@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
-from cpp_runner.compiler.compiler_utils import make_compiler
+from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
@@ -60,11 +60,16 @@ def main(args):
             conv_name=f"test_conv_{rnd_str}",
         )
 
-    compiler = make_compiler(
+    compiler = OLAPCompilerFactory(db_storage=db_storage).make_compiler(
         cwd=work_dir,
-        db_storage=db_storage,
         untracked_cpp_runner_content="",
     )
+    compiler.set_compile_options(optimize=True, trace_mode=False)
+
+    # compile
+    comp_result, _, _ = compiler.build_cached(skip_cache=True, write_cache=False)
+    assert comp_result is None, f"Compilation failed with error: {comp_result}"
+
     bespoke_engine = RunTool(
         cwd=work_dir,
         query_validator=None,

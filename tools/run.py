@@ -46,7 +46,8 @@ class RunTool:
         self,
         cwd: Path,
         dataset_name: str,
-        base_parquet_dir: str,  # must contain per scale-factors subdirs: e.g. base_parquet_dir/sf1/, base_parquet_dir/sf10/..., each containing the corresponding parquet files for the scale factor
+        base_parquet_dir: str
+        | Path,  # must contain per scale-factors subdirs: e.g. base_parquet_dir/sf1/, base_parquet_dir/sf10/..., each containing the corresponding parquet files for the scale factor
         db_storage: DBStorage,
         compiler: CachedCompiler,
         run_stats_collector: RunStatsCollector | None,
@@ -209,12 +210,8 @@ class RunTool:
                 "Launching with manual stdin args data. Query-Validator will not be invoked!"
             )
 
-        cxx_flags = []
-        if optimize:
-            cxx_flags.extend(["-O3", "-flto"])
-        if trace_mode:
-            cxx_flags.append("-DTRACE")
-        self.compiler.set_extra_cxxflags(cxx_flags)
+        # set compile mode
+        self.compiler.set_compile_options(optimize=optimize, trace_mode=trace_mode)
 
         import time as _time
 

@@ -78,10 +78,6 @@ def make_compiler(
         cwd.resolve(),
     )
 
-    logger.warning(f"Compiler API path: {api_path}")
-    logger.warning(f"Compiler CPP helpers path: {cpp_helpers_path}")
-    logger.warning(f"Compiler hotpatch path: {hotpatch_path}")
-
     libs = {
         "loader": [
             api_path / "loader_api.cpp",
