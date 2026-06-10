@@ -1,0 +1,13 @@
+The following queries are critically slow — more than 5x slower than DuckDB:
+
+${slow_query_list}
+
+This indicates a fundamental algorithmic problem in the implementation of these queries. Investigate each query's implementation and identify the root cause of the excessive slowness (e.g. missing index, O(n²) nested loop, wrong join order, missing early termination, redundant computation, wrong data structure, etc.).
+
+Limit investigation to the affected query file(s), `${query_impl_path}`, and `${builder_path}`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch. Do not use broad find, repo-wide grep, or directory scans unless the prompt names no target files. If a needed file is missing, inspect at most one directory level around the named files.
+
+Fix the issues and verify that:
+1. The query produces correct results (run validation).
+2. The runtime is no longer critically slow (run benchmark and confirm speedup > 0.2x vs DuckDB).
+
+Make sure your fixes do not break the other queries.

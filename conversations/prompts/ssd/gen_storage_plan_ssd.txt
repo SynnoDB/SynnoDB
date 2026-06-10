@@ -1,0 +1,59 @@
+Your task is to analyze the workload and produce an SSD-backed storage-layout summary for the tables accessed by the queries. The dataset is expected to be substantially larger than the buffer pool (RAM). Under that regime, **bytes read from disk is the dominant cost**: every byte you do not persist is a byte you do not read at query time, and every page the zone map skips is a page you do not read at all. The plan must reflect this priority.
+
+You have flexibility to explore creative encodings, hybrid layouts, and unconventional ideas — but every design choice must be justified by its expected effect on bytes-on-disk and bytes-read-per-query.
+
+# Mandatory design dimensions
+
+For every table accessed by the workload, the plan must explicitly state:
+
+1. **Per-column type, chosen from observed cardinality — not the SQL nominal type**
+Declare the smallest fixed-width type that fits the actual value range (e.g. `col ∈ [1,50]` → `int8`, not `int32`, even if the SQL type is `INTEGER`). State the observed `(min, max, distinct)` the choice is based on, even if estimated.
+
+2. **Per-column encoding**
+Pick one of: raw fixed-width, frame-of-reference (FOR), bit-packing, RLE, dictionary, or packed-tuple (correlated narrow columns combined into a single code). Justify the choice in one line tied to the column's cardinality and clustering. For non-raw encodings, state the decode strategy at query time.
+
+3. **Workload-wide sort / clustering order, chosen for maximum zone-map pruning**
+Pick one sort key per table (or declare the table unsorted), and justify it by the expected pruning across the *entire* workload, not per-query.
+- For every column with a range predicate, estimate selectivity from the predicate shape and value distribution — a one-sided predicate near the column's extreme prunes far less than a middle-window range.
+- The chosen sort key should maximize the **sum of bytes-read-saved across the workload**, weighted by query frequency / cost.
+- If no single key dominates, consider hierarchical clustering (sort by A, secondary sort by B).
+
+4. **Per-page zone maps for every column with range or equality predicates**
+Store `(min, max)` per page in a sidecar `<col>.zonemaps.bin` file. For columns with low distinct count, a per-page bitset of present values is more selective than min/max — declare which.
+
+5. **Compact derived sidecars for out-of-core shortcuts**
+Page/prefix aggregates over the clustering key are allowed when (a) the sidecar is metadata-scale relative to the base table, (b) it can be recomputed from persisted columns, and (c) it eliminates a full scan for a recurring query pattern. State the sidecar schema, size, and rebuild rule. Do not store row-level duplicate payload — sidecars are page/block summaries, indexes, dictionaries, or permutations only.
+
+6. **Byte budget per query**
+For each query, estimate **bytes-read-from-disk under the proposed layout** with expected zone-map pruning. Sum across queries and report the workload total. A plan that doubles a query's bytes-read versus the obvious DSM layout must justify it elsewhere; a plan that halves it is the goal.
+
+7. **Resident vs. paged columns**
+Identify which structures should be pinned permanently in the buffer pool (small dictionaries, lookup tables, dimension columns that fit in a few MB) versus which page in and out. Compute the resident footprint and state it explicitly. The resident footprint must fit comfortably inside the buffer pool with room left for paged work.
+
+# Hard constraints
+
+- Store all the data, and store it in a way that it could be flattened back to the original data.
+- Do not store payload data redundantly. Compression, encoding, metadata, and special data structures are allowed, but avoid secondary full/partial copies of columns unless they are only metadata/permutations.
+- For every column used by the workload, specify the concrete persisted representation and the Database handle/index that will expose it to query kernels.
+- Represent variable-length strings as offsets + bytes files exposed through `StringColumnHandle`. Represent dates/decimals as documented fixed-width values when possible.
+- Build must stream Parquet input row-group by row-group from table file paths; do not assume the full Parquet dataset fits in memory.
+- Do not assume Parquet input is already sorted; if a sort order is required, state how it is produced via streaming/external sort.
+- Design for sequential I/O: prefer access patterns that read column pages in ascending page-index order.
+- Identify which acceleration structures (e.g. CSR indexes) are small enough to fit permanently in the RAM budget, and which must be streamed or replaced with merge-join patterns.
+
+# Output
+
+Write the plan to `${storage_plan_filename}`. For each table accessed by the queries, include:
+- A table of per-column declarations: `column → persisted type → encoding → ColumnHandle name → expected on-disk size`.
+- The chosen sort key and the justification (which queries benefit, expected pruning, weighted total).
+- A bytes-read estimate per query under the layout (with expected zone-map pruning).
+- The resident footprint (always-pinned structures).
+- Any auxiliary files (zone maps, dictionaries, FOR per-page minima, offset sidecars), with their sizes.
+
+The queries are listed in the file: `${queries_path}`.
+The schema is:
+${schema}
+
+Be inventive and free-form on encoding ideas — speculative or unconventional encodings are welcome — but every choice must be tied back to its effect on bytes-on-disk and bytes-read-per-query.
+
+Do not read build scripts, system paths, or tool internals. Limit inspection to `${queries_path}` and the provided schema. Do not use broad `find`, repo-wide `grep`, or directory scans.

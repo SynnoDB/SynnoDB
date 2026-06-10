@@ -1,0 +1,6 @@
+Execute and check correctness by using the run tool. Run with query_id "${query_id}" and scale_factor ${sf_verify_str}. If there are errors, fix the implementation accordingly.
+
+If errors occur: first assume the bug is in the target query file or `${builder_path}`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+${error_hints}
+The SQL-template is:
+${sql}

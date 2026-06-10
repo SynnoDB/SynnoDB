@@ -1,0 +1,10 @@
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).

@@ -1,0 +1,34 @@
+Add the following `get_query_pool` function to `${query_impl_cpp_filename}`:
+```
+// query_impl.cpp
+ThreadPool& get_query_pool() {
+    static struct Holder {
+        ThreadPool pool;
+        Holder() {
+            init_thread_pool(pool);
+            pool.parallel_for([](int, int) {});  // warm-up
+        }
+    } h;
+    return h.pool;
+}
+```
+The function is forward declared in `query_pool.hpp`.
+The ThreadPool struct is defined in `${thread_pool_filename}`.
+This thread pool will be shared across all queries and can be used to dispatch parallel tasks for query execution.
+
+In each queryN.cpp, add exactly:
+```
+#include "query_pool.hpp"
+static ThreadPool& pool = get_query_pool();
+```
+Place the static definition at file scope, once per file. Do not modify any other files besides query_impl.cpp, query_pool.hpp if needed, and the listed queryN.cpp files.
+Do not yet dispatch work to the thread pool, just ensure that it is initialized and can be accessed.
+
+Call the run-tool after implementing the thread pool initialization. Check that the code compiles and runs correctly.
+
+${general_pretext}
+
+${constraints}
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries${bespoke_storage_related}. Avoid regressions on the other queries.

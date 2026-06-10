@@ -1,0 +1,7 @@
+The validation/correctness check reported the produced query results are incorrect (executed with trace_mode=${tracing_mode}, qids=${qids}).
+Investigate this issue and fix your implementation until query-implementation is correct.
+
+Limit investigation to the target query file(s), `${query_impl_path}`, and `${builder_path}`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch. Do not use broad find, repo-wide grep, or directory scans unless the prompt names no target files. If a needed file is missing, inspect at most one directory level around the named files.
+${error_hints}
+Debug Information:
+${msg}

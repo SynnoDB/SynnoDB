@@ -1,0 +1,19 @@
+Verify the implementation is correct at scale-factor ${target_sf}. It was 
+previously tested successfully at ${sf_list}. Call the run-tool with sf 
+${target_sf}, optimize=True, trace=False.
+
+If it produces errors, the most common causes when scaling to a larger dataset are:
+
+- int32 overflow in row counts, offsets, or array indices (use int64/size_t)
+- int32 overflow in aggregation accumulators (e.g. SUM into int32)
+- Hardcoded or statically-sized buffers that were large enough at smaller SF
+- Hash table capacity not scaling with data size, causing OOM or rehash loops
+- Arrow/Parquet int32 column offset overflow when a column exceeds 2 GiB
+- Join build side exceeding available memory with no spill path
+- mmap or allocation sizes computed through int32 arithmetic that wraps
+
+${general_pretext}
+
+${constraints}
+- Call run-tool only after significant edits. A single call is sufficient to evaluate a batch of changes.
+- Be carefull with changes that affect other queries${bespoke_storage_related}. Avoid regressions on the other queries.

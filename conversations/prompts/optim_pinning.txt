@@ -1,0 +1,3 @@
+Your Task is to adapt the query implementation code (`${query_impl_path}`) and pin the query-execution to a single logical CPU core. Do this to ensure deterministic performance measurements and reduce noise from scheduling variability. Use the same core for all implemented queries. 
+${affinity_prompt}
+Pin to core ${core_id}.

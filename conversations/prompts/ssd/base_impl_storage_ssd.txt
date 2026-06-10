@@ -1,0 +1,48 @@
+Finish all todos from previous interaction outlined in `${base_impl_todo_file}`.
+Focus on the storage implementation: declare the schema-specific fields in the Database struct, stream Parquet columns to binary files, register those files with the BufferPool, and populate the Database struct with ColumnHandle<T> descriptors.
+Implement the build logic in `${builder_path}` and update the adjacent header that defines `struct Database` when new ColumnHandle<T> fields are needed.
+`file_loader_utils.hpp`/`.cpp` is present in the workspace and contains reusable SSD loader helpers: `ParquetFileScanner`, `FdStream`, `StringWriter`, fixed-width/string column writers, Arrow extraction helpers, and registration helpers such as `reg_int32`, `reg_int64`, `reg_fixed_width<T>`, `reg_page_aligned_fixed_width<T>`, and `reg_string`. Reuse these helpers where helpful.
+
+Before editing, plan your approach and implementation steps.
+
+# SSD Storage Model
+
+The build phase must:
+1. Create the storage directory (read from `STORAGE_DIR` env var, default `./column_files/`).
+2. For each table path in `ParquetTables` (for example `tables->lineitem_path`), use `ParquetFileScanner` from `file_loader_utils.hpp` to read only the needed columns, one row group at a time. Do NOT call `ReadParquetTable()` for large tables and do NOT materialize all Parquet files in memory at once.
+3. For each fixed-width numeric column: use `FdStream` plus `write_col_int32`, `write_col_int64`, or a narrow schema-specific equivalent to append values to a flat binary file. Flat `reg_fixed_width<T>` storage is valid only when `BP_PAGE_BYTES % sizeof(T) == 0`. Store DATE columns as a documented int32_t representation. Store DECIMAL columns as scaled integers when possible, otherwise double only if precision loss is acceptable for the query.
+4. For each string/binary column: prefer `StringWriter` to append `uint64_t offsets[num_rows + 1]` and `char bytes[total_bytes]` files and expose them with `StringColumnHandle`. Do not store persistent `std::vector<std::string>` fields.
+5. If a fixed-length string optimization is truly needed, do not hand-roll it. Use `write_fixed_char_col_aligned()` plus `finish_fixed_char_col_aligned()` to write page-aligned files, and register them with `reg_page_aligned_fixed_width<std::array<char,N>>()`. Fixed-char widths such as 15 or 25 do not divide `BP_PAGE_BYTES`, so byte-packed `num_rows * N` files are unsafe with `ColumnHandle<std::array<char,N>>`.
+6. Allocate a `BufferPool` with a frame count chosen to fit the available RAM budget (e.g. available_ram_bytes / BP_PAGE_BYTES frames). Store the pool pointer in `db->pool`.
+7. For each column file: register it with `reg_int32`, `reg_int64`, `reg_fixed_width<T>`, `reg_page_aligned_fixed_width<T>`, or `reg_string`, then assign the returned handle to the corresponding Database field. If hand-registering, call `pool->register_column(path, num_bytes)` and set `{pool, col_id, num_rows}`. For strings, register both offsets and bytes files and assign the `StringColumnHandle`.
+
+This step is incomplete unless all columns needed by the planned queries have:
+- one declared `ColumnHandle<T>` (or an explicitly documented encoded equivalent) in `Database`
+- one persisted binary file under the storage directory
+- one `register_column()` call
+- one assignment that stores `{pool, col_id, num_rows}` in the corresponding Database field
+
+For variable-length strings, the equivalent is one `StringColumnHandle`, two persisted files (`.offsets.bin` and `.bytes.bin`), two `register_column()` calls, and one assignment that wires both handles into the Database field.
+
+Do NOT return an empty Database. Do NOT leave `build()` with only `db->pool = pool` and TODO comments. Do NOT use `std::vector<T>` as persistent Database storage. Temporary page-sized buffers during serialization are acceptable, but the returned Database struct must contain only ColumnHandle<T> fields, compact metadata needed by the query kernels, and the shared `BufferPool*`.
+
+Before compiling, perform a storage invariant audit in your response:
+- every Database field added and its persisted representation
+- every fixed-width handle and whether `BP_PAGE_BYTES % sizeof(T) == 0` or the page-aligned fixed-width helpers are used
+- every string handle and its offsets/bytes files
+- every registration path and row count source
+
+On re-runs (if the column files already exist), skip serialization and re-register the existing files with a fresh pool.
+
+# Arrow Extraction Note
+
+When reading numeric columns from Arrow ChunkedArrays, do not static_cast directly to `ArrowNumericArray<T>`. Instead, dispatch on `chunk->type_id()` at runtime to handle INT8/INT16/INT32/INT64/UINT*/FLOAT/DOUBLE/DECIMAL128, casting values to the desired CType. This is necessary because the physical Arrow type depends on which tool wrote the Parquet file and may differ from the schema's logical type. For strings, handle STRING and LARGE_STRING chunks explicitly by appending bytes and offsets. Release each row-group Arrow table before reading the next row group.
+
+Limit file inspection to: `${base_impl_todo_file}`, `${builder_path}`, `${query_impl_path}`, `${args_path}`, `parquet_reader.hpp`, `file_loader_utils.hpp`, `file_loader_utils.cpp`, `buffer_pool.hpp`, `column_handle.hpp`, the query implementation files (`query<QID>.cpp/hpp`) and the parquet schema. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+
+IMPORTANT: Focus on producing a correct build implementation. Prefer simple and efficient serialization code. The bottleneck is disk write throughput, not computation. If the current Database header lacks the needed fields, edit it before compiling; compile success with an empty storage layout is not success.
+
+For the query execution logic in `${query_impl_path}` and the individual query files (`query<QID>.cpp/hpp`) keep the stubs for now. The full query-implementation will be done later.
+
+After implementing, call compile tool to check for errors. If there are errors, fix them.

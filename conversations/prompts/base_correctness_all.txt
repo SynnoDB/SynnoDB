@@ -1,0 +1,3 @@
+Check correctness of the output of all queries by using the run tool. Run with scale_factor ${sf_verify_str}. Call the run tool once for all queries together. If there are errors, fix the implementation accordingly.
+
+After fixing, rerun the full batch once to confirm. If errors persist: first assume the bug is in the relevant query file or `query_impl.cpp`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.

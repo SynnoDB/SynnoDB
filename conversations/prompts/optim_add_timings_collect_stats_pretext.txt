@@ -1,0 +1,55 @@
+# Objective
+Add comprehensive tracing instrumentation to measure query execution timing and row flow. The goal is to produce actionable data that identifies bottlenecks and validates optimizations.
+
+# Tracing Infrastructure
+The file `trace.hpp` is already present in the workspace. Include it in any file that needs instrumentation:
+```cpp
+#include "trace.hpp"
+```
+
+All tracing code is compiled away to nothing unless `-DTRACE` is set. `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+## Available Macros
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+## Output Format
+Stable, machine-parsable output with two line types:
+```
+PROFILE <section_name> <nanoseconds>
+COUNT <counter_name> <value>
+```
+Names should reflect the specific query and phase. E.g. `q1_titlescan_decode`, ...
+
+# Instrumentation Requirements
+## Timing
+Use `PROFILE_SCOPE` to time each major operator and sub-phase (scan, decode, join build/probe, aggregation, sort, etc.).
+
+## Row Count Instrumentation
+Track data flow through each operator using `TRACE_COUNT`:
+
+Scan counters:
+- rows_scanned - Total rows read
+- rows_emitted - Rows passing filter (rows_scanned - rows_filtered_out)
+
+Join counters:
+- build_rows_in - Build side input rows
+- probe_rows_in - Probe side input rows
+- join_rows_emitted - Output rows
+
+Aggregation counters:
+- agg_rows_in - Input rows
+- groups_created - Distinct groups
+- agg_rows_emitted - Output rows (usually equals groups_created)
+
+Sort counters:
+- sort_rows_in
+- sort_rows_out
+
+General:
+- query_output_rows - Final result count
+
+# YOUR TASK
+Instrument the execution code of all queries to collect the tracing statistics. Use the macros from `trace.hpp` to add timing and counting instrumentation to all major operators (scan, join, aggregation, sort, etc.) and wherever else it seems helpful. Ensure that the output is stable and parsable, and that there is no overhead when TRACE is disabled.

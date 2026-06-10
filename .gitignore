@@ -1,3 +1,20 @@
+.env
+cache/
+output/
+lsyncd.conf.lua
+duckdb
+*.parquet
+*.csv
+*.pdf
+*.json
+wandb/
+*.png
+*.jpg
+*.zip
+dbs/
+tmp/
+*.tmp
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

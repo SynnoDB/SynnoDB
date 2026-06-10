@@ -1,0 +1,19 @@
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, ${storage_layout}chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `${builder_path}`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.

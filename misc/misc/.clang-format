@@ -1,0 +1,16 @@
+﻿---
+BasedOnStyle: LLVM
+AccessModifierOffset: '-4'
+AllowShortIfStatementsOnASingleLine: Never
+BreakBeforeBraces: Attach
+ColumnLimit: '0'
+FixNamespaceComments: 'true'
+IncludeBlocks: Regroup
+IndentCaseLabels: 'true'
+IndentWidth: '4'
+MaxEmptyLinesToKeep: '2'
+PointerAlignment: Left
+TabWidth: '4'
+UseTab: Never
+
+...
