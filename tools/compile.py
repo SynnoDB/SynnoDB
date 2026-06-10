@@ -7,7 +7,7 @@ from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker
 from utils.utils import DBStorage
 
-from ..cpp_runner.compiler_utils import make_compiler
+from ..cpp_runner.compiler.compiler_utils import make_compiler
 
 logger = logging.getLogger(__name__)
 

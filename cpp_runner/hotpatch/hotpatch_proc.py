@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-from cpp_runner.proc_utils import ProcTreeTimeoutKiller
+from cpp_runner.utils.proc_utils import ProcTreeTimeoutKiller
 from tools.sandbox import _set_rlimits
 from tools.validate.query_validator_class import QueryResult
 

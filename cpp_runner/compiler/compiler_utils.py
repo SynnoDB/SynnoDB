@@ -3,8 +3,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-
-from cpp_runner.compiler_cached import CachedCompiler
+from cpp_runner.compiler.compiler_cached import CachedCompiler
 from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker
 from utils.utils import DBStorage

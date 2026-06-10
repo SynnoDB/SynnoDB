@@ -2,7 +2,7 @@ import logging
 import sys
 from pathlib import Path
 
-from cpp_runner.compiler import Compiler
+from cpp_runner.compiler.compiler import Compiler
 
 ROOT = Path(__file__).resolve().parents[1]
 
