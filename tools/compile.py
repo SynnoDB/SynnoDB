@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from cpp_runner.compiler.compiler_utils import make_compiler
+from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from observability.logging.run_stats_collector import RunStatsCollector
 from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker
@@ -30,9 +30,8 @@ class CompileTool:
         ] = None,  # restrict to 10000 chars ~ 2.5 Thousand tokens
     ) -> None:
         self.cwd = cwd
-        self.compiler = make_compiler(
+        self.compiler = OLAPCompilerFactory(db_storage=db_storage).make_compiler(
             cwd,
-            db_storage=db_storage,
             compile_cache_dir=compile_cache_dir,
             git_snapshotter=git_snapshotter,
             runtime_tracker=runtime_tracker,
@@ -47,12 +46,7 @@ class CompileTool:
     def __call__(self, optimize: bool) -> str:
         logger.info("compile call")
 
-        cxx_flags = []
-        if optimize:
-            cxx_flags.extend(["-O3", "-flto"])
-        self.compiler.set_extra_cxxflags(
-            cxx_flags
-        )  # if this methodolyg is changed, keep in mind to update the cache hash calculation
+        self.compiler.set_compile_options(optimize=True)
 
         err = self.compiler.build()
         if err is None:

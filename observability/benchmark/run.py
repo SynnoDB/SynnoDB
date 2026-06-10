@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
-from cpp_runner.compiler.compiler_utils import make_compiler
+from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from observability.benchmark.systems.base import SystemRunner
 from observability.benchmark.writer import BenchmarkWriter
 from observability.logging.logger import setup_logging
@@ -274,9 +274,8 @@ def run_benchmark(args) -> None:
             assert isinstance(args.db_storage, DBStorage), (
                 f"Expected DBStorage for bespoke system, got type {type(args.db_storage)}"
             )
-            compiler = make_compiler(
+            compiler = OLAPCompilerFactory(db_storage=args.db_storage).make_compiler(
                 cwd=out_path,
-                db_storage=args.db_storage,
                 untracked_cpp_runner_content="",
             )
             db_engine = RunTool(

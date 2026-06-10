@@ -63,7 +63,6 @@ class Compiler:
         app_extra_srcs: list[Path | str] | None = None,
         build_dir: str = "build",
         link_libs: list[str] | None = None,
-        extra_cxxflags: list[str] | None = None,
         pkgconfig_libs: list[str] | None = None,
         force_rebuild: bool = False,
         include_dirs: list[Path | str] | None = None,
@@ -76,7 +75,6 @@ class Compiler:
         self.app_extra_srcs = app_extra_srcs or []
         self.build_dir = build_dir
         self.link_libs = link_libs or []
-        self.extra_cxxflags = extra_cxxflags or []
         self.pkgconfig_libs = pkgconfig_libs or []
         self.force_rebuild = force_rebuild
         self.include_dirs = include_dirs or ["."]
@@ -97,7 +95,7 @@ class Compiler:
             "-fno-record-gcc-switches",
         ]
         self.include_flags = self._normalize_include_dirs(self.include_dirs)
-        self.cxxflags = self._make_cxxflags(self.extra_cxxflags)
+        self.cxxflags = self._make_cxxflags([])
         self.ldflags = ["-shared", "-Wl,--build-id=sha1", "-Wl,--no-undefined"]
         self.pkg_cflags: list[str] = []
         self.pkg_libs: list[str] = []
@@ -120,7 +118,16 @@ class Compiler:
                     parts.append("pkg-config failed")
                 raise RuntimeError("\n".join(parts))
 
-    def set_extra_cxxflags(self, flags: list[str]) -> None:
+    def set_compile_options(self, optimize: bool = False, trace_mode: bool = False):
+        # overwrite existing extra flags with the new ones
+        cxx_flags = []
+        if optimize:
+            cxx_flags.extend(["-O3", "-flto"])
+        if trace_mode:
+            cxx_flags.append("-DTRACE")
+        self._set_extra_cxxflags(cxx_flags)
+
+    def _set_extra_cxxflags(self, flags: list[str]) -> None:
         self.extra_cxxflags = list(flags)
         self.cxxflags = self._make_cxxflags(self.extra_cxxflags)
 

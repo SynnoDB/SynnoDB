@@ -25,7 +25,7 @@ import sys
 import threading
 from pathlib import Path
 
-from cpp_runner.compiler.compiler_utils import make_compiler
+from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from observability.logging.logger import setup_logging
 from tools.validate.query_validator_class import format_args_string
 from workloads.dataset.dataset_tables_dict import get_dataset_name
@@ -117,9 +117,8 @@ def init_service(args) -> None:
         base_parquet_dir=(parquet_dir.as_posix()),
         run_stats_collector=None,
         db_storage=args.db_storage,
-        compiler=make_compiler(
+        compiler=OLAPCompilerFactory(db_storage=args.db_storage).make_compiler(
             cwd=workspace_dir,
-            db_storage=args.db_storage,
             untracked_cpp_runner_content="",
         ),
     )
