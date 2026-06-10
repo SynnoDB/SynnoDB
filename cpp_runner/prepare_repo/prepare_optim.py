@@ -1,8 +1,8 @@
 import logging
 from pathlib import Path
 
-from pipeline.git_snapshotter import GitSnapshotter
-from prepare_repo.prepare import get_art_str
+from cpp_runner.prepare_repo.prepare import get_art_str
+from synth_framework.git_snapshotter import GitSnapshotter
 from utils import utils
 
 logger = logging.getLogger(__name__)

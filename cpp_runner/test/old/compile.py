@@ -2,13 +2,9 @@ import logging
 import sys
 from pathlib import Path
 
+sys.path.append(Path(__file__).parent.parent.parent.as_posix())
+
 from cpp_runner.compiler.compiler import Compiler
-
-ROOT = Path(__file__).resolve().parents[1]
-
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 
 logger = logging.getLogger(__name__)
 

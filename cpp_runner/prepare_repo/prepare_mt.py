@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from pipeline.git_snapshotter import GitSnapshotter
+from synth_framework.git_snapshotter import GitSnapshotter
 from utils import utils
 
 logger = logging.getLogger(__name__)

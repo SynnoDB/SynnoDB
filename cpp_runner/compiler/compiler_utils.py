@@ -62,25 +62,41 @@ def make_compiler(
     only_from_cache: bool = False,
 ) -> CachedCompiler:
     api_path = relpath(
-        Path(__file__).parent.parent.parent / "pipeline" / "cpp_runner",
+        Path(__file__).parent.parent / "api",
         cwd.resolve(),
     )
+    cpp_helpers_path = relpath(
+        Path(__file__).parent.parent / "cpp_helpers",
+        cwd.resolve(),
+    )
+    hotpatch_path = relpath(
+        Path(__file__).parent.parent / "hotpatch",
+        cwd.resolve(),
+    )
+    db_cpp_path = relpath(
+        Path(__file__).parent.parent / "db.cpp",
+        cwd.resolve(),
+    )
+
+    logger.warning(f"Compiler API path: {api_path}")
+    logger.warning(f"Compiler CPP helpers path: {cpp_helpers_path}")
+    logger.warning(f"Compiler hotpatch path: {hotpatch_path}")
 
     libs = {
         "loader": [
             api_path / "loader_api.cpp",
             "parquet_reader.cpp",
-            api_path / "loader_utils.cpp",
+            cpp_helpers_path / "loader_utils.cpp",
         ],
         "builder": [
             api_path / "builder_api.cpp",
             "db_loader.cpp",
-            api_path / "cpu_affinity.cpp",
+            cpp_helpers_path / "cpu_affinity.cpp",
         ],
         "query": [
             api_path / "query_api.cpp",
             "query_impl.cpp",
-            api_path / "cpu_affinity.cpp",
+            cpp_helpers_path / "cpu_affinity.cpp",
         ],
     }
 
@@ -89,7 +105,7 @@ def make_compiler(
             [
                 "file_loader_utils.cpp",
                 "parquet_reader.cpp",
-                api_path / "loader_utils.cpp",
+                cpp_helpers_path / "loader_utils.cpp",
             ]
         )
 
@@ -102,9 +118,9 @@ def make_compiler(
     args = dict(
         working_dir=cwd,
         libs=libs,
-        main_src=api_path / "db.cpp",
-        include_dirs=[api_path],
-        app_extra_srcs=[api_path / "utils/build_id.cpp"],
+        main_src=db_cpp_path,
+        include_dirs=[api_path, cpp_helpers_path, hotpatch_path],
+        app_extra_srcs=[hotpatch_path / "build_id.cpp"],
         build_dir="build",
         link_libs=[],
         pkgconfig_libs=["arrow", "parquet"],

@@ -19,7 +19,6 @@ from llm.sdk.agents_sdk.openai_token_usage import (
     openai_get_tokens_context_and_dollar_info,
 )
 from observability.logging.cloc_utils import calculate_loc
-from observability.logging.run_stats_collector import RunStatsCollector
 from observability.logging.run_stats_drain import DataDrain
 from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker

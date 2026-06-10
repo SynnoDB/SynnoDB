@@ -10,7 +10,6 @@ from observability.logging.logger import PLAIN
 from observability.logging.run_stats_collector import RunStatsCollector
 from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker
-from tools.workspace_editor import WorkspaceEditor
 from utils import utils
 
 logger = logging.getLogger(__name__)
