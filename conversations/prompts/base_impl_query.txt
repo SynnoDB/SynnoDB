@@ -1,0 +1,12 @@
+${prefix} query ${query_id}. 
+The SQL query template to implement is:
+${sql}
+
+Add the query execution logic to `query${query_id}.cpp`.
+Align with the existing storage layout and value-encoding implementation in `${builder_path}`.
+
+Limit file inspection to: `${builder_path}`, `${query_impl_path}`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+
+Focus on correctness first! The implementation can be optimized later.
+
+${sample_args_str}

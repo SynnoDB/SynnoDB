@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BespokeOLAP Demo Runner</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="site-header">
+  <span class="site-logo">BespokeOLAP</span>
+  <span class="site-badge">Generated CPP Runner</span>
+  <div id="header-meta" class="header-meta"></div>
+</header>
+<div id="form-area">
+  <div id="form-cols">
+    <div id="col-left">
+      <label for="qsel">Query</label>
+      <select id="qsel"></select>
+      <div id="placeholders"></div>
+    </div>
+    <div id="col-right">
+      <div class="sql-label">SQL</div>
+      <pre id="sql-preview"></pre>
+      <div id="sql-scroll-hint" aria-hidden="true">Scroll to see full query ↓</div>
+    </div>
+  </div>
+  <div id="form-bottom">
+    <div class="engine-row" id="engine-row" style="display:none">
+      <label class="cb-label" id="lbl-umbra" style="display:none"><input type="checkbox" id="cb-umbra" checked> Run against Umbra</label>
+      <label class="cb-label" id="lbl-duckdb" style="display:none"><input type="checkbox" id="cb-duckdb"> Run against DuckDB</label>
+      <label class="cb-label" id="lbl-clickhouse" style="display:none"><input type="checkbox" id="cb-clickhouse"> Run against ClickHouse</label>
+    </div>
+    <div class="btn-row">
+      <button id="run-btn" onclick="runQuery()">Run</button>
+      <!-- <button id="show-btn" class="secondary" onclick="showQuery()">Assemble query / curl</button> -->
+    </div>
+    <div id="status"></div>
+  </div>
+</div>
+<div id="progress"></div>
+<div id="chart"></div>
+<div id="output"></div>
+<footer class="site-footer">
+  <a href="/privacy">Privacy</a>
+</footer>
+<script src="/ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+You are an expert database engineer and skilled programmer.
+
+# Context
+You will implement a specialized high-performance database engine in C++ that is optimized to only execute a predefined set of SQL queries. The engine has two phases:
+
+1. Build phase: Open the Parquet file paths provided by `ParquetTables`, stream the needed columns to flat binary files on disk, and populate a Database struct with ColumnHandle<T> descriptors backed by a shared BufferPool. The BufferPool pages column data in/out of a fixed RAM budget on demand — do NOT load all data into std::vector<T> RAM structures. Datatypes can be hard-coded to avoid interpretation overhead.
+2. Execution phase: Execute the predefined queries by streaming column pages through the buffer pool and writing results to CSV files. Query kernels receive typed pointers from pin_page() and release them with unpin_page() after processing each page.
+
+# System Overview
+Queries: Defined in ${queries_path} (${query_str}).
+
+Build phase is implemented in ${builder_path}, which predefines a Database struct. `ParquetTables` contains file paths such as `tables->lineitem_path`, not materialized Arrow tables. Your job is to open those Parquet files, serialize columns to binary files, and populate Database with ColumnHandle<T> descriptors. ${storage_hint}
+
+The buffer pool and column handle types are predefined in `buffer_pool.hpp` and `column_handle.hpp`. The build function reads the storage directory from the `STORAGE_DIR` environment variable (default: `./column_files/`). `parquet_reader.hpp` provides `ParquetFileScanner` so build() can process one row group at a time without loading full Parquet tables into memory.
+
+Execution phase interface is predefined in ${query_impl_path}. It accepts a QueryRequest list and calls the corresponding query implementation for each request.
+Sample query implementations are provided in e.g., `query1.cpp/hpp`.
+The output of each query should be written to `result<RUN_NR>.csv` (where `<RUN_NR>` is the 1-based position in the arg list), using: `delimiter=','`, `escapechar='\\'`, `quotechar='"'`, `header=True`.
+
+Table schemas can be inspected with: parquet-dump-schema `${parquet_path}/lineitem.parquet`
+
+# Your Task
+Create a TODO plan for implementing this database engine. Write your plan to `${base_impl_todo_file}`. The plan should include concrete implementation steps in order, formatted so individual steps can later be marked as done. It should also include conceptual notes on data structure design and query execution strategy, covering both the build and execution phases.
+
+The plan must address:
+- Which columns to serialize and what binary type to use for each
+- The exact `ColumnHandle<T>` and `StringColumnHandle` fields that must be added to `struct Database`
+- The exact build-phase registration path for each field: Arrow table/column name → binary file name → `pool->register_column()` → Database handle assignment
+- How each Parquet file will be streamed row-group by row-group from `tables-><table>_path`, including column indices to read for each table
+- How variable-length strings are represented as offsets + bytes files, and how DATE/DECIMAL values are represented as fixed-width values
+- Why every fixed-width representation is page-safe: flat fixed-width storage only when `BP_PAGE_BYTES % sizeof(T) == 0`; otherwise use `StringColumnHandle` or page-aligned fixed-char helpers
+- How to choose the BufferPool frame count (RAM budget / BP_PAGE_BYTES)
+- Whether any acceleration structures (e.g. small CSR indexes) fit in RAM and should be pinned permanently
+- How queries will iterate ColumnHandle pages (pin → process chunk → unpin loop), including row-range chunks for multi-column scans because different element sizes produce different rows-per-page
+- Join strategy: sort-merge joins (sequential I/O, preferred for large tables) vs hash joins (random access, only if the build side fits in RAM)
+
+The later implementation will be rejected if it returns an empty Database, materializes all Parquet files in memory at once, keeps Arrow tables as the execution storage, or stores columns persistently in `std::vector<T>` fields. Make the todo plan concrete enough that the next step can mechanically declare every handle and populate every handle.
+
+Do not start executing any of your todo steps yet.
+
+Do not use broad `find`, repo-wide `grep`, or directory scans when writing the plan. Limit inspection to `${queries_path}`, `${builder_path}`, `${query_impl_path}`, `${args_path}`, `parquet_reader.hpp`, `buffer_pool.hpp`, `column_handle.hpp`, and the parquet schema output of `parquet-dump-schema`. Do not read build scripts, framework internals, or system paths.
+
+Note: `parquet-dump-schema` reports logical types. At runtime, Arrow may expose a different physical type (e.g. DECIMAL128 instead of INT64, or DOUBLE instead of DECIMAL). When planning the build phase, do not assume the Arrow type_id matches the logical schema type for numeric columns. Plan for runtime type dispatch.

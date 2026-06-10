@@ -1,0 +1,28 @@
+Optimize the implementation of query ${query_id} using this sample execution plan collected from ${engine} (sf ${sf}):
+${query_plan}
+
+Study the query plan to understand join order, cardinalities, operator choices, and data access patterns that the ${engine} optimizer arrived at. Use this structural insight to align the current implementation with the plan's information (e.g. build/probe sides, filter selectivity, aggregation grouping).
+
+${tracing_block}
+# Scope of this stage
+
+This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
+- Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
+- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Filter ordering and selectivity-driven predicate evaluation.
+${additional_instructions}
+
+${general_pretext}
+
+${constraints}
+
+# Final Instructions
+
+Before editing: make a 3-step plan: (1) what algorithmic bottleneck the plan reveals, (2) what structural change you will make, (3) expected effect.
+
+Make at most 2 optimization rounds:
+1. Apply one batched change set.
+2. Measure runtime (trace=off).
+3. Only do a second round if you have a new concrete hypothesis.
+${misc}
+Stop when: correctness is preserved AND performance improves measurably, OR two rounds fail to improve. If a change does not help, revert it immediately instead of stacking further edits. Verify correctness on scale factors ${sf_list} and benchmark on ${sf}.

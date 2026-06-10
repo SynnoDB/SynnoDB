@@ -1,0 +1,3 @@
+python -m dataset.custom_scaler.scale_parquet --duckdb /mnt/labstore/bespoke_olap/imdb_parquet/imdb.duckdb --output-dir /mnt/labstore/bespoke_olap/imdb_parquet/ --scale 0.5
+python -m dataset.custom_scaler.scale_parquet --duckdb /mnt/labstore/bespoke_olap/imdb_parquet/imdb.duckdb --output-dir /mnt/labstore/bespoke_olap/imdb_parquet/ --scale 1
+python -m dataset.custom_scaler.scale_parquet --duckdb /mnt/labstore/bespoke_olap/imdb_parquet/imdb.duckdb --output-dir /mnt/labstore/bespoke_olap/imdb_parquet/ --scale 2

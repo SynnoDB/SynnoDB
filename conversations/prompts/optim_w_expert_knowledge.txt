@@ -1,0 +1,14 @@
+Optimize query ${query_id} using the expert knowledge on high-performance in-memory OLAP systems:
+
+${expert_knowledge}
+
+Use this expert knowledge to speedup the implementation of query ${query_id}. 
+
+${general_pretext}
+
+${constraints}
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries${bespoke_storage_related}. Avoid regressions on the other queries.
+${misc}
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail. 

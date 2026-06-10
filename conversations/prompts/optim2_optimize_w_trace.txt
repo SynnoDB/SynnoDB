@@ -1,0 +1,25 @@
+Optimize the multi-threaded implementation of query $query_id using the tracing/profiling data collected with sf ${sf}:
+
+```
+${tracing_data}
+```
+
+Focus on multi-threading specific bottlenecks:
+- Load imbalance: threads finishing at different times (idle cores while work remains).
+- Synchronization overhead: lock contention, spin-waits, or barriers that serialize execution.
+- False sharing: threads writing to adjacent cache lines, causing cache invalidations.
+- Memory bandwidth saturation: too many threads contending for the same memory regions.
+- Remaining sequential sections that limit parallel speedup (Amdahl's law).
+
+After making changes, validate correctness and confirm performance improved.
+Target: reduce runtime further from $current_rt for sf $sf. Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: $st_rt for sf $sf).
+
+Turn off trace instrumentation in the run-tool for reliable benchmarking. Call run-tool with trace to gather updated statistics for bottleneck identification.
+Make sure the performance improved. Otherwise, try again or remove your changes.
+
+${general_pretext}
+
+$constraints
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries${bespoke_storage_related}. Avoid regressions on the other queries.

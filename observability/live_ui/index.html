@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bespoke OLAP — Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="hdr" class="standalone">
+  <span id="hdr-title">&#9889; Bespoke OLAP &#8212; Live Dashboard</span>
+  <div id="hdr-meta">
+    <span class="hdr-meta-item"><span class="hdr-meta-label">Started</span><span id="hdr-start-time">&#8212;</span></span>
+    <span class="hdr-meta-item"><span class="hdr-meta-label">W&amp;B</span><span id="hdr-wandb-id">&#8212;</span></span>
+    <span class="hdr-meta-item"><span class="hdr-meta-label">Run</span><span id="hdr-run-name">&#8212;</span></span>
+    <span class="hdr-meta-item"><span class="hdr-meta-label">System</span><span id="hdr-system-name">&#8212;</span></span>
+    <span class="hdr-meta-item" id="hdr-reload-item"><span class="hdr-meta-label">Reloaded</span><span id="hdr-reload-time">&#8212;</span></span>
+  </div>
+  <div id="hdr-source">
+    <div id="source-wrap">
+      <input id="source-input" type="text" autocomplete="off" spellcheck="false" placeholder="run-id, /path/to.duckdb, or http://host:8765" title="W&amp;B run ID, local .duckdb path, or remote live dashboard URL" />
+      <div id="source-dropdown" hidden></div>
+    </div>
+    <button id="source-switch-btn" title="Switch to this source">Switch</button>
+  </div>
+  <span id="hdr-ts">
+    <button id="reload-btn" title="Reload data from source" aria-label="Reload">&#x21BB;</button>
+    <span class="dot"></span><span id="ts-txt">Connecting&#8230;</span>
+  </span>
+</header>
+<div id="layout">
+  <aside id="sidebar">
+    <div class="panel-header">
+      <div class="sb-title">Prompts</div>
+      <button class="panel-close" id="sidebar-close" title="Close prompts panel" aria-label="Close prompts panel">&#x2039;</button>
+    </div>
+    <div id="prompt-list"><div class="pl-item" style="color:var(--muted)">Waiting&#8230;</div></div>
+  </aside>
+  <button class="panel-toggle left" id="sidebar-toggle" title="Open prompts panel" aria-label="Open prompts panel">
+    <span class="panel-toggle-icon">&#x2039;</span>
+    <span class="panel-toggle-label">Prompts</span>
+  </button>
+  <div id="content">
+    <div id="cards">
+      <div class="card" id="c-turn"><div class="card-head"><label>Turn / Step</label><div id="v-timer" class="turn-timer">&#8212;</div></div><div class="val" id="v-turn">&#8212;</div></div>
+      <div class="card" id="c-cost">
+        <div class="card-head">
+          <label id="cost-label">USD Calculatorial</label>
+          <div id="cost-mode-toggle"><button class="cost-btn active" data-mode="calc">Calc.</button><button class="cost-btn" data-mode="real">Real</button></div>
+        </div>
+        <div class="val" id="v-cost">&#8212;</div>
+      </div>
+      <div class="card" id="c-time"><label>Runtime</label><div class="val" id="v-time">&#8212;</div></div>
+    </div>
+    <div id="chart-box">
+      <div id="chart-hdr">
+        <span>Timeline</span>
+        <div id="timeline-mode-toggle"><button class="tlm-btn" data-mode="turn">Turns</button><button class="tlm-btn" data-mode="time">Time</button></div>
+      </div>
+      <div id="canvas-wrap">
+        <canvas id="tc"></canvas>
+        <div id="corr-wrap">
+          <div id="corr-label">Correctness</div>
+          <div id="corr-row"></div>
+        </div>
+      </div>
+    </div>
+    <div id="query-chart-box">
+      <div id="query-chart-hdr">
+        <span>Query Runtimes</span>
+        <span id="timetravel-indicator" hidden></span>
+        <button id="timetravel-live-btn" hidden>&#x21A9; Live</button>
+        <div id="qc-sf-toggle" hidden></div>
+        <div id="qc-mode-toggle"><button class="qcm-btn" data-mode="speedup">Speedup</button><button class="qcm-btn" data-mode="absolute">Absolute</button></div>
+      </div>
+      <div id="qcanvas-wrap"><canvas id="qc"></canvas></div>
+    </div>
+  </div>
+  <button class="panel-toggle right" id="log-toggle" title="Open activity log" aria-label="Open activity log">
+    <span class="panel-toggle-label">Activity Log</span>
+    <span class="panel-toggle-icon">&#x203A;</span>
+  </button>
+  <div id="log-panel">
+    <div class="panel-header">
+      <div class="sb-title">Activity Log</div>
+      <button class="dist-chip" id="dist-toggle" title="Time distribution" aria-label="Time distribution">&#9685; Time Dist.</button>
+      <button class="panel-close" id="log-close" title="Close activity log" aria-label="Close activity log">&#x203A;</button>
+    </div>
+    <div id="log-list"><div class="log-empty">No activity yet&#8230;</div></div>
+  </div>
+</div>
+
+<div id="prompt-modal" class="modal-overlay" hidden>
+  <div class="modal-box prompt-modal-box">
+    <div class="modal-hdr">
+      <span class="modal-title" id="prompt-modal-title"></span>
+      <button class="modal-close" id="prompt-modal-close" aria-label="Close">&#10005;</button>
+    </div>
+    <pre id="prompt-modal-body" class="prompt-modal-body"></pre>
+  </div>
+</div>
+
+<div id="dist-modal" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <span class="modal-title">Wall-clock Time Distribution</span>
+      <button class="modal-close" id="dist-modal-close" aria-label="Close">&#10005;</button>
+    </div>
+    <div class="modal-charts">
+      <div class="modal-chart-col">
+        <div class="modal-chart-hdr">
+          <span>Time spent per activity</span>
+          <div id="dist-chart-toggle">
+            <button class="dcm-btn active" data-mode="pie">Pie</button>
+            <button class="dcm-btn" data-mode="rel">Rel.</button>
+            <button class="dcm-btn" data-mode="abs">Abs.</button>
+          </div>
+        </div>
+        <div class="modal-canvas-wrap">
+          <canvas id="pc"></canvas>
+          <canvas id="tc-dist" style="display:none"></canvas>
+        </div>
+      </div>
+      <div class="modal-chart-col modal-bar-col">
+        <div class="modal-chart-hdr">Number of calls per activity</div>
+        <div class="modal-canvas-wrap modal-bar-wrap"><canvas id="bc"></canvas></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="js/state.js"></script>
+<script src="js/util.js"></script>
+<script src="js/sections.js"></script>
+<script src="js/metrics.js"></script>
+<script src="js/chart-timeline.js"></script>
+<script src="js/chart-query.js"></script>
+<script src="js/chart-dist.js"></script>
+<script src="js/log.js"></script>
+<script src="js/cards.js"></script>
+<script src="js/source.js"></script>
+<script src="js/controls.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

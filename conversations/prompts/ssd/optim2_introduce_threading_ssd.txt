@@ -1,0 +1,90 @@
+Parallelize the implementation of query $query_id (`query${query_id}.hpp/cpp`) to utilize multiple CPU cores. The goal is to reduce the query execution time by decomposing the work into parallel tasks that can be executed concurrently.
+The thread_pool is already added and initialized in the query files. Use its ThreadPool API defined in `${thread_pool_filename}` to manage the execution of parallel tasks.
+Call `thread_pool.parallel_for(f)` to dispatch work, where f(tid, n_threads) is invoked concurrently on all threads at once.
+
+Current single-threaded tracing/profiling output (sf {sf}). Use it to classify the bottleneck (I/O-bound vs CPU-bound) before choosing a parallelization pattern:
+${tracing_block}
+
+# Diagnose the bottleneck first, then pick the parallelization pattern
+
+For SSD-backed storage the right parallelization depends on whether the query is I/O-bound (most of the time is spent waiting on `pin_page` slow paths) or CPU-bound (most of the time is spent in the inner aggregation loop). The two regimes call for different patterns:
+
+- **CPU-bound** (cache-resident or small data): inner-loop row split inside one chunk is fine. The main thread pins pages serially, workers parallelize the compute.
+- **I/O-bound** (data > buffer pool): inner-loop row split leaves N-1 worker threads idle while the main thread blocks on `pread`. Use **outer-loop page-range partition** instead, so workers own page pinning and I/O can overlap.
+
+If `buffer_pool_read_page` / `buffer_pool_pin_page` or high `buffer_pool_bytes_read` / `buffer_pool_page_misses` dominate, you are I/O-bound (pattern B); otherwise pattern A is sufficient. If the trace is unclear, add finer-grained `PROFILE_SCOPE` markers and re-run with `trace_mode=true`.
+
+# Page-Aware Parallelism (Important for SSD-backed storage)
+
+Column data is accessed via ColumnHandle<T> page by page. Scattering threads across arbitrary non-contiguous row ranges causes parallel page faults and thrashes the buffer pool. Chunking is mandatory; the question is **which thread owns the pin** for each chunk.
+
+For multi-column scans, chunk by logical row range, not by a shared page index, because different element sizes have different rows-per-page.
+
+## Pattern A — Inner-loop row split (good when CPU-bound)
+
+One driver thread pins pages for a chunk, workers split rows within the chunk. Simple, correct, but the I/O is serial.
+
+```cpp
+for (int64_t pg = 0; pg < db->col.num_pages(); ++pg) {
+    int64_t count;
+    const T* ptr = db->col.pin_page(pg, &count);
+
+    pool.parallel_for([&](int tid, int n) {
+        int64_t lo = tid * (count / n);
+        int64_t hi = (tid == n - 1) ? count : lo + count / n;
+        // process ptr[lo..hi) with thread-local accumulators
+    });
+
+    db->col.unpin_page(pg);
+}
+// merge per-thread accumulators
+```
+
+## Pattern B — Outer-loop page-range partition (preferred when I/O-bound)
+
+Partition the **page range** across threads; each thread does its own pins, its own compute, and writes into its own accumulator. The OS sees N concurrent read streams, NVMe queue depth grows, and there is no main-thread serialization point.
+
+```cpp
+const int64_t n_pages = db->col_a.num_pages();
+pool.parallel_for([&](int tid, int n) {
+    const int64_t pg_lo = tid * (n_pages / n);
+    const int64_t pg_hi = (tid == n - 1) ? n_pages : pg_lo + n_pages / n;
+    Accum local{};
+    for (int64_t pg = pg_lo; pg < pg_hi; ++pg) {
+        int64_t count_a, count_b;
+        const A* a = db->col_a.pin_page(pg, &count_a);
+        const B* b = db->col_b.pin_page(pg, &count_b);  // must be same pages_per_page
+        // process a[0..count_a), b[0..count_a) into `local`
+        db->col_a.unpin_page(pg);
+        db->col_b.unpin_page(pg);
+    }
+    publish(tid, local);
+});
+// merge per-thread accumulators
+```
+
+For uneven page counts, give the last thread the remainder. For imbalanced work per page, replace the static `pg_lo/pg_hi` split with an `std::atomic<int64_t> next_pg` claim loop.
+
+# Common pitfalls
+
+- **Per-thread accumulators must be cache-line padded** (struct size aligned to 64 B). Adjacent slots in a `std::vector<Accum>` will false-share otherwise.
+- **`pin_page` uses a shared buffer-pool mutex around metadata and in-flight page coordination.** Page reads happen outside the mutex, but many threads pinning tiny chunks can still bottleneck on metadata. Prefer fewer, larger chunks; or partition cleanly so each thread mostly hits its own page set.
+- **Do not pin a page from one thread and unpin from another** unless the framework explicitly supports cross-thread unpin.
+
+Additional strategies (choose what fits):
+- Parallel aggregation with per-thread local accumulators, then a sequential final merge.
+- Parallel hash join where each thread builds a thread-local hash table over its sub-range, then merges.
+- Lock-free data structures if concurrent write access is required.
+
+You can assume a single-numa region.
+
+${general_pretext}
+
+${constraints}
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Call the run-tool only with scale-factor `${run_tool_sf}` (both for benchmarking and correctness checking).
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries${bespoke_storage_related}. Avoid regressions on the other queries.
+- Dispatch work to the thread pool and collect results before returning. Avoid spawning new threads per query call.
+
+Validate correctness after each change. If performance did not improve, reconsider the parallelization strategy and try again.

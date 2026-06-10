@@ -1,0 +1,23 @@
+[project]
+name = "pgrouter"
+version = "0.1.0"
+description = "Plaintext PostgreSQL router proof of concept"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "psycopg[binary]>=3.2",
+    "sqlglot>=26.0",
+]
+
+[project.scripts]
+pgrouter = "pgrouter.cli:run"
+pgrouter-analyze = "pgrouter.analyze:main"
+pgrouter-inspect = "pgrouter.inspect:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pgrouter*"]

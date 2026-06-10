@@ -1,0 +1,3 @@
+Call the run tool with scale_factor ${max_scale_factor}. Benchmark the execution time of all queries. Fix any errors that occur.
+
+If errors occur: first assume the bug is in the relevant query file (i.e. `query<QID>.cpp`) or `${query_impl_path}`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch. 

@@ -1,0 +1,29 @@
+Parallelize the implementation of query $query_id (`query${query_id}.hpp/cpp`) to utilize multiple CPU cores. The goal is to reduce the query execution time by decomposing the work into parallel tasks that can be executed concurrently.
+The thread_pool is already added and initialized in the query files. Use its ThreadPool API defined in `${thread_pool_filename}` to manage the execution of parallel tasks.
+Call `thread_pool.parallel_for(f)` to dispatch work, where `f(tid, n_threads)` is invoked concurrently on all threads at once.
+
+Current single-threaded tracing/profiling output (sf ${sf}). Use it to classify the bottleneck (I/O-bound vs CPU-bound) before choosing a parallelization pattern:
+${tracing_block}
+
+Use the trace above (collected single-threaded before MT was introduced) to identify which operator or scope dominates runtime. Parallelize the dominant operator first, anything else is wasted effort because of Amdahl's law.
+
+Common strategies for decomposing the query execution into parallel work units include:
+- Morsel driven parallelism
+- Range-based partitioning of table scans: each thread processes a disjoint range of rows.
+- Parallel aggregation with per-thread local accumulators, then a sequential final merge.
+- Parallel hash joins with thread-local hash tables.
+- Any other approach that minimizes synchronization overhead between threads.
+- Lock-free data structures if concurrent access is required
+
+You can assume a single-numa region.
+
+${general_pretext}
+
+${constraints}
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Call the run-tool only with scale-factor `${run_tool_sf}` (both for benchmarking and correctness checking).
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries${bespoke_storage_related}. Avoid regressions on the other queries.
+- Dispatch work to the thread pool and collect results before returning. Avoid spawning new threads per query call.
+
+Validate correctness after each change. If performance did not improve, reconsider the parallelization strategy and try again.

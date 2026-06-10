@@ -1,0 +1,15 @@
+Optimize `${builder_path_hpp}` and `${builder_path_cpp}` for SF${max_scale_factor} serialization time (Arrow → column files on disk). Aim to maximize Arrow extraction and disk write throughput. Optimization strategies include parallel column serialization across threads, batched sequential writes, avoiding intermediate copies, and checking whether existing column files can be reused to skip re-serialization.
+`file_loader_utils.hpp`/`.cpp` may contain the shared SSD serialization helpers used by `${builder_path_cpp}` (`ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers). Prefer improving those helpers when the bottleneck is generic rather than duplicating helper code in `${builder_path_cpp}`.
+
+First inspect those files and directly included headers only, then produce a short plan with the top 3 bottlenecks and the optimizations you will implement to address them. Then implement those optimizations in a batch and validate correctness and performance improvement.
+If you are unable to identify bottlenecks, you can add lightweight timing instrumentation to `${builder_path_hpp}/.cpp`.
+You get the stdout/stderr output when calling the run tool with scale_factor ${max_scale_factor}.
+
+Constraints:
+- No inspection of `query*.cpp`, build dirs, systems libs, validator/compile/run tool internals, or any other files not directly included by `${builder_path_hpp}/.cpp`; `file_loader_utils.hpp` and `file_loader_utils.cpp` are allowed when present.
+- No broad grep/find/ls beyond named target files.
+- No compile or run after individual edits. Only validate after a complete batch implementing one coherent optimization strategy.
+- Use at most 2 major optimization attempts and 1 refinement.
+- If within 15% of target or bottleneck is Parquet I/O bound or disk write bandwidth bound, stop and report.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns). Assume all loaded columns must preserve semantics for existing and future queries. Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Validate correctness with SF=${sf_verify_str} once per strategy; measure serialization time with SF=${max_scale_factor} once per strategy.

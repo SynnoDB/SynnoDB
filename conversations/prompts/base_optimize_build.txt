@@ -1,0 +1,14 @@
+Optimize `${builder_path_hpp}` and `${builder_path_cpp}` for SF${max_scale_factor} load time. Aim for 10s load time. To speedup loading optimize the implementation and e.g. add multithreading.
+
+First inspect those files and directly included headers only, then produce a short plan with the top 3 bottlenecks and the optimizations you will implement to address them. Then implement those optimizations in a batch and validate correctness and performance improvement.
+If you are unable to identify bottlenecks, you can add lightweight timing instrumentation to `${builder_path_hpp}/.cpp`.
+You get the stdout/stderr output when calling the run tool with scale_factor ${max_scale_factor}.
+
+Constraints:
+- No inspection of `query*.cpp`, build dirs, systems libs, validator/compile/run tool internals, or any other files not directly included by `${builder_path_hpp}/.cpp`.
+- No broad grep/find/ls beyond named target files.
+- No compile or run after individual edits. Only validate after a complete batch implementing one coeherent optimization strategy.
+- Use at most 2 major optimization attempts and 1 refinement.
+- If within 15% of target or bottleneck is memory-bandwidth/Parquet I/O bound, stop and report.
+- Always load all data from Parquet during ingestion (do not skip rows or columns) i.e. do not inspect query*.cpp to decide whether a column can be skipped, reordered differently, or stored unsafely. Assume all loaded columns must preserve semantics for existing and future queries. Storage layout must remain general enough that in theory arbitrary SQL could be executed 
+- Validate correctness with SF=${sf_verify_str} once per strategy; measure build time with SF=${max_scale_factor} once per strategy.

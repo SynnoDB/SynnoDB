@@ -1,0 +1,20 @@
+Your task is to analyze the workload and produce a creative in-memory storage-layout summary for the tables accessed by the query. You have the flexibility to return detailed, free-form text that explores not only conventional storage-layout recommendations but also unconventional, novel, and even 'crazy' storage designs.
+You are encouraged to include additional ideas, new partitioning strategies, speculative encoding techniques, or experimental ways of grouping and organizing columns or data.
+For each accessed table, feel free to be inventive and elaborate on possibilities such as hybrid layouts, speculative SoA/AoS (Array of Structures/Structure of Arrays) approaches, novel column encodings, or adaptive partitioning.
+Use this as an opportunity to push beyond current norms and propose storage techniques that might be futuristic or outlandish.
+Output the storage layout for each table. Output only the final storage layout.
+
+Important:
+- store all the data, and store them in a way that it could be flattened back to the original data
+- do not store data redundantly, but you can use compression or encoding, meta data, or special datastructures
+- optimized for in-memory (single-node) analytical query processing
+
+The queries are listed in the file: `${queries_path}`.
+The schema is:
+${schema}
+
+Based on the given queries and schema, provide a detailed and creative storage layout summary for the tables accessed by the query. Feel free to explore unconventional and novel storage designs, including speculative encoding techniques or experimental ways of organizing data. Write it to the file: `${storage_plan_filename}`.
+
+Do not read build scripts, system paths, or tool internals. Limit inspection to `${queries_path}` and the provided schema. Do not use broad `find`, repo-wide `grep`, or directory scans.
+
+

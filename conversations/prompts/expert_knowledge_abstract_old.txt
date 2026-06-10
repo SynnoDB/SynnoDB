@@ -1,0 +1,38 @@
+An expert has given the following tips to consider when optimizing a custom in-memory OLAP database engine in C++. The workload is read-only and the set of queries is fixed.
+
+• Prefer query-specific physical layouts over generic ones. Store only the columns used by the fixed queries, partition data along the primary filter dimension (often time), and cluster or sort data to match common predicates and group-by keys.
+
+• Exploit the read-only nature of the data. Pre-join dimension tables into fact tables when joins are always the same, precompute frequently used expressions, and materialize partial or full aggregations that match the fixed query set.
+
+• Use aggressive data skipping. Maintain per-partition or per-chunk min/max (zone maps) on filtered columns, dictionary-ID presence sets for equality predicates, and lightweight bitmaps where selectivity is high.
+
+• Dictionary-encode all strings and low-cardinality columns. Execute predicates, joins, and group-bys on integer IDs instead of strings. Choose encodings per column and per partition to maximize compression and minimize memory bandwidth.
+
+• Sort or cluster data intentionally to improve both compression and execution speed. Sorting by filter and group-by keys enables RLE, delta encoding, better cache locality, and faster aggregations.
+
+• Eliminate general-purpose execution overhead. Build query-specific execution pipelines with no virtual dispatch, no iterator-style operators, and minimal branching. Hardcode predicate constants, join keys, and aggregation logic where possible.
+
+• Use vectorized execution throughout. Process data in fixed-size batches, combine predicates into single kernels, and carry selection vectors or bitsets instead of materializing intermediate results.
+
+• Leverage SIMD aggressively. Use SIMD comparisons for filters, SIMD hashing or probing where applicable, and branchless aggregation kernels to reduce misprediction and instruction overhead.
+
+• Optimize joins for fixed schemas. Prefer perfect hashing or array-based joins when keys are dense. Otherwise, build dimension hash tables once and reuse them across queries. Radix-partition joins when hash tables exceed cache.
+
+• Optimize aggregations for predictability. Use per-thread local aggregation with a merge phase. For dense or low-cardinality group keys, use direct indexing instead of hash tables.
+
+• Pre-size and specialize hash tables. Avoid rehashing, store hash values alongside keys, and use open-addressing or cache-friendly probing schemes.
+
+• Be NUMA-aware. Partition data by NUMA node, run scans locally, and replicate small read-only structures per node to avoid cross-socket traffic.
+
+• Avoid dynamic memory allocation in hot paths. Use arena or region allocators with query-lifetime memory and eliminate malloc/free during execution.
+
+• Avoid features that only benefit ad-hoc or mutable workloads. Skip cost-based optimizers, generic indexes, tuple-at-a-time execution, complex concurrency control, and transactional abstractions unless strictly required.
+
+• Implement optimizations in a high-impact order: 
+  1) columnar layout with partitioning and dictionary encoding
+  2) data skipping and projection pruning
+  3) clustering/sorting to match query patterns
+  4) precomputation (joins, expressions, aggregations)
+  5) vectorized and SIMD execution
+  6) NUMA-aware parallelism and memory placement
+  7) query-specific compiled execution pipelines

@@ -1,0 +1,16 @@
+Finish all todos from previous interaction outlined in `${base_impl_todo_file}`.
+Focus on the build logic to convert ArrowTable into an efficient in-memory data structure.
+Implement the build logic in `${builder_path}`.
+
+Before editing, plan your approach and implementation steps.
+
+Note: When reading numeric columns from Arrow ChunkedArrays, do not static_cast directly to `ArrowNumericArray<T>`. Instead, dispatch on `chunk->type_id()` at runtime to handle INT8/INT16/INT32/INT64/UINT*/FLOAT/DOUBLE/DECIMAL128, casting values to the desired CType. This is necessary because the physical Arrow type depends on which tool wrote the Parquet file and may differ from the schema's logical type.
+
+Limit file inspection to: `${base_impl_todo_file}`, `${builder_path}`, `${query_impl_path}`, `${args_path}`, the query implementation files (`query<QID>.cpp/hpp`) and the parquet schema. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+
+IMPORTANT: Focus on producing a correct build implementation. Prefer simple and efficient build code.
+
+For the query execution logic in `${query_impl_path}` and the individual query files (`query<QID>.cpp/hpp`) keep the stubs for now. The full query-implementation will be done later.
+
+After implementing, call compile tool to check for errors. If there are errors, fix them.

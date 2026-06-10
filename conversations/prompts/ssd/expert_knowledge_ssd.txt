@@ -1,0 +1,121 @@
+# Expert Knowledge & Best Practices for High-Performance Data Processing
+
+## Memory Access & Data Movement
+
+1. Ensure sequential memory access patterns
+Traverse memory linearly whenever possible. Sequential access maximizes cache line utilization and hardware prefetch efficiency.
+
+2. Prefer pointer iteration over indexed access in tight loops - ensure sequential memory access patterns
+Sequential pointer traversal reduces address recomputation and improves auto-vectorization.
+
+3. Prefetch data when accessing through indices
+If you access arrays indirectly through an index list, the CPU cannot predict what memory will be needed next. Manually prefetching upcoming elements helps hide memory latency and reduces cache misses.
+
+4. Copy small records into local variables
+When repeatedly accessing multiple fields of a small struct, copy the struct into a local variable first. This allows the compiler to keep values in registers instead of reloading them from memory.
+
+5. Avoid unnecessary move or copy operations
+Use in-place construction and rely on compiler elision where possible.
+
+## Loop Structure & Invariants
+
+6. Hoist invariant work out of loops
+Any computation, lookup, or reference that does not change per iteration must be moved outside the loop.
+
+7. Eliminate repeated structural checks
+Do not repeatedly verify conditions that are constant or guaranteed.
+Compute once, cache once, or rely on established invariants.
+Also, if different conditions require different processing strategies, determine the strategy before the loop starts and then run the appropriate version. Avoid checking the same conditions repeatedly while scanning data.
+
+8. Decide execution strategy before entering the loop
+If multiple processing modes exist, select the mode once and run a dedicated loop variant.
+
+9. Avoid duplicating large loop bodies
+If several branches run almost identical loops with only small differences in filtering, combine them into one loop and control behavior with flags. This keeps code smaller, improves instruction cache usage, and helps the compiler optimize better.
+
+## Control Flow
+
+10. Minimize branching in inner loops
+Use early-continue filtering or direct predicate-based accumulation.
+Avoid auxiliary state flags if results can be inferred.
+
+11. Consider branchless computation when branch prediction is poor
+If control flow is unpredictable, replace branches with arithmetic masking.
+Computing a boolean condition and using it to control arithmetic (e.g., multiply by 0 or 1) can be faster than branching, especially in large scans.
+
+## Arithmetic & Computation Cost
+
+12. Remove expensive arithmetic from hot loops
+Avoid division or other high-latency operations per element.
+Precompute constants or perform normalization after aggregation.
+
+13. Avoid expensive general-purpose parsing in hot paths
+Do not use high-level string conversions or substring allocation inside tight loops (e.g. std::stoi, std::stod, substr).
+Prefer fixed-format, allocation-free parsing directly from raw memory.
+
+## Containers & Lookup Structures
+
+14. Pre-size output containers using realistic estimates
+Estimate result size from selectivity or statistics to avoid dynamic growth.
+
+15. Replace repeated linear searches with indexed lookup structures
+Use hash-based or constant-time lookup instead of scanning collections repeatedly.
+
+## Algorithm Selection
+
+16. Use algorithms specialized for data characteristics
+For fixed-width numeric keys or sortable primitives, prefer non-comparison-based or domain-specific algorithms.
+
+## Compiler Optimization Signals
+
+17. Communicate aliasing guarantees
+Tell the compiler when memory regions do not overlap (e.g. restrict semantics).
+
+18. Inline hot functions when beneficial
+Reduces call overhead and exposes optimization opportunities.
+
+## Vectorization & Hardware Utilization
+
+19. Exploit SIMD parallelism where applicable
+Process multiple elements per iteration using vectorized comparisons and masked arithmetic.
+
+## SSD-Backed Storage: I/O is the budget
+
+When the dataset is larger than the buffer pool, query runtime is often bounded by **bytes read from disk**, not by CPU cycles. The single-most-effective optimization is to read less. The second is to overlap reads with compute. Inner-loop micro-optimization gains nothing if the scan is bandwidth-bound: first determine the bottleneck, then optimize the right resource.
+
+20. Diagnose I/O vs CPU bottleneck before optimizing
+Use the buffer-pool read/pin timers and miss/bytes counters. If they dominate total query time, the query is I/O-bound — optimizing the compute kernel is wasted effort. If buffer-pool misses are low and the inner loop dominates, the query is CPU-bound. The two bottlenecks call for opposite strategies: I/O-bound queries want fewer/smaller reads and I/O parallelism; CPU-bound queries want SIMD, branchless inner loops, and tighter per-thread accumulators. Re-check at memory-pressure scale factors, not just at SFs where data fits in RAM — a change that wins at SF=1 but doubles bytes read at SF=100 is a regression.
+
+21. Reduce bytes-on-disk before reducing cycles
+Every byte you do not write at ingest is a byte you do not read at query time. Concrete techniques, in priority order:
+- Narrow integer types to the smallest that fits the observed value range (not the SQL nominal type). A column whose SQL type is `INTEGER` but whose values lie in `[1, 50]` is `int8`, not `int32`. Check actual min/max/distinct before choosing a type.
+- Frame-of-reference encoding for clustered integers: store `value - min_of_page` and shrink the type. Common for dates and identifiers.
+- Bit-pack small-domain integers: a column with 4 distinct values needs 2 bits, not 8.
+- RLE for sorted or highly clustered columns: store runs of `(value, count)`.
+- Dictionary encoding for low-cardinality strings or repeated small values; persist the dictionary separately, store column as fixed-width codes.
+
+22. Decode at the page boundary, not per-row
+When a page uses encoding (FOR, bit-pack, RLE, dict), decode the entire page once into a thread-local scratch buffer on pin, then run the existing aggregation loop unmodified. This isolates decode complexity from hot inner-loop code and lets the inner loop stay vectorizable.
+
+23. Use zone maps aggressively, and design the data so they actually fire
+Zone maps only help when the data is clustered on the filtered column. If a query's predicate is on column `C`, the table needs to be either sorted by `C` or partitioned such that most pages have a tight `(min, max)` range on `C`. A workload-wide sort key should be the single column that yields the highest expected pruning across the most expensive queries — not picked per query.
+
+24. Prefer page-level or prefix summaries for tiny-cardinality range aggregates
+When a query aggregates a contiguous range over the clustering key and has a tiny fixed group cardinality, a compact derived sidecar beats scanning data pages. Store per-page or prefix aggregate records, then scan only the boundary page at query time. This is especially strong for predicates like `date <= cutoff` on data sorted by `date`, where all qualifying full pages can be answered from summaries.
+
+25. Pin briefly and unpin promptly
+The buffer pool has a fixed frame count and shared metadata protected by a mutex. Long-held pins reduce eviction flexibility, and tiny chunks increase metadata contention. Pin a page, process it within a single pipeline step, and unpin immediately to keep the working set small.
+
+26. Overlap I/O with compute via parallelism or prefetching
+With synchronous `pin_page` on a single driver thread, the timeline is `[wait on SSD][compute][wait on SSD][compute]…`. NVMe wants queue depth ≥ 8 to hit peak bandwidth. Two ways to get there:
+- **Page-range partition across threads** (simplest): each of N threads scans a disjoint page range and aggregates into a thread-local accumulator. The OS sees N parallel read streams, and each worker pins its own pages so the main thread is not a serial bottleneck.
+- **Producer-consumer pipeline** (when partitioning is awkward): a producer pins N+lookahead pages ahead of the consumer; lookahead ≈ 4–16.
+
+27. Co-process columns within the same row range to avoid eviction thrashing
+For a query touching K columns, pin all K columns for one row range (chunk), process them together, then unpin and advance. Do not scan column A end-to-end and then column B end-to-end — that requires K full passes through the buffer pool and evicts useful pages.
+
+28. Choose join strategies based on memory and ordering
+Sort-merge joins are efficient when both inputs are sorted on the join key or can be streamed in sorted order — purely sequential I/O, no random reads. Hash joins are preferable when the build side fits in RAM. For large joins where neither input fits, use partitioned hash joins (radix-partition both sides to disk, then hash-join partitions that fit in RAM) — this keeps access mostly sequential and bounds peak memory.
+
+29. Write column data sequentially and in large blocks at ingest
+During build, write each column in a single append-only pass. Avoid random writes and flush data in large, aligned blocks (≥ 2 MiB) to maximize SSD throughput and minimize write amplification. The cost paid at ingest is recouped many times over at query time.

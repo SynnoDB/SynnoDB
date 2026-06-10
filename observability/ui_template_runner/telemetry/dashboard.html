@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BespokeOLAP · Telemetry Dashboard</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:      #0d1117;
+  --surface: #161b22;
+  --border:  #30363d;
+  --text:    #c9d1d9;
+  --muted:   #6e7681;
+  --accent:  #58a6ff;
+  --green:   #3fb950;
+  --yellow:  #d29922;
+  --orange:  #db6d28;
+  --red:     #f85149;
+  --fast:    #1a472a;
+  --fast-fg: #3fb950;
+  --ok-bg:   #1c2d1c;
+  --ok-fg:   #7ee787;
+  --slow-bg: #2d2208;
+  --slow-fg: #d29922;
+  --bad-bg:  #2d0f0f;
+  --bad-fg:  #f85149;
+}
+body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.5; }
+
+/* ---- header ---- */
+header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.logo { font-size: 15px; font-weight: 600; color: var(--accent); letter-spacing: -.3px; }
+.logo span { color: var(--muted); font-weight: 400; }
+#refresh-info { font-size: 11px; color: var(--muted); }
+
+/* ---- deployment cards ---- */
+.cards { display: flex; gap: 12px; flex-wrap: wrap; padding: 16px 24px; border-bottom: 1px solid var(--border); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 16px; min-width: 140px; }
+.card-label { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 4px; }
+.card-value { font-size: 14px; font-weight: 600; color: var(--text); font-family: 'SFMono-Regular', Consolas, monospace; word-break: break-all; }
+.card-value.accent { color: var(--accent); }
+
+/* ---- summary stats ---- */
+.stats { display: flex; gap: 24px; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.stat { text-align: center; }
+.stat-num { font-size: 22px; font-weight: 700; color: var(--accent); }
+.stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+
+/* ---- table ---- */
+.table-wrap { overflow-x: auto; padding: 16px 24px; }
+h2 { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead th { text-align: left; padding: 6px 10px; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tbody tr { border-bottom: 1px solid #21262d; }
+tbody tr:hover { background: #1c2128; }
+td { padding: 7px 10px; vertical-align: middle; white-space: nowrap; }
+td.wrap { white-space: normal; max-width: 200px; }
+
+/* time */
+.ts-abs { color: var(--muted); }
+.ts-rel { color: var(--text); }
+
+/* visitor */
+.geo-flag { font-size: 16px; margin-right: 4px; }
+.geo-loc  { color: var(--text); }
+.geo-sub  { color: var(--muted); font-size: 11px; }
+
+/* query */
+.query-badge { display: inline-block; background: #1f2d3d; color: var(--accent); border-radius: 4px; padding: 1px 7px; font-weight: 600; font-family: monospace; font-size: 12px; }
+
+/* placeholders */
+.ph-pair { display: inline-block; background: #1c2128; border-radius: 3px; padding: 1px 6px; margin: 1px; font-family: monospace; font-size: 11px; color: var(--muted); }
+.ph-pair b { color: var(--text); }
+
+/* timing cells */
+.ms { font-family: monospace; text-align: right; }
+.ms-best { color: var(--green); font-weight: 600; }
+.ms-na { color: var(--muted); }
+.ms-failed { color: var(--red); font-weight: 600; cursor: help; }
+.failure-row { background: rgba(248, 81, 73, 0.04); }
+
+/* speedup cells */
+.sx { text-align: right; font-family: monospace; font-weight: 600; border-radius: 4px; padding: 2px 8px; }
+.sx-fast { background: var(--fast); color: var(--fast-fg); }
+.sx-ok   { background: var(--ok-bg); color: var(--ok-fg); }
+.sx-slow { background: var(--slow-bg); color: var(--slow-fg); }
+.sx-bad  { background: var(--bad-bg); color: var(--bad-fg); }
+.sx-na   { color: var(--muted); }
+
+/* error / loading */
+#status { padding: 32px 24px; color: var(--muted); text-align: center; }
+.error-msg { color: var(--red); }
+
+/* header controls */
+.header-right { display: flex; align-items: center; gap: 12px; }
+button.btn {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 10px; font-size: 12px; font-family: inherit;
+  cursor: pointer; transition: background .15s, border-color .15s;
+}
+button.btn:hover { background: #1c2128; border-color: var(--accent); }
+button.btn:active { background: #0d1117; }
+button.btn:disabled { opacity: .5; cursor: wait; }
+
+/* service logs */
+.logs-section { padding: 12px 24px; border-bottom: 1px solid var(--border); }
+.logs-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.logs-bar h2 { margin: 0 8px 0 0; }
+.logs-bar .spacer { flex: 1; }
+.logs-meta { font-size: 11px; color: var(--muted); font-family: monospace; }
+.logs-viewer {
+  display: none; margin-top: 10px; background: #010409; border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 12px; font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 11px; line-height: 1.45; color: var(--text); white-space: pre-wrap;
+  max-height: 500px; overflow-y: auto; word-break: break-all;
+}
+.logs-viewer.visible { display: block; }
+button.btn.active { background: #1f2d3d; border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">BespokeOLAP <span>/ Telemetry</span></div>
+  <div class="header-right">
+    <span id="refresh-info">Loading…</span>
+    <button id="refresh-btn" class="btn" type="button">↻ Refresh</button>
+  </div>
+</header>
+
+<div class="cards" id="deploy-cards"></div>
+<div class="stats" id="summary-stats"></div>
+
+<div class="logs-section">
+  <div class="logs-bar">
+    <h2>Service Logs</h2>
+    <button class="btn" data-service="ui" type="button">ui</button>
+    <button class="btn" data-service="bespoke" type="button">bespoke</button>
+    <button class="btn" data-service="umbra" type="button">umbra</button>
+    <button class="btn" data-service="telemetry" type="button">telemetry</button>
+    <button class="btn" data-service="clickhouse" type="button">clickhouse</button>
+    <span class="spacer"></span>
+    <span class="logs-meta" id="logs-meta"></span>
+  </div>
+  <pre class="logs-viewer" id="logs-viewer"></pre>
+</div>
+
+<div class="table-wrap">
+  <h2>Query Sessions</h2>
+  <div id="status">Loading telemetry data…</div>
+  <table id="sessions-table" style="display:none">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Visitor</th>
+        <th>Device</th>
+        <th>Query</th>
+        <th>Parameters</th>
+        <th class="ms">Bespoke</th>
+        <th class="ms">DuckDB</th>
+        <th class="ms">Umbra</th>
+        <th class="ms">vs DuckDB</th>
+        <th class="ms">vs Umbra</th>
+      </tr>
+    </thead>
+    <tbody id="sessions-body"></tbody>
+  </table>
+</div>
+
+<script>
+const REFRESH_S = 30;
+let countdown = REFRESH_S;
+let timer;
+
+// ---- utilities ----
+
+function timeAgo(ts) {
+  const s = Math.floor(Date.now() / 1000 - ts);
+  if (s < 5)   return 'just now';
+  if (s < 60)  return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+
+function absTime(ts) {
+  return new Date(ts * 1000).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
+}
+
+function fmtMs(ms) {
+  if (ms == null) return '<td class="ms ms-na">—</td>';
+  const s = ms < 1000 ? `${Math.round(ms)} ms` : `${(ms/1000).toFixed(2)} s`;
+  return `<td class="ms">${s}</td>`;
+}
+
+function speedupCell(bespoke, baseline) {
+  if (bespoke == null || baseline == null) return '<td class="sx sx-na">—</td>';
+  const sx = baseline / bespoke;
+  let cls, label;
+  if      (sx >= 8)  { cls = 'sx-fast'; label = `${sx.toFixed(1)}×`; }
+  else if (sx >= 3)  { cls = 'sx-ok';   label = `${sx.toFixed(1)}×`; }
+  else if (sx >= 1)  { cls = 'sx-slow'; label = `${sx.toFixed(1)}× ⚠`; }
+  else               { cls = 'sx-bad';  label = `${sx.toFixed(2)}× ✗`; }
+  return `<td class="sx ${cls}">${label}</td>`;
+}
+
+function flagEmoji(code) {
+  if (!code || code.length !== 2) return '🌐';
+  return [...code.toUpperCase()].map(c => String.fromCodePoint(c.charCodeAt(0) + 127397)).join('');
+}
+
+// Compact User-Agent parser — extracts browser, OS, and form-factor.
+// Order matters: Edge before Chrome, Chrome before Safari (Chrome UA includes "Safari").
+function parseUA(ua) {
+  if (!ua) return { browser: '—', version: '', os: '', form: '' };
+  let browser = 'Other', version = '';
+  const browsers = [
+    [/Edg\/([\d.]+)/,                    'Edge'],
+    [/OPR\/([\d.]+)/,                    'Opera'],
+    [/Firefox\/([\d.]+)/,                'Firefox'],
+    [/Chrome\/([\d.]+)/,                 'Chrome'],
+    [/Version\/([\d.]+).*Safari/,        'Safari'],
+    [/CriOS\/([\d.]+)/,                  'Chrome'],
+    [/FxiOS\/([\d.]+)/,                  'Firefox'],
+    [/curl\/([\d.]+)/,                   'curl'],
+    [/python-requests\/([\d.]+)/,        'python-requests'],
+    [/Wget\/([\d.]+)/,                   'Wget'],
+  ];
+  for (const [re, name] of browsers) {
+    const m = ua.match(re);
+    if (m) { browser = name; version = m[1].split('.')[0]; break; }
+  }
+
+  const osMajor = (re) => { const m = ua.match(re); return m ? m[1].replace(/_/g, '.').split('.')[0] : ''; };
+  let os = '';
+  if      (/iPhone|iPad|iPod/.test(ua)) os = `iOS ${osMajor(/OS ([\d_]+)/)}`.trim();
+  else if (/Android/.test(ua))          os = `Android ${osMajor(/Android ([\d.]+)/)}`.trim();
+  else if (/Mac OS X/.test(ua))         os = `macOS ${osMajor(/Mac OS X ([\d_]+)/)}`.trim();
+  else if (/Windows NT/.test(ua))       os = 'Windows';
+  else if (/CrOS/.test(ua))             os = 'ChromeOS';
+  else if (/Linux/.test(ua))            os = 'Linux';
+
+  let form = 'Desktop';
+  if (/iPad|Tablet/.test(ua) || (/Android/.test(ua) && !/Mobile/.test(ua))) form = 'Tablet';
+  else if (/Mobi|iPhone|iPod|Android.*Mobile/.test(ua))                     form = 'Mobile';
+  if (/bot|crawler|spider/i.test(ua))                                       form = 'Bot';
+
+  return { browser, version, os, form };
+}
+
+function escHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ---- session grouping ----
+// Group events by run_id so repeated identical queries remain separate sessions.
+
+function groupSessions(events) {
+  const map = new Map();
+  for (const e of events) {
+    const key = e.run_id || `event-${e.id}`;
+    if (!map.has(key)) {
+      map.set(key, { ts: e.ts, client_ip: e.client_ip, geo: e.geo, user_agent: e.user_agent || '',
+                     run_id: key, query_id: e.query_id, placeholders: e.placeholders, sf: e.sf, engines: {}, errors: {} });
+    }
+    const s = map.get(key);
+    if (e.ts > s.ts) { s.ts = e.ts; s.geo = e.geo; s.user_agent = e.user_agent || s.user_agent; }
+    if (e.error) {
+      s.errors[e.engine] = e.error;
+      continue;
+    }
+    // keep the fastest timing per engine within the session
+    if (s.engines[e.engine] == null || e.time_ms < s.engines[e.engine])
+      s.engines[e.engine] = e.time_ms;
+  }
+  return [...map.values()].sort((a, b) => b.ts - a.ts);
+}
+
+// ---- render ----
+
+function renderDeployment(dep) {
+  const fields = [
+    { label: 'W&B Run',     value: dep.wandb_run    || '—', accent: true },
+    { label: 'Snapshot',    value: (dep.git_snapshot_hash || '—').slice(0, 12) },
+    { label: 'Model',       value: dep.model         || '—' },
+    { label: 'Turn',        value: dep.turn          != null ? `#${dep.turn}` : '—' },
+    { label: 'Benchmark',   value: dep.benchmark     || '—' },
+    { label: 'Scale Factor',value: dep.sf            != null ? `SF${dep.sf}` : '—' },
+  ];
+  document.getElementById('deploy-cards').innerHTML = fields.map(f =>
+    `<div class="card">
+       <div class="card-label">${f.label}</div>
+       <div class="card-value${f.accent ? ' accent' : ''}">${f.value}</div>
+     </div>`
+  ).join('');
+}
+
+function renderStats(sessions) {
+  const total = sessions.length;
+  const visitors = new Set(sessions.map(s => `${s.client_ip}|${s.user_agent || ''}`)).size;
+  const queries  = new Set(sessions.map(s => s.query_id)).size;
+  const failures = sessions.filter(s => Object.keys(s.errors || {}).length > 0).length;
+
+  const speedups = sessions.flatMap(s => {
+    const b = s.engines.bespoke;
+    if (b == null) return [];
+    return ['duckdb','umbra'].filter(e => s.engines[e] != null).map(e => s.engines[e] / b);
+  });
+  const avgSx = speedups.length ? (speedups.reduce((a,b)=>a+b,0)/speedups.length).toFixed(1) : '—';
+  const maxSx = speedups.length ? Math.max(...speedups).toFixed(1) : '—';
+
+  document.getElementById('summary-stats').innerHTML = [
+    { num: total,       lbl: 'Sessions' },
+    { num: visitors,    lbl: 'Unique Visitors' },
+    { num: queries,     lbl: 'Distinct Queries' },
+    { num: failures,    lbl: 'Failed Sessions' },
+    { num: avgSx + (speedups.length ? '×' : ''), lbl: 'Avg Speedup' },
+    { num: maxSx + (speedups.length ? '×' : ''), lbl: 'Peak Speedup' },
+  ].map(s => `<div class="stat"><div class="stat-num">${s.num}</div><div class="stat-lbl">${s.lbl}</div></div>`).join('');
+}
+
+function renderTable(sessions) {
+  const body = document.getElementById('sessions-body');
+  if (sessions.length === 0) {
+    document.getElementById('status').textContent = 'No query sessions recorded yet.';
+    document.getElementById('sessions-table').style.display = 'none';
+    return;
+  }
+  document.getElementById('status').style.display = 'none';
+  document.getElementById('sessions-table').style.display = '';
+
+  const bms = s => s.engines.bespoke;
+
+  body.innerHTML = sessions.map(s => {
+    const g = s.geo || {};
+    const flag = flagEmoji(g.country_code);
+    const loc  = [g.city, g.country].filter(Boolean).join(', ') || g.country || '—';
+
+    const phHtml = Object.entries(s.placeholders).map(([k, v]) =>
+      `<span class="ph-pair"><b>${escHtml(k)}</b>=${escHtml(v)}</span>`
+    ).join(' ') || '<span class="ph-pair" style="color:var(--muted)">—</span>';
+
+    // find best baseline for "best ms" highlighting
+    const allMs = ['bespoke','duckdb','umbra','clickhouse'].map(e => s.engines[e]).filter(v => v != null);
+    const minMs = allMs.length ? Math.min(...allMs) : null;
+
+    function msCell(engine) {
+      if (s.errors && s.errors[engine]) {
+        return `<td class="ms ms-failed" title="${escHtml(s.errors[engine])}">failed</td>`;
+      }
+      const v = s.engines[engine];
+      if (v == null) return '<td class="ms ms-na">—</td>';
+      const isBest = v === minMs;
+      const text = v < 1000 ? `${Math.round(v)} ms` : `${(v/1000).toFixed(2)} s`;
+      return `<td class="ms${isBest ? ' ms-best' : ''}">${text}</td>`;
+    }
+
+    const failed = Object.keys(s.errors || {}).length > 0;
+
+    const ua = parseUA(s.user_agent);
+    const browserLabel = ua.version ? `${ua.browser} ${ua.version}` : ua.browser;
+    const deviceSub = [ua.os, ua.form && ua.form !== 'Desktop' ? ua.form : ''].filter(Boolean).join(' · ');
+
+    return `<tr class="${failed ? 'failure-row' : ''}">
+      <td>
+        <div class="ts-rel">${timeAgo(s.ts)}</div>
+        <div class="ts-abs" style="font-size:10px">${absTime(s.ts)}</div>
+      </td>
+      <td>
+        <span class="geo-flag">${flag}</span>
+        <span class="geo-loc">${escHtml(loc)}</span>
+        <div class="geo-sub">${escHtml(g.region || '')}</div>
+      </td>
+      <td title="${escHtml(s.user_agent || '')}">
+        <span class="geo-loc">${escHtml(browserLabel)}</span>
+        <div class="geo-sub">${escHtml(deviceSub)}</div>
+      </td>
+      <td><span class="query-badge">Q${escHtml(s.query_id)}</span></td>
+      <td class="wrap">${phHtml}</td>
+      ${msCell('bespoke')}
+      ${msCell('duckdb')}
+      ${msCell('umbra')}
+      ${speedupCell(bms(s), s.engines.duckdb)}
+      ${speedupCell(bms(s), s.engines.umbra)}
+    </tr>`;
+  }).join('');
+}
+
+// ---- fetch & refresh ----
+
+async function load() {
+  try {
+    const resp = await fetch('/api/telemetry?limit=2000');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    renderDeployment(data.deployment || {});
+    const sessions = groupSessions(data.events || []);
+    renderStats(sessions);
+    renderTable(sessions);
+  } catch (err) {
+    document.getElementById('status').innerHTML = `<span class="error-msg">Failed to load telemetry: ${err.message}</span>`;
+    document.getElementById('status').style.display = '';
+  }
+}
+
+function startCountdown() {
+  clearInterval(timer);
+  countdown = REFRESH_S;
+  timer = setInterval(() => {
+    countdown--;
+    document.getElementById('refresh-info').textContent = `Auto-refresh in ${countdown}s`;
+    if (countdown <= 0) { load(); countdown = REFRESH_S; }
+  }, 1000);
+}
+
+// ---- service logs ----
+
+let activeLogService = null;
+
+async function viewLogs(service) {
+  const viewer = document.getElementById('logs-viewer');
+  const meta   = document.getElementById('logs-meta');
+  const buttons = document.querySelectorAll('.logs-bar button[data-service]');
+
+  // toggle off if clicking the active one again
+  if (activeLogService === service) {
+    viewer.classList.remove('visible');
+    meta.textContent = '';
+    buttons.forEach(b => b.classList.remove('active'));
+    activeLogService = null;
+    return;
+  }
+
+  activeLogService = service;
+  buttons.forEach(b => b.classList.toggle('active', b.dataset.service === service));
+  viewer.classList.add('visible');
+  viewer.textContent = `Loading ${service} log…`;
+  meta.textContent = '';
+
+  try {
+    const resp = await fetch(`/api/logs?service=${encodeURIComponent(service)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    // race guard: don't overwrite if user switched services while fetching
+    if (activeLogService !== service) return;
+    viewer.textContent = data.content || '(empty)';
+    const kb = (data.size_bytes / 1024).toFixed(1);
+    meta.textContent = `${data.file} · ${kb} KB${data.truncated ? ' (tail)' : ''}`;
+    viewer.scrollTop = viewer.scrollHeight;
+  } catch (err) {
+    if (activeLogService !== service) return;
+    viewer.innerHTML = `<span class="error-msg">Failed to load ${service} log: ${err.message}</span>`;
+    meta.textContent = '';
+  }
+}
+
+function refreshNow() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  load().finally(() => { btn.disabled = false; });
+  // also refresh the currently open log, if any
+  if (activeLogService) {
+    const svc = activeLogService;
+    activeLogService = null;  // force re-fetch instead of toggle-off
+    viewLogs(svc);
+  }
+  // reset auto-refresh countdown
+  startCountdown();
+}
+
+document.getElementById('refresh-btn').addEventListener('click', refreshNow);
+document.querySelectorAll('.logs-bar button[data-service]').forEach(btn => {
+  btn.addEventListener('click', () => viewLogs(btn.dataset.service));
+});
+
+load();
+startCountdown();
+</script>
+</body>
+</html>

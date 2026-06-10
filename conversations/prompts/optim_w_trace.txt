@@ -1,0 +1,20 @@
+Optimize the implementation of query ${query_id} using the tracing/profiling data collected with sf ${sf}:
+
+```
+${tracing_data}
+```
+
+Analyze the tracing/profiling data to identify bottlenecks in the query execution, e.g. operators which consume the most time, cardinalities that require significant processing and optimized code implementation.
+${analyze_hints}
+Before editing, think about a plan first: which scope or counter dominates, what bottleneck class it represents (skew / I/O / CPU / contention), and what change addresses that specific class.
+Then implement the optimization by editing the query implementation files (`query${query_id}.hpp/cpp`). Focus on the scope that is the bottleneck.
+
+${general_pretext}
+
+${constraints}
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries${bespoke_storage_related}. Avoid regressions on the other queries.
+${more_constraints}
+${misc}
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail.

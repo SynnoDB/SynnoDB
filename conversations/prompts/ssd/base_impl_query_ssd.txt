@@ -1,0 +1,58 @@
+${prefix} query ${query_id}.
+The SQL query template to implement is:
+${sql}
+
+Add the query execution logic to `query${query_id}.cpp`.
+Align with the existing storage layout and ColumnHandle<T> implementation in `${builder_path}`.
+If a needed column is missing from `Database`, update the storage implementation first: add the ColumnHandle<T> field, serialize/register it in build(), and then use that handle from the query. Do not load Parquet/Arrow data during query execution and do not add persistent std::vector<T> column copies to Database.
+
+Limit file inspection to: `${builder_path}`, `${query_impl_path}`, `buffer_pool.hpp`, `column_handle.hpp`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+
+Focus on correctness first! The implementation can be optimized later.
+
+# Required Access Audit
+
+Before editing the query, write a short audit in your response:
+- every SQL column this query references and the exact `Database` handle used for it
+- every multi-column scan loop and the full set of handles that must contribute to the `contiguous_rows()` chunk minimum
+- every string access and whether it uses `StringColumnHandle::get(row)` or an explicitly page-safe offsets/bytes scan
+- every fixed-char access, if any; only use it when storage was written with page-aligned fixed-width helpers
+
+# Page-Based Execution Pattern
+
+Column data is accessed page by page via ColumnHandle<T>. The standard single-column scan loop is:
+
+```cpp
+for (int64_t pg = 0; pg < db->col.num_pages(); ++pg) {
+    int64_t count;
+    const T* ptr = db->col.pin_page(pg, &count);
+    for (int64_t i = 0; i < count; ++i) {
+        // ... process ptr[i] ...
+    }
+    db->col.unpin_page(pg);
+}
+```
+
+When multiple columns from the same table are needed together, do not assume page index N covers the same logical rows in every column; different element sizes produce different rows-per-page. Iterate by logical row ranges, shrink each chunk to the largest range that is contiguous in every required column, then pin that range in each column:
+
+```cpp
+for (int64_t row = 0; row < db->col_a.num_rows; ) {
+    int64_t chunk = db->col_a.contiguous_rows(row, db->col_a.num_rows - row);
+    chunk = std::min(chunk, db->col_b.contiguous_rows(row, chunk));
+
+    auto a = db->col_a.pin_range(row, chunk);
+    auto b = db->col_b.pin_range(row, chunk);
+    for (int64_t i = 0; i < chunk; ++i) { /* use a.data[i], b.data[i] */ }
+    db->col_a.unpin_page(a.page_idx);
+    db->col_b.unpin_page(b.page_idx);
+    row += chunk;
+}
+```
+
+String columns use `StringColumnHandle`; call `db->string_col.get(row)` for correctness. If this becomes hot, optimize later by scanning the offsets and bytes handles directly.
+
+For joins: prefer sequential scans on the outer and inner sides. If a small table fits entirely within the RAM budget (num_pages × 2 frames), it can be scanned once to build a hash table in RAM. For large tables that do not fit, use a sort-merge join strategy by iterating both sorted column files in lockstep.
+
+Before finishing this query, verify that every column referenced by the SQL is read through a ColumnHandle<T> page loop or through a compact metadata/index structure created during build from disk-backed columns. A query implementation that depends on Arrow tables, raw Parquet readers, or empty/uninitialized handles is incomplete.
+
+${sample_args_str}

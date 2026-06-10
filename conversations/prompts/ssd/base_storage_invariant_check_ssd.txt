@@ -1,0 +1,18 @@
+Verify the SSD storage implementation before implementing query kernels.
+
+Query implementations are still stubs at this stage; only the `build()` path is being exercised. Empty/placeholder query output is expected and is not a correctness signal — focus the audit entirely on the storage layer.
+
+Use the run/compile tools with scale factor ${sf_verify_str} to force `build()` to serialize and register the column files. If there are build, ingest, or runtime errors, fix `${builder_path}` and the adjacent header before continuing.
+
+Perform and report a storage invariant audit:
+- every `Database` handle is valid after `build()`
+- every table row count in `Database` matches the corresponding serialized column row count
+- every fixed-width handle uses flat storage only when `BP_PAGE_BYTES % sizeof(T) == 0`
+- every fixed-char handle, if any, uses page-aligned files written by `write_fixed_char_col_aligned()`/`finish_fixed_char_col_aligned()` and registered by `reg_page_aligned_fixed_width<T>()`
+- every `StringColumnHandle` has `num_rows + 1` offsets, monotonic offsets, and a bytes file registered through the buffer pool
+- sample first row, page-boundary rows, and last row for every fixed-width/fixed-char handle with `pin_range(row, 1)`
+- sample first row and last row for every string handle with `.get(row)`
+
+If an invariant cannot be checked directly with existing code, add a temporary/small local check in `${builder_path}` or an adjacent helper and remove or disable it once the storage implementation passes. Do not inspect validator/compile/cache/tool internals unless an error explicitly indicates an interface mismatch.
+
+Do not return until this storage audit passes for every scale factor requested here. Compile success alone is not enough.
