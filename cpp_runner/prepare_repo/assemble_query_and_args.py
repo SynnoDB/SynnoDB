@@ -210,11 +210,6 @@ inline {qn}Args parse_{qn.lower()}(const QueryRequest& request) {{
     {qn}Args args;
     std::istringstream iss(request.line);
 
-    std::string qid;
-    if (!(iss >> qid)) {{  // consume query id
-\t\tthrow std::runtime_error("Q{q_id}: failed to parse query id");
-    }}
-
 {parsers}
 
     return args;
@@ -238,7 +233,7 @@ def gen_parser_example_code(query_ids: List[str]) -> str:
         "\n"
         "// Example code for how to use the parse functions together:\n"
         "//for (const auto& req : requests) {\n"
-        "//    switch (req.id) {\n"
+        "//    switch (req.query_id) {\n"
         f"{first_cases}\n"
         "//        ...\n"
         f"{last_case}\n"
@@ -261,14 +256,14 @@ def gen_query_impl_ifelse_block(query_ids: list[str]):
     body = " " * 16
 
     case_template = string.Template(
-        '${prefix}${kw} (req.id == "${qid}") {\n'
+        '${prefix}${kw} (req.query_id == "${qid}") {\n'
         "${body}Q${qid}Args args = parse_q${qid}(req);\n"
         "${body}std::vector<std::vector<std::string>> rows;\n"
         "${body}auto start = std::chrono::steady_clock::now();\n"
         "${body}rows = run_q${qid}(db, args);\n"
         "${body}auto end = std::chrono::steady_clock::now();\n"
         "${body}elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();\n"
-        '${body}const std::string filename = "result" + std::to_string(i + 1) + ".csv";\n'
+        '${body}const std::string filename = "result_" + req.req_id + ".csv";\n'
         "${body}write_csv(filename, rows);\n"
         "${indent}}"
     )
@@ -287,7 +282,7 @@ def gen_query_impl_ifelse_block(query_ids: list[str]):
         )
     cases.append(
         f"{indent}else {{\n"
-        f'{body}throw std::runtime_error("Unsupported query id: " + req.id);\n'
+        f'{body}throw std::runtime_error("Unsupported query id: " + req.query_id);\n'
         f"{indent}}}"
     )
     case_str = "\n".join(cases)
