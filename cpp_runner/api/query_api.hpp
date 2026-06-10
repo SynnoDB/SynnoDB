@@ -10,6 +10,8 @@
 // the wall-clock runtime in milliseconds, and a non-empty error message
 // when the query threw (otherwise empty).
 struct QueryResult {
+    std::string query_id;
+    std::string req_id;
     std::string trace;
     long long   elapsed_ms;
     std::string error;

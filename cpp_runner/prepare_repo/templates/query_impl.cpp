@@ -69,10 +69,14 @@ std::vector<QueryResult> query(Database* db, const std::vector<std::string>& que
         std::istringstream iss(line);
         std::string query_id =  "0";
         iss >> query_id;
+        std::string req_id = "0";
+        iss >> req_id;
         if (!iss) {
             continue;
         }
-        requests.push_back(QueryRequest{query_id, line});
+        std::string args_line;
+        std::getline(iss, args_line); // everything after inst_hash
+        requests.push_back(QueryRequest{query_id, req_id, args_line});
     }
 
     // <<pin_thread_to_core>>
@@ -85,7 +89,7 @@ std::vector<QueryResult> query(Database* db, const std::vector<std::string>& que
         long long elapsed_ms = -1;
         std::string error;
         const std::string prefix =
-            "run #" + std::to_string(i + 1) + " Q" + req.id + ": ";
+            "run #" + std::to_string(i + 1) + " Q" + req.query_id+"(" + req.req_id + "): ";
         try {
             // <<impl_fn_calls>>
         } catch (const std::exception& e) {
@@ -94,7 +98,7 @@ std::vector<QueryResult> query(Database* db, const std::vector<std::string>& que
             error = prefix + "unknown exception";
         }
         // TRACE_FLUSH();
-        results.push_back({"", elapsed_ms, error});
+        results.push_back(QueryResult{req.query_id, req.req_id, "", elapsed_ms, error});
     }
     return results;
 }

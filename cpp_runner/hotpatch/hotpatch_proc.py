@@ -551,9 +551,11 @@ class HotpatchProc:
                         )
                     query_results = [
                         QueryResult(
-                            trace=qr.get("trace", ""),
+                            trace=qr.get("trace", "missing"),
                             elapsed_ms=qr.get("elapsed_ms", -1),
-                            error=qr.get("error", ""),
+                            error=qr.get("error", "missing"),
+                            query_id=qr.get("query_id", "missing"),
+                            req_id=qr.get("req_id", "missing"),
                         )
                         for qr in payload.get("query_results", [])
                     ]

@@ -1,7 +1,9 @@
 import logging
+import random
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, DefaultDict, Dict, List, Optional, Tuple
 
@@ -30,6 +32,8 @@ PIN_CORE = 3
 
 @dataclass
 class QueryResult:
+    query_id: str
+    req_id: str
     trace: str
     elapsed_ms: float
     error: str = ""
@@ -819,17 +823,23 @@ def format_args_string(
 ) -> List[str]:
     args_list = []
     for qid_str, placeholders in zip(query_list, placeholder_list):
+        # generate random req-id
+        # req_id = date_time + random int, to ensure uniqueness across different runs and queries
+        req_id = (
+            datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
+        )
+
         # Don't add double quotes to IN lists (they start with '(')
-        tmp_vals = []
-        for v in placeholders.values():
-            if isinstance(v, str) and v.startswith("("):
+        formatted_values = []
+        for value in placeholders.values():
+            if isinstance(value, str) and value.startswith("("):
                 # IN list - don't add quotes
-                tmp_vals.append(v)
+                formatted_values.append(value)
             else:
                 # Regular value - add quotes
-                tmp_vals.append(f'"{v}"')
-        tmp_vals_str = " ".join(tmp_vals)
-        args_list.append(f"{qid_str} {tmp_vals_str}")
+                formatted_values.append(f'"{value}"')
+
+        args_list.append(f"{qid_str} {req_id} {' '.join(formatted_values)}")
     return args_list
 
 

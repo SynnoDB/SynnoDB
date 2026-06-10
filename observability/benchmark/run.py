@@ -18,6 +18,7 @@ from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_ru
 from run_gen_base_impl import validate_snapshot
 from synth_framework.git_snapshotter import GitSnapshotter
 from tools.run import RunTool
+from tools.validate.query_validator_class import format_args_string
 from utils.utils import DBStorage, create_dir_and_set_permissions, parse_db_storage
 from workloads.dataset.dataset_tables_dict import get_dataset_name
 from workloads.dataset.query_gen_factory import get_query_gen
@@ -456,23 +457,8 @@ def _make_query_batch(
             sql_list.extend(inst_sql)
             placeholder_list.extend(inst_placeholders)
 
-    args_list = _format_args_string(query_list, placeholder_list)
+    args_list = format_args_string(query_list, placeholder_list)
     return query_list, sql_list, args_list
-
-
-def _format_args_string(
-    query_list: list[str], placeholder_list: list[dict]
-) -> list[str]:
-    args_list = []
-    for qid_str, placeholders in zip(query_list, placeholder_list):
-        values = []
-        for value in placeholders.values():
-            if isinstance(value, str) and value.startswith("("):
-                values.append(value)
-            else:
-                values.append(f'"{value}"')
-        args_list.append(f"{qid_str} {' '.join(values)}")
-    return args_list
 
 
 def _timing_rows(

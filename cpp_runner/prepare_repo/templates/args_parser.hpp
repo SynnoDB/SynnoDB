@@ -9,8 +9,9 @@
 #include <vector>
 
 struct QueryRequest {
-    std::string id;
-    std::string line;
+    std::string query_id; // query-id 
+    std::string req_id; // id of the request
+    std::string line; // line with query arguments
 };
 
 ${query_structs_and_parsers}

@@ -342,6 +342,10 @@ static auto build_pipeline() {
                     payload += std::to_string(results[i].elapsed_ms);
                     payload += ",\"error\":\"";
                     payload += json_escape(results[i].error);
+                    payload += "\",\"query_id\":\"";
+                    payload += json_escape(results[i].query_id);
+                    payload += "\",\"req_id\":\"";
+                    payload += json_escape(results[i].req_id);
                     payload += "\"}";
                 }
                 payload += "],\"stage_error\":\"";
