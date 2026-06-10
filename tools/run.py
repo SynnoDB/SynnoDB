@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 from cpp_runner.compiler.compiler_cached import CachedCompiler
 from cpp_runner.hotpatch.hotpatch_proc import HotpatchProc, HotpatchProcRunResult
+from cpp_runner.hotpatch.pool import HotpatchPool
 from observability.logging.run_stats_collector import RunStatsCollector
 from tools.validate.query_validator_class import (
     ExecCallbackResult,
@@ -16,8 +17,6 @@ from tools.validate.query_validator_class import (
 )
 from tools.validate.run_and_check_queries import assemble_error
 from utils.utils import DBStorage
-
-from ..cpp_runner.hotpatch.pool import HotpatchPool
 
 logger = logging.getLogger(__name__)
 

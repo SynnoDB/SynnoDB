@@ -1,18 +1,17 @@
 import logging
 from pathlib import Path
 
+from conversations.filenames import get_filenames
+from cpp_runner.prepare_repo.assemble_query_and_args import get_sql_dict
+from cpp_runner.prepare_repo.get_readonly_files import get_readonly_files
+from cpp_runner.prepare_repo.prepare import prepare_repo
+from cpp_runner.prepare_repo.prepare_mt import prepare_repo_for_mt
+from cpp_runner.prepare_repo.prepare_optim import prepare_repo_for_optim
 from synth_framework.git_snapshotter import GitSnapshotter
 from tools.run import delete_result_csv_files
-from workloads.dataset.query_gen_factory import get_placeholders_fn
-from conversations.filenames import get_filenames
-
-from prepare_repo.assemble_query_and_args import get_sql_dict
-from prepare_repo.get_readonly_files import get_readonly_files
-from prepare_repo.prepare import prepare_repo
-from prepare_repo.prepare_mt import prepare_repo_for_mt
-from prepare_repo.prepare_optim import prepare_repo_for_optim
 from utils.confirm_dialog import await_user_confirmation
 from utils.utils import DBStorage
+from workloads.dataset.query_gen_factory import get_placeholders_fn
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ def prepare_repo_and_load_snapshot(
     prepare: str,
     benchmark: str,
     query_list: list[str],
-    cache_path: Path,
+    cache_path: Path | None,
     db_storage: DBStorage,
     storage_plan: str | None = None,
     do_not_cache: bool = True,
@@ -76,7 +75,9 @@ def prepare_repo_and_load_snapshot(
         gen_placeholders_fn = get_placeholders_fn(
             benchmark,
             do_not_cache=do_not_cache,
-            cache_dir=cache_path / "placeholders_cache",
+            cache_dir=cache_path / "placeholders_cache"
+            if cache_path is not None
+            else None,
         )
         artifacts_in_context += prepare_repo(
             workspace_dir=snapshotter.working_dir,
@@ -86,7 +87,9 @@ def prepare_repo_and_load_snapshot(
             sql_dict=get_sql_dict(benchmark),
             gen_placeholders_fn=gen_placeholders_fn,
             git_snapshotter=snapshotter,
-            cache_dir=cache_path / "repo_prepare_cache",
+            cache_dir=cache_path / "repo_prepare_cache"
+            if cache_path is not None
+            else None,
             do_not_cache=do_not_cache,
             write_non_tracked_only=write_non_tracked_only,
             readonly_files_not_git_tracked=readonly_files_not_git_tracked,
@@ -108,7 +111,9 @@ def prepare_repo_and_load_snapshot(
             workspace_dir=snapshotter.working_dir,
             query_impl_filename=query_impl_filename,
             git_snapshotter=snapshotter,
-            cache_dir=cache_path / "repo_prepare_optim_cache",
+            cache_dir=cache_path / "repo_prepare_optim_cache"
+            if cache_path is not None
+            else None,
             do_not_cache=do_not_cache,
             readonly_files_not_git_tracked=readonly_files_not_git_tracked,
             write_non_tracked_only=prepare
@@ -124,7 +129,9 @@ def prepare_repo_and_load_snapshot(
         artifacts_in_context += prepare_repo_for_mt(
             workspace_dir=snapshotter.working_dir,
             git_snapshotter=snapshotter,
-            cache_dir=cache_path / "repo_prepare_mt_cache",
+            cache_dir=cache_path / "repo_prepare_mt_cache"
+            if cache_path is not None
+            else None,
             do_not_cache=do_not_cache,
             only_from_cache=only_from_cache,
         )

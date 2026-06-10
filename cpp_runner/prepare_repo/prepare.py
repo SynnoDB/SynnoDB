@@ -2,10 +2,10 @@ import logging
 import re
 from pathlib import Path
 
-from pipeline.git_snapshotter import GitSnapshotter
-from prepare_repo.assemble_query_and_args import build_query_and_args_files
-from prepare_repo.assemble_query_files import build_query_files
-from prepare_repo.assemble_template_files import build_template_files
+from cpp_runner.prepare_repo.assemble_query_and_args import build_query_and_args_files
+from cpp_runner.prepare_repo.assemble_query_files import build_query_files
+from cpp_runner.prepare_repo.assemble_template_files import build_template_files
+from synth_framework.git_snapshotter import GitSnapshotter
 from utils import utils
 from utils.utils import DBStorage
 

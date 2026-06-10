@@ -1,6 +1,7 @@
 #include "loader_api.hpp"
 
-#include "utils/plugin_base.hpp"
+#include "../hotpatch/plugin_base.hpp"
+
 
 // FILE_VERSION: 1
 
