@@ -7,9 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class ProcTreeTimeoutKiller:
-    def __init__(
-        self, root_pid: int, timeout: int, *, min_descendant_depth: int = 0
-    ):
+    def __init__(self, root_pid: int, timeout: int, *, min_descendant_depth: int = 0):
         self.root_pid = root_pid
         self.timeout = timeout
         self.min_descendant_depth = min_descendant_depth

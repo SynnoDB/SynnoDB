@@ -1,7 +1,7 @@
 #include "builder_api.hpp"
 #include "loader_api.hpp"
 #include "query_api.hpp"
-#include "utils/pipeline.hpp"
+#include "pipeline.hpp"
 
 #include <chrono>
 #include <cstdlib>

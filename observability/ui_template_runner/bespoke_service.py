@@ -25,7 +25,7 @@ import sys
 import threading
 from pathlib import Path
 
-from cpp_runner.compiler_utils import make_compiler
+from cpp_runner.compiler.compiler_utils import make_compiler
 from observability.logging.logger import setup_logging
 from tools.validate.query_validator_class import format_args_string
 from workloads.dataset.dataset_tables_dict import get_dataset_name

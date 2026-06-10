@@ -2,13 +2,12 @@ import atexit
 import logging
 from typing import Callable
 
-from cpp_runner.hotpatch_proc import HotpatchProc
-
+from cpp_runner.hotpatch.hotpatch_proc import HotpatchProc
 
 logger = logging.getLogger(__name__)
 
 
-class _FasttestHolder:
+class _HotpatchHolder:
     def __init__(self) -> None:
         self._runners: dict[str, HotpatchProc] = {}
 
@@ -32,12 +31,14 @@ class _FasttestHolder:
 
 
 def _terminate_all_at_exit() -> None:
-    for key in list(FastTestPool._runners.keys()):
+    for key in list(HotpatchPool._runners.keys()):
         try:
-            FastTestPool.terminate(key)
+            HotpatchPool.terminate(key)
         except Exception:
-            logger.exception("Failed to terminate cached runner during interpreter exit: %s", key)
+            logger.exception(
+                "Failed to terminate cached runner during interpreter exit: %s", key
+            )
 
 
-FastTestPool = _FasttestHolder()
+HotpatchPool = _HotpatchHolder()
 atexit.register(_terminate_all_at_exit)

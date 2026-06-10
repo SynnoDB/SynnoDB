@@ -4,8 +4,7 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-
-from cpp_runner.compiler import Compiler
+from cpp_runner.compiler.compiler import Compiler
 from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker
 from utils import utils

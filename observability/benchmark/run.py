@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
-from cpp_runner.compiler_utils import make_compiler
+from cpp_runner.compiler.compiler_utils import make_compiler
 from observability.benchmark.systems.base import SystemRunner
 from observability.benchmark.writer import BenchmarkWriter
 from observability.logging.logger import setup_logging

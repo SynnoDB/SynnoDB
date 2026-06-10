@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from cpp_runner.compiler_cached import CachedCompiler
-from cpp_runner.hotpatch_proc import HotpatchProc, HotpatchProcRunResult
+from cpp_runner.compiler.compiler_cached import CachedCompiler
+from cpp_runner.hotpatch.hotpatch_proc import HotpatchProc, HotpatchProcRunResult
 from observability.logging.run_stats_collector import RunStatsCollector
 from tools.validate.query_validator_class import (
     ExecCallbackResult,
@@ -17,7 +17,7 @@ from tools.validate.query_validator_class import (
 from tools.validate.run_and_check_queries import assemble_error
 from utils.utils import DBStorage
 
-from ..cpp_runner.pool import FastTestPool
+from ..cpp_runner.hotpatch.pool import HotpatchPool
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +317,7 @@ class RunTool:
         else:
             phys_ram_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
             hp_kwargs["memory_limit_bytes"] = int(phys_ram_bytes * 0.9)
-        runner = FastTestPool.get(
+        runner = HotpatchPool.get(
             pool_key,
             factory=lambda: HotpatchProc(cmd, **hp_kwargs),
         )
