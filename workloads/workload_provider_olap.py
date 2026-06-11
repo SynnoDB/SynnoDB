@@ -3,19 +3,22 @@ import functools
 import logging
 import os
 import random
+from dataclasses import dataclass
 from pathlib import Path
 
-from tools.run import FRAME_POOL_SHARE, RunToolMode
-from tools.validate.query_validator_class import format_args_element
+from tools.run_tool_mode import RunToolMode
 from utils import utils
+from utils.sql_utils import extract_order_by_columns
 from utils.utils import DBStorage
 from workloads.dataset.gen_ceb.ceb_queries import ceb_templates
 from workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from workloads.workload_provider import (
+    ExecSettings,
     QueryBatch,
     QueryEntry,
     WorkloadProvider,
     WrapperConfig,
+    format_args_element,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,10 +26,21 @@ logger = logging.getLogger(__name__)
 CEB_DIR = Path("/mnt/labstore/bespoke_olap/datasets/ceb/imdb")
 CEB_DIR = Path(__file__).parent.parent / "data" / "ceb" / "imdb"
 
+# Fraction of memory_budget_mb that goes to the generated engine's paged
+# frame pool. The remainder is implicit headroom for mmap_col regions and
+# other working memory; both are bounded together by RLIMIT_AS.
+FRAME_POOL_SHARE = 0.60
+
 
 class OLAPWorkload(enum.Enum):
     TPC_H = "tpch"
     CEB = "ceb"
+
+
+@dataclass
+class OLAPExecSettings(ExecSettings):
+    scale_factor: float
+    db_storage: DBStorage
 
 
 class OLAPWorkloadProvider(WorkloadProvider):
@@ -44,7 +58,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
         self.base_parquet_dir = base_parquet_dir
         self.db_storage = db_storage
         self.dataset_tables = self._dataset_tables()
-        self.dataset_name = self._get_dataset_name()
+        self.dataset_name = self._get_dataset_name(self.benchmark)
         self.dataset_schema = self._get_dataset_schema()
         self.bespoke_storage_dir = bespoke_storage_dir
 
@@ -58,15 +72,23 @@ class OLAPWorkloadProvider(WorkloadProvider):
     def produce_workload(
         self,
         run_mode: RunToolMode,
+        query_ids: list[str] | None,
     ) -> list[QueryBatch]:
+        if query_ids is None or len(query_ids) == 0:
+            queries_to_generate = self.query_ids
+        else:
+            queries_to_generate = query_ids
+
         if run_mode == RunToolMode.FAST_CHECK:
             instantiations = 3
             repetitions = 1
 
             if self.benchmark == OLAPWorkload.TPC_H:
-                scale_factors = [1, 2]
+                # scale_factors = [1, 2]
+                scale_factors = [1]
             elif self.benchmark == OLAPWorkload.CEB:
-                scale_factors = [0.25, 0.5]
+                # scale_factors = [0.25, 0.5]
+                scale_factors = [0.25]
             else:
                 raise ValueError(f"Unknown benchmark: {self.benchmark}")
 
@@ -108,10 +130,8 @@ class OLAPWorkloadProvider(WorkloadProvider):
 
             # assemble parquet path where data is loaded from
             parquet_path = (
-                self.base_parquet_dir
-                / f"parquet_{self.dataset_name}"
-                / f"sf{scale_factor}"
-            ).as_posix()
+                self.base_parquet_dir / f"sf{scale_factor}"
+            ).as_posix() + "/"
             assert parquet_path.endswith("/"), (
                 f"Parquet path must end with '/': {parquet_path}"
             )
@@ -120,15 +140,20 @@ class OLAPWorkloadProvider(WorkloadProvider):
             query_list = []
 
             for inst_idx in range(instantiations):
-                for query_id in self.query_ids:
-                    _, query, placeholders = self._get_query_gen_fn()(
+                for query_id in queries_to_generate:
+                    _, sql, placeholders = self._get_query_gen_fn()(
                         query_name=f"Q{query_id}", rnd=rnd
                     )
 
+                    # Extract order by information
+                    order_by_info = extract_order_by_columns(sql)
+
                     query_entry = QueryEntry(
                         query_id=str(query_id),
-                        sql=query,
+                        sql=sql,
                         query_args=format_args_element(str(query_id), placeholders),
+                        placeholder=placeholders,
+                        order_by_info=order_by_info,
                     )
 
                     for _ in range(repetitions):
@@ -143,7 +168,9 @@ class OLAPWorkloadProvider(WorkloadProvider):
                     timeout_s=approx_timeout_for_validation(
                         scale_factor, len(query_list)
                     ),
-                    log_info={"scale_factor": str(scale_factor)},
+                    exec_settings=OLAPExecSettings(
+                        scale_factor=scale_factor, db_storage=self.db_storage
+                    ),
                 )
             )
 
@@ -270,13 +297,14 @@ class OLAPWorkloadProvider(WorkloadProvider):
             raise ValueError(f"Unknown benchmark {self.benchmark}")
         return tables_lists[self.benchmark]
 
-    def _get_dataset_name(self) -> str:
-        if self.benchmark == OLAPWorkload.TPC_H:
+    @staticmethod
+    def _get_dataset_name(benchmark: OLAPWorkload) -> str:
+        if benchmark == OLAPWorkload.TPC_H:
             return "tpch"
-        elif self.benchmark == OLAPWorkload.CEB:
+        elif benchmark == OLAPWorkload.CEB:
             return "imdb"
         else:
-            raise ValueError(f"Unknown benchmark {self.benchmark}")
+            raise ValueError(f"Unknown benchmark {benchmark}")
 
     def _get_dataset_schema(self) -> str:
         if self.benchmark == OLAPWorkload.TPC_H:

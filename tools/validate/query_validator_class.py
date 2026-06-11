@@ -1,9 +1,7 @@
 import logging
-import random
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, DefaultDict, Dict, List, Optional, Tuple
 
@@ -24,7 +22,7 @@ from tools.validate.run_and_check_queries import (
 from tools.validate.validate_cache_type import ValidateCacheType
 from utils import utils
 from utils.utils import DBStorage
-from workloads.workload_provider import QueryBatch
+from workloads.workload_provider import QueryBatch, format_args_string
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +349,7 @@ class QueryValidator:
                             result_message=f"Error: query_id {q_id} not recognized. Known query IDs: {self.all_query_ids}",
                             correct=False,
                             metrics=assemble_error(
-                                log_info=log_info,
+                                exec_settings=exec_settings,
                                 query_ids_executed=[],
                                 exception=True,
                                 query_id_not_recognized=q_id,
@@ -410,7 +408,7 @@ class QueryValidator:
                             result_message=f"stdout: {exec_result.out.rstrip()}\nstderr: {exec_result.err.rstrip()}\n{exec_result.resp}",
                             correct=True,
                             metrics=assemble_exec(
-                                scale_factor=scale_factor,
+                                exec_settings=exec_settings,
                                 num_queries_executed=num_queries,
                             ),
                             trace_output=None,
@@ -702,7 +700,7 @@ class QueryValidator:
                 ),
                 correct=False,
                 metrics=assemble_error(
-                    log_info=log_info,
+                    exec_settings=exec_settings,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=None,
@@ -731,7 +729,7 @@ class QueryValidator:
                 ),
                 correct=False,
                 metrics=assemble_error(
-                    log_info=log_info,
+                    exec_settings=exec_settings,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=crashed_qid,
@@ -752,7 +750,7 @@ class QueryValidator:
                 ),
                 correct=False,
                 metrics=assemble_error(
-                    log_info=log_info,
+                    exec_settings=exec_settings,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=failed_qid,
@@ -788,34 +786,6 @@ class QueryValidator:
 
 def _cache_path_for_hash(validate_cache_dir: Path, hash: str) -> Path:
     return validate_cache_dir / f"{hash}.pkl"
-
-
-# separate args by , and add double quotes around each arg (except for IN lists which start with '(')
-def format_args_string(
-    query_list: List[str], placeholder_list: List[Dict[str, Any]]
-) -> List[str]:
-    args_list = []
-    for qid_str, placeholders in zip(query_list, placeholder_list):
-        args_list.append(format_args_element(qid_str, placeholders))
-    return args_list
-
-
-def format_args_element(qid_str: str, placeholders: Dict[str, Any]) -> str:
-    # generate random req-id
-    # req_id = date_time + random int, to ensure uniqueness across different runs and queries
-    req_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
-
-    # Don't add double quotes to IN lists (they start with '(')
-    formatted_values = []
-    for value in placeholders.values():
-        if isinstance(value, str) and value.startswith("("):
-            # IN list - don't add quotes
-            formatted_values.append(value)
-        else:
-            # Regular value - add quotes
-            formatted_values.append(f'"{value}"')
-
-    return f"{qid_str} {req_id} {' '.join(formatted_values)}"
 
 
 def _format_query_traces(query_results: list[QueryResult], instantiations: list) -> str:

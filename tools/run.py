@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import enum
 import functools
 import logging
 import os
@@ -12,6 +11,7 @@ from cpp_runner.compiler.compiler_cached import CachedCompiler
 from cpp_runner.hotpatch.hotpatch_proc import HotpatchProc, HotpatchProcRunResult
 from cpp_runner.hotpatch.pool import HotpatchPool
 from observability.logging.run_stats_collector import RunStatsCollector
+from tools.run_tool_mode import RunToolMode
 from tools.validate.query_validator_class import (
     ExecCallbackResult,
     QueryValidator,
@@ -21,16 +21,6 @@ from utils.utils import DBStorage
 from workloads.workload_provider import QueryBatch, WorkloadProvider
 
 logger = logging.getLogger(__name__)
-
-# Fraction of memory_budget_mb that goes to the generated engine's paged
-# frame pool. The remainder is implicit headroom for mmap_col regions and
-# other working memory; both are bounded together by RLIMIT_AS.
-FRAME_POOL_SHARE = 0.60
-
-
-class RunToolMode(enum.Enum):
-    FAST_CHECK = "fast_check"
-    EXHAUSTIVE = "exhaustive"
 
 
 @dataclass
@@ -108,7 +98,7 @@ class RunTool:
         self,
         mode: RunToolMode,
         optimize: bool,
-        query_id: Optional[List[str]] = None,
+        query_ids: list[str] | None = None,
         trace_mode: bool = False,  # set trace flag
         external_call: bool = False,  # only for logging purposes
         echo_output: bool = False,  # print stdout and co directly
@@ -117,7 +107,7 @@ class RunTool:
             run_result = self.run_worker(
                 mode=mode,
                 optimize=optimize,
-                query_id=query_id,
+                query_ids=query_ids,
                 trace_mode=trace_mode,
                 external_call=external_call,
                 echo_output=echo_output,
@@ -143,7 +133,7 @@ class RunTool:
         self,
         mode: RunToolMode,
         optimize: bool,
-        query_id: Optional[List[str]] = None,
+        query_ids: list[str] | None = None,
         trace_mode: bool = False,  # set trace flag
         force_compile: bool = False,
         external_call: bool = False,
@@ -154,9 +144,9 @@ class RunTool:
         parallelism: bool | None = None,
         core_ids: list[int] | None = None,
     ) -> RunWorkerResult:
-        if isinstance(query_id, list) and len(query_id) == 0:
+        if isinstance(query_ids, list) and len(query_ids) == 0:
             # rewrite to None for easier handling
-            query_id = None
+            query_ids = None
 
         current_parallelism = (
             parallelism if parallelism is not None else self.parallelism
@@ -178,7 +168,7 @@ class RunTool:
             )
 
         logger.info(
-            f"Run with: {query_id=} {mode=} {self.dataset_name=} {trace_mode=} {optimize=} {self.base_parquet_dir=} num_threads={len(current_core_ids) if current_parallelism else '1'} mem_limit={self.memory_budget_mb}"  # type: ignore
+            f"Run with: {query_ids=} {mode=} {self.dataset_name=} {trace_mode=} {optimize=} {self.base_parquet_dir=} num_threads={len(current_core_ids) if current_parallelism else '1'} mem_limit={self.memory_budget_mb}"  # type: ignore
         )
 
         # Delete any result CSV files written by a previous run so we never
@@ -211,8 +201,8 @@ class RunTool:
             # report stats
             # assemble validation error
             metrics = assemble_error(
-                log_info={},
-                query_ids_executed=query_id if query_id is not None else [],
+                exec_settings=None,
+                query_ids_executed=query_ids if query_ids is not None else [],
             )
             metrics["type"] = "validate"
             metrics["validation/compile_with_optimize"] = optimize
@@ -240,7 +230,7 @@ class RunTool:
 
         query_batches = self.workload_provider.produce_workload(
             run_mode=mode,
-            query_id=query_id,
+            query_ids=query_ids,
         )
 
         result_list = []
@@ -417,7 +407,7 @@ class RunTool:
                 )
                 msg = "Error: one or more queries threw an exception.\n" + msg
                 metrics = assemble_error(
-                    log_info=batch.log_info,
+                    exec_settings=batch.exec_settings,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=failed_query_id,

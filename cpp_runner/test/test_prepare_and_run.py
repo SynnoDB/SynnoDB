@@ -33,26 +33,22 @@ def main(args):
 
     ##### CONFIGURATION #####
     benchmark = OLAPWorkload.TPC_H
-    workload_provider = OLAPWorkloadProvider(benchmark=benchmark)
     db_storage = DBStorage.IN_MEMORY
-    parquet_dir = (
-        f"/mnt/labstore/bespoke_olap/{workload_provider.dataset_name}_parquet/"
-    )
-    parquet_dir = (
-        Path(__file__).parent.parent.parent
-        / "data"
-        / f"{workload_provider.dataset_name}_parquet"
-    )
     parallelism = False
     core_ids = None
     ##########################
 
-    if benchmark == OLAPWorkload.CEB:
-        scale_factor = 0.25
-    elif benchmark == OLAPWorkload.TPC_H:
-        scale_factor = 1
-    else:
-        raise ValueError(f"Unknown benchmark: {benchmark}")
+    dataset_name = OLAPWorkloadProvider._get_dataset_name(benchmark)
+    # parquet_dir = f"/mnt/labstore/bespoke_olap/{dataset_name}_parquet/"
+    parquet_dir = (
+        Path(__file__).parent.parent.parent / "data" / f"{dataset_name}_parquet"
+    )
+    workload_provider = OLAPWorkloadProvider(
+        benchmark=benchmark,
+        base_parquet_dir=parquet_dir,
+        db_storage=db_storage,
+        bespoke_storage_dir=None,
+    )
 
     if not args.skip_prep:
         prepare_workspace_provider = OLAPPrepareWorkspace(
@@ -108,11 +104,14 @@ def main(args):
     result: RunWorkerResult = bespoke_engine.run_worker(
         mode=RunToolMode.FAST_CHECK,
         optimize=True,
+        query_ids=None,  # ["1"],
         trace_mode=True,
         echo_output=True,
         parallelism=parallelism,
         core_ids=core_ids,
     )
+
+    assert result.query_results is not None, "Expected query results, but got None"
 
     for res in result.query_results:
         logger.info(res)
