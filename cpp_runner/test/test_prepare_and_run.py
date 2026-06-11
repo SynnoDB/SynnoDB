@@ -16,8 +16,6 @@ from synth_framework.git_snapshotter import GitSnapshotter
 from tools.run import RunTool, RunWorkerResult
 from tools.validate.query_validator_class import format_args_string
 from utils.utils import DBStorage, sha256
-from workloads.dataset.dataset_tables_dict import get_dataset_name
-from workloads.dataset.query_gen_factory import get_query_gen
 from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 setup_logging(level=logging.DEBUG)
@@ -36,21 +34,26 @@ def main(args):
 
     ##### CONFIGURATION #####
     benchmark = OLAPWorkload.TPC_H
+    workload_provider = OLAPWorkloadProvider(benchmark=benchmark)
     db_storage = DBStorage.IN_MEMORY
     parquet_dir = (
-        f"/mnt/labstore/bespoke_olap/{get_dataset_name(benchmark.value)}_parquet/"
+        f"/mnt/labstore/bespoke_olap/{workload_provider.dataset_name}_parquet/"
     )
     parquet_dir = (
         Path(__file__).parent.parent.parent
         / "data"
-        / f"{get_dataset_name(benchmark.value)}_parquet"
+        / f"{workload_provider.dataset_name}_parquet"
     )
     parallelism = False
     core_ids = None
-    scale_factor = 1.0
     ##########################
 
-    workload_provider = OLAPWorkloadProvider(benchmark=benchmark)
+    if benchmark == OLAPWorkload.CEB:
+        scale_factor = 0.25
+    elif benchmark == OLAPWorkload.TPC_H:
+        scale_factor = 1
+    else:
+        raise ValueError(f"Unknown benchmark: {benchmark}")
 
     if not args.skip_prep:
         prepare_workspace_provider = OLAPPrepareWorkspace(
@@ -86,7 +89,7 @@ def main(args):
     bespoke_engine = RunTool(
         cwd=work_dir,
         query_validator=None,
-        dataset_name=get_dataset_name(benchmark.value),
+        dataset_name=workload_provider.dataset_name,
         base_parquet_dir=parquet_dir,
         run_stats_collector=None,
         db_storage=db_storage,
@@ -96,7 +99,7 @@ def main(args):
     instantiations = 2
     repetitions = 2
     inst_query_list, inst_sql_list, inst_args_list, inst_hash_list = _make_query_batch(
-        gen_query_fn=get_query_gen(benchmark.value),
+        gen_query_fn=workload_provider.get_query_gen_fn(),
         query_ids=workload_provider.query_ids,
         instantiations=instantiations,
         repetitions=repetitions,

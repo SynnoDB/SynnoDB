@@ -10,10 +10,7 @@ from tqdm import tqdm
 
 from utils.drop_caches import drop_os_caches, is_memory_backed
 from utils.utils import DBStorage, create_dir_and_set_permissions
-from workloads.dataset.dataset_tables_dict import (
-    get_benchmark_schema,
-    get_tables_for_benchmark,
-)
+from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +56,6 @@ class UmbraRunner:
         self._port = port
         self._user = user
         self._password = password
-        self._schema_sql = get_benchmark_schema(benchmark)
         self._loaded_sf: float | None = None
         self._db_names: dict[float, str] = {}
         self._conns: dict[float, psycopg2.extensions.connection] = {}
@@ -70,6 +66,8 @@ class UmbraRunner:
         self._container_name = container_name
         self._container_image = container_image
         self._scale_factors = scale_factors
+
+        self.workload_provider = OLAPWorkloadProvider(benchmark=OLAPWorkload(benchmark))
 
         if self._db_storage in [DBStorage.LABSTORE, DBStorage.SSD] and host not in {
             "127.0.0.1",
@@ -183,7 +181,7 @@ class UmbraRunner:
     def _load_sf(self, scale_factor: float, verbose: bool = True) -> None:
         db_name = self._db_name_for_sf(scale_factor)
         self._db_names[scale_factor] = db_name
-        tables = get_tables_for_benchmark(self._benchmark)
+        tables = self.workload_provider.dataset_tables
 
         con = None
         if self._database_exists(db_name):
@@ -214,7 +212,8 @@ class UmbraRunner:
 
         assert con is not None
         cur = con.cursor()
-        cur.execute(self._schema_sql)
+
+        cur.execute(self.workload_provider.dataset_schema)
 
         for table in tqdm(
             tables,
