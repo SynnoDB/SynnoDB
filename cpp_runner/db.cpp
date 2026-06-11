@@ -1,13 +1,9 @@
-#include "builder_api.hpp"
-#include "loader_api.hpp"
-#include "query_api.hpp"
+#include "db_usecase.hpp"
 #include "pipeline.hpp"
 
-#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <poll.h>
@@ -16,55 +12,14 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 
-// FILE_VERSION: 3
+// FILE_VERSION: 4
 
-struct State {
-    std::string parquet_path;
-    ParquetTables* parquet_tables = nullptr;
-    Database* database = nullptr;
-    int trace_write_fd = -1;
-};
-
-static State state;
-
-static void clear_storage_dir_if_configured() {
-    const char* env = std::getenv("STORAGE_DIR");
-    if (!env || env[0] == '\0') {
-        return;
-    }
-
-    std::filesystem::path storage_dir(env);
-
-    // Refuse to delete a directory we didn't create: run.py drops a
-    // .bespoke_storage_dir marker into every storage dir it sets up, so a
-    // misconfigured STORAGE_DIR pointing at unrelated data is rejected here.
-    if (!std::filesystem::exists(storage_dir / ".bespoke_storage_dir")) {
-        throw std::runtime_error(
-            "Refusing to clear STORAGE_DIR " + storage_dir.string() +
-            ": missing .bespoke_storage_dir sentinel");
-    }
-
-    std::error_code ec;
-    std::filesystem::remove_all(storage_dir, ec);
-    if (ec) {
-        throw std::runtime_error(
-            "Failed to remove STORAGE_DIR " + storage_dir.string() + ": " + ec.message());
-    }
-
-    std::filesystem::create_directories(storage_dir, ec);
-    if (ec) {
-        throw std::runtime_error(
-            "Failed to create STORAGE_DIR " + storage_dir.string() + ": " + ec.message());
-    }
-
-    // Re-create the sentinel file after clearing the directory.
-    std::ofstream(storage_dir / ".bespoke_storage_dir").close();
-}
+int g_trace_write_fd = -1;
 
 // ---------------------------------------------------------------------------
 // JSON string escaping for the c2p response
 // ---------------------------------------------------------------------------
-static std::string json_escape(const std::string& s) {
+std::string json_escape(const std::string& s) {
     std::string r;
     r.reserve(s.size() + 16);
     for (unsigned char c : s) {
@@ -88,7 +43,7 @@ static std::string json_escape(const std::string& s) {
 }
 
 // Write a length-prefixed byte string to fd.
-static void write_length_prefixed(int fd, const std::string& data) {
+void write_length_prefixed(int fd, const std::string& data) {
     uint32_t len = static_cast<uint32_t>(data.size());
     ipc::write_exact(fd, len);
     const char* p = data.data();
@@ -223,145 +178,6 @@ static DoneAndTrace read_done_and_trace(int done_fd, int trace_fd) {
     }
 }
 
-
-// ---------------------------------------------------------------------------
-// Hotpatch / Plugins
-// ---------------------------------------------------------------------------
-
-static auto build_pipeline() {
-    return make_pipeline(
-        // ── Loader stage ────────────────────────────────────────────────────
-        // Behaviour differs by storage mode (controlled at code-generation time):
-        //
-        //   In-memory mode:  api.load() reads all Parquet files via Arrow and
-        //     materialises them as Arrow tables in RAM.  The builder stage then
-        //     converts those tables into the in-memory Database struct.
-        //
-        //   Persistent-storage (SSD) mode:  api.load() is a trivial no-op that
-        //     only records the per-scale-factor Parquet directory as file-path
-        //     strings inside ParquetTables (e.g. tables->lineitem_path).  No
-        //     Arrow data is read here.  The builder stage later opens those
-        //     paths itself, streams columns row-group by row-group, and writes
-        //     them to binary column files on disk.
-        //
-        // The stage is kept in both modes so that the builder always receives a
-        // populated ParquetTables* with the correct file paths, without needing
-        // to know the parquet directory itself.
-        stage<RunPolicy::OnChange>("./build/libloader.so",
-            [](Plugin& plugin) {
-                auto api = plugin.get<LoaderApi>();
-                std::cerr << "loader start\n";
-                state.parquet_tables = api.load(state.parquet_path);
-                std::cerr << "loader done\n";
-                return 0;
-            },
-            [](Plugin& plugin) {
-                // Destroy old tables with the old plugin BEFORE dlclose so that
-                // shared_ptr deleters and Arrow statics in libloader.so are still
-                // mapped when the destructor chain runs.
-                auto api = plugin.get<LoaderApi>();
-                if (state.parquet_tables) {
-                    api.destroy(state.parquet_tables);
-                    state.parquet_tables = nullptr;
-                }
-            }),
-        // ── Builder stage ────────────────────────────────────────────────────
-        // Behaviour differs by storage mode:
-        //
-        //   In-memory mode:  api.build() converts the Arrow tables produced by
-        //     the loader into an optimised in-memory Database struct (column
-        //     vectors, CSR indexes, pre-joined columns, etc.).  All data lives
-        //     in RAM for the lifetime of the process.
-        //
-        //   Persistent-storage (SSD) mode:  api.build() opens the Parquet files
-        //     via the paths in ParquetTables, serialises each column to a flat
-        //     binary file under STORAGE_DIR (set by run.py per scale-factor),
-        //     and returns a Database whose fields
-        //     are ColumnHandle<T> descriptors backed by a shared BufferPool.
-        //     Column pages are loaded from SSD on demand at query time.
-        //     The runner clears STORAGE_DIR exactly when this builder stage
-        //     reruns, so query-only hotpatches keep the existing files while
-        //     storage-layout or loader/builder reloads rebuild them from scratch.
-        stage<RunPolicy::OnChange>("./build/libbuilder.so",
-            [](Plugin& plugin, int) {
-                auto api = plugin.get<BuilderApi>();
-                clear_storage_dir_if_configured();
-                std::cerr << "builder start\n";
-                const auto t0 = std::chrono::steady_clock::now();
-                state.database = api.build(state.parquet_tables);
-                std::cerr << "builder done\n";
-                const auto t1 = std::chrono::steady_clock::now();
-                const float ms =
-                    std::chrono::duration<float, std::milli>(t1 - t0).count();
-                std::cerr << "Ingest ms: " << ms << "\n";
-                return 0;
-            },
-            [](Plugin& plugin) {
-                auto api = plugin.get<BuilderApi>();
-                if (state.database) {
-                    api.destroy(state.database);
-                    state.database = nullptr;
-                }
-            }),
-        // The query stage receives batch.query_lines from run_parent via the
-        // framed IPC protocol.  Previously the lines were written to stdin
-        // before the RUN signal, which could leave stale lines buffered and
-        // cause them to be consumed by a subsequent invocation.
-        stage<RunPolicy::AlwaysReload>("./build/libquery.so", [](Plugin& plugin, int, const RunBatch& batch) {
-            auto api = plugin.get<QueryApi>();
-            std::cerr << "query start\n";
-
-            // Catch any C++ exception thrown out of api.query() so the child
-            // process can still report a structured response instead of
-            // aborting (which would surface only as a SIGABRT to the parent).
-            // Note: this does NOT catch async signals like SIGSEGV; those
-            // still terminate the child and are reported via term_signal.
-            std::vector<QueryResult> results;
-            std::string stage_error;
-            try {
-                results = api.query(state.database, batch.query_lines);
-            } catch (const std::exception& e) {
-                stage_error = std::string("query stage threw std::exception: ") + e.what();
-                std::cerr << stage_error << "\n";
-            } catch (...) {
-                stage_error = "query stage threw unknown exception";
-                std::cerr << stage_error << "\n";
-            }
-            std::cerr << "query done\n";
-
-            // Serialize per-query results plus any stage-level error as a JSON
-            // object and send to run_parent via the trace pipe, before
-            // write_done() fires on done_pipe.
-            if (state.trace_write_fd >= 0) {
-                std::string payload = "{\"query_results\":[";
-                for (std::size_t i = 0; i < results.size(); ++i) {
-                    if (i > 0) payload += ",";
-                    payload += "{\"trace\":\"";
-                    payload += json_escape(results[i].trace);
-                    payload += "\",\"elapsed_ms\":";
-                    payload += std::to_string(results[i].elapsed_ms);
-                    payload += ",\"error\":\"";
-                    payload += json_escape(results[i].error);
-                    payload += "\",\"query_id\":\"";
-                    payload += json_escape(results[i].query_id);
-                    payload += "\",\"req_id\":\"";
-                    payload += json_escape(results[i].req_id);
-                    payload += "\"}";
-                }
-                payload += "],\"stage_error\":\"";
-                payload += json_escape(stage_error);
-                payload += "\"}";
-                write_length_prefixed(state.trace_write_fd, payload);
-            }
-            return 0;
-        }));
-}
-
-static void run_child(int read_fd, int done_fd) {
-    auto pipeline = build_pipeline();
-    pipeline.run(read_fd, done_fd, false);
-}
-
 static int getenv_fd(const char* name) {
     const char* v = std::getenv(name);
     if (!v) {
@@ -369,7 +185,6 @@ static int getenv_fd(const char* name) {
     }
     return std::atoi(v);
 }
-
 
 // Bridges the Python-side IPC (p2c / c2p FDs) and the internal pipeline
 // PipelineControl.  Reads framed ControlMessages from P2C_FD, forwards RUN
@@ -433,12 +248,9 @@ static void run_parent(PipelineControl& control, int trace_r) {
 
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <PARQUET_DIR\n";
+    if (!usecase_parse_args(argc, argv)) {
         return 1;
     }
-    std::string base_parquet = argv[1];
-    state.parquet_path = base_parquet;
 
     signal(SIGPIPE, SIG_IGN);
 
@@ -457,12 +269,12 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (pipe(trace_pipe) == -1) {
-        perror("pipe trace_pipe"); 
-        close(p2c[0]); 
-        close(p2c[1]); 
-        close(done_pipe[0]); 
-        close(done_pipe[1]); 
-        return 1; 
+        perror("pipe trace_pipe");
+        close(p2c[0]);
+        close(p2c[1]);
+        close(done_pipe[0]);
+        close(done_pipe[1]);
+        return 1;
     }
 
     // The Python preexec_fn already set PR_SET_PDEATHSIG=SIGKILL on this
@@ -479,8 +291,8 @@ int main(int argc, char** argv) {
         close(p2c[1]);
         close(done_pipe[0]);
         close(trace_pipe[0]);          // child does not read from trace pipe
-        state.trace_write_fd = trace_pipe[1];
-        run_child(p2c[0], done_pipe[1]);
+        g_trace_write_fd = trace_pipe[1];
+        usecase_run_child(p2c[0], done_pipe[1]);
         _exit(0);
     }
     if (pid < 0) {

@@ -49,6 +49,9 @@ class CompilerFactory:
     ) -> tuple[dict[str, list[Path | str]], list[Path]]:
         raise NotImplementedError
 
+    def _get_usecase_src(self, file_paths: FilePaths) -> Path | None:
+        return None
+
     def make_compiler(
         self,
         cwd: Path,
@@ -63,6 +66,11 @@ class CompilerFactory:
 
         libs, include_dirs = self._get_libs(file_paths)
 
+        usecase_src = self._get_usecase_src(file_paths)
+        app_extra_srcs = [file_paths.hotpatch_path / "build_id.cpp"]
+        if usecase_src is not None:
+            app_extra_srcs.append(usecase_src)
+
         args = dict(
             working_dir=cwd,
             libs=libs,
@@ -73,7 +81,7 @@ class CompilerFactory:
                 file_paths.hotpatch_path,
             ]
             + include_dirs,
-            app_extra_srcs=[file_paths.hotpatch_path / "build_id.cpp"],
+            app_extra_srcs=app_extra_srcs,
             build_dir="build",
             link_libs=[],
             pkgconfig_libs=["arrow", "parquet"],

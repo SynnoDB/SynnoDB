@@ -1,6 +1,7 @@
 #include "query_impl.hpp"
 #include "cpu_affinity.hpp"
 // <<thread_pool_include>>
+// <<trace_include>>
 // Increment file version to invalidate cache when this file is changed. This is needed because this file is included in the generated code and changes to it should trigger regeneration of all code that includes it.
 // FILE_VERSION: 6
 

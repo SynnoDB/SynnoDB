@@ -31,6 +31,7 @@ def prepare_repo_and_load_snapshot(
     do_not_cache: bool = True,
     conv_name: str | None = None,
     only_from_cache: bool = False,
+    add_sample_trace: bool = False,
 ) -> str:
     """Bring the workspace into a known state and run the requested prepare steps.
 
@@ -97,6 +98,7 @@ def prepare_repo_and_load_snapshot(
             only_query_txt=prepare == "storage_plan",
             db_storage=db_storage,
             only_from_cache=only_from_cache,
+            add_sample_trace=add_sample_trace,
         )
 
     if prepare in ["optim", "mt"]:

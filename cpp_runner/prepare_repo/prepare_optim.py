@@ -47,8 +47,8 @@ def prepare_repo_for_optim(
         )
 
     # replace trace stuff
-    trace_kw = 'results.push_back({"", elapsed_ms, error});'
-    trace_target = "results.push_back({trace_get_and_clear(), elapsed_ms, error});"
+    trace_kw = 'results.push_back(QueryResult{req.query_id, req.req_id, "", elapsed_ms, error});'
+    trace_target = "results.push_back(QueryResult{req.query_id, req.req_id, trace_get_and_clear(), elapsed_ms, error});"
     assert trace_kw in query_impl_str, (
         f"Could not find '{trace_kw}' in {query_impl_path}"
     )

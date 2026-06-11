@@ -29,6 +29,7 @@ def build_query_and_args_files(
     storage_plan: Optional[str] = None,
     add_thread_pool_to_query_impl: bool = False,
     pin_to_core: int = 3,
+    add_sample_trace_to_query_impl: bool = False,
 ) -> dict[str, str]:
     """Build query/args file contents without writing to disk.
 
@@ -52,7 +53,9 @@ def build_query_and_args_files(
     assert impl_keyword in query_impl_content, (
         f"Keyword '{impl_keyword}' not found in query_impl.cpp template"
     )
-    case_block, include_headers = gen_query_impl_ifelse_block(query_list)
+    case_block, include_headers = gen_query_impl_ifelse_block(
+        query_list, add_sample_trace=add_sample_trace_to_query_impl
+    )
     query_impl = query_impl_content.replace(impl_keyword, case_block)
 
     query_headers_kw = "// <<include_query_headers>>"
@@ -63,10 +66,11 @@ def build_query_and_args_files(
 
     thread_pool_include_kw = "// <<thread_pool_include>>"
     thread_pool_placeholder_kw = "// <<get_thread_pool_placeholder>>"
+    trace_include_kw = "// <<trace_include>>"
 
     if add_thread_pool_to_query_impl:
         query_impl = query_impl.replace(
-            thread_pool_include_kw, '#include "thread_pool.hpp"\n#include "trace.hpp"\n'
+            thread_pool_include_kw, '#include "thread_pool.hpp"'
         )
         query_impl = query_impl.replace(
             thread_pool_placeholder_kw,
@@ -90,6 +94,23 @@ ThreadPool& get_query_pool() {
     else:
         query_impl = query_impl.replace(thread_pool_include_kw, "")
         query_impl = query_impl.replace(thread_pool_placeholder_kw, "")
+
+    if add_sample_trace_to_query_impl or add_thread_pool_to_query_impl:
+        query_impl = query_impl.replace(trace_include_kw, '#include "trace.hpp"')
+        # replace trace stuff
+        trace_kw = 'results.push_back(QueryResult{req.query_id, req.req_id, "", elapsed_ms, error});'
+        trace_target = "results.push_back(QueryResult{req.query_id, req.req_id, trace_get_and_clear(), elapsed_ms, error});"
+        assert trace_kw in query_impl, (
+            f"Could not find '{trace_kw}' in query_impl.cpp template"
+        )
+        query_impl = query_impl.replace(trace_kw, trace_target)
+
+        # remove comments
+        trace_kw_list = ["TRACE_FLUSH();", "TRACE_RESET();"]
+        for kw in trace_kw_list:
+            query_impl = query_impl.replace(f"// {kw}", kw)
+    else:
+        query_impl = query_impl.replace(trace_include_kw, "")
 
     pin_thread_to_core_kw = "// <<pin_thread_to_core>>"
     assert pin_thread_to_core_kw in query_impl, (
@@ -242,7 +263,9 @@ def gen_parser_example_code(query_ids: List[str]) -> str:
     )
 
 
-def gen_query_impl_ifelse_block(query_ids: list[str]):
+def gen_query_impl_ifelse_block(
+    query_ids: list[str], add_sample_trace: bool = False
+) -> tuple[str, str]:
     """Emit the if/else dispatch chain that fills the <<impl_fn_calls>>
     placeholder in `query_impl.cpp`.
 
@@ -255,11 +278,16 @@ def gen_query_impl_ifelse_block(query_ids: list[str]):
     indent = " " * 12
     body = " " * 16
 
+    sample_trace_str = (
+        '${body}TRACE_COUNT("SAMPLE_TRACE_${qid}",1);\n' if add_sample_trace else ""
+    )
+
     case_template = string.Template(
         '${prefix}${kw} (req.query_id == "${qid}") {\n'
         "${body}Q${qid}Args args = parse_q${qid}(req);\n"
         "${body}std::vector<std::vector<std::string>> rows;\n"
         "${body}auto start = std::chrono::steady_clock::now();\n"
+        f"{sample_trace_str}"
         "${body}rows = run_q${qid}(db, args);\n"
         "${body}auto end = std::chrono::steady_clock::now();\n"
         "${body}elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();\n"
