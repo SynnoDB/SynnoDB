@@ -4,7 +4,7 @@ from string import Template
 
 from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from utils.utils import DBStorage
-from workloads.dataset.dataset_tables_dict import get_tables_for_benchmark
+from workloads.workload_provider_olap import OLAPWorkloadProvider
 
 
 class OLAPPrepareWorkspace(PrepareWorkspace):
@@ -12,7 +12,13 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
         self.db_storage = db_storage
         super().__init__(**kwargs)
 
-    def _assemble_usecase_files(self, storage_plan: str = None) -> dict[str, str]:
+        assert isinstance(self.workload_provider, OLAPWorkloadProvider), (
+            f"Expected workload_provider to be an instance of OLAPWorkloadProvider, got {type(self.workload_provider)}"
+        )
+
+    def _assemble_usecase_files(
+        self, storage_plan: str | None = None
+    ) -> dict[str, str]:
         """Build template file contents without writing to disk."""
         project_dir = Path(__file__).parent
         src_dir = project_dir / "templates"
@@ -43,7 +49,10 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
         else:
             raise ValueError(f"Unsupported db source: {self.db_storage}")
 
-        tables = get_tables_for_benchmark(self.workload_provider.benchmark_name)
+        assert isinstance(self.workload_provider, OLAPWorkloadProvider), (
+            f"Expected workload_provider to be an instance of OLAPWorkloadProvider, got {type(self.workload_provider)}"
+        )
+        table_names = self.workload_provider.dataset_tables
 
         result: dict[str, str] = {}
         for filename, source_path in file_sources:
@@ -57,7 +66,7 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
                     file_content,
                     "table-defs",
                     _gen_table_defs(
-                        tables,
+                        table_names,
                         persistent_storage=persistent_storage,
                     ),
                 )
@@ -66,7 +75,7 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
                     file_content,
                     "table-reads",
                     _gen_table_reads(
-                        tables,
+                        table_names,
                         persistent_storage=persistent_storage,
                     ),
                 )
