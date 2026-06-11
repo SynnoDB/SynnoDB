@@ -1,59 +1,27 @@
 import string
 from pathlib import Path
-from typing import Callable, List, Optional
 
-from workloads.dataset.gen_ceb.ceb_queries import ceb_templates
-from workloads.dataset.gen_tpch.tpch_queries import tpc_h
-
-_CPP_TYPE = {str: "std::string", int: "int", float: "float"}
-_ARGS_PARSER_TEMPLATE = Path(__file__).parent / "templates" / "args_parser.hpp"
+_QUERY_IMPL_TEMPLATE = Path(__file__).parent / "templates" / "query_impl.cpp"
 
 
-def get_sql_dict(benchmark_name: str):
-    if benchmark_name == "tpch":
-        benchmark_queries = tpc_h
-    elif benchmark_name == "ceb":
-        benchmark_queries = ceb_templates
-    else:
-        raise ValueError(f"Unknown benchmark name: {benchmark_name}")
-
-    return benchmark_queries
-
-
-def build_query_and_args_files(
-    benchmark_name: str,
-    gen_placeholders_fn: Callable,
-    query_list: List[str],
-    query_impl_content: str,
-    drop_os_caches_for_each_query: bool = False,
-    storage_plan: Optional[str] = None,
-    add_thread_pool_to_query_impl: bool = False,
-    pin_to_core: int = 3,
-    add_sample_trace_to_query_impl: bool = False,
-) -> dict[str, str]:
-    """Build query/args file contents without writing to disk.
-
-    Args:
-        query_impl_content: Contents of the query_impl.cpp template (from build_template_files).
-    """
-    benchmark_queries = get_sql_dict(benchmark_name)
-
-    sql_template_list = [
-        f"Query {q}:\n{benchmark_queries[f'Q{q}']}" for q in query_list
-    ]
-    qf_string = "\n\n".join(sql_template_list)
-
-    args_str, _ = gen_args_str(
-        query_list,
-        use_fasttest_format=True,
-        gen_placeholders_fn=gen_placeholders_fn,
+def assemble_query_impl_file(
+    add_thread_pool_to_query_impl: bool,
+    add_sample_trace_to_query_impl: bool,
+    query_list: list[str],
+    pin_to_core: int,
+    drop_os_caches_for_each_query: bool,
+):
+    # read query impl file
+    assert _QUERY_IMPL_TEMPLATE.is_file(), (
+        f"Query impl template not found: {_QUERY_IMPL_TEMPLATE}"
     )
+    query_impl_content = _QUERY_IMPL_TEMPLATE.read_text()
 
     impl_keyword = "// <<impl_fn_calls>>"
     assert impl_keyword in query_impl_content, (
         f"Keyword '{impl_keyword}' not found in query_impl.cpp template"
     )
-    case_block, include_headers = gen_query_impl_ifelse_block(
+    case_block, include_headers = gen_query_impl_query_select_block(
         query_list, add_sample_trace=add_sample_trace_to_query_impl
     )
     query_impl = query_impl_content.replace(impl_keyword, case_block)
@@ -161,109 +129,10 @@ ThreadPool& get_query_pool() {
         end_idx = query_impl.index(drop_caches_def_kw_end) + len(drop_caches_def_kw_end)
         query_impl = query_impl[:start_idx] + query_impl[end_idx:]
 
-    result: dict[str, str] = {
-        "queries.txt": qf_string,
-        "args_parser.hpp": args_str,
-        "query_impl.cpp": query_impl,
-    }
-
-    if storage_plan is not None:
-        result["storage_plan.txt"] = storage_plan
-
-    return result
+    return query_impl
 
 
-def gen_args_str(
-    query_ids: List[str],
-    gen_placeholders_fn: Callable,
-    use_fasttest_format: bool = True,
-):
-    if not use_fasttest_format:
-        raise Exception(
-            "Non-fasttest format is outdated and no longer supported. E.g. this IN list parsing is not ported back."
-        )
-
-    query_blocks = "\n".join(
-        _gen_query_block(q_id, gen_placeholders_fn(query_name=f"Q{q_id}"))
-        for q_id in query_ids
-    )
-    out_str = string.Template(_ARGS_PARSER_TEMPLATE.read_text()).substitute(
-        query_structs_and_parsers=query_blocks
-    )
-    return out_str, gen_parser_example_code(query_ids)
-
-
-# --- per-query C++ generation helpers ---
-
-
-def _field_decl(placeholder: str, value) -> str:
-    if isinstance(value, str) and value.startswith("("):
-        return f"    std::vector<std::string> {placeholder};"
-    return f"    {_CPP_TYPE[type(value)]} {placeholder};"
-
-
-def _field_parser(q_id: str, placeholder: str, value) -> str:
-    if isinstance(value, str) and value.startswith("("):
-        return f"\targs.{placeholder} = parse_in_list(iss);"
-    access = (
-        f"std::quoted(args.{placeholder})"
-        if isinstance(value, str)
-        else f"args.{placeholder}"
-    )
-    return (
-        f"\tif (!(iss >> {access})) {{\n"
-        f'\t\tthrow std::runtime_error("Q{q_id}: failed to parse {placeholder}");\n'
-        f"\t}}"
-    )
-
-
-def _gen_query_block(q_id: str, placeholders_dict: dict) -> str:
-    qn = f"Q{q_id}"
-    fields = "\n".join(_field_decl(p, v) for p, v in placeholders_dict.items())
-    parsers = "\n".join(_field_parser(q_id, p, v) for p, v in placeholders_dict.items())
-    return f"""\
-//{qn}
-struct {qn}Args {{
-{fields}
-}};
-
-inline {qn}Args parse_{qn.lower()}(const QueryRequest& request) {{
-    {qn}Args args;
-    std::istringstream iss(request.line);
-
-{parsers}
-
-    return args;
-}}
-"""
-
-
-def gen_parser_example_code(query_ids: List[str]) -> str:
-    def case_block(i):
-        return (
-            f'//        case "{i}": {{\n'
-            f"//            Q{i}Args args = parse_q{i}(req);\n"
-            f"//            run_q{i}(db, args);\n"
-            f"//            break;\n"
-            f"//        }}"
-        )
-
-    first_cases = "\n".join(case_block(i) for i in query_ids[:2])
-    last_case = case_block(query_ids[-1])
-    return (
-        "\n"
-        "// Example code for how to use the parse functions together:\n"
-        "//for (const auto& req : requests) {\n"
-        "//    switch (req.query_id) {\n"
-        f"{first_cases}\n"
-        "//        ...\n"
-        f"{last_case}\n"
-        "//    }\n"
-        "//}\n"
-    )
-
-
-def gen_query_impl_ifelse_block(
+def gen_query_impl_query_select_block(
     query_ids: list[str], add_sample_trace: bool = False
 ) -> tuple[str, str]:
     """Emit the if/else dispatch chain that fills the <<impl_fn_calls>>

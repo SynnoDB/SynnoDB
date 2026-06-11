@@ -1,7 +1,6 @@
 import logging
 from pathlib import Path
 
-from cpp_runner.prepare_repo.prepare import get_art_str
 from synth_framework.git_snapshotter import GitSnapshotter
 from utils import utils
 
@@ -169,3 +168,46 @@ def write_artifacts(
             path.unlink()
         else:
             path.write_text(content)
+
+
+def get_art_str(files: dict[str, str], must_be_version: bool = False) -> str:
+    # extract version str for each file: if found add the version, if not, add the full file content
+    artifacts_str = []
+    for name, content in sorted(files.items()):
+        file_version, content_without_version = _extract_version_id(
+            file_path=None, content=content, must_be_version=must_be_version
+        )
+
+        if file_version is not None:
+            artifacts_str.append(
+                f"// ---- {name} ----\n// FILE_VERSION: {file_version}"
+            )
+        else:
+            artifacts_str.append(f"// ---- {name} ----\n{content_without_version}")
+
+    # Stable string for cache key and LLM context
+    return "\n\n".join(artifacts_str)
+
+
+def _extract_version_id(
+    file_path: Path | None, content: str | None, must_be_version: bool = False
+) -> tuple[str | None, str | None]:
+    if content is None:
+        assert file_path is not None, "Either file_path or content must be provided"
+        content = file_path.read_text()
+
+    # apply regex
+    file_version_regex = r"// FILE_VERSION: ([0-9]+)"
+    match = re.search(file_version_regex, content)
+
+    if must_be_version:
+        assert match, (
+            f"Expected to find version string in {file_path}. Ensure the file contains a line like '// FILE_VERSION: 123'. E.g. file was marked as read-only, then requires such a version string to be used in cache keys / ..."
+        )
+
+    if match:
+        version = match.group(1)
+        return version, None
+
+    else:
+        return None, content

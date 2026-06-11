@@ -489,31 +489,3 @@ def _timing_rows(
         for query_id, time_ms in zip(query_list, timings)
         if time_ms is not None
     ]
-
-
-def get_all_query_ids(benchmark: str) -> List[str]:
-    if benchmark == "tpch":
-        query_ids = [str(i) for i in range(1, 23)]
-    elif benchmark == "ceb":
-        query_ids = [
-            "1a",
-            "2a",
-            "2b",
-            "2c",
-            "3a",
-            "3b",
-            "4a",
-            "5a",
-            "6a",
-            "7a",
-            "8a",
-            "9a",
-            "9b",
-            "10a",
-            "11a",
-            "11b",
-        ]
-    else:
-        raise ValueError(f"Unknown benchmark: {benchmark}")
-
-    return query_ids

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from cpp_runner.prepare_repo.prepare import extract_version_id
+from cpp_runner.prepare_repo.old.prepare import extract_version_id
 
 
 def get_framework_version_artifacts_str() -> str:

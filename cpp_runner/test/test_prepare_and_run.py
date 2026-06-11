@@ -10,7 +10,7 @@ from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
-from observability.benchmark.run import get_all_query_ids
+from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from observability.logging.logger import setup_logging
 from synth_framework.git_snapshotter import GitSnapshotter
 from tools.run import RunTool, RunWorkerResult
@@ -18,6 +18,7 @@ from tools.validate.query_validator_class import format_args_string
 from utils.utils import DBStorage, sha256
 from workloads.dataset.dataset_tables_dict import get_dataset_name
 from workloads.dataset.query_gen_factory import get_query_gen
+from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 setup_logging(level=logging.DEBUG)
 
@@ -34,31 +35,42 @@ def main(args):
     rnd_str = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
 
     ##### CONFIGURATION #####
-    benchmark = "tpch"
-    query_list = get_all_query_ids(benchmark)
+    benchmark = OLAPWorkload.TPC_H
     db_storage = DBStorage.IN_MEMORY
-    parquet_dir = f"/mnt/labstore/bespoke_olap/{get_dataset_name(benchmark)}_parquet/"
+    parquet_dir = (
+        f"/mnt/labstore/bespoke_olap/{get_dataset_name(benchmark.value)}_parquet/"
+    )
     parquet_dir = (
         Path(__file__).parent.parent.parent
         / "data"
-        / f"{get_dataset_name(benchmark)}_parquet"
+        / f"{get_dataset_name(benchmark.value)}_parquet"
     )
     parallelism = False
     core_ids = None
     scale_factor = 1.0
     ##########################
 
+    workload_provider = OLAPWorkloadProvider(benchmark=benchmark)
+
     if not args.skip_prep:
+        prepare_workspace_provider = OLAPPrepareWorkspace(
+            db_storage=db_storage,
+            workload_provider=workload_provider,
+            workspace_dir=work_dir,
+            git_snapshotter=snapshotter,
+            prepare_cache_dir=None,
+        )
+
         prepare_repo_and_load_snapshot(
             snapshotter=snapshotter,
             snapshot=None,
             prepare="base",
-            benchmark=benchmark,
-            query_list=query_list,
-            cache_path=None,
-            db_storage=DBStorage.IN_MEMORY,
             conv_name=f"test_conv_{rnd_str}",
             add_sample_trace=True,
+            prepare_workspace_provider=prepare_workspace_provider,
+            usecase_prepare_args=dict(
+                storage_plan="DEMO STORAGE PLAN CONTENT",
+            ),
         )
 
     compiler = OLAPCompilerFactory(db_storage=db_storage).make_compiler(
@@ -74,7 +86,7 @@ def main(args):
     bespoke_engine = RunTool(
         cwd=work_dir,
         query_validator=None,
-        dataset_name=get_dataset_name(benchmark),
+        dataset_name=get_dataset_name(benchmark.value),
         base_parquet_dir=parquet_dir,
         run_stats_collector=None,
         db_storage=db_storage,
@@ -84,8 +96,8 @@ def main(args):
     instantiations = 2
     repetitions = 2
     inst_query_list, inst_sql_list, inst_args_list, inst_hash_list = _make_query_batch(
-        gen_query_fn=get_query_gen(benchmark),
-        query_ids=query_list,
+        gen_query_fn=get_query_gen(benchmark.value),
+        query_ids=workload_provider.query_ids,
         instantiations=instantiations,
         repetitions=repetitions,
     )
@@ -103,9 +115,10 @@ def main(args):
 
     assert result.query_results is not None, "No query results returned"
     assert (
-        len(result.query_results) == len(query_list) * instantiations * repetitions
+        len(result.query_results)
+        == len(workload_provider.query_ids) * instantiations * repetitions
     ), (
-        f"Number of query results does not match number of queries run: {len(result.query_results)} != {len(query_list) * instantiations * repetitions}"
+        f"Number of query results does not match number of queries run: {len(result.query_results)} != {len(workload_provider.query_ids) * instantiations * repetitions}"
     )
     for res in result.query_results:
         logger.info(res)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from prepare_repo.prepare_optim import prepare_repo_for_optim
+from cpp_runner.prepare_repo.old.prepare_optim import prepare_repo_for_optim
 
 QUERY_IMPL_FILENAME = "query_impl.cpp"
 
