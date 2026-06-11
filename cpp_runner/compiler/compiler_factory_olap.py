@@ -49,3 +49,6 @@ class OLAPCompilerFactory(CompilerFactory):
         include_dirs = [file_paths.api_path / "olap"]
 
         return libs, include_dirs
+
+    def _get_usecase_src(self, file_paths: FilePaths) -> Path:
+        return file_paths.db_cpp_path.parent / "db_olap.cpp"

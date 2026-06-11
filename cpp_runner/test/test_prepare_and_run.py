@@ -58,13 +58,14 @@ def main(args):
             cache_path=None,
             db_storage=DBStorage.IN_MEMORY,
             conv_name=f"test_conv_{rnd_str}",
+            add_sample_trace=True,
         )
 
     compiler = OLAPCompilerFactory(db_storage=db_storage).make_compiler(
         cwd=work_dir,
         untracked_cpp_runner_content="",
     )
-    compiler.set_compile_options(optimize=True, trace_mode=False)
+    compiler.set_compile_options(optimize=True, trace_mode=True)
 
     # compile
     comp_result, _, _ = compiler.build_cached(skip_cache=True, write_cache=False)
@@ -92,16 +93,13 @@ def main(args):
     result: RunWorkerResult = bespoke_engine.run_worker(
         scale_factor=scale_factor,
         optimize=True,
+        trace_mode=True,
         query_id=inst_query_list,
         stdin_args_data=inst_args_list,
         echo_output=True,
         parallelism=parallelism,
         core_ids=core_ids,
     )
-
-    logger.info(f"Run result: {result.msg}")
-    logger.info(f"Run stdout: {result.out}")
-    logger.info(f"Run stderr: {result.err}")
 
     assert result.query_results is not None, "No query results returned"
     assert (

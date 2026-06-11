@@ -81,6 +81,7 @@ def prepare_repo(
     add_thread_pool_to_query_impl: bool = False,
     only_query_txt: bool = False,
     only_from_cache: bool = False,
+    add_sample_trace: bool = False,
 ) -> str:
     # Step 1: Build artifacts dict without writing files
     template_files = build_template_files(
@@ -96,6 +97,7 @@ def prepare_repo(
         query_impl_content=template_files.pop("query_impl.cpp"),
         drop_os_caches_for_each_query=db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
         add_thread_pool_to_query_impl=add_thread_pool_to_query_impl,
+        add_sample_trace_to_query_impl=add_sample_trace,
     )
 
     query_source_files = build_query_files(
