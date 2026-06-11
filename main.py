@@ -23,11 +23,11 @@ from conversations.scripted_conversation import ScriptedConversation
 from conversations.ssd_1_st_opt_conv import SSD1STOptimConv
 from conversations.ssd_2_mt_conv import SSD2MTOptConv
 from conversations.supervision_agent import SupervisionAgent
-from cpp_runner.prepare_repo.assemble_query_and_args import get_sql_dict
-from cpp_runner.prepare_repo.get_readonly_files import get_readonly_files
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
+from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
 )
@@ -63,6 +63,7 @@ from utils.utils import (
 )
 from workloads.dataset.dataset_tables_dict import get_benchmark_schema, get_dataset_name
 from workloads.dataset.query_gen_factory import get_query_gen
+from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +101,12 @@ async def main(args: argparse.Namespace) -> None:
 
     notify.SEND_NOTIFICATIONS = args.notify
 
+    workload_provider = OLAPWorkloadProvider(benchmark=OLAPWorkload(args.benchmark))
+
     # get files that should be marked as read-only - they will be untracked in git and excluded from snapshot hashed / ... (i.e. unless their version number changes, they will not affect caches)
-    readonly_files_not_git_tracked, readonly_files_git_tracked = get_readonly_files()
+    readonly_files_not_git_tracked, readonly_files_git_tracked = (
+        PrepareWorkspace._get_readonly_files()
+    )
 
     extra_gitignore = [
         "*.o",
@@ -184,7 +189,6 @@ async def main(args: argparse.Namespace) -> None:
     else:
         storage_plan = None
 
-    sql_dict = get_sql_dict(args.benchmark)
     filenames_dict = get_filenames()
 
     framework_code_content = get_framework_version_artifacts_str()
@@ -208,18 +212,27 @@ async def main(args: argparse.Namespace) -> None:
         else:
             prepare_mode = "base"
 
+        usecase_prepare_args = dict()
+        if storage_plan is not None:
+            usecase_prepare_args["storage_plan"] = storage_plan
+
         framework_code_content += prepare_repo_and_load_snapshot(
             snapshotter=snapshotter,
             snapshot=args.start_snapshot,
             prepare=prepare_mode,
-            benchmark=args.benchmark,
-            query_list=query_list,
-            cache_path=cache_path,
-            db_storage=db_storage,
-            storage_plan=storage_plan,
+            usecase_prepare_args=usecase_prepare_args,
             do_not_cache=args.do_not_cache,
             conv_name=args.conv_name,
             only_from_cache=args.only_from_cache,
+            prepare_workspace_provider=OLAPPrepareWorkspace(
+                db_storage=db_storage,
+                workload_provider=workload_provider,
+                workspace_dir=workspace_path,
+                git_snapshotter=snapshotter,
+                prepare_cache_dir=cache_path / "prepare_cache"
+                if cache_path is not None
+                else None,
+            ),
         )
 
     ###############
@@ -521,7 +534,7 @@ async def main(args: argparse.Namespace) -> None:
                 sample_query_args_dict=sample_query_args_dict,
                 workspace_path=workspace_path,
                 use_master_prompt=args.use_autonomy_master_prompt,
-                sql_dict=sql_dict,
+                sql_dict=workload_provider.sql_dict,
                 db_storage=db_storage,
                 **auto_conversation_args,
                 **conv_args,

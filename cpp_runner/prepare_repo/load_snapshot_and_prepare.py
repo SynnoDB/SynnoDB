@@ -1,17 +1,10 @@
 import logging
-from pathlib import Path
 
 from conversations.filenames import get_filenames
-from cpp_runner.prepare_repo.assemble_query_and_args import get_sql_dict
-from cpp_runner.prepare_repo.get_readonly_files import get_readonly_files
-from cpp_runner.prepare_repo.prepare import prepare_repo
-from cpp_runner.prepare_repo.prepare_mt import prepare_repo_for_mt
-from cpp_runner.prepare_repo.prepare_optim import prepare_repo_for_optim
+from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from synth_framework.git_snapshotter import GitSnapshotter
 from tools.run import delete_result_csv_files
 from utils.confirm_dialog import await_user_confirmation
-from utils.utils import DBStorage
-from workloads.dataset.query_gen_factory import get_placeholders_fn
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +16,8 @@ def prepare_repo_and_load_snapshot(
     snapshotter: GitSnapshotter,
     snapshot: str | None,
     prepare: str,
-    benchmark: str,
-    query_list: list[str],
-    cache_path: Path | None,
-    db_storage: DBStorage,
-    storage_plan: str | None = None,
+    prepare_workspace_provider: PrepareWorkspace,
+    usecase_prepare_args: dict[str, str],
     do_not_cache: bool = True,
     conv_name: str | None = None,
     only_from_cache: bool = False,
@@ -69,36 +59,48 @@ def prepare_repo_and_load_snapshot(
 
     delete_result_csv_files(workspace_path=snapshotter.working_dir)
 
-    readonly_files_not_git_tracked, readonly_files_git_tracked = get_readonly_files()
+    readonly_files_not_git_tracked, readonly_files_git_tracked = (
+        prepare_workspace_provider._get_readonly_files()
+    )
     artifacts_in_context = ""
 
     if prepare in ["storage_plan", "base", "optim", "mt"]:
-        gen_placeholders_fn = get_placeholders_fn(
-            benchmark,
-            do_not_cache=do_not_cache,
-            cache_dir=cache_path / "placeholders_cache"
-            if cache_path is not None
-            else None,
-        )
-        artifacts_in_context += prepare_repo(
-            workspace_dir=snapshotter.working_dir,
-            benchmark=benchmark,
-            storage_plan=storage_plan,
-            query_list=query_list,
-            sql_dict=get_sql_dict(benchmark),
-            gen_placeholders_fn=gen_placeholders_fn,
-            git_snapshotter=snapshotter,
-            cache_dir=cache_path / "repo_prepare_cache"
-            if cache_path is not None
-            else None,
-            do_not_cache=do_not_cache,
-            write_non_tracked_only=write_non_tracked_only,
-            readonly_files_not_git_tracked=readonly_files_not_git_tracked,
+        # gen_placeholders_fn = get_placeholders_fn(
+        #     benchmark,
+        #     do_not_cache=do_not_cache,
+        #     cache_dir=cache_path / "placeholders_cache"
+        #     if cache_path is not None
+        #     else None,
+        # )
+        # artifacts_in_context += prepare_repo(
+        #     workspace_dir=snapshotter.working_dir,
+        #     benchmark=benchmark,
+        #     storage_plan=storage_plan,
+        #     query_list=query_list,
+        #     sql_dict=get_sql_dict(benchmark),
+        #     gen_placeholders_fn=gen_placeholders_fn,
+        #     git_snapshotter=snapshotter,
+        #     cache_dir=cache_path / "repo_prepare_cache"
+        #     if cache_path is not None
+        #     else None,
+        #     do_not_cache=do_not_cache,
+        #     write_non_tracked_only=write_non_tracked_only,
+        #     readonly_files_not_git_tracked=readonly_files_not_git_tracked,
+        #     add_thread_pool_to_query_impl=prepare == "mt",
+        #     only_query_txt=prepare == "storage_plan",
+        #     db_storage=db_storage,
+        #     only_from_cache=only_from_cache,
+        #     add_sample_trace=add_sample_trace,
+        # )
+
+        artifacts_in_context += prepare_workspace_provider.prepare(
             add_thread_pool_to_query_impl=prepare == "mt",
             only_query_txt=prepare == "storage_plan",
-            db_storage=db_storage,
-            only_from_cache=only_from_cache,
             add_sample_trace=add_sample_trace,
+            write_non_tracked_only=write_non_tracked_only,
+            only_from_cache=only_from_cache,
+            do_not_cache=do_not_cache,
+            usecase_args=usecase_prepare_args,
         )
 
     if prepare in ["optim", "mt"]:
@@ -109,18 +111,24 @@ def prepare_repo_and_load_snapshot(
         # For "optim" we are upgrading a base-impl snapshot, so modify the tracked
         # query_impl.cpp. For "mt" the snapshot already has trace applied; only the
         # ro/untracked files need to be (re)written.
-        artifacts_in_context += prepare_repo_for_optim(
-            workspace_dir=snapshotter.working_dir,
-            query_impl_filename=query_impl_filename,
-            git_snapshotter=snapshotter,
-            cache_dir=cache_path / "repo_prepare_optim_cache"
-            if cache_path is not None
-            else None,
-            do_not_cache=do_not_cache,
-            readonly_files_not_git_tracked=readonly_files_not_git_tracked,
-            write_non_tracked_only=prepare
-            != "optim",  # when loading from snapshot in make_mt mode, only write non git-tracked files as the tracked files are already included in the snapshot and might be at a different version than the current ones
+        # artifacts_in_context += prepare_repo_for_optim(
+        #     workspace_dir=snapshotter.working_dir,
+        #     query_impl_filename=query_impl_filename,
+        #     git_snapshotter=snapshotter,
+        #     cache_dir=cache_path / "repo_prepare_optim_cache"
+        #     if cache_path is not None
+        #     else None,
+        #     do_not_cache=do_not_cache,
+        #     readonly_files_not_git_tracked=readonly_files_not_git_tracked,
+        #     write_non_tracked_only=prepare
+        #     != "optim",  # when loading from snapshot in make_mt mode, only write non git-tracked files as the tracked files are already included in the snapshot and might be at a different version than the current ones
+        #     only_from_cache=only_from_cache,
+        # )
+
+        artifacts_in_context += prepare_workspace_provider.prepare_optim(
+            write_non_tracked_only=prepare != "optim",  # see above
             only_from_cache=only_from_cache,
+            do_not_cache=do_not_cache,
         )
 
     if prepare in ["mt"]:
@@ -128,14 +136,19 @@ def prepare_repo_and_load_snapshot(
             "Preparing workspace for make_mt by adding thread pool helpers and flushing to %s and adding thread_pool.hpp.",
             query_impl_filename,
         )
-        artifacts_in_context += prepare_repo_for_mt(
-            workspace_dir=snapshotter.working_dir,
-            git_snapshotter=snapshotter,
-            cache_dir=cache_path / "repo_prepare_mt_cache"
-            if cache_path is not None
-            else None,
-            do_not_cache=do_not_cache,
+        # artifacts_in_context += prepare_repo_for_mt(
+        #     workspace_dir=snapshotter.working_dir,
+        #     git_snapshotter=snapshotter,
+        #     cache_dir=cache_path / "repo_prepare_mt_cache"
+        #     if cache_path is not None
+        #     else None,
+        #     do_not_cache=do_not_cache,
+        #     only_from_cache=only_from_cache,
+        # )
+
+        artifacts_in_context += prepare_workspace_provider.prepare_mt(
             only_from_cache=only_from_cache,
+            do_not_cache=do_not_cache,
         )
 
     return artifacts_in_context

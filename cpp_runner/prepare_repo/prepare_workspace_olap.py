@@ -1,0 +1,157 @@
+import re
+from pathlib import Path
+from string import Template
+
+from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from utils.utils import DBStorage
+from workloads.dataset.dataset_tables_dict import get_tables_for_benchmark
+
+
+class OLAPPrepareWorkspace(PrepareWorkspace):
+    def __init__(self, db_storage: DBStorage, **kwargs):
+        self.db_storage = db_storage
+        super().__init__(**kwargs)
+
+    def _assemble_usecase_files(self, storage_plan: str = None) -> dict[str, str]:
+        """Build template file contents without writing to disk."""
+        project_dir = Path(__file__).parent
+        src_dir = project_dir / "templates"
+        ssd_dir = src_dir / "olap" / "ssd"
+
+        if self.db_storage in [DBStorage.LABSTORE, DBStorage.SSD]:
+            file_sources: list[tuple[str, Path]] = [
+                ("parquet_reader.hpp", ssd_dir / "parquet_reader.hpp"),
+                ("parquet_reader.cpp", ssd_dir / "parquet_reader.cpp"),
+                ("db_loader.hpp", ssd_dir / "db_loader.hpp"),
+                ("db_loader.cpp", ssd_dir / "db_loader.cpp"),
+                ("file_loader_utils.hpp", ssd_dir / "file_loader_utils.hpp"),
+                ("file_loader_utils.cpp", ssd_dir / "file_loader_utils.cpp"),
+                ("buffer_pool.hpp", ssd_dir / "buffer_pool.hpp"),
+                ("column_handle.hpp", ssd_dir / "column_handle.hpp"),
+                ("query_impl.hpp", ssd_dir / "query_impl.hpp"),
+            ]
+            persistent_storage = True
+        elif self.db_storage == DBStorage.IN_MEMORY:
+            file_sources = [
+                ("parquet_reader.hpp", src_dir / "parquet_reader.hpp"),
+                ("parquet_reader.cpp", src_dir / "parquet_reader.cpp"),
+                ("db_loader.hpp", src_dir / "db_loader.hpp"),
+                ("db_loader.cpp", src_dir / "db_loader.cpp"),
+                ("query_impl.hpp", src_dir / "query_impl.hpp"),
+            ]
+            persistent_storage = False
+        else:
+            raise ValueError(f"Unsupported db source: {self.db_storage}")
+
+        tables = get_tables_for_benchmark(self.workload_provider.benchmark_name)
+
+        result: dict[str, str] = {}
+        for filename, source_path in file_sources:
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Source file not found: {source_path}")
+
+            file_content = source_path.read_text()
+
+            if filename == "parquet_reader.hpp":
+                file_content = replace_cpp_marked_block(
+                    file_content,
+                    "table-defs",
+                    _gen_table_defs(
+                        tables,
+                        persistent_storage=persistent_storage,
+                    ),
+                )
+            elif filename == "parquet_reader.cpp":
+                file_content = replace_cpp_marked_block(
+                    file_content,
+                    "table-reads",
+                    _gen_table_reads(
+                        tables,
+                        persistent_storage=persistent_storage,
+                    ),
+                )
+
+            result[filename] = file_content
+
+        if storage_plan is not None:
+            result["storage_plan.txt"] = storage_plan
+
+        sql_template_list = [
+            f"Query {q}:\n{self.workload_provider.sql_dict[f'Q{q}']}"
+            for q in self.workload_provider.query_ids
+        ]
+        qf_string = "\n\n".join(sql_template_list)
+
+        result["queries.txt"] = qf_string
+
+        return result
+
+    def _assemble_query_files(self) -> dict[str, str]:
+        """Build per-query file contents without writing to disk."""
+        result: dict[str, str] = {}
+
+        # generate queryX.hpp files from template:
+        template_path = Path(__file__).parent / "templates" / "olap" / "queryX.hpp"
+        template_str = template_path.read_text()
+        template = Template(template_str)
+
+        for qid in self.workload_provider.query_ids:
+            result[f"query{qid}.hpp"] = template.substitute(qid=qid)
+
+        # generate queryX.cpp files from template:
+        template_path = Path(__file__).parent / "templates" / "olap" / "queryX.cpp"
+        template_str = template_path.read_text()
+        template = Template(template_str)
+
+        for qid in self.workload_provider.query_ids:
+            assert not qid.startswith("Q"), f"Query id should not start with 'Q': {qid}"
+            result[f"query{qid}.cpp"] = template.substitute(
+                qid=qid,
+                query_sql=self.workload_provider.sql_dict[f"Q{qid}"],
+            )
+
+        return result
+
+
+def replace_cpp_marked_block(text, marker_name, replacement):
+    name = re.escape(marker_name)
+
+    pattern = re.compile(
+        rf"""(?ms)
+        ^[ \t]*//[ \t]*start:[ \t]*{name}[ \t]*\r?\n?
+        .*?
+        ^[ \t]*//[ \t]*end:[ \t]*{name}[ \t]*(?:\r?\n|$)
+        """,
+        re.VERBOSE,
+    )
+
+    if replacement and not replacement.endswith(("\n", "\r\n")):
+        replacement += "\n"
+
+    result, n = pattern.subn(replacement, text, count=1)
+
+    if n != 1:
+        raise ValueError(f"expected exactly one replacement, got {n}")
+
+    return result
+
+
+def _gen_table_defs(tables: list[str], persistent_storage: bool) -> str:
+    indent = " " * 4
+    if persistent_storage:
+        return "\n".join(f"{indent}std::string {name}_path;" for name in tables)
+    else:
+        return "\n".join(f"{indent}ArrowTable {name};" for name in tables)
+
+
+def _gen_table_reads(tables: list[str], persistent_storage: bool) -> str:
+    indent = " " * 4
+    if persistent_storage:
+        return "\n".join(
+            f'{indent}tables->{name}_path = path + "{name}.parquet";' for name in tables
+        )
+    else:
+        return "\n".join(
+            f'{indent}tables->{name} = ReadParquetTable(path + "{name}.parquet");'
+            for name in tables
+        )
