@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import enum
+import functools
 import logging
 import os
 from dataclasses import dataclass
@@ -13,10 +15,10 @@ from observability.logging.run_stats_collector import RunStatsCollector
 from tools.validate.query_validator_class import (
     ExecCallbackResult,
     QueryValidator,
-    approx_timeout_for_validation,
 )
 from tools.validate.run_and_check_queries import assemble_error
 from utils.utils import DBStorage
+from workloads.workload_provider import QueryBatch, WorkloadProvider
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,11 @@ logger = logging.getLogger(__name__)
 # frame pool. The remainder is implicit headroom for mmap_col regions and
 # other working memory; both are bounded together by RLIMIT_AS.
 FRAME_POOL_SHARE = 0.60
+
+
+class RunToolMode(enum.Enum):
+    FAST_CHECK = "fast_check"
+    EXHAUSTIVE = "exhaustive"
 
 
 @dataclass
@@ -34,6 +41,7 @@ class RunWorkerResult:
     out: Optional[str] = None
     err: Optional[str] = None
     trace_output: Optional[str] = None
+    query_batches: list[QueryBatch] | None = None
     query_results: list | None = None
 
 
@@ -44,6 +52,7 @@ class RunTool:
 
     def __init__(
         self,
+        workload_provider: WorkloadProvider,
         cwd: Path,
         dataset_name: str,
         base_parquet_dir: str
@@ -69,10 +78,11 @@ class RunTool:
         ) = None,  # total RAM budget for the child engine; drives RLIMIT_AS and the generated frame-pool size. Only needed for disk-based storage runs.
         include_mem_budget_for_in_mem_in_hashes: bool = False,  # opt-in: include memory_budget_mb in the validate-cache hash even for IN_MEMORY storage (legacy behaviour, useful for hitting old caches)
     ):
+        self.workload_provider = workload_provider
         self.cwd = cwd
         self.dataset_name = dataset_name
         self.base_parquet_dir = base_parquet_dir
-        self.bespoke_storage_base = bespoke_storage_dir
+
         self.compiler = compiler
         self.query_validator: Optional[QueryValidator] = query_validator
         self.run_stats_collector = run_stats_collector
@@ -96,7 +106,7 @@ class RunTool:
 
     def run(
         self,
-        scale_factor: float,
+        mode: RunToolMode,
         optimize: bool,
         query_id: Optional[List[str]] = None,
         trace_mode: bool = False,  # set trace flag
@@ -105,7 +115,7 @@ class RunTool:
     ) -> Tuple[str, Optional[Dict], str | None]:
         try:
             run_result = self.run_worker(
-                scale_factor=scale_factor,
+                mode=mode,
                 optimize=optimize,
                 query_id=query_id,
                 trace_mode=trace_mode,
@@ -131,13 +141,12 @@ class RunTool:
 
     def run_worker(
         self,
-        scale_factor: float,
+        mode: RunToolMode,
         optimize: bool,
         query_id: Optional[List[str]] = None,
         trace_mode: bool = False,  # set trace flag
         force_compile: bool = False,
         external_call: bool = False,
-        stdin_args_data: Optional[List[str]] = None,
         current_git_snapshot: Optional[
             str
         ] = None,  # for external instrumentation: e.g. from benchmarking script (will not use git snapshotter)
@@ -145,13 +154,6 @@ class RunTool:
         parallelism: bool | None = None,
         core_ids: list[int] | None = None,
     ) -> RunWorkerResult:
-        if scale_factor >= 1:
-            # it has to be an int
-            assert int(scale_factor) == scale_factor, (
-                "Scale factor has to be integer >= 1"
-            )
-            scale_factor = int(scale_factor)
-
         if isinstance(query_id, list) and len(query_id) == 0:
             # rewrite to None for easier handling
             query_id = None
@@ -165,8 +167,18 @@ class RunTool:
                 "core_ids must be provided if parallelism is enabled"
             )
 
+        # local definition overwrites global
+        extra_env = dict()
+        if current_parallelism:
+            assert current_core_ids is not None
+            extra_env["CORE_IDS"] = ",".join(str(c) for c in current_core_ids)
+        else:
+            extra_env["CORE_IDS"] = (
+                "1"  # pass a single core. Just to ensure that it is not falling back to "use all cores" in case the thread-pool is already implemented.
+            )
+
         logger.info(
-            f"Run with: {query_id=} {scale_factor=} {self.dataset_name=} {trace_mode=} {optimize=} {self.base_parquet_dir=} num_threads={len(current_core_ids) if current_parallelism else '1'} mem_limit={self.memory_budget_mb}"  # type: ignore
+            f"Run with: {query_id=} {mode=} {self.dataset_name=} {trace_mode=} {optimize=} {self.base_parquet_dir=} num_threads={len(current_core_ids) if current_parallelism else '1'} mem_limit={self.memory_budget_mb}"  # type: ignore
         )
 
         # Delete any result CSV files written by a previous run so we never
@@ -175,52 +187,16 @@ class RunTool:
         if self.delete_result_csv_before_execution:
             delete_result_csv_files(self.cwd)
 
-        # check that scalefactor is prepared  /availabe in validator
-        if (
-            self.query_validator is not None
-            and scale_factor not in self.query_validator.sf_list
-            and stdin_args_data
-            is None  # if manual stdin args are provided, we skip the check and just execute (e.g. for testing purposes
-        ):
-            metrics = assemble_error(
-                scale_factor=scale_factor,
-                query_ids_executed=query_id if query_id is not None else [],
-            )
-            metrics["type"] = "validate"
-            metrics["validation/compile_with_optimize"] = optimize
-            metrics["validation/trace_mode"] = trace_mode
-            metrics["validation/compile_error"] = True
-            metrics["validation/external_call"] = external_call
-
-            # report stats
-            if self.run_stats_collector is not None:
-                self.run_stats_collector.log_metrics_callback(
-                    metrics, log_and_increment=True
-                )
-                self.run_stats_collector.add_to_activity_summary(
-                    "Run Tool called: failed with compile error"
-                )
-            return RunWorkerResult(
-                msg=f"Scale factor {scale_factor} not available in query validator (not prepared). Available scale factors: {self.query_validator.sf_list}",
-                metrics=metrics,
-            )
-
-        if stdin_args_data is not None:
-            logger.warning(
-                "Launching with manual stdin args data. Query-Validator will not be invoked!"
-            )
-
         # set compile mode
         self.compiler.set_compile_options(optimize=optimize, trace_mode=trace_mode)
 
         import time as _time
 
-        _compile_start = _time.monotonic()
         logger.info(
-            "build_cached: starting compilation (sf=%s, trace=%s)",
-            scale_factor,
+            "build_cached: starting compilation (trace=%s)",
             trace_mode,
         )
+        _compile_start = _time.monotonic()
         err, compile_used_cache, compile_key_hash = self.compiler.build_cached(
             skip_cache=force_compile,
             current_git_snapshot=current_git_snapshot,
@@ -230,11 +206,12 @@ class RunTool:
             _time.monotonic() - _compile_start,
             compile_used_cache,
         )
+
         if err is not None:
             # report stats
             # assemble validation error
             metrics = assemble_error(
-                scale_factor=scale_factor,
+                log_info={},
                 query_ids_executed=query_id if query_id is not None else [],
             )
             metrics["type"] = "validate"
@@ -257,42 +234,64 @@ class RunTool:
             logger.error(f"Compile error: {err}")
             return RunWorkerResult(msg=err, err=err)
 
-        parquet_dir = os.path.join(self.base_parquet_dir, f"sf{scale_factor}/")
-        assert parquet_dir.endswith("/")
-        cmd = f"./db {parquet_dir}"
-
-        extra_env: Dict[str, str] = {}
-        pool_key = cmd
-
-        # assemble storage dir path
         assert compile_key_hash is not None, (
             "compile_key_hash should not be None if compile did not return an error. This should not happen."
         )
-        if self.db_storage in [DBStorage.SSD, DBStorage.LABSTORE]:
-            assert self.bespoke_storage_base is not None
-            storage_dir = self.bespoke_storage_base / f"sf{scale_factor}"
-            extra_env["STORAGE_DIR"] = str(storage_dir) + os.sep
-            if self.memory_budget_mb is not None:
-                # Apply the frame-pool / mmap-headroom split here so the generated
-                # C++ only sees its directly-usable frame budget.
-                buffer_pool_mb = int(self.memory_budget_mb * FRAME_POOL_SHARE)
-                extra_env["BUFFER_POOL_MB"] = str(buffer_pool_mb)
-                pool_key += f"|memory_budget_mb={self.memory_budget_mb}"
 
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            # create sentinel file to indicate that this is a bespoke storage dir (so that it can be cleaned up without accidentally deleting other files)
-            (storage_dir / ".bespoke_storage_dir").touch()
-        else:
-            storage_dir = None
+        query_batches = self.workload_provider.produce_workload(
+            run_mode=mode,
+            query_id=query_id,
+        )
 
-        # local definition overwrites global
-        if current_parallelism:
-            assert current_core_ids is not None
-            extra_env["CORE_IDS"] = ",".join(str(c) for c in current_core_ids)
-        else:
-            extra_env["CORE_IDS"] = (
-                "1"  # pass a single core. Just to ensure that it is not falling back to "use all cores" in case the thread-pool is already implemented.
+        result_list = []
+        for batch in query_batches:
+            result = self.run_query_batch(
+                batch,
+                echo_output=echo_output,
+                compile_used_cache=compile_used_cache,
+                current_git_snapshot=current_git_snapshot,
+                optimize=optimize,
+                trace_mode=trace_mode,
+                compile_key_hash=compile_key_hash,
+                general_extra_env=extra_env,
+                external_call=external_call,
+                current_parallelism=current_parallelism,
+                current_core_ids=current_core_ids,
+            )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
+            result_list.append(result)
+
+        # TODO: aggregate results
+
+        return result_list[-1]
+
+    def run_query_batch(
+        self,
+        batch: QueryBatch,
+        echo_output: bool,
+        compile_used_cache: bool,
+        current_git_snapshot: Optional[str],
+        optimize: bool,
+        trace_mode: bool,
+        compile_key_hash: str,
+        general_extra_env: dict[str, str],
+        external_call: bool,
+        current_parallelism: bool,
+        current_core_ids: list[int] | None,
+    ) -> RunWorkerResult:
+        # assemble call cmd
+        cmd = f"./db {batch.cli_call_args}"
+
+        # start with general extra env passed to the function - create copy
+        extra_env = dict(general_extra_env)
+
+        if batch.extra_env is not None:
+            # ensure no overlap
+            assert not set(extra_env.keys()).intersection(batch.extra_env.keys()), (
+                f"extra_env keys {set(extra_env.keys())} and batch.extra_env keys {set(batch.extra_env.keys())} overlap. This should not happen."
             )
+            extra_env.update(batch.extra_env)
+
+        pool_key = cmd
 
         # Bound the child's virtual memory via RLIMIT_AS to the same budget the
         # generated frame pool is sized from. mmap_col regions and frame
@@ -308,101 +307,22 @@ class RunTool:
             "cwd": self.cwd,
         }
 
-        if self.memory_budget_mb is not None:
-            hp_kwargs["memory_limit_bytes"] = self.memory_budget_mb * 1024 * 1024
+        memory_limit_mb = batch.wrapper_config.memory_limit_mb
+        if memory_limit_mb is not None:
+            pool_key += f"|memory_budget_mb={memory_limit_mb}"
+            hp_kwargs["memory_limit_bytes"] = memory_limit_mb * 1024 * 1024
         else:
             phys_ram_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
             hp_kwargs["memory_limit_bytes"] = int(phys_ram_bytes * 0.9)
+
         runner = HotpatchPool.get(
             pool_key,
             factory=lambda: HotpatchProc(cmd, **hp_kwargs),
         )
 
-        # callback executing the query
-        def exec_callback(args_list: List[str], timeout_s: int) -> ExecCallbackResult:
-            # query_lines are bundled into the RUN message atomically, replacing
-            # the old separate runner.send() loop that could leave lines buffered
-            # in stdin and consumed by a later invocation.
-            hotpatch_proc_run_result: HotpatchProcRunResult = runner.run(
-                timeout=timeout_s,
-                query_lines=args_list,
-                run_env=extra_env,
-                echo_output=echo_output,
-            )
-
-            if len(hotpatch_proc_run_result.query_results) == 0 and (
-                # "terminate called after throwing an instance of 'std::bad_alloc'"
-                # in hotpatch_proc_run_result.stderr or
-                "std::bad_alloc" in hotpatch_proc_run_result.stdout
-                or "std::bad_alloc" in hotpatch_proc_run_result.stderr
-            ):
-                # retry
-                logger.warning(
-                    "Process likely killed due to OOM (std::bad_alloc). Retrying once..."
-                )
-                hotpatch_proc_run_result: HotpatchProcRunResult = runner.run(
-                    timeout=timeout_s,
-                    query_lines=args_list,
-                    run_env=extra_env,
-                    echo_output=echo_output,
-                )
-
-            resp = hotpatch_proc_run_result.response
-            out = hotpatch_proc_run_result.stdout
-            err = hotpatch_proc_run_result.stderr
-
-            # extract ingest time from output and cache it in runner (this is not always executed again, since we are hotpatching and only rerun ingest if necessary)
-            # search for ingest line matching "Ingest ms: <num>"
-            ingest_key = "Ingest ms:"
-            ingest_lines = [
-                line for line in (out + err).splitlines() if line.startswith(ingest_key)
-            ]
-            if len(ingest_lines) == 0:
-                ingest_time_ms = runner.last_ingest_time_ms  # fallback to last ingest time if not found in output (e.g. because of output truncation)
-
-                if ingest_time_ms == -1:
-                    # error during first ingest run
-                    assert (
-                        "builder start" in out.lower() or "builder start" in err.lower()
-                    ), (
-                        "Ingest time not found in output and no cached ingest time available. This should not happen - at least one of them should be available. Output:\n"
-                        + f"STDERR:\n{err}\nSTDOUT:\n{out}\nResp:\n{resp}"
-                    )
-                    logger.info(
-                        "Build phase failed during invocation. LLM has to fix it."
-                    )
-                    ingest_time_ms = -1
-                # else:
-                #     logger.debug(
-                #         "reusing cached ingest time from runner: %.2fms", ingest_time_ms
-                #     )
-            else:
-                assert len(ingest_lines) == 1, (
-                    "Multiple ingest lines found in program stdout. "
-                    "Expected exactly one line like: 'Ingest ms: <num>'.\n"
-                    + f"STDERR:\n{err}\nSTDOUT:\n{out}\nResp:\n{resp}"
-                )
-                ingest_time_ms_str = ingest_lines[0].strip()
-                ingest_time_ms_str = (
-                    ingest_time_ms_str[len("Ingest ms:") :].strip().strip(":").strip()
-                )
-                ingest_time_ms = float(ingest_time_ms_str)
-
-                # cache ingest time in runner for future request
-                runner.last_ingest_time_ms = ingest_time_ms
-
-            logger.info(f"resp={resp.rstrip()}")
-            return ExecCallbackResult(
-                resp=resp,
-                out=out,
-                err=err,
-                ingest_time_ms=ingest_time_ms,
-                query_results=hotpatch_proc_run_result.query_results,
-            )
-
         # validate output correctness
         # in case query-validator is not provided or manual-stdin args are provided, just execute without validation
-        if self.query_validator and stdin_args_data is None:
+        if self.query_validator is not None:
 
             def fn_compile_callback():
                 if compile_used_cache:
@@ -416,12 +336,18 @@ class RunTool:
                         current_git_snapshot=current_git_snapshot,
                     )
 
+            execute_fn = functools.partial(
+                call_hotpatch_proc,
+                runner=runner,
+                extra_env=extra_env,
+                echo_output=echo_output,
+            )
+
             # this branch is cached via validation tool cache
             msg, success, metrics, exec_used_cache, trace_output = (
                 self.query_validator.exec_and_validate(
-                    exec_callback_fn=exec_callback,
-                    scale_factor=scale_factor,
-                    query_id=query_id,
+                    exec_callback_fn=execute_fn,
+                    query_batch=batch,
                     other_config={
                         "optimize": optimize,
                         "memory_budget_mb": self.memory_budget_mb,
@@ -458,21 +384,14 @@ class RunTool:
                 "No query validator provided, just executing the query without validation!"
             )
 
-            assert stdin_args_data is not None, (
-                "stdin_args_data must be provided if no query_validator is provided. This should not happen."
-            )
-            if stdin_args_data is None:
-                stdin_args_data = [f"{query_id} x=12 v=32"]
+            args_list = [entry.query_args for entry in batch.query_list]
 
-            timeout = approx_timeout_for_validation(
-                scale_factor=scale_factor,
-                num_queries=len(stdin_args_data),
-                repetitions=1,
-                num_random_query_instantiations=1,
-            )
-
-            run_result: ExecCallbackResult = exec_callback(
-                stdin_args_data, timeout_s=timeout
+            run_result: ExecCallbackResult = call_hotpatch_proc(
+                runner=runner,
+                extra_env=batch.extra_env if batch.extra_env is not None else {},
+                echo_output=echo_output,
+                args_list=args_list,
+                timeout_s=batch.timeout_s,
             )
 
             msg = f"stdout: {run_result.out.rstrip()}\nstderr: {run_result.err.rstrip()}\n{run_result.resp}"
@@ -488,7 +407,7 @@ class RunTool:
                     i for i, qr in enumerate(run_result.query_results) if qr.error
                 )
                 query_ids_executed = []
-                for line in stdin_args_data:
+                for line in args_list:
                     parts = line.split(maxsplit=1)
                     query_ids_executed.append(parts[0] if parts else "")
                 failed_query_id = (
@@ -498,7 +417,7 @@ class RunTool:
                 )
                 msg = "Error: one or more queries threw an exception.\n" + msg
                 metrics = assemble_error(
-                    scale_factor=scale_factor,
+                    log_info=batch.log_info,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=failed_query_id,
@@ -555,8 +474,9 @@ class RunTool:
         query_id: Optional[List[str]] = None,
         trace_mode: bool = False,  # sets trace flag for the run
     ) -> str:
+        # todo update tool interface
         return self.run(
-            scale_factor=scale_factor,
+            mode=RunToolMode.EXHAUSTIVE,
             optimize=optimize,
             query_id=query_id,
             trace_mode=trace_mode,
@@ -570,3 +490,88 @@ def delete_result_csv_files(workspace_path: Path):
         logger.info(f"Deleting existing result-csv files ({len(csv_files)} files).")
         for csv_file in csv_files:
             csv_file.unlink()
+
+
+# callback executing the query
+def call_hotpatch_proc(
+    runner: HotpatchProc,
+    args_list: List[str],
+    timeout_s: int,
+    extra_env: dict[str, str],
+    echo_output: bool,
+) -> ExecCallbackResult:
+    # query_lines are bundled into the RUN message atomically, replacing
+    # the old separate runner.send() loop that could leave lines buffered
+    # in stdin and consumed by a later invocation.
+    hotpatch_proc_run_result: HotpatchProcRunResult = runner.run(
+        timeout=timeout_s,
+        query_lines=args_list,
+        run_env=extra_env,
+        echo_output=echo_output,
+    )
+
+    if len(hotpatch_proc_run_result.query_results) == 0 and (
+        # "terminate called after throwing an instance of 'std::bad_alloc'"
+        # in hotpatch_proc_run_result.stderr or
+        "std::bad_alloc" in hotpatch_proc_run_result.stdout
+        or "std::bad_alloc" in hotpatch_proc_run_result.stderr
+    ):
+        # retry
+        logger.warning(
+            "Process likely killed due to OOM (std::bad_alloc). Retrying once..."
+        )
+        hotpatch_proc_run_result: HotpatchProcRunResult = runner.run(
+            timeout=timeout_s,
+            query_lines=args_list,
+            run_env=extra_env,
+            echo_output=echo_output,
+        )
+
+    resp = hotpatch_proc_run_result.response
+    out = hotpatch_proc_run_result.stdout
+    err = hotpatch_proc_run_result.stderr
+
+    # extract ingest time from output and cache it in runner (this is not always executed again, since we are hotpatching and only rerun ingest if necessary)
+    # search for ingest line matching "Ingest ms: <num>"
+    ingest_key = "Ingest ms:"
+    ingest_lines = [
+        line for line in (out + err).splitlines() if line.startswith(ingest_key)
+    ]
+    if len(ingest_lines) == 0:
+        ingest_time_ms = runner.last_ingest_time_ms  # fallback to last ingest time if not found in output (e.g. because of output truncation)
+
+        if ingest_time_ms == -1:
+            # error during first ingest run
+            assert "builder start" in out.lower() or "builder start" in err.lower(), (
+                "Ingest time not found in output and no cached ingest time available. This should not happen - at least one of them should be available. Output:\n"
+                + f"STDERR:\n{err}\nSTDOUT:\n{out}\nResp:\n{resp}"
+            )
+            logger.info("Build phase failed during invocation. LLM has to fix it.")
+            ingest_time_ms = -1
+        # else:
+        #     logger.debug(
+        #         "reusing cached ingest time from runner: %.2fms", ingest_time_ms
+        #     )
+    else:
+        assert len(ingest_lines) == 1, (
+            "Multiple ingest lines found in program stdout. "
+            "Expected exactly one line like: 'Ingest ms: <num>'.\n"
+            + f"STDERR:\n{err}\nSTDOUT:\n{out}\nResp:\n{resp}"
+        )
+        ingest_time_ms_str = ingest_lines[0].strip()
+        ingest_time_ms_str = (
+            ingest_time_ms_str[len("Ingest ms:") :].strip().strip(":").strip()
+        )
+        ingest_time_ms = float(ingest_time_ms_str)
+
+        # cache ingest time in runner for future request
+        runner.last_ingest_time_ms = ingest_time_ms
+
+    logger.info(f"resp={resp.rstrip()}")
+    return ExecCallbackResult(
+        resp=resp,
+        out=out,
+        err=err,
+        ingest_time_ms=ingest_time_ms,
+        query_results=hotpatch_proc_run_result.query_results,
+    )

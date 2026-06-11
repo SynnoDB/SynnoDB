@@ -1,12 +1,22 @@
 import enum
 import functools
 import logging
+import os
+import random
 from pathlib import Path
 
+from tools.run import FRAME_POOL_SHARE, RunToolMode
+from tools.validate.query_validator_class import format_args_element
 from utils import utils
+from utils.utils import DBStorage
 from workloads.dataset.gen_ceb.ceb_queries import ceb_templates
 from workloads.dataset.gen_tpch.tpch_queries import tpc_h
-from workloads.workload_provider import WorkloadProvider
+from workloads.workload_provider import (
+    QueryBatch,
+    QueryEntry,
+    WorkloadProvider,
+    WrapperConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,21 +31,125 @@ class OLAPWorkload(enum.Enum):
 
 class OLAPWorkloadProvider(WorkloadProvider):
     def __init__(
-        self, benchmark: OLAPWorkload, query_cache_dir: Path | None = None, **kwargs
+        self,
+        benchmark: OLAPWorkload,
+        base_parquet_dir: Path,
+        db_storage: DBStorage,
+        bespoke_storage_dir: Path | None = None,
+        query_cache_dir: Path | None = None,
+        **kwargs,
     ):
         self.benchmark = benchmark
-        self.benchmark_name = benchmark.value
-        self.query_ids = _get_all_query_ids(self.benchmark_name)
-        self.sql_dict = self._get_sql_dict()
         self.query_cache_dir = query_cache_dir
-
+        self.base_parquet_dir = base_parquet_dir
+        self.db_storage = db_storage
         self.dataset_tables = self._dataset_tables()
         self.dataset_name = self._get_dataset_name()
         self.dataset_schema = self._get_dataset_schema()
+        self.bespoke_storage_dir = bespoke_storage_dir
 
-        super().__init__(**kwargs)
+        super().__init__(
+            benchmark_name=self.benchmark.value,
+            query_ids=_get_all_query_ids(self.benchmark.value),
+            sql_dict=self._get_sql_dict(self.benchmark),
+            **kwargs,
+        )
 
-    def get_query_gen_fn(self):
+    def produce_workload(
+        self,
+        run_mode: RunToolMode,
+    ) -> list[QueryBatch]:
+        if run_mode == RunToolMode.FAST_CHECK:
+            instantiations = 3
+            repetitions = 1
+
+            if self.benchmark == OLAPWorkload.TPC_H:
+                scale_factors = [1, 2]
+            elif self.benchmark == OLAPWorkload.CEB:
+                scale_factors = [0.25, 0.5]
+            else:
+                raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        elif run_mode == RunToolMode.EXHAUSTIVE:
+            instantiations = 5
+            repetitions = 3
+
+            if self.benchmark == OLAPWorkload.TPC_H:
+                scale_factors = [1, 2, 20]
+            elif self.benchmark == OLAPWorkload.CEB:
+                scale_factors = [0.25, 0.5, 5]
+            else:
+                raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        else:
+            raise ValueError(f"Unknown run mode: {run_mode}")
+
+        extra_env = dict()
+        # assemble storage dir path
+
+        query_batch_list = []
+        rnd = random.Random(42)
+        for scale_factor in scale_factors:
+            if self.db_storage in [DBStorage.SSD, DBStorage.LABSTORE]:
+                assert self.bespoke_storage_dir is not None
+                storage_dir = self.bespoke_storage_dir / f"sf{scale_factor}"
+                extra_env["STORAGE_DIR"] = str(storage_dir) + os.sep
+                if self.memory_limit_mb is not None:
+                    # Apply the frame-pool / mmap-headroom split here so the generated
+                    # C++ only sees its directly-usable frame budget.
+                    buffer_pool_mb = int(self.memory_limit_mb * FRAME_POOL_SHARE)
+                    extra_env["BUFFER_POOL_MB"] = str(buffer_pool_mb)
+
+                storage_dir.mkdir(parents=True, exist_ok=True)
+                # create sentinel file to indicate that this is a bespoke storage dir (so that it can be cleaned up without accidentally deleting other files)
+                (storage_dir / ".bespoke_storage_dir").touch()
+            else:
+                storage_dir = None
+
+            # assemble parquet path where data is loaded from
+            parquet_path = (
+                self.base_parquet_dir
+                / f"parquet_{self.dataset_name}"
+                / f"sf{scale_factor}"
+            ).as_posix()
+            assert parquet_path.endswith("/"), (
+                f"Parquet path must end with '/': {parquet_path}"
+            )
+            cli_call_args_str = f"{parquet_path}"
+
+            query_list = []
+
+            for inst_idx in range(instantiations):
+                for query_id in self.query_ids:
+                    _, query, placeholders = self._get_query_gen_fn()(
+                        query_name=f"Q{query_id}", rnd=rnd
+                    )
+
+                    query_entry = QueryEntry(
+                        query_id=str(query_id),
+                        sql=query,
+                        query_args=format_args_element(str(query_id), placeholders),
+                    )
+
+                    for _ in range(repetitions):
+                        query_list.append(query_entry)
+
+            query_batch_list.append(
+                QueryBatch(
+                    query_list=query_list,
+                    cli_call_args=cli_call_args_str,
+                    extra_env=extra_env,
+                    wrapper_config=WrapperConfig(memory_limit_mb=self.memory_limit_mb),
+                    timeout_s=approx_timeout_for_validation(
+                        scale_factor, len(query_list)
+                    ),
+                    log_info={"scale_factor": str(scale_factor)},
+                )
+            )
+
+        return query_batch_list
+
+    def _get_query_gen_fn(self):
         # prepare query gen
         if self.benchmark == OLAPWorkload.TPC_H:
             from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
@@ -176,13 +290,13 @@ class OLAPWorkloadProvider(WorkloadProvider):
         else:
             raise ValueError(f"Unknown benchmark {self.benchmark}")
 
-    def _get_sql_dict(self):
-        if self.benchmark == OLAPWorkload.TPC_H:
+    def _get_sql_dict(self, benchmark: OLAPWorkload):
+        if benchmark == OLAPWorkload.TPC_H:
             return tpc_h
-        elif self.benchmark == OLAPWorkload.CEB:
+        elif benchmark == OLAPWorkload.CEB:
             return ceb_templates
         else:
-            raise ValueError(f"Unknown benchmark: {self.benchmark}")
+            raise ValueError(f"Unknown benchmark: {benchmark}")
 
 
 def _get_all_query_ids(benchmark: str) -> list[str]:
@@ -221,3 +335,22 @@ class PlaceholdersCacheType:
     def __init__(self, placeholders: dict, hash_payload: str):
         self.placeholders = placeholders
         self.hash_payload = hash_payload
+
+
+def approx_timeout_for_validation(
+    scale_factor: float,
+    num_executions: int,
+) -> int:
+    # approximate a timeout for validation based on scale factor and number of queries
+    timeout = (
+        scale_factor * num_executions * 2
+    )  # 2 seconds per query with sf=1 as a rough estimate, can be adjusted as needed
+    timeout = max(timeout, 120)  # at least 1 minute total timeout
+    timeout = min(
+        timeout, 1200
+    )  # at most 20 minutes total timeout - for sf100 or similar this might take long
+
+    # round up to minutes
+    timeout = ((timeout + 59) // 60) * 60
+
+    return int(timeout)

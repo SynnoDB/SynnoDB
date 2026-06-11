@@ -14,7 +14,10 @@ def parse_db_storage(s: str) -> "DBStorage":
     try:
         return DBStorage(s)
     except ValueError:
-        raise ValueError(f"Invalid db storage: {s}. Valid options are: {[e.value for e in DBStorage]}")
+        raise ValueError(
+            f"Invalid db storage: {s}. Valid options are: {[e.value for e in DBStorage]}"
+        )
+
 
 class DBStorage(str, enum.Enum):
     LABSTORE = "labstore"
@@ -190,3 +193,7 @@ def dump_pickle(
     except Exception as e:
         logger.exception(f"Failed to write to {path}: {e}")
         raise e
+
+
+def prefix_dict(d: dict[str, Any], prefix: str) -> dict[str, Any]:
+    return {f"{prefix}_{k}": v for k, v in d.items()}

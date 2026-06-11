@@ -9,6 +9,7 @@ import wandb
 
 from observability.logging.wandb_plots_gen import create_wandb_speedup_plot
 from tools.validate.query_cache import QueryInstantiation
+from utils.utils import prefix_dict
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +22,16 @@ class Measurement:
 
 
 def assemble_error(
-    scale_factor: float,
+    log_info: dict[str, str],
     query_ids_executed: List[str],
     exception: bool = True,
     query_id: Optional[str] = None,
     query_id_not_recognized: Optional[str] = None,
 ) -> Dict:
     # assemble default failed metrics
+
     return {
-        "validation/scale_factor": scale_factor,
+        **prefix_dict(log_info, "validation/"),
         "validation/correct": False,
         "validation/error": exception,
         "validation/query_ids_executed": query_ids_executed,
@@ -40,10 +42,10 @@ def assemble_error(
     }
 
 
-def assemble_exec(scale_factor: float, num_queries_executed: int) -> Dict:
+def assemble_exec(log_info: dict[str, str], num_queries_executed: int) -> Dict:
     # assemble default successful metrics without correctness info
     return {
-        "validation/scale_factor": scale_factor,
+        **prefix_dict(log_info, "validation/"),
         "validation/num_queries": num_queries_executed,
     }
 
@@ -57,7 +59,7 @@ class ValidationOutput:
 
 
 def check_output_correctness(
-    scale_factor: float,
+    log_info: dict[str, str],
     instantiations: List[QueryInstantiation],
     measurements: List[Measurement],
     out_path: Path,
@@ -69,7 +71,7 @@ def check_output_correctness(
     trace_mode: bool,
     trace_data: str = "",
 ) -> ValidationOutput:
-    logger.info(f"Comparing results with DuckDB for SF{scale_factor}...")
+    logger.info(f"Comparing results with DuckDB for {log_info}...")
 
     # retrieve query ids executed from instantiations
     query_ids_executed_set = set()
@@ -93,7 +95,7 @@ def check_output_correctness(
                 result_message=f"Error: run-nr counting is wrong. Unexpected run nr {rt.run_nr} in line {i}, expected {i + 1}.",
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor=scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=inst.query_id,
@@ -106,7 +108,7 @@ def check_output_correctness(
                 result_message=f'Error: query id stdout "{rt.query_id}" does not match expected query-id {inst.query_id} for line {i}.',
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor=scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=inst.query_id,
@@ -137,7 +139,7 @@ def check_output_correctness(
         faster = rt.exec_time < duckdb_time
 
         logger.info(
-            f"Q{inst.query_id} (SF={scale_factor}): {rt.exec_time}ms (Bespoke), {duckdb_time:.2f}ms (DuckDB) {'-- faster' if faster else ''}"
+            f"Q{inst.query_id} ({log_info}): {rt.exec_time}ms (Bespoke), {duckdb_time:.2f}ms (DuckDB) {'-- faster' if faster else ''}"
         )
         impl_rt_lists[inst.query_id].append(rt.exec_time)
 
@@ -149,7 +151,7 @@ def check_output_correctness(
                 result_message=f"Error: {res_path} not found after executing command: {cmd}",
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor=scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=inst.query_id,
@@ -172,7 +174,7 @@ def check_output_correctness(
                 result_message=f"Error: failed to read result CSV {filename} into DataFrame: {e}",
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor=scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=inst.query_id,
@@ -193,7 +195,7 @@ def check_output_correctness(
                     result_message=output,
                     correct=False,
                     metrics=assemble_error(
-                        scale_factor=scale_factor,
+                        log_info=log_info,
                         query_ids_executed=query_ids_executed,
                         exception=False,
                         query_id=inst.query_id,
@@ -237,7 +239,7 @@ def check_output_correctness(
                     result_message=output,
                     correct=False,
                     metrics=assemble_error(
-                        scale_factor=scale_factor,
+                        log_info=log_info,
                         query_ids_executed=query_ids_executed,
                         exception=False,
                         query_id=inst.query_id,
@@ -294,7 +296,7 @@ def check_output_correctness(
                         result_message=output,
                         correct=False,
                         metrics=assemble_error(
-                            scale_factor=scale_factor,
+                            log_info=log_info,
                             query_ids_executed=query_ids_executed,
                             exception=False,
                             query_id=inst.query_id,
@@ -310,7 +312,7 @@ def check_output_correctness(
             result_message=log_collector,
             correct=False,
             metrics=assemble_error(
-                scale_factor=scale_factor,
+                log_info=log_info,
                 query_ids_executed=query_ids_executed,
                 exception=False,
             ),
@@ -335,7 +337,7 @@ def check_output_correctness(
                 ),
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor=scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=False,
                     query_id=q,
@@ -351,7 +353,7 @@ def check_output_correctness(
                 ),
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor=scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=False,
                     query_id=q,
@@ -396,7 +398,7 @@ def check_output_correctness(
     # Report metrics to wandb if callback is set
 
     metrics = {
-        "validation/scale_factor": scale_factor,
+        **prefix_dict(log_info, "validation/"),
         "validation/correct": True,
         "validation/error": False,
         "validation/total_duckdb_runtime_ms": total_duckdb_rt,
@@ -411,12 +413,8 @@ def check_output_correctness(
 
     if len(query_ids_executed) == len(all_query_ids):
         metrics["validation/all_queries"] = True
-        metrics[f"validation/sf{scale_factor}_all_queries_avg_speedup"] = (
-            average_speedup
-        )
-        metrics[f"validation/sf{scale_factor}_all_queries_total_speedup"] = (
-            total_speedup
-        )
+        metrics["validation/all_queries_avg_speedup"] = average_speedup
+        metrics["validation/all_queries_total_speedup"] = total_speedup
 
         # prepare to log full speeedups table
         measurements_df = pd.DataFrame(
@@ -435,10 +433,8 @@ def check_output_correctness(
             }
         )
         t = wandb.Table(dataframe=measurements_df)
-        metrics[f"validation/sf{scale_factor}_all_queries_data"] = t
-        metrics[f"validation/sf{scale_factor}_all_queries_plot"] = (
-            create_wandb_speedup_plot(t, scale_factor)
-        )
+        metrics["validation/all_queries_data"] = t
+        metrics["validation/all_queries_plot"] = create_wandb_speedup_plot(t, log_info)
 
     # Add per-query metrics
     for q in query_ids_executed:

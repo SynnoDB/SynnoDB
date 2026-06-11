@@ -24,6 +24,7 @@ from tools.validate.run_and_check_queries import (
 from tools.validate.validate_cache_type import ValidateCacheType
 from utils import utils
 from utils.utils import DBStorage
+from workloads.workload_provider import QueryBatch
 
 logger = logging.getLogger(__name__)
 
@@ -200,8 +201,7 @@ class QueryValidator:
     def exec_and_validate(
         self,
         exec_callback_fn: Callable[..., ExecCallbackResult],
-        scale_factor: float,
-        query_id: Optional[List[str]],
+        query_batch: QueryBatch,
         compile_key_hash: str,
         trace_mode: bool,
         other_config: Dict[str, Any] = {},
@@ -215,41 +215,20 @@ class QueryValidator:
         with custom_span(
             f"exec_and_validate ({query_id if query_id is not None else 'all queries'}, sf={scale_factor}, trace_mode={trace_mode}, {'no-validate' if skip_validate else ''})",
         ):
-            if trace_mode:
-                repetitions = 1  # in trace mode we want to keep runtime low and avoid executing multiple times, as we mainly care about the trace output and not the validation confidence
-            if self.rep1_for_max_sf and scale_factor == self.sf_list[-1]:
-                # flag is set - we run only 1 rep
-                repetitions = 1
-            elif scale_factor == self.sf_list[-1]:
-                # average runtime for largest scale factor can be long, so use more repetitions to increase confidence in validation result
-                repetitions = 3
-            else:
-                repetitions = 1
-
-            # approximate a timeout
-            timeout = approx_timeout_for_validation(
-                scale_factor=scale_factor,
-                num_queries=len(query_id)
-                if query_id is not None
-                else len(self.all_query_ids),
-                repetitions=repetitions,
-                num_random_query_instantiations=self.num_random_query_instantiations,
-            )
-            logger.debug(f"Run with timeout: {timeout} seconds")
+            logger.debug(f"Run with timeout: {query_batch.timeout_s} seconds")
 
             result, cache_path, hash_payload, hash = self._check_answer_from_cache(
-                query_id=query_id,
-                scale_factor=scale_factor,
+                query_batch=query_batch,
                 skip_validate=skip_validate,
                 other_config=other_config,
                 stop_on_first_error=True,
-                timeout=timeout,
                 compile_key_hash=compile_key_hash,
-                repetitions=repetitions,
                 num_threads=num_threads_for_logging
                 if num_threads_for_logging is not None
                 else self.num_threads,
             )
+
+            query_id = list(set([entry.query_id for entry in query_batch.query_list]))
 
             replayed_from_cache = False
             if result is not None:
@@ -372,7 +351,7 @@ class QueryValidator:
                             result_message=f"Error: query_id {q_id} not recognized. Known query IDs: {self.all_query_ids}",
                             correct=False,
                             metrics=assemble_error(
-                                scale_factor=scale_factor,
+                                log_info=log_info,
                                 query_ids_executed=[],
                                 exception=True,
                                 query_id_not_recognized=q_id,
@@ -541,30 +520,23 @@ class QueryValidator:
 
     def _check_answer_from_cache(
         self,
-        query_id: Optional[List[str]],
-        scale_factor: float,
         skip_validate: bool,
         other_config: Dict[str, Any],
         stop_on_first_error: bool,
-        timeout: int,
         compile_key_hash: str,
-        repetitions: int,
         num_threads: int,
+        query_batch: QueryBatch,
     ) -> Tuple[ValidateCacheType | None, Optional[Path], str, str | None]:
         if self.git_snapshotter is not None:
             hash_payload = {
+                "query_batch": query_batch.to_dict(),
                 "snapshotter_hash": self.git_snapshotter.current_hash,
-                "query_id": query_id,
-                "scale_factor": scale_factor,
                 "skip_validate": skip_validate,
                 "stop_on_first_error": stop_on_first_error,
                 "wandb_pin_worker": self.wandb_pin_worker,
                 "wandb_pin_core": PIN_CORE,
                 "num_random_query_instantiations": self.num_random_query_instantiations,
-                "output_stdout": self._show_stdout(scale_factor),
-                "timeout": timeout,
                 "compile_key_hash": compile_key_hash,
-                "repetitions": repetitions,
                 "num_threads": num_threads,
                 "db_storage": self.db_storage.value,
                 **other_config,
@@ -687,6 +659,7 @@ class QueryValidator:
 
     def _validate_query(
         self,
+        log_info: dict[str, str],
         instantiations: List[QueryInstantiation],
         query_results: List[QueryResult],
         stdout: str,
@@ -729,7 +702,7 @@ class QueryValidator:
                 ),
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=None,
@@ -758,7 +731,7 @@ class QueryValidator:
                 ),
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=crashed_qid,
@@ -779,7 +752,7 @@ class QueryValidator:
                 ),
                 correct=False,
                 metrics=assemble_error(
-                    scale_factor,
+                    log_info=log_info,
                     query_ids_executed=query_ids_executed,
                     exception=True,
                     query_id=failed_qid,
@@ -799,7 +772,7 @@ class QueryValidator:
         out_path = self.workspace_path / "results"
         out_path.mkdir(parents=True, exist_ok=True)
         return check_output_correctness(
-            scale_factor=scale_factor,
+            log_info=log_info,
             instantiations=instantiations,
             measurements=measurements,
             out_path=out_path,
@@ -823,45 +796,26 @@ def format_args_string(
 ) -> List[str]:
     args_list = []
     for qid_str, placeholders in zip(query_list, placeholder_list):
-        # generate random req-id
-        # req_id = date_time + random int, to ensure uniqueness across different runs and queries
-        req_id = (
-            datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
-        )
-
-        # Don't add double quotes to IN lists (they start with '(')
-        formatted_values = []
-        for value in placeholders.values():
-            if isinstance(value, str) and value.startswith("("):
-                # IN list - don't add quotes
-                formatted_values.append(value)
-            else:
-                # Regular value - add quotes
-                formatted_values.append(f'"{value}"')
-
-        args_list.append(f"{qid_str} {req_id} {' '.join(formatted_values)}")
+        args_list.append(format_args_element(qid_str, placeholders))
     return args_list
 
 
-def approx_timeout_for_validation(
-    scale_factor: float,
-    num_queries: int,
-    repetitions: int,
-    num_random_query_instantiations: int,
-) -> int:
-    # approximate a timeout for validation based on scale factor and number of queries
-    timeout = (
-        scale_factor * num_queries * 2 * num_random_query_instantiations * repetitions
-    )  # 2 seconds per query with sf=1 as a rough estimate, can be adjusted as needed
-    timeout = max(timeout, 120)  # at least 1 minute total timeout
-    timeout = min(
-        timeout, 1200
-    )  # at most 20 minutes total timeout - for sf100 or similar this might take long
+def format_args_element(qid_str: str, placeholders: Dict[str, Any]) -> str:
+    # generate random req-id
+    # req_id = date_time + random int, to ensure uniqueness across different runs and queries
+    req_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
 
-    # round up to minutes
-    timeout = ((timeout + 59) // 60) * 60
+    # Don't add double quotes to IN lists (they start with '(')
+    formatted_values = []
+    for value in placeholders.values():
+        if isinstance(value, str) and value.startswith("("):
+            # IN list - don't add quotes
+            formatted_values.append(value)
+        else:
+            # Regular value - add quotes
+            formatted_values.append(f'"{value}"')
 
-    return int(timeout)
+    return f"{qid_str} {req_id} {' '.join(formatted_values)}"
 
 
 def _format_query_traces(query_results: list[QueryResult], instantiations: list) -> str:
