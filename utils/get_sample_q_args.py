@@ -2,7 +2,7 @@ import random
 from pathlib import Path
 
 from tools.validate.query_validator_class import QueryValidator
-from tools.validate.sf_list_gen import gen_sf
+from utils.sf_list_gen import gen_sf
 from utils.utils import DBStorage
 from workloads.dataset.dataset_tables_dict import get_dataset_name
 from workloads.dataset.query_gen_factory import get_placeholders_fn, get_query_gen

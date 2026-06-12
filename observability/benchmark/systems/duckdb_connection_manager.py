@@ -10,15 +10,16 @@ from tqdm import tqdm
 
 from utils.drop_caches import drop_os_caches, is_memory_backed
 from utils.utils import DBStorage
-from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from workloads.workload_provider import Workload
 
 
 class DuckDBConnectionManager:
     def __init__(
         self,
         pre_load_duckdb_tables: bool,
-        parquet_path: str,
-        benchmark: str,
+        dataset_tables: list[str],
+        parquet_path: Path,
+        benchmark: Workload,
         db_storage: DBStorage,
         disk_db_dir: Optional[Path] = None,
         sf: float = 1,
@@ -37,8 +38,7 @@ class DuckDBConnectionManager:
         self.db_storage = db_storage
         self.duckdb_dir: Optional[tempfile.TemporaryDirectory] = None
         self.duckdb_path: Optional[Path] = None
-
-        self.workload_provider = OLAPWorkloadProvider(benchmark=OLAPWorkload(benchmark))
+        self.dataset_tables = dataset_tables
 
         if self.pin_worker:
             assert self.pin_core is not None
@@ -126,7 +126,7 @@ class DuckDBConnectionManager:
         self._connect(self.duckdb_path)
         assert self.con is not None
         for table in tqdm(
-            self.workload_provider.dataset_tables,
+            self.dataset_tables,
             desc=f"Loading DuckDB tables for SF{self.sf}",
         ):
             self.con.execute(

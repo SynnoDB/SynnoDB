@@ -1,4 +1,3 @@
-import enum
 import functools
 import logging
 import os
@@ -14,10 +13,11 @@ from workloads.dataset.gen_ceb.ceb_queries import ceb_templates
 from workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from workloads.workload_provider import (
     ExecSettings,
+    GeneralSystemConfig,
     QueryBatch,
     QueryEntry,
+    Workload,
     WorkloadProvider,
-    WrapperConfig,
     format_args_element,
 )
 
@@ -32,7 +32,7 @@ CEB_DIR = Path(__file__).parent.parent / "data" / "ceb" / "imdb"
 FRAME_POOL_SHARE = 0.60
 
 
-class OLAPWorkload(enum.Enum):
+class OLAPWorkload(Workload):
     TPC_H = "tpch"
     CEB = "ceb"
 
@@ -41,6 +41,8 @@ class OLAPWorkload(enum.Enum):
 class OLAPExecSettings(ExecSettings):
     scale_factor: float
     db_storage: DBStorage
+    parquet_dir: Path
+    disk_db_dir: Path | None
 
 
 class OLAPWorkloadProvider(WorkloadProvider):
@@ -57,9 +59,9 @@ class OLAPWorkloadProvider(WorkloadProvider):
         self.query_cache_dir = query_cache_dir
         self.base_parquet_dir = base_parquet_dir
         self.db_storage = db_storage
-        self.dataset_tables = self._dataset_tables()
+        self.dataset_tables = self._dataset_tables(self.benchmark)
         self.dataset_name = self._get_dataset_name(self.benchmark)
-        self.dataset_schema = self._get_dataset_schema()
+        self.dataset_schema = self._get_dataset_schema(self.benchmark)
         self.bespoke_storage_dir = bespoke_storage_dir
 
         super().__init__(
@@ -73,6 +75,8 @@ class OLAPWorkloadProvider(WorkloadProvider):
         self,
         run_mode: RunToolMode,
         query_ids: list[str] | None,
+        num_threads: int,
+        core_ids: list[int] | None,
     ) -> list[QueryBatch]:
         if query_ids is None or len(query_ids) == 0:
             queries_to_generate = self.query_ids
@@ -151,8 +155,9 @@ class OLAPWorkloadProvider(WorkloadProvider):
                     query_entry = QueryEntry(
                         query_id=str(query_id),
                         sql=sql,
+                        benchmark=self.benchmark,
                         query_args=format_args_element(str(query_id), placeholders),
-                        placeholder=placeholders,
+                        placeholders=placeholders,
                         order_by_info=order_by_info,
                     )
 
@@ -162,14 +167,22 @@ class OLAPWorkloadProvider(WorkloadProvider):
             query_batch_list.append(
                 QueryBatch(
                     query_list=query_list,
+                    benchmark=self.benchmark,
                     cli_call_args=cli_call_args_str,
                     extra_env=extra_env,
-                    wrapper_config=WrapperConfig(memory_limit_mb=self.memory_limit_mb),
+                    general_system_config=GeneralSystemConfig(
+                        memory_limit_mb=self.memory_limit_mb,
+                        num_threads=num_threads,
+                        core_ids=core_ids,
+                    ),
                     timeout_s=approx_timeout_for_validation(
                         scale_factor, len(query_list)
                     ),
                     exec_settings=OLAPExecSettings(
-                        scale_factor=scale_factor, db_storage=self.db_storage
+                        scale_factor=scale_factor,
+                        db_storage=self.db_storage,
+                        parquet_dir=self.base_parquet_dir,
+                        disk_db_dir=storage_dir,
                     ),
                 )
             )
@@ -257,7 +270,8 @@ class OLAPWorkloadProvider(WorkloadProvider):
 
         return gen_fn
 
-    def _dataset_tables(self) -> list[str]:
+    @staticmethod
+    def _dataset_tables(benchmark: OLAPWorkload) -> list[str]:
         tables_lists = {
             OLAPWorkload.TPC_H: [
                 "customer",
@@ -293,9 +307,9 @@ class OLAPWorkloadProvider(WorkloadProvider):
                 "title",
             ],
         }
-        if self.benchmark not in tables_lists:
-            raise ValueError(f"Unknown benchmark {self.benchmark}")
-        return tables_lists[self.benchmark]
+        if benchmark not in tables_lists:
+            raise ValueError(f"Unknown benchmark {benchmark}")
+        return tables_lists[benchmark]
 
     @staticmethod
     def _get_dataset_name(benchmark: OLAPWorkload) -> str:
@@ -306,17 +320,18 @@ class OLAPWorkloadProvider(WorkloadProvider):
         else:
             raise ValueError(f"Unknown benchmark {benchmark}")
 
-    def _get_dataset_schema(self) -> str:
-        if self.benchmark == OLAPWorkload.TPC_H:
+    @staticmethod
+    def _get_dataset_schema(benchmark: OLAPWorkload) -> str:
+        if benchmark == OLAPWorkload.TPC_H:
             from workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
 
             return tpc_h_schema
-        elif self.benchmark == OLAPWorkload.CEB:
+        elif benchmark == OLAPWorkload.CEB:
             from workloads.dataset.gen_ceb.imdb_schema import imdb_schema
 
             return imdb_schema
         else:
-            raise ValueError(f"Unknown benchmark {self.benchmark}")
+            raise ValueError(f"Unknown benchmark {benchmark}")
 
     def _get_sql_dict(self, benchmark: OLAPWorkload):
         if benchmark == OLAPWorkload.TPC_H:

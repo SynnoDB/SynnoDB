@@ -45,7 +45,6 @@ from tools.compile import CompileTool
 from tools.run import RunTool
 from tools.shell_executor import ShellExecutor
 from tools.validate.query_validator_class import QueryValidator
-from tools.validate.sf_list_gen import gen_sf
 from tools.workspace_editor import WorkspaceEditor
 from utils.cli_config import RunConfig, add_common_args
 from utils.confirm_dialog import await_user_confirmation
@@ -54,6 +53,7 @@ from utils.core_utils import get_cores_for_current_machine
 from utils.get_sample_q_args import get_sample_query_args
 from utils.hugepages import get_num_numa_nodes, set_hugepages
 from utils.pkgconfig import check_pkg
+from utils.sf_list_gen import gen_sf
 from utils.snapshot_utils import load_storage_plan_from_snapshot
 from utils.utils import (
     DBStorage,

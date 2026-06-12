@@ -43,7 +43,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from tools.validate.duckdb_connection_manager import DuckDBConnectionManager
+from observability.benchmark.systems.duckdb_connection_manager import (
+    DuckDBConnectionManager,
+)
 from workloads.dataset.dataset_tables_dict import get_dataset_name
 from workloads.dataset.query_gen_factory import get_query_gen
 

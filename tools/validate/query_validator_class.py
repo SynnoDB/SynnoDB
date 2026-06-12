@@ -1,17 +1,13 @@
 import logging
 import time
-from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, DefaultDict, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agents import custom_span
 
-from observability.benchmark.systems.umbra import UmbraRunner
 from observability.logging.truncate_csv import truncate_csvs_recursively
 from synth_framework.runtime_tracker import RuntimeTracker
-from tools.validate.duckdb_connection_manager import DuckDBConnectionManager
-from tools.validate.query_cache import QueryCache, QueryInstantiation
 from tools.validate.run_and_check_queries import (
     Measurement,
     ValidationOutput,
@@ -21,12 +17,14 @@ from tools.validate.run_and_check_queries import (
 )
 from tools.validate.validate_cache_type import ValidateCacheType
 from utils import utils
-from utils.utils import DBStorage
-from workloads.workload_provider import QueryBatch, format_args_string
+from workloads.query_execution_cache import QueryExecutionCache
+from workloads.workload_provider import (
+    ExecSettings,
+    QueryBatch,
+    QueryEntry,
+)
 
 logger = logging.getLogger(__name__)
-
-PIN_CORE = 3
 
 
 @dataclass
@@ -68,18 +66,10 @@ class QueryValidator:
 
     def __init__(
         self,
-        benchmark: str,
-        gen_query_fn: Callable,
-        sf_list: List[float],
-        parquet_path: str,
-        wandb_pin_worker: bool,
-        all_query_ids: List[str],
-        num_random_query_instantiations: int,
-        query_cache_dir: Path,
         validate_cache_dir: Path | None,
         workspace_path: Path,
-        db_storage: DBStorage,
-        disk_db_dir: Optional[Path] = None,
+        query_execution_cache: QueryExecutionCache,
+        all_query_ids: list[str],
         git_snapshotter: Optional[Any] = None,
         output_stdout_stderr: bool = False,  # whether to include stdout and stderr in the validation result message also in case of correct validation (not only in case of errors)
         output_stdout_stderr_for_max_sf: bool = False,  # include stdout and stderr for max scale factor
@@ -96,105 +86,20 @@ class QueryValidator:
             float
         ] = None,  # if set, result CSVs in workspace_path are truncated to this size right before the post-run snapshot so they don't bloat snapshots
     ):
-        self.benchmark = benchmark
-        self.all_query_ids = all_query_ids
         self.workspace_path = workspace_path
         self.runtime_tracker = runtime_tracker
-        self.query_cache_dir = query_cache_dir
+        self.query_execution_cache = query_execution_cache
+        self.all_query_ids = all_query_ids
         self.validate_cache_dir = validate_cache_dir
-        self.num_random_query_instantiations = num_random_query_instantiations
         self.git_snapshotter = git_snapshotter
-        self.wandb_pin_worker = wandb_pin_worker
         self.output_stdout_stderr = output_stdout_stderr
-        self.output_stdout_stderr_for_max_sf = output_stdout_stderr_for_max_sf
         self.do_not_cache = do_not_cache
         self.rep1_for_max_sf = rep1_for_max_sf
         self.num_threads = num_threads
         self.core_ids = core_ids
-        self.parquet_path = parquet_path
-        self.gen_query_fn = gen_query_fn
         self.run_umbra_as_well = run_umbra_as_well
         self.only_from_cache = only_from_cache
         self.max_snapshot_csv_size_mb = max_snapshot_csv_size_mb
-        self.db_storage = db_storage
-        self.disk_db_dir = disk_db_dir
-
-        # Create DuckDB connection managers each scale factor
-        self.duckdb_con: Dict[float, DuckDBConnectionManager] = dict()
-
-        self._init_with_sf_list(sf_list)
-
-    def _init_with_sf_list(self, sf_list: list[float]):
-        self.sf_list = sf_list
-        for sf in sf_list:
-            if self.num_threads == 1:
-                self.duckdb_con[sf] = DuckDBConnectionManager(
-                    benchmark=self.benchmark,
-                    pre_load_duckdb_tables=False,
-                    parquet_path=self.parquet_path,
-                    sf=sf,
-                    pin_worker=self.wandb_pin_worker,
-                    pin_core=PIN_CORE,
-                    num_threads=1,
-                    db_storage=self.db_storage,
-                    disk_db_dir=self.disk_db_dir,
-                )
-            else:
-                self.duckdb_con[sf] = DuckDBConnectionManager(
-                    benchmark=self.benchmark,
-                    pre_load_duckdb_tables=False,
-                    parquet_path=self.parquet_path,
-                    sf=sf,
-                    pin_worker=False,
-                    pin_core=None,
-                    num_threads=self.num_threads,
-                    db_storage=self.db_storage,
-                    disk_db_dir=self.disk_db_dir,
-                )
-
-        umbra_runner = None
-        if self.run_umbra_as_well:
-            umbra_runner = UmbraRunner(
-                parquet_path=Path(self.parquet_path),
-                benchmark=self.benchmark,
-                scale_factors=sf_list,
-                container_num_cores=self.num_threads,
-                container_pin_core_id_start=self.core_ids[0] if self.core_ids else 4,
-                allow_auto_restarts=True,
-                db_storage=self.db_storage,
-                disk_db_dir=self.disk_db_dir,
-            )
-
-        # Pre-generate all query instantiations and execute them with DuckDB
-        # Results are cached in the QueryCache for efficient validation
-        logger.info("Initializing query cache with pre-generated instantiations...")
-        self.query_cache = QueryCache(
-            gen_query_fn=self.gen_query_fn,
-            query_ids=self.all_query_ids,
-            sf_list=sf_list,
-            num_instantiations_per_query=self.num_random_query_instantiations,
-            duckdb_managers=self.duckdb_con,
-            cache_dir=self.query_cache_dir,
-            run_umbra_plans=self.run_umbra_as_well,
-            umbra_runner=umbra_runner,
-            only_from_cache=self.only_from_cache,
-            num_threads=self.num_threads,
-            do_not_cache=self.do_not_cache,
-            db_storage=self.db_storage,
-        )
-
-        # after initializing the query cache, we cleanup the DuckDB connections
-        for duckdb_con in self.duckdb_con.values():
-            duckdb_con.clear_mem_footprint(
-                including_disk=False
-            )  # only prune from memory
-
-        if self.run_umbra_as_well:
-            assert umbra_runner is not None
-            umbra_runner.stop()
-
-        if self.validate_cache_dir is not None:
-            utils.create_dir_and_set_permissions(self.validate_cache_dir)
 
     def exec_and_validate(
         self,
@@ -208,10 +113,9 @@ class QueryValidator:
         recompile_if_necessary_callback: Optional[
             Callable
         ] = None,  # will internally check if recompilation is necessary (i.e. if compile result was from cache) and call the callback if it is necessary
-        num_threads_for_logging: int | None = None,
     ) -> Tuple[str, bool, Dict[str, Any], bool, Optional[str]]:
         with custom_span(
-            f"exec_and_validate ({query_id if query_id is not None else 'all queries'}, sf={scale_factor}, trace_mode={trace_mode}, {'no-validate' if skip_validate else ''})",
+            f"exec_and_validate ({query_batch.exec_settings}, trace_mode={trace_mode}, {'no-validate' if skip_validate else ''})",
         ):
             logger.debug(f"Run with timeout: {query_batch.timeout_s} seconds")
 
@@ -221,9 +125,6 @@ class QueryValidator:
                 other_config=other_config,
                 stop_on_first_error=True,
                 compile_key_hash=compile_key_hash,
-                num_threads=num_threads_for_logging
-                if num_threads_for_logging is not None
-                else self.num_threads,
             )
 
             query_id = list(set([entry.query_id for entry in query_batch.query_list]))
@@ -237,68 +138,6 @@ class QueryValidator:
                 trace_output = result.trace_output
 
                 replayed_from_cache = True
-
-                # fallback for old cache state where query_ids_executed was not stored - extract from query cache
-                if "validation/query_ids_executed" not in metrics:
-                    exec_list = list(
-                        query_id if query_id is not None else self.all_query_ids
-                    )
-                    metrics["validation/query_ids_executed"] = exec_list
-
-                    logger.debug(f"Log: {exec_list} / query id: {query_id}")
-
-                if "validation/total_umbra_runtime_ms" not in metrics:
-                    # Fallback for old cache entries: derive
-                    # total_umbra_runtime_ms and per-query
-                    # validation/query_XYZ/umbra_runtime_ms from the query
-                    # cache, using the same instantiation set (incl.
-                    # repetitions) the original run would have used. Mirrors
-                    # check_output_correctness: per-query average umbra exec
-                    # time, summed only if every executed query has umbra
-                    # times recorded; otherwise None.
-                    try:
-                        _, instantiations, _ = (
-                            self._get_instantiations_and_convert_to_arg_list(
-                                scale_factor=scale_factor,
-                                query_id=query_id,
-                                repetitions=repetitions,
-                                trace_mode=trace_mode,
-                            )
-                        )
-
-                        umbra_rt_lists: DefaultDict[str, List[Optional[float]]] = (
-                            defaultdict(list)
-                        )
-                        for inst in instantiations:
-                            umbra_rt_lists[inst.query_id].append(
-                                inst.umbra_exec_time_ms / 1000
-                                if inst.umbra_exec_time_ms is not None
-                                else None  # this is ns / although named as ms
-                            )
-
-                        avg_umbra_rts: Dict[str, float] = {}
-                        for qid, rts in umbra_rt_lists.items():
-                            non_none_rts = [rt for rt in rts if rt is not None]
-                            if len(non_none_rts) == len(rts) and len(rts) > 0:
-                                avg_umbra_rts[qid] = sum(non_none_rts) / len(rts)
-
-                        if len(avg_umbra_rts) == len(umbra_rt_lists):
-                            metrics["validation/total_umbra_runtime_ms"] = sum(
-                                avg_umbra_rts.values()
-                            )
-                        else:
-                            metrics["validation/total_umbra_runtime_ms"] = None
-
-                        for qid in umbra_rt_lists:
-                            q_3d_str = str(qid).zfill(3)
-                            key = f"validation/query_{q_3d_str}/umbra_runtime_ms"
-                            if key not in metrics:
-                                metrics[key] = avg_umbra_rts.get(qid)
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not derive total_umbra_runtime_ms from query cache for cache entry {cache_path} with hash {hash} and payload {hash_payload}. Error was: {e}"
-                        )
-                        metrics["validation/total_umbra_runtime_ms"] = None
 
                 if self.runtime_tracker is not None:
                     # add skipped time to the runtime tracker
@@ -327,107 +166,56 @@ class QueryValidator:
 
                 validate_time_start = time.perf_counter()
 
-                # check query-IDs are existing
-                all_found = True
-                rewritten_query_ids = []
-                for q_id in query_id or []:
-                    if q_id not in self.all_query_ids:
-                        # check if llm accidently calls query with q prefix (e.g. q1 instead of 1) - if yes, auto-rewrite and continue with a warning, otherwise error out
-                        if (q_id.startswith("q") or q_id.startswith("Q")) and q_id[
-                            1:
-                        ] in self.all_query_ids:
-                            logger.warning(
-                                f"Query ID {q_id} not recognized, but {q_id[1:]} is in the list of known query IDs. Auto rewriting it."
-                            )
-                            rewritten_query_ids.append(q_id[1:])
-                            continue
+                # execute queries via callback
+                args_list = [entry.query_args for entry in query_batch.query_list]
+                exec_result = exec_callback_fn(
+                    args_list, timeout_s=query_batch.timeout_s
+                )
+                ingest_ms = exec_result.ingest_time_ms
+                exec_query_results = exec_result.query_results
+                exec_trace = _format_query_traces(
+                    exec_query_results, query_batch.query_list
+                )
 
-                        # ERROR: query ID not recognized
-                        all_found = False
-
-                        validation_output = ValidationOutput(
-                            result_message=f"Error: query_id {q_id} not recognized. Known query IDs: {self.all_query_ids}",
-                            correct=False,
-                            metrics=assemble_error(
-                                exec_settings=exec_settings,
-                                query_ids_executed=[],
-                                exception=True,
-                                query_id_not_recognized=q_id,
-                            ),
-                            trace_output=None,
-                        )
-                        logger.error(validation_output.result_message)
-
-                        break
-                    else:
-                        rewritten_query_ids.append(q_id)
-
-                # overwrite query id with potentially rewritten query ids (e.g. "q1" rewritten to "1") for downstream processing
-                if query_id is not None:
-                    query_id = rewritten_query_ids
-
-                if all_found:
-                    # get query instantiations and convert to arg list
-                    args_list, instantiations, num_queries = (
-                        self._get_instantiations_and_convert_to_arg_list(
-                            scale_factor=scale_factor,
-                            query_id=query_id,
-                            repetitions=repetitions,
-                            trace_mode=trace_mode,
-                        )
+                if not skip_validate:
+                    # validate output
+                    validation_output = self._validate_query(
+                        exec_settings=query_batch.exec_settings,
+                        query_batch=query_batch,
+                        query_execution_cache=self.query_execution_cache,
+                        query_results=exec_query_results,
+                        stdout=exec_result.out,
+                        stderr=exec_result.err,
+                        cmd=None,
+                        stop_on_first_error=True,
+                        trace_mode=trace_mode,
+                        trace_data=exec_trace,
+                        resp=exec_result.resp,
                     )
-
-                    # execute queries via callback
-                    exec_result = exec_callback_fn(args_list, timeout_s=timeout)
-                    ingest_ms = exec_result.ingest_time_ms
-                    exec_query_results = exec_result.query_results
-                    exec_trace = _format_query_traces(
-                        exec_query_results, instantiations
-                    )
-
-                    if not skip_validate:
-                        # validate output
-                        validation_output = self._validate_query(
-                            instantiations=instantiations,
-                            query_results=exec_query_results,
-                            scale_factor=scale_factor,
-                            stdout=exec_result.out,
-                            stderr=exec_result.err,
-                            cmd=None,
-                            stop_on_first_error=True,
-                            trace_mode=trace_mode,
-                            trace_data=exec_trace,
-                            resp=exec_result.resp,
-                        )
-
-                    else:
-                        logger.warning(
-                            f"Skipping correctness validation as requested ({query_id=}, {scale_factor=}). Only return stdout/stderr."
-                        )
-                        validation_output = ValidationOutput(
-                            result_message=f"stdout: {exec_result.out.rstrip()}\nstderr: {exec_result.err.rstrip()}\n{exec_result.resp}",
-                            correct=True,
-                            metrics=assemble_exec(
-                                exec_settings=exec_settings,
-                                num_queries_executed=num_queries,
-                            ),
-                            trace_output=None,
-                        )
-
-                    if ingest_ms is not None:
-                        validation_output.result_message += (
-                            f"Build time (ms): {ingest_ms}\n"
-                        )
 
                 else:
-                    instantiations = []
-                    ingest_ms = None
-                    exec_result = None
+                    logger.warning(
+                        f"Skipping correctness validation as requested ({query_id=}, {query_batch.exec_settings=}). Only return stdout/stderr."
+                    )
+                    validation_output = ValidationOutput(
+                        result_message=f"stdout: {exec_result.out.rstrip()}\nstderr: {exec_result.err.rstrip()}\n{exec_result.resp}",
+                        correct=True,
+                        metrics=assemble_exec(
+                            exec_settings=query_batch.exec_settings,
+                            num_queries_executed=len(args_list),
+                        ),
+                        trace_output=None,
+                    )
+
+                if ingest_ms is not None:
+                    validation_output.result_message += (
+                        f"Build time (ms): {ingest_ms}\n"
+                    )
 
                 # extend metrics
-                validation_output.metrics["validation/repetitions"] = repetitions
-                validation_output.metrics["validation/instantiations"] = (
-                    len(instantiations) / repetitions
+
+                validation_output.metrics["validation/executed_queries"] = len(
+                    args_list
                 )
                 validation_output.metrics["validation/runtime_seconds"] = (
                     time.perf_counter() - validate_time_start
@@ -490,7 +278,7 @@ class QueryValidator:
         optimize_flags = other_config["optimize"]
 
         logger.info(
-            f"Validate Tool Result: {'correct' if success else 'incorrect'} (Query ID: {query_id}, Scale Factor: {scale_factor}, Replayed from cache: {replayed_from_cache}, trace_mode: {trace_mode}, optim-flags: {optimize_flags}, num_threads: {num_threads_for_logging if num_threads_for_logging is not None else 'unknown'}) - Total Speedup: {total_speedup}x"
+            f"Validate Tool Result: {'correct' if success else 'incorrect'} (Query ID: {query_id}, ExecSettings: {query_batch.exec_settings}, Replayed from cache: {replayed_from_cache}, trace_mode: {trace_mode}, optim-flags: {optimize_flags}) - Total Speedup: {total_speedup}x"
         )
 
         # truncate msg if too long for logging
@@ -511,32 +299,21 @@ class QueryValidator:
         ):
             return msg, success, metrics, replayed_from_cache, trace_output
 
-    def _show_stdout(self, sf: float):
-        return self.output_stdout_stderr or (
-            sf == self.sf_list[-1] and self.output_stdout_stderr_for_max_sf
-        )
-
     def _check_answer_from_cache(
         self,
         skip_validate: bool,
         other_config: Dict[str, Any],
         stop_on_first_error: bool,
         compile_key_hash: str,
-        num_threads: int,
         query_batch: QueryBatch,
     ) -> Tuple[ValidateCacheType | None, Optional[Path], str, str | None]:
         if self.git_snapshotter is not None:
             hash_payload = {
-                "query_batch": query_batch.to_dict(),
+                "query_batch": utils.stable_json(asdict(query_batch)),
                 "snapshotter_hash": self.git_snapshotter.current_hash,
                 "skip_validate": skip_validate,
                 "stop_on_first_error": stop_on_first_error,
-                "wandb_pin_worker": self.wandb_pin_worker,
-                "wandb_pin_core": PIN_CORE,
-                "num_random_query_instantiations": self.num_random_query_instantiations,
                 "compile_key_hash": compile_key_hash,
-                "num_threads": num_threads,
-                "db_storage": self.db_storage.value,
                 **other_config,
             }
 
@@ -579,90 +356,14 @@ class QueryValidator:
 
         return None, cache_path, stable_payload, hash
 
-    def _get_queries_executed_from_queryid_arg(
-        self, query_id: Optional[List[str]]
-    ) -> List[str]:
-        if isinstance(query_id, list):
-            filtered_queries = query_id
-        elif query_id is None:
-            filtered_queries = self.all_query_ids
-        else:
-            raise ValueError(
-                f"Unexpected query_id type: {type(query_id)}. Expected list or None."
-            )
-
-        assert len(filtered_queries) > 0
-        return filtered_queries
-
-    def _get_instantiations(
-        self,
-        scale_factor: float,
-        query_id: Optional[List[str]],
-        trace_mode: bool,
-    ) -> Tuple[List[QueryInstantiation], int]:
-        # determine which queries to execute
-        executed_queries = self._get_queries_executed_from_queryid_arg(query_id)
-
-        assert scale_factor in self.sf_list, (
-            f"Scale factor {scale_factor} not in configured list."
-        )
-
-        # Sample query instantiations from cache
-        instantions = self.query_cache.get_instantiations(
-            scale_factor=scale_factor,
-            query_id=executed_queries,
-            num_samples=1 if trace_mode else None,
-        )
-
-        if len(executed_queries) > 0:
-            assert len(instantions) > 0, (
-                f"No query instantiations found for scale factor {scale_factor} and query_id {query_id}."
-            )
-
-        return instantions, len(executed_queries)
-
-    def _get_instantiations_and_convert_to_arg_list(
-        self,
-        scale_factor: float,
-        query_id: list[str] | None,
-        repetitions: int,
-        trace_mode: bool,
-    ) -> Tuple[List[str], List[QueryInstantiation], int]:
-        instantiations, num_queries = self._get_instantiations(
-            scale_factor=scale_factor,
-            query_id=query_id,
-            trace_mode=trace_mode,
-        )
-
-        if trace_mode and isinstance(query_id, list):
-            # in trace mode we only want to execute one instantiation per query to keep runtime low and avoid executing multiple times, as we mainly care about the trace output and not the validation confidence or runtime
-            assert len(instantiations) == len(query_id), (
-                f"In trace mode, expected exactly one instantiation per query. Got {len(instantiations)} instantiations for {len(query_id)} queries."
-            )
-
-        # Prepare arguments for implementation
-        args_list = format_args_string(
-            query_list=[inst.query_id for inst in instantiations],
-            placeholder_list=[inst.placeholders for inst in instantiations],
-        )
-
-        # add repetitions to args list if repetitions > 1
-        repeated_args_list = []
-        repeated_instantiations = []
-        for arg, inst in zip(args_list, instantiations):
-            repeated_args_list.extend([arg] * repetitions)
-            repeated_instantiations.extend([inst] * repetitions)
-
-        return repeated_args_list, repeated_instantiations, num_queries
-
     def _validate_query(
         self,
-        log_info: dict[str, str],
-        instantiations: List[QueryInstantiation],
+        exec_settings: ExecSettings,
+        query_batch: QueryBatch,
+        query_execution_cache: QueryExecutionCache,
         query_results: List[QueryResult],
         stdout: str,
         stderr: str,
-        scale_factor: float,
         cmd: Optional[str],
         trace_mode: bool,
         stop_on_first_error: bool = True,
@@ -670,7 +371,7 @@ class QueryValidator:
         resp: str = "",
     ) -> ValidationOutput:
         query_ids_executed = sorted(
-            list(set([inst.query_id for inst in instantiations]))
+            list(set([inst.query_id for inst in query_batch.query_list]))
         )
 
         from_cmd_str = "" if cmd is None else f" from command: {cmd}"
@@ -689,7 +390,7 @@ class QueryValidator:
             # are lost, so we cannot identify which query crashed; the
             # signal name in `resp` (if any) plus stderr/stdout are the
             # caller's best clues.
-            requested = ", ".join(f"Q{i.query_id}" for i in instantiations)
+            requested = ", ".join(f"Q{i.query_id}" for i in query_batch.query_list)
             return ValidationOutput(
                 result_message=(
                     f"Error: no query results received{from_cmd_str}. "
@@ -707,15 +408,15 @@ class QueryValidator:
                 ),
             )
 
-        if len(query_results) != len(instantiations):
+        if len(query_results) != len(query_batch.query_list):
             # Partial batch: the C++ side dropped some queries from the
             # request stream (e.g. malformed line that failed iss parsing).
             # The first un-returned slot is where the gap starts.
             crashed_idx = len(query_results)
-            assert crashed_idx < len(instantiations), (
-                f"Unexpectedly got more query results ({len(query_results)}) than instantiations ({len(instantiations)})."
+            assert crashed_idx < len(query_batch.query_list), (
+                f"Unexpectedly got more query results ({len(query_results)}) than query items ({len(query_batch.query_list)})."
             )
-            crashed_qid = instantiations[crashed_idx].query_id
+            crashed_qid = query_batch.query_list[crashed_idx].query_id
             crashed_at = (
                 f" First missing slot: run #{crashed_idx + 1} (Q{crashed_qid})."
                 if crashed_qid is not None
@@ -724,7 +425,7 @@ class QueryValidator:
             return ValidationOutput(
                 result_message=(
                     f"Error: unexpected number of query results{from_cmd_str}. "
-                    f"Got {len(query_results)} but expected {len(instantiations)}."
+                    f"Got {len(query_results)} but expected {len(query_batch.query_list)}."
                     f"{crashed_at}{resp_block}{per_query_block}"
                 ),
                 correct=False,
@@ -742,7 +443,7 @@ class QueryValidator:
         # it and continued, but the result CSV for that query was never written
         if per_query_errors:
             first_failed_idx = next(i for i, qr in enumerate(query_results) if qr.error)
-            failed_qid = instantiations[first_failed_idx].query_id
+            failed_qid = query_batch.query_list[first_failed_idx].query_id
             return ValidationOutput(
                 result_message=(
                     f"Error: one or more queries threw an exception"
@@ -763,22 +464,23 @@ class QueryValidator:
                 query_id=inst.query_id,
                 exec_time=float(qr.elapsed_ms),
             )
-            for i, (inst, qr) in enumerate(zip(instantiations, query_results))
+            for i, (inst, qr) in enumerate(zip(query_batch.query_list, query_results))
         ]
 
         # validate with duckdb
         out_path = self.workspace_path / "results"
         out_path.mkdir(parents=True, exist_ok=True)
         return check_output_correctness(
-            log_info=log_info,
-            instantiations=instantiations,
+            exec_settings=exec_settings,
+            query_batch=query_batch,
+            query_execution_cache=query_execution_cache,
             measurements=measurements,
             out_path=out_path,
             cmd=cmd,
             stop_on_first_error=stop_on_first_error,
             all_query_ids=self.all_query_ids,
-            stdout=stdout if self._show_stdout(scale_factor) else None,
-            stderr=stderr if self._show_stdout(scale_factor) else None,
+            stdout=stdout if self.output_stdout_stderr else None,
+            stderr=stderr if self.output_stdout_stderr else None,
             trace_mode=trace_mode,
             trace_data=trace_data,
         )
@@ -788,21 +490,23 @@ def _cache_path_for_hash(validate_cache_dir: Path, hash: str) -> Path:
     return validate_cache_dir / f"{hash}.pkl"
 
 
-def _format_query_traces(query_results: list[QueryResult], instantiations: list) -> str:
+def _format_query_traces(
+    query_results: list[QueryResult], query_items: list[QueryEntry]
+) -> str:
     """Format per-query trace data from the query_results JSON array into a single string.
 
-    query_results may be shorter than instantiations when the C++ child crashed
+    query_results may be shorter than query_items when the C++ child crashed
     or timed out before serialising all results — _validate_query reports that
     case separately, so here we just format whatever traces we got. The opposite
-    (more results than instantiations) should be impossible: stale pipe data is
+    (more results than query_items) should be impossible: stale pipe data is
     caught by the batch_id check in hotpatch_proc.
     """
-    assert len(query_results) <= len(instantiations), (
-        f"Got more query_results ({len(query_results)}) than instantiations "
-        f"({len(instantiations)}) — likely stale pipe data that bypassed the batch_id check."
+    assert len(query_results) <= len(query_items), (
+        f"Got more query_results ({len(query_results)}) than query_items "
+        f"({len(query_items)}) — likely stale pipe data that bypassed the batch_id check."
     )
     parts = []
-    for qr, inst in zip(query_results, instantiations):
+    for qr, inst in zip(query_results, query_items):
         trace = qr.trace
         if trace is not None and trace.strip() != "":
             parts.append(f"--- Query {inst.query_id} ({qr.elapsed_ms}ms) ---\n{trace}")

@@ -62,7 +62,6 @@ class RunTool:
         parallelism: bool = False,
         core_ids: Optional[List[int]] = None,
         delete_result_csv_before_execution: bool = True,  # this is important to make sure that we do not read old results from previous runs
-        bespoke_storage_dir: Optional[Path] = None,
         memory_budget_mb: (
             int | None
         ) = None,  # total RAM budget for the child engine; drives RLIMIT_AS and the generated frame-pool size. Only needed for disk-based storage runs.
@@ -148,10 +147,43 @@ class RunTool:
             # rewrite to None for easier handling
             query_ids = None
 
+        # rewrite query-ids
+        if query_ids is not None:
+            available_query_ids = self.workload_provider.query_ids
+            rewritten_query_ids = []
+
+            for q_id in query_ids:
+                if q_id in available_query_ids:
+                    rewritten_query_ids.append(q_id)
+                else:
+                    # check if llm accidently calls query with q prefix (e.g. q1 instead of 1) - if yes, auto-rewrite and continue with a warning, otherwise error out
+                    if (q_id.startswith("q") or q_id.startswith("Q")) and q_id[
+                        1:
+                    ] in available_query_ids:
+                        logger.warning(
+                            f"Query ID {q_id} not recognized, but {q_id[1:]} is in the list of known query IDs. Auto rewriting it."
+                        )
+                        rewritten_query_ids.append(q_id[1:])
+                        continue
+
+                    # ERROR: query ID not recognized
+                    return RunWorkerResult(
+                        msg=f"Error: Query ID {q_id} not recognized. Available query IDs are: {available_query_ids}",
+                        err=f"Query ID {q_id} not recognized. Available query IDs are: {available_query_ids}",
+                        metrics={},
+                    )
+
+            query_ids = rewritten_query_ids
+
         current_parallelism = (
             parallelism if parallelism is not None else self.parallelism
         )
         current_core_ids = core_ids if core_ids is not None else self.core_ids
+        current_num_threads = (
+            len(current_core_ids)
+            if current_parallelism and current_core_ids is not None
+            else 1
+        )
         if current_parallelism:
             assert current_core_ids is not None, (
                 "core_ids must be provided if parallelism is enabled"
@@ -230,6 +262,8 @@ class RunTool:
 
         query_batches = self.workload_provider.produce_workload(
             run_mode=mode,
+            num_threads=current_num_threads,
+            core_ids=current_core_ids,
             query_ids=query_ids,
         )
 
@@ -297,7 +331,7 @@ class RunTool:
             "cwd": self.cwd,
         }
 
-        memory_limit_mb = batch.wrapper_config.memory_limit_mb
+        memory_limit_mb = batch.general_system_config.memory_limit_mb
         if memory_limit_mb is not None:
             pool_key += f"|memory_budget_mb={memory_limit_mb}"
             hp_kwargs["memory_limit_bytes"] = memory_limit_mb * 1024 * 1024
@@ -347,9 +381,6 @@ class RunTool:
                     only_from_cache=self.only_from_cache,
                     recompile_if_necessary_callback=fn_compile_callback,
                     trace_mode=trace_mode,
-                    num_threads_for_logging=len(current_core_ids)  # type: ignore
-                    if current_parallelism
-                    else 1,
                 )
             )
 
@@ -461,14 +492,14 @@ class RunTool:
         self,
         scale_factor: float,
         optimize: bool,
-        query_id: Optional[List[str]] = None,
+        query_ids: Optional[List[str]] = None,
         trace_mode: bool = False,  # sets trace flag for the run
     ) -> str:
         # todo update tool interface
         return self.run(
             mode=RunToolMode.EXHAUSTIVE,
             optimize=optimize,
-            query_id=query_id,
+            query_ids=query_ids,
             trace_mode=trace_mode,
         )[0]
 

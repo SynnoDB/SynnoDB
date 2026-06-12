@@ -14,7 +14,10 @@ from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from observability.logging.logger import setup_logging
 from synth_framework.git_snapshotter import GitSnapshotter
 from tools.run import RunTool, RunToolMode, RunWorkerResult
+from tools.validate.query_validator_class import QueryValidator
 from utils.utils import DBStorage
+from workloads.query_execution_cache import QueryExecutionCache
+from workloads.system_factory import SystemFactory
 from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 setup_logging(level=logging.DEBUG)
@@ -35,7 +38,7 @@ def main(args):
     benchmark = OLAPWorkload.TPC_H
     db_storage = DBStorage.IN_MEMORY
     parallelism = False
-    core_ids = None
+    core_ids = None  # [3, 4, 5, 6]
     ##########################
 
     dataset_name = OLAPWorkloadProvider._get_dataset_name(benchmark)
@@ -81,15 +84,29 @@ def main(args):
     comp_result, _, _ = compiler.build_cached(skip_cache=True, write_cache=False)
     assert comp_result is None, f"Compilation failed with error: {comp_result}"
 
+    query_exec_cache = QueryExecutionCache(
+        query_execution_cache_dir=None, system_factory=SystemFactory()
+    )
+
+    query_validator = QueryValidator(
+        validate_cache_dir=None,
+        workspace_path=work_dir,
+        query_execution_cache=query_exec_cache,
+        all_query_ids=workload_provider.query_ids,
+        git_snapshotter=snapshotter,
+    )
+
     bespoke_engine = RunTool(
         cwd=work_dir,
-        query_validator=None,
+        query_validator=query_validator,
         dataset_name=workload_provider.dataset_name,
         base_parquet_dir=parquet_dir,
         run_stats_collector=None,
         db_storage=db_storage,
         compiler=compiler,
         workload_provider=workload_provider,
+        parallelism=parallelism,
+        core_ids=core_ids,
     )
 
     # instantiations = 2

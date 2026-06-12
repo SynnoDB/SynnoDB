@@ -1,3 +1,4 @@
+import enum
 import random
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -7,6 +8,10 @@ from tools.run_tool_mode import RunToolMode
 from utils import utils
 
 
+class Workload(enum.Enum):
+    pass
+
+
 @dataclass
 class ExecSettings:
     pass
@@ -14,27 +19,35 @@ class ExecSettings:
 
 @dataclass
 class QueryEntry:
+    benchmark: Workload
     query_id: str
     sql: str
     query_args: str
-    placeholder: dict[str, str]
+    placeholders: dict[str, str]
     order_by_info: list[tuple[str, str]]
 
 
 @dataclass
-class WrapperConfig:
+class GeneralSystemConfig:
     memory_limit_mb: int | None
+    num_threads: int
+    core_ids: list[int] | None
 
     def to_dict(self) -> dict:
-        return {"memory_limit_mb": self.memory_limit_mb}
+        return {
+            "memory_limit_mb": self.memory_limit_mb,
+            "num_threads": self.num_threads,
+            "core_ids": self.core_ids,
+        }
 
 
 @dataclass
 class QueryBatch:
     query_list: list[QueryEntry]
+    benchmark: Workload
     exec_settings: ExecSettings
     cli_call_args: str
-    wrapper_config: WrapperConfig
+    general_system_config: GeneralSystemConfig
     timeout_s: int
     extra_env: dict[str, str]
 
@@ -51,7 +64,7 @@ class QueryBatch:
             ],
             # "log_info": self.log_info, --- IGNORE --- log info is only for reporting, has no influence on execution
             "cli_call_args": self.cli_call_args,
-            "wrapper_config": self.wrapper_config.to_dict(),
+            "general_system_config": self.general_system_config.to_dict(),
             "timeout_s": self.timeout_s,
             "extra_env": self.extra_env,
         }
@@ -82,7 +95,11 @@ class WorkloadProvider:
 
     @abstractmethod
     def produce_workload(
-        self, run_mode: RunToolMode, query_ids: list[str] | None = None
+        self,
+        run_mode: RunToolMode,
+        num_threads: int,
+        core_ids: list[int] | None,
+        query_ids: list[str] | None = None,
     ) -> list[QueryBatch]:
         raise NotImplementedError("Subclasses must implement produce_workload")
 
