@@ -10,12 +10,8 @@ from conversations.checkpointed_conversation import (
 from conversations.conversation import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
-    VALIDATE_MAX_SF_REP1_OFF,
-    VALIDATE_MAX_SF_REP1_ON,
     VALIDATE_OFF,
     VALIDATE_ON,
-    VALIDATE_OUTPUT_STDOUT_MAXSF_OFF,
-    VALIDATE_OUTPUT_STDOUT_MAXSF_ON,
     VALIDATE_OUTPUT_STDOUT_OFF,
 )
 from conversations.filenames import get_filenames
@@ -37,6 +33,7 @@ from conversations.stage_config import (
     StaticStageConfig,
 )
 from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
+from tools.run_tool_mode import RunToolMode
 from utils.utils import DBStorage
 
 logger = logging.getLogger(__name__)
@@ -47,7 +44,6 @@ class BaseImplConversation(CheckpointedConversation):
         self,
         verify_sf_list: list[float],
         max_scale_factor: int | float,
-        artifacts_dir: Path,
         benchmark: str,
         workspace_path: Path,
         sql_dict: dict[str, str],
@@ -61,7 +57,6 @@ class BaseImplConversation(CheckpointedConversation):
 
         self.verify_sf_list = verify_sf_list
         self.max_scale_factor = max_scale_factor
-        self.artifacts_dir = artifacts_dir
         self.benchmark = benchmark
         self.read_storage_plan = read_storage_plan
         self.sample_query_args_dict = sample_query_args_dict
@@ -80,9 +75,9 @@ class BaseImplConversation(CheckpointedConversation):
         slow_queries = []
         for qid in query_ids:
             _, metrics, _ = self.run_tool.run(
-                scale_factor=sf,
+                mode=RunToolMode.EXHAUSTIVE,
                 optimize=True,
-                query_id=[qid],
+                query_ids=[qid],
                 trace_mode=False,
                 external_call=True,
             )
@@ -184,10 +179,6 @@ class BaseImplConversation(CheckpointedConversation):
             raise ValueError(f"Unknown benchmark {self.benchmark}")
 
         # paths
-        parquet_path = (
-            self.artifacts_dir / f"{self.benchmark}_parquet" / "sf<SCALE_FACTOR>"
-        )
-
         filenames_dict = get_filenames()
         queries_path = filenames_dict["queries_path"]
         builder_path = filenames_dict["builder_path"]
@@ -356,9 +347,9 @@ class BaseImplConversation(CheckpointedConversation):
                     ),
                 ),
                 BENCHMARK_MARKER,
-                VALIDATE_MAX_SF_REP1_ON,  # only single repetition with largest (benchmarking) scale factor - we don't care if measured query rt is noisy
+                # VALIDATE_MAX_SF_REP1_ON,  # only single repetition with largest (benchmarking) scale factor - we don't care if measured query rt is noisy
                 VALIDATE_OUTPUT_STDOUT_OFF,
-                VALIDATE_OUTPUT_STDOUT_MAXSF_ON,  # include stdout and stderr for largest (benchmarking) scale factor to have more info in case of regressions
+                # VALIDATE_OUTPUT_STDOUT_MAXSF_ON,  # include stdout and stderr for largest (benchmarking) scale factor to have more info in case of regressions
                 StaticStageConfig(
                     descriptor="optimize build",
                     get_prompt=lambda _sf, _rt: base_optimize_build_prompt(
@@ -371,8 +362,8 @@ class BaseImplConversation(CheckpointedConversation):
                     measure_performance_after_stage=False,
                     auto_revert_on_regression=False,
                 ),
-                VALIDATE_OUTPUT_STDOUT_MAXSF_OFF,
-                VALIDATE_MAX_SF_REP1_OFF,
+                # VALIDATE_OUTPUT_STDOUT_MAXSF_OFF,
+                # VALIDATE_MAX_SF_REP1_OFF,
                 BENCHMARK_MARKER,
             ]
         )

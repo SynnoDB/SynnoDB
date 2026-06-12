@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RunWorkerResult:
     msg: str
+    success: bool
     metrics: Optional[Dict] = None
     resp: Optional[str] = None
     out: Optional[str] = None
@@ -168,7 +169,7 @@ class RunTool:
                     return RunWorkerResult(
                         msg=f"Error: Query ID {q_id} not recognized. Available query IDs are: {available_query_ids}",
                         err=f"Query ID {q_id} not recognized. Available query IDs are: {available_query_ids}",
-                        metrics={},
+                        success=False,
                     )
 
             query_ids = rewritten_query_ids
@@ -252,7 +253,12 @@ class RunTool:
                 if len(err) > self.compile_output_truncation:
                     err = err[: self.compile_output_truncation] + "\n...[truncated]..."
             logger.error(f"Compile error: {err}")
-            return RunWorkerResult(msg=err, err=err)
+            return RunWorkerResult(
+                msg=err,
+                err=err,
+                success=False,
+                metrics=metrics,
+            )
 
         assert compile_key_hash is not None, (
             "compile_key_hash should not be None if compile did not return an error. This should not happen."
@@ -282,7 +288,9 @@ class RunTool:
             )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
             result_list.append(result)
 
-        # TODO: aggregate results
+            if not result.success:
+                # eraly return
+                break
 
         return result_list[-1]
 
@@ -483,18 +491,24 @@ class RunTool:
             err=err,
             trace_output=trace_output,
             query_results=query_results,
+            success=success,
         )
 
     def __call__(
         self,
-        scale_factor: float,
+        fast_check: bool,
         optimize: bool,
         query_ids: Optional[List[str]] = None,
         trace_mode: bool = False,  # sets trace flag for the run
     ) -> str:
-        # todo update tool interface
+        # update tool interface
+        if fast_check:
+            mode = RunToolMode.FAST_CHECK
+        else:
+            mode = RunToolMode.EXHAUSTIVE
+
         return self.run(
-            mode=RunToolMode.EXHAUSTIVE,
+            mode=mode,
             optimize=optimize,
             query_ids=query_ids,
             trace_mode=trace_mode,

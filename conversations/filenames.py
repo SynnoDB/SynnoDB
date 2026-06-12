@@ -1,5 +1,5 @@
 def get_filenames():
-    queries_path = "queries.txt"
+    queries_path = "queries.md"
     builder_path = "db_loader.hpp/db_loader.cpp"
     builder_cpp_path = "db_loader.cpp"
     builder_hpp_path = "db_loader.hpp"

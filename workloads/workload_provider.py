@@ -12,6 +12,15 @@ class Workload(enum.Enum):
     def __str__(self) -> str:
         return str(self.value)
 
+    @classmethod
+    def of(cls, value: str) -> "Workload":
+        for subclass in cls.__subclasses__():
+            try:
+                return subclass(value)
+            except ValueError:
+                continue
+        raise ValueError(f"invalid Workload value: {value!r}")
+
 
 @dataclass
 class ExecSettings:

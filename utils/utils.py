@@ -29,7 +29,9 @@ def get_disk_db_dir(
     db_storage: DBStorage, workspace_path: Path
 ) -> tuple[Path | None, Path | None]:
     if db_storage == DBStorage.LABSTORE:
-        raise NotImplementedError("LABSTORE storage is not supported in this codebase. Please use SSD or IN_MEMORY.")
+        raise NotImplementedError(
+            "LABSTORE storage is not supported in this codebase. Please use SSD or IN_MEMORY."
+        )
         # disk_db_dir = Path("/mnt/labstore/bespoke_olap/dbs")
         # bespoke_db_dir = Path("/mnt/labstore/bespoke_olap/tmp")
     elif db_storage == DBStorage.SSD:
@@ -161,15 +163,6 @@ def load_pickle(path: Path, expected: type[T]) -> T | None:
     except Exception as e:
         logger.exception(f"Failed to read from {path}: {e}")
         raise e
-
-    # quarantine corrupted / unexpected cache entry
-    # TODO activate this!
-    # try:
-    #     os.replace(path, path.with_suffix(path.suffix + ".corrupt"))
-    # except Exception:
-    #     pass
-
-    return None
 
 
 def dump_pickle(

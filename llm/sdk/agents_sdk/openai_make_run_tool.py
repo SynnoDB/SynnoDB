@@ -8,20 +8,14 @@ from tools.run import RunTool
 
 
 class RunArgs(BaseModel):
-    scale_factor: int = Field(..., ge=1, description="Scale factor (>= 1)")
-    optimize: bool = Field(..., description="Enable compiler optimization")
-    query_id: List[str] | None = Field(
-        None,
-        description="List of Query-IDs to execute. None means all queries.",
+    fast_check: bool = Field(
+        ...,
+        description="Whether to perform a fast check run (e.g., using a smaller scale factor or a subset of queries). Turn off for performance measurements with the full dataset and all queries.",
     )
-
-
-class IMDBRunArgs(BaseModel):
-    scale_factor: float = Field(..., gt=0, description="Scale factor (> 0)")
     optimize: bool = Field(..., description="Enable compiler optimization")
-    query_id: List[str] | None = Field(
+    query_ids: List[str] | None = Field(
         None,
-        description="List of Query-IDs to execute. None means all queries.",
+        description="List of Query-IDs to execute. None means all queries. Example: ['1', '2b', '5']",
     )
 
 
@@ -35,23 +29,13 @@ class RunArgsTrace(RunArgs):
     )
 
 
-class IMDBRunArgsTrace(IMDBRunArgs):
-    trace_mode: bool = Field(
-        False,
-        description=trace_flag_description,
-    )
-
-
 def make_openai_run_tool(
     run_tool: RunTool,
     run_tool_offer_trace_option: bool = False,
     defer_loading: bool = False,
 ) -> FunctionTool:
     def get_args_model():
-        if run_tool.dataset_name == "imdb":
-            return IMDBRunArgsTrace if run_tool_offer_trace_option else IMDBRunArgs
-        else:
-            return RunArgsTrace if run_tool_offer_trace_option else RunArgs
+        return RunArgsTrace if run_tool_offer_trace_option else RunArgs
 
     args_model = get_args_model()
 
@@ -60,16 +44,16 @@ def make_openai_run_tool(
 
         if run_tool_offer_trace_option:
             return run_tool(
-                scale_factor=args.scale_factor,
+                fast_check=args.fast_check,
                 optimize=args.optimize,
-                query_id=args.query_id,
+                query_ids=args.query_ids,
                 trace_mode=args.trace_mode,  # type: ignore
             )
         else:
             return run_tool(
-                scale_factor=args.scale_factor,
+                fast_check=args.fast_check,
                 optimize=args.optimize,
-                query_id=args.query_id,
+                query_ids=args.query_ids,
             )
 
     return FunctionTool(

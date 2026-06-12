@@ -80,7 +80,6 @@ def add_common_args(
     include_query_list: bool = False,
     include_queries_str: bool = False,
     include_continue_run: bool = False,
-    include_artifacts_dir: bool = False,
     include_no_preload: bool = False,
     include_notify: bool = False,
     include_start_snapshot: bool = False,
@@ -96,7 +95,6 @@ def add_common_args(
     include_bespoke_storage: bool = False,
     include_storage_plan_snapshot: bool = False,
     include_only_from_llm_cache: bool = False,
-    include_base_parquet_dir: bool = False,
     include_only_from_cache: bool = False,
     include_do_not_cache: bool = False,
     include_tool_search_tool: bool = False,
@@ -121,7 +119,7 @@ def add_common_args(
     if include_benchmark:
         parser.add_argument(
             "--benchmark",
-            type=Workload,
+            type=Workload.of,
             choices=list(OLAPWorkload),
             default=OLAPWorkload.TPCH,
             help="Benchmark to use for the agent.",

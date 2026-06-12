@@ -28,7 +28,7 @@ SYNNO_DATA_DIR = os.getenv("SYNNO_DATA_DIR", default=None)
 assert SYNNO_DATA_DIR is not None, "SYNNO_DATA_DIR environment variable is not set"
 SYNNO_DATA_DIR = Path(SYNNO_DATA_DIR)
 
-CEB_DIR = SYNNO_DATA_DIR / "workloads" / "ceb"
+CEB_QUERY_DIR = SYNNO_DATA_DIR / "workloads" / "ceb" / "queries"
 
 # Fraction of memory_budget_mb that goes to the generated engine's paged
 # frame pool. The remainder is implicit headroom for mmap_col regions and
@@ -217,7 +217,9 @@ class OLAPWorkloadProvider(WorkloadProvider):
         elif self.benchmark == OLAPWorkload.CEB:
             from workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
 
-            gen_query_fn = functools.partial(gen_query_single_only, ceb_dir=CEB_DIR)
+            gen_query_fn = functools.partial(
+                gen_query_single_only, ceb_dir=CEB_QUERY_DIR
+            )
         else:
             raise ValueError(f"Unknown benchmark: {self.benchmark}")
 
@@ -268,7 +270,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
                     return cached.placeholders
 
                 # we only need the placeholders dict
-                placeholders = gen_query_single_only(**kwargs, ceb_dir=CEB_DIR)[2]
+                placeholders = gen_query_single_only(**kwargs, ceb_dir=CEB_QUERY_DIR)[2]
 
                 # store output in cache
                 if cache_path is not None and not do_not_cache:

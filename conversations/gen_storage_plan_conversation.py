@@ -29,7 +29,7 @@ class GenStoragePlanConversation(CheckpointedConversation):
         await self._run_stages(self.assemble_stages())
 
     def assemble_stages(self):
-        queries_filename = "queries.txt"
+        queries_filename = "queries.md"
         storage_plan_filename = "storage_plan.txt"
 
         def _validate_storage_plan_exists() -> str | None:

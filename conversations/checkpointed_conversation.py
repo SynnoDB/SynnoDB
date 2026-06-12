@@ -17,11 +17,10 @@ from conversations.supervision_agent import (
     SUPERVISION_STAGE_VISIBILITY_MARKER,
     SupervisionAgent,
 )
-
 from observability.logging.run_stats_collector import RunStatsCollector
 from synth_framework.git_snapshotter import GitSnapshotter
 from tools.run import RunTool
-
+from tools.run_tool_mode import RunToolMode
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +66,6 @@ class CheckpointedConversation(AbstractConversation):
     def __init__(
         self,
         run_tool: RunTool,
-        benchmark_sf: float,
         git_snapshotter: GitSnapshotter,
         run_stats_collector: RunStatsCollector,
         gen_incorrect_output_prompt_fn: Callable,
@@ -80,7 +78,6 @@ class CheckpointedConversation(AbstractConversation):
         )
 
         self.run_tool = run_tool
-        self.benchmark_sf = benchmark_sf
         self.git_snapshotter = git_snapshotter
         self.run_stats_collector = run_stats_collector
         self.supervision_agent = supervision_agent
@@ -96,15 +93,14 @@ class CheckpointedConversation(AbstractConversation):
 
     def _run_tool_benchmark(
         self,
-        sf: float,
-        query_id=None,
+        query_ids=None,
         trace_mode: bool = False,
     ):
         """Thin wrapper around run_tool.run with standard benchmark parameters."""
         return self.run_tool.run(
-            scale_factor=sf,
+            mode=RunToolMode.EXHAUSTIVE,
             optimize=True,
-            query_id=query_id,
+            query_ids=query_ids,
             trace_mode=trace_mode,
             external_call=True,
         )
@@ -186,7 +182,9 @@ class CheckpointedConversation(AbstractConversation):
         ), "get_prompt callback is required for StaticStageConfig"
 
         # stage.sf overrides the default benchmark_sf for all measurements in this stage
-        stage_sf = stage_config.sf if stage_config.sf is not None else self.benchmark_sf
+        stage_sf = (
+            stage_config.sf if stage_config.sf is not None else None
+        )  # TODO: remove all this sf stuff
 
         # assemble prompt
         if stage_config.get_prompt is not None:
@@ -230,7 +228,7 @@ class CheckpointedConversation(AbstractConversation):
             try:
                 # measure performance after LLM interaction for this stage
                 msg, metrics, tracing_output = self._run_tool_benchmark(
-                    query_id=[query_id], sf=stage_sf
+                    query_ids=[query_id],
                 )
 
                 assert metrics is not None, (
@@ -303,7 +301,7 @@ class CheckpointedConversation(AbstractConversation):
 
                 # measure and log performance after the rollback
                 out_str, metrics, trace_output = self._run_tool_benchmark(
-                    query_id=[query_id], sf=stage_sf
+                    query_ids=[query_id],
                 )
                 assert metrics is not None, (
                     f"Metrics is None after reverting stage '{stage_config.descriptor}' for query {query_id}."
@@ -320,7 +318,7 @@ class CheckpointedConversation(AbstractConversation):
                         current_stage_nr=current_stage_nr,
                     )
                     _, metrics, _ = self._run_tool_benchmark(
-                        query_id=[query_id], sf=stage_sf
+                        query_ids=[query_id],
                     )
                     assert metrics is not None, (
                         f"Metrics is None after reverting stage '{stage_config.descriptor}' for query {query_id}."
@@ -448,7 +446,7 @@ class CheckpointedConversation(AbstractConversation):
             while True:
                 # check correctness
                 success, metrics, msg = self._check_correctness(
-                    qids, trace_mode=tracing_mode, sf=self.benchmark_sf
+                    qids, trace_mode=tracing_mode
                 )
                 if not success:
                     # incorrect
@@ -480,9 +478,8 @@ class CheckpointedConversation(AbstractConversation):
         self,
         qids: List[str],
         trace_mode: bool,
-        sf: float,
     ) -> tuple[bool, Dict | None, str | None]:
-        msg, metrics, trace_output = self._run_tool_benchmark(sf, qids, trace_mode)
+        msg, metrics, trace_output = self._run_tool_benchmark(qids, trace_mode)
         if metrics is None or not metrics["validation/correct"]:
             logger.error(
                 f"Validation check reported results are incorrect (with trace_mode={trace_mode}, qids={qids})."
@@ -528,7 +525,7 @@ class CheckpointedConversation(AbstractConversation):
             f"Could not find a recent validate benchmark result without interceding changes (sf={sf}, trace_mode={trace_mode}, query_id={query_id}). Rerunning the benchmark to get fresh results."
         )
         _, metrics, _ = self._run_tool_benchmark(
-            sf=sf, trace_mode=trace_mode, query_id=query_id
+            trace_mode=trace_mode, query_ids=query_id
         )
         assert metrics is not None, "Metrics is None after rerunning benchmark."
         return metrics

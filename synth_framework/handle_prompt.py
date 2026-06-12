@@ -8,12 +8,8 @@ from litellm.exceptions import BadRequestError, InternalServerError
 from conversations.conversation import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
-    VALIDATE_MAX_SF_REP1_OFF,
-    VALIDATE_MAX_SF_REP1_ON,
     VALIDATE_OFF,
     VALIDATE_ON,
-    VALIDATE_OUTPUT_STDOUT_MAXSF_OFF,
-    VALIDATE_OUTPUT_STDOUT_MAXSF_ON,
     VALIDATE_OUTPUT_STDOUT_OFF,
     VALIDATE_OUTPUT_STDOUT_ON,
 )
@@ -21,6 +17,7 @@ from llm.sdk.sdk_wrapper import SDKWrapper
 from observability.logging.run_stats_collector import RunStatsCollector
 from observability.logging.truncate_model_log import truncate_model_final_output
 from tools.run import RunTool
+from tools.run_tool_mode import RunToolMode
 from tools.tool_call_error_logger import log_tool_call_error
 from tools.validate.query_validator_class import QueryValidator
 
@@ -32,7 +29,6 @@ async def handle_prompt(
     short_desc: str | None,
     idx: int,
     run_tool: RunTool,
-    max_scale_factor: int | float,
     run_stats_collector: RunStatsCollector,
     agent_sdk_wrapper: SDKWrapper,
     query_validator: QueryValidator | None,
@@ -52,9 +48,9 @@ async def handle_prompt(
     if text == BENCHMARK_MARKER:
         logger.info(f"Triggering benchmarking at prompt index {idx}")
         run_tool.run(
-            scale_factor=max_scale_factor,
+            mode=RunToolMode.EXHAUSTIVE,
             optimize=True,
-            query_id=None,
+            query_ids=None,
             trace_mode=False,
             external_call=True,
         )
@@ -81,34 +77,6 @@ async def handle_prompt(
         query_validator.output_stdout_stderr = False
         logger.info(
             f"Disabled output stdout in validation results at prompt index {idx}"
-        )
-        return None
-    if text == VALIDATE_MAX_SF_REP1_ON:
-        assert query_validator is not None
-        query_validator.rep1_for_max_sf = True
-        logger.info(
-            f"Enabled 1 repetition for largest scale factor in validation results at prompt index {idx}"
-        )
-        return None
-    if text == VALIDATE_MAX_SF_REP1_OFF:
-        assert query_validator is not None
-        query_validator.rep1_for_max_sf = False
-        logger.info(
-            f"Disabled 1 repetition for largest scale factor in validation results at prompt index {idx}"
-        )
-        return None
-    if text == VALIDATE_OUTPUT_STDOUT_MAXSF_ON:
-        assert query_validator is not None
-        query_validator.output_stdout_stderr_for_max_sf = True
-        logger.info(
-            f"Enabled output stdout for largest scale factor in validation results at prompt index {idx}"
-        )
-        return None
-    if text == VALIDATE_OUTPUT_STDOUT_MAXSF_OFF:
-        assert query_validator is not None
-        query_validator.output_stdout_stderr_for_max_sf = False
-        logger.info(
-            f"Disabled output stdout for largest scale factor in validation results at prompt index {idx}"
         )
         return None
 

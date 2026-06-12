@@ -11,13 +11,13 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent.parent))
-
-from observability.benchmark.run import get_all_query_ids
+from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
+    prepare_repo_and_load_snapshot,
+)
+from observability.logging.logger import setup_logging
+from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
 from observability.plots.utils.wandb_trace_preprocessor import SECTION_RULES
-from pipeline.git_snapshotter import GitSnapshotter
-from prepare_repo.load_snapshot_and_prepare import prepare_repo_and_load_snapshot
-from utils.logging_and_reporting.logger import setup_logging
-from utils.logging_and_reporting.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synth_framework.git_snapshotter import GitSnapshotter
 
 setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)

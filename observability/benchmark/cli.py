@@ -84,8 +84,6 @@ def build_run_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         parser,
         include_notify=True,
         include_disable_repo_sync=True,
-        include_artifacts_dir=True,
-        include_base_parquet_dir=True,
         include_db_storage=True,
     )
     return parser

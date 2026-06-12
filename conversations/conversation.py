@@ -12,7 +12,6 @@ from prompt_toolkit.filters import is_multiline
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
-
 from llm.sdk.sdk_wrapper import SDKWrapper
 from observability.logging.notify import send_notification
 from synth_framework.runtime_tracker import RuntimeTracker
@@ -24,10 +23,6 @@ VALIDATE_ON = "<<VALIDATE_ON>>"
 VALIDATE_OFF = "<<VALIDATE_OFF>>"
 VALIDATE_OUTPUT_STDOUT_ON = "<<VALIDATE_OUTPUT_STDOUT_ON>>"
 VALIDATE_OUTPUT_STDOUT_OFF = "<<VALIDATE_OUTPUT_STDOUT_OFF>>"
-VALIDATE_MAX_SF_REP1_ON = "<<VALIDATE_MAX_SF_REP1_ON>>"
-VALIDATE_MAX_SF_REP1_OFF = "<<VALIDATE_MAX_SF_REP1_OFF>>"
-VALIDATE_OUTPUT_STDOUT_MAXSF_ON = "<<VALIDATE_OUTPUT_STDOUT_MAXSF_ON>>"
-VALIDATE_OUTPUT_STDOUT_MAXSF_OFF = "<<VALIDATE_OUTPUT_STDOUT_MAXSF_OFF>>"
 NOTIFY_AFTER_SEC = 60
 
 # Display labels for each choice key (order is preserved in the prompt).

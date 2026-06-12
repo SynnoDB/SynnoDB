@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-import wandb
 from dotenv import load_dotenv
 
+import wandb
 from conversations.base_impl_conversation import BaseImplConversation
 from conversations.check_sf_correctness_conv import CheckSFCorrectnessConv
 from conversations.filenames import get_filenames
@@ -53,7 +53,6 @@ from utils.core_utils import get_cores_for_current_machine
 from utils.get_sample_q_args import get_sample_query_args
 from utils.hugepages import get_num_numa_nodes, set_hugepages
 from utils.pkgconfig import check_pkg
-from utils.sf_list_gen import gen_sf
 from utils.snapshot_utils import load_storage_plan_from_snapshot
 from utils.utils import (
     DBStorage,
@@ -66,6 +65,20 @@ from workloads.system_factory_olap import OLAPSystemFactory
 from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
+
+# load environment variables
+load_dotenv()
+
+synnodb_data_dir_tmp = os.getenv("SYNNO_DATA_DIR", default=None)
+assert synnodb_data_dir_tmp is not None, (
+    "SYNNO_DATA_DIR environment variable is not set"
+)
+synnodb_data_dir = Path(synnodb_data_dir_tmp)
+
+log_dir = synnodb_data_dir / "logs" / "logfiles"
+create_dir_and_set_permissions(log_dir)
+duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
+create_dir_and_set_permissions(duckdb_drain_dir)
 
 
 async def main(args: argparse.Namespace) -> None:
@@ -80,11 +93,7 @@ async def main(args: argparse.Namespace) -> None:
     workspace_path.mkdir(exist_ok=True)
 
     # cache paths
-    synnodb_data_dir = os.getenv("SYNNO_DATA_DIR", default=None)
-    assert synnodb_data_dir is not None, (
-        "SYNNO_DATA_DIR environment variable is not set"
-    )
-    synnodb_data_dir = Path(synnodb_data_dir)
+
     cache_dir = synnodb_data_dir / "cache"
     create_dir_and_set_permissions(cache_dir)
 
@@ -140,7 +149,7 @@ async def main(args: argparse.Namespace) -> None:
         benchmark=OLAPWorkload(args.benchmark),
         base_parquet_dir=parquet_dir,
         db_storage=args.db_storage,
-        bespoke_storage_dir=bespoke_db_dir,
+        bespoke_ssd_storage_dir=bespoke_db_dir,
     )
 
     # get files that should be marked as read-only - they will be untracked in git and excluded from snapshot hashed / ... (i.e. unless their version number changes, they will not affect caches)
@@ -265,8 +274,6 @@ async def main(args: argparse.Namespace) -> None:
     runtime_tracker = RuntimeTracker()
 
     # Create hooks instance for tracking metrics
-    log_path = Path(args.artifacts_dir) / "logs"
-    create_dir_and_set_permissions(log_path)
     import socket
 
     data_drains: list[DataDrain] = [
@@ -275,7 +282,7 @@ async def main(args: argparse.Namespace) -> None:
             wandb_run_id=getattr(args, "wandb_run_id", None),
             system_name=socket.gethostname(),
         ),
-        DuckDBDrain(db_path=log_path / f"{args.run_name}.duckdb"),
+        DuckDBDrain(db_path=duckdb_drain_dir / f"{args.run_name}.duckdb"),
     ]
     if not args.disable_wandb:
         data_drains.append(WandbDrain())
@@ -289,22 +296,6 @@ async def main(args: argparse.Namespace) -> None:
         drains=data_drains,
     )
     run_stats_collector = RunStatsCollector(**collector_args)
-
-    # assemble default sf values for the selected benchmark
-    verify_sf_list, max_scale_factor = gen_sf(
-        args.benchmark,
-        benchmark_sf=args.max_scale_factor,
-        multi_threaded_mode=args.conv_mode == ConvMode.MAKE_MT
-        or (args.conv_mode == ConvMode.CHECK_SF and prepare_mode == "mt"),
-    )
-
-    if args.conv_mode == ConvMode.MAKE_MT:
-        # get pre_sf
-        _, pre_sf = gen_sf(
-            args.benchmark,
-            benchmark_sf=args.max_scale_factor,
-            multi_threaded_mode=False,  # pre-sf is always generated with single-threaded settings
-        )
 
     # run tool parallelism setup (must be determined before QueryValidator so the
     # num_threads value is included in the query-cache key)
@@ -325,17 +316,6 @@ async def main(args: argparse.Namespace) -> None:
     # cap result CSVs at this size before snapshotting (used by validator and
     # exposed in the LLM cache key via config_kwargs below for cache stability)
     max_snapshot_csv_size_mb = 5.0
-
-    validator_sf_list = verify_sf_list + [max_scale_factor]
-    if args.conv_mode == ConvMode.CHECK_SF and args.target_sf is not None:
-        # the check-sf conversation validates correctness at target_sf, so the
-        # validator must precompute reference results for it as well
-        if args.target_sf not in validator_sf_list:
-            validator_sf_list = validator_sf_list + [args.target_sf]
-    if args.conv_mode == ConvMode.MAKE_MT and pre_sf not in validator_sf_list:
-        # the MT-introduction stage measures the pre-MT reference runtime at pre_sf,
-        # so the validator must precompute reference results for it as well
-        validator_sf_list = validator_sf_list + [pre_sf]
 
     query_execution_cache = QueryExecutionCache(
         query_execution_cache_dir=query_execution_cache_dir,
@@ -493,7 +473,6 @@ async def main(args: argparse.Namespace) -> None:
             callback=functools.partial(
                 handle_prompt,
                 run_tool=run_tool,
-                max_scale_factor=max_scale_factor,
                 run_stats_collector=run_stats_collector,
                 query_validator=query_validator,
                 agent_sdk_wrapper=agent_sdk_wrapper,
@@ -509,7 +488,6 @@ async def main(args: argparse.Namespace) -> None:
         )
         auto_conversation_args = dict(
             run_tool=run_tool,
-            benchmark_sf=max_scale_factor,
             git_snapshotter=snapshotter,
             run_stats_collector=run_stats_collector,
             supervision_agent=supervision_agent,
@@ -534,13 +512,14 @@ async def main(args: argparse.Namespace) -> None:
             conv = ScriptedConversation(**conv_args)
         elif args.conv_mode == ConvMode.BASE:
             # get sample query args for later use in the conversation (e.g. for better prompt formatting)
-            sample_query_args_dict: Dict[str, str] = get_sample_query_args(args)
+            sample_query_args_dict: Dict[str, str] = get_sample_query_args(
+                args, workload_provider=workload_provider
+            )
 
             # load the base impl conversation
             conv = BaseImplConversation(
                 verify_sf_list=verify_sf_list,
                 max_scale_factor=max_scale_factor,
-                artifacts_dir=Path(args.artifacts_dir),
                 benchmark=args.benchmark,
                 read_storage_plan=args.bespoke_storage,
                 sample_query_args_dict=sample_query_args_dict,
@@ -711,8 +690,6 @@ def run_conv_wrapper(
     args.conv_name = conv_name
     args.conv_name_withdatetime = conv_name_withdatetime
 
-    # load environment variables
-    load_dotenv()
     if args.sdk == "openai":
         if args.disable_openai_tracing:
             # disable agents sdk tracing
@@ -760,8 +737,6 @@ def run_conv_wrapper(
         _wandb_run = None
 
     # create log dir and setup logging
-    log_path = Path(args.artifacts_dir) / "logs"
-    create_dir_and_set_permissions(log_path)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # assemble log filename
@@ -778,7 +753,7 @@ def run_conv_wrapper(
         args.wandb_run_id = None
 
     log_filename = f"{run_name}.log"
-    setup_logging(logging.DEBUG, log_path / log_filename)
+    setup_logging(logging.DEBUG, log_dir / log_filename)
 
     if args.notify:
         logger.info(
@@ -849,7 +824,6 @@ if __name__ == "__main__":
         include_disable_wandb=True,
         include_query_list=True,
         include_continue_run=True,
-        include_artifacts_dir=True,
         include_no_preload=True,
         include_notify=True,
         include_start_snapshot=True,
@@ -863,7 +837,6 @@ if __name__ == "__main__":
         include_run_tool_offer_trace_option=True,
         include_bespoke_storage=True,
         include_only_from_llm_cache=True,
-        include_base_parquet_dir=True,
         include_only_from_cache=True,
         include_do_not_cache=True,
         include_tool_search_tool=True,
