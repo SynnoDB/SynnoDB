@@ -52,7 +52,6 @@ class RunTool:
         run_stats_collector: RunStatsCollector | None,
         query_validator: Optional[QueryValidator] = None,
         parse_out_and_validate_output: bool = True,
-        only_from_cache: bool = False,
         validate_output_truncation: Optional[
             int
         ] = 10000,  # restrict output to 10000 chars ~ 2.5 Thousand tokens
@@ -76,7 +75,6 @@ class RunTool:
         self.query_validator: Optional[QueryValidator] = query_validator
         self.run_stats_collector = run_stats_collector
         self.parse_out_and_validate_output = parse_out_and_validate_output
-        self.only_from_cache = only_from_cache
         self.validate_output_truncation = validate_output_truncation
         self.compile_output_truncation = compile_output_truncation
         self.parallelism = parallelism
@@ -378,7 +376,6 @@ class RunTool:
                     },
                     skip_validate=not self.parse_out_and_validate_output,
                     compile_key_hash=compile_key_hash,  # via this hash we ensure val is correctly chained to cache.
-                    only_from_cache=self.only_from_cache,
                     recompile_if_necessary_callback=fn_compile_callback,
                     trace_mode=trace_mode,
                 )

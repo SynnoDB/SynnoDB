@@ -45,7 +45,7 @@ def main(args):
         synno_data_dir = Path(synno_data_dir)
 
     ##### CONFIGURATION #####
-    benchmark = OLAPWorkload.TPC_H
+    benchmark = OLAPWorkload.TPCH
     db_storage = DBStorage.IN_MEMORY
     parallelism = False
     core_ids = None  # [3, 4, 5, 6]

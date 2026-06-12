@@ -4,6 +4,8 @@ import argparse
 from dataclasses import dataclass
 
 from utils.utils import DBStorage
+from workloads.workload_provider import Workload
+from workloads.workload_provider_olap import OLAPWorkload
 
 # DEFAULT_MODEL = "gpt-5.3-codex"
 DEFAULT_MODEL = "gpt-5.4"
@@ -119,7 +121,9 @@ def add_common_args(
     if include_benchmark:
         parser.add_argument(
             "--benchmark",
-            default="tpch",  # options: tpch, ceb
+            type=Workload,
+            choices=list(OLAPWorkload),
+            default=OLAPWorkload.TPCH,
             help="Benchmark to use for the agent.",
         )
     if include_replay:
@@ -163,13 +167,6 @@ def add_common_args(
             default=False,
             help="Continue with the current snapshot in the working-dir. Does not start empty.",
         )
-    if include_artifacts_dir:
-        parser.add_argument(
-            "--artifacts_dir",
-            type=str,
-            default=DEFAULT_ARTIFACTS_DIR,
-            help="Directory to store artifacts like logs.",
-        )
     if include_no_preload:
         parser.add_argument(
             "--no_preload",
@@ -192,14 +189,6 @@ def add_common_args(
             required=start_snapshot_required,
             help="Path to snapshot to start from (if not continuing current snapshot).",
         )
-    if include_base_parquet_dir:
-        parser.add_argument(
-            "--base_parquet_dir",
-            type=str,
-            default=DEFAULT_PARQUET_DIR,
-            help="Base parquet directory.",
-        )
-
     if include_disable_repo_sync:
         parser.add_argument(
             "--disable_repo_sync",

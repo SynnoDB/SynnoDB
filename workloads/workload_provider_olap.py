@@ -37,7 +37,7 @@ FRAME_POOL_SHARE = 0.60
 
 
 class OLAPWorkload(Workload):
-    TPC_H = "tpch"
+    TPCH = "tpch"
     CEB = "ceb"
 
 
@@ -55,7 +55,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
         benchmark: OLAPWorkload,
         base_parquet_dir: Path,
         db_storage: DBStorage,
-        bespoke_storage_dir: Path | None = None,
+        bespoke_ssd_storage_dir: Path | None = None,
         query_cache_dir: Path | None = None,
         **kwargs,
     ):
@@ -66,7 +66,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
         self.dataset_tables = self._dataset_tables(self.benchmark)
         self.dataset_name = self._get_dataset_name(self.benchmark)
         self.dataset_schema = self._get_dataset_schema(self.benchmark)
-        self.bespoke_storage_dir = bespoke_storage_dir
+        self.bespoke_ssd_storage_dir = bespoke_ssd_storage_dir
 
         super().__init__(
             benchmark_name=self.benchmark.value,
@@ -91,7 +91,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
             instantiations = 3
             repetitions = 1
 
-            if self.benchmark == OLAPWorkload.TPC_H:
+            if self.benchmark == OLAPWorkload.TPCH:
                 scale_factors = [1, 2]
             elif self.benchmark == OLAPWorkload.CEB:
                 scale_factors = [0.25, 0.5]
@@ -102,7 +102,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
             instantiations = 5
             repetitions = 3
 
-            if self.benchmark == OLAPWorkload.TPC_H:
+            if self.benchmark == OLAPWorkload.TPCH:
                 scale_factors = [1, 2, 20]
             elif self.benchmark == OLAPWorkload.CEB:
                 scale_factors = [0.25, 0.5, 5]
@@ -119,8 +119,8 @@ class OLAPWorkloadProvider(WorkloadProvider):
         rnd = random.Random(42)
         for scale_factor in scale_factors:
             if self.db_storage in [DBStorage.SSD, DBStorage.LABSTORE]:
-                assert self.bespoke_storage_dir is not None
-                storage_dir = self.bespoke_storage_dir / f"sf{scale_factor}"
+                assert self.bespoke_ssd_storage_dir is not None
+                storage_dir = self.bespoke_ssd_storage_dir / f"sf{scale_factor}"
                 extra_env["STORAGE_DIR"] = str(storage_dir) + os.sep
                 if self.memory_limit_mb is not None:
                     # Apply the frame-pool / mmap-headroom split here so the generated
@@ -210,7 +210,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
 
     def _get_query_gen_fn(self):
         # prepare query gen
-        if self.benchmark == OLAPWorkload.TPC_H:
+        if self.benchmark == OLAPWorkload.TPCH:
             from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
 
             gen_query_fn = gen_query
@@ -226,7 +226,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
     def get_placeholders_fn(self, do_not_cache: bool = False):
         # prepare query gen
         gen_fn = None
-        if self.benchmark == OLAPWorkload.TPC_H:
+        if self.benchmark == OLAPWorkload.TPCH:
             from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
 
             def gen_placeholder_tpch(**kwargs):
@@ -292,7 +292,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
     @staticmethod
     def _dataset_tables(benchmark: OLAPWorkload) -> list[str]:
         tables_lists = {
-            OLAPWorkload.TPC_H: [
+            OLAPWorkload.TPCH: [
                 "customer",
                 "lineitem",
                 "nation",
@@ -332,7 +332,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
 
     @staticmethod
     def _get_dataset_name(benchmark: OLAPWorkload) -> str:
-        if benchmark == OLAPWorkload.TPC_H:
+        if benchmark == OLAPWorkload.TPCH:
             return "tpch"
         elif benchmark == OLAPWorkload.CEB:
             return "imdb"
@@ -341,7 +341,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
 
     @staticmethod
     def _get_dataset_schema(benchmark: OLAPWorkload) -> str:
-        if benchmark == OLAPWorkload.TPC_H:
+        if benchmark == OLAPWorkload.TPCH:
             from workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
 
             return tpc_h_schema
@@ -353,7 +353,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
             raise ValueError(f"Unknown benchmark {benchmark}")
 
     def _get_sql_dict(self, benchmark: OLAPWorkload):
-        if benchmark == OLAPWorkload.TPC_H:
+        if benchmark == OLAPWorkload.TPCH:
             return tpc_h
         elif benchmark == OLAPWorkload.CEB:
             return ceb_templates

@@ -75,12 +75,6 @@ class QueryValidator:
         runtime_tracker: Optional[RuntimeTracker] = None,
         do_not_cache: bool = False,
         only_from_cache: bool = False,
-        run_umbra_as_well: bool = False,  # whether to run UMBRA plans for validation.
-        rep1_for_max_sf: bool = False,  # whether to use 1 repetition for the largest scale factor - e.g. for build improvement we don't care about query runtime, only build runtime
-        num_threads: int = 1,  # number of threads for the bespoke run tool; used to key query cache and fetch MT DuckDB reference runtimes. 1 = single threaded
-        core_ids: Optional[
-            List[int]
-        ] = None,  # list of core ids to pin the MT implementation to - if None, no pinning is applied; only used for the multi-threading optimization conversation mode
         max_snapshot_csv_size_mb: Optional[
             float
         ] = None,  # if set, result CSVs in workspace_path are truncated to this size right before the post-run snapshot so they don't bloat snapshots
@@ -93,10 +87,6 @@ class QueryValidator:
         self.git_snapshotter = git_snapshotter
         self.output_stdout_stderr = output_stdout_stderr
         self.do_not_cache = do_not_cache
-        self.rep1_for_max_sf = rep1_for_max_sf
-        self.num_threads = num_threads
-        self.core_ids = core_ids
-        self.run_umbra_as_well = run_umbra_as_well
         self.only_from_cache = only_from_cache
         self.max_snapshot_csv_size_mb = max_snapshot_csv_size_mb
 
@@ -108,7 +98,6 @@ class QueryValidator:
         trace_mode: bool,
         other_config: Dict[str, Any] = {},
         skip_validate: bool = False,
-        only_from_cache: bool = False,
         recompile_if_necessary_callback: Optional[
             Callable
         ] = None,  # will internally check if recompilation is necessary (i.e. if compile result was from cache) and call the callback if it is necessary
@@ -153,7 +142,7 @@ class QueryValidator:
                     logger.debug("No cmd output in cache result (old cache)")
 
             else:
-                if only_from_cache:
+                if self.only_from_cache:
                     raise Exception(
                         f"Validation result not found in cache for key {compile_key_hash} and only_from_cache is set. Cache path: {cache_path}"
                     )
