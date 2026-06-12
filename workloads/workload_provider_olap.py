@@ -23,8 +23,12 @@ from workloads.workload_provider import (
 
 logger = logging.getLogger(__name__)
 
-CEB_DIR = Path("/mnt/labstore/bespoke_olap/datasets/ceb/imdb")
-CEB_DIR = Path(__file__).parent.parent / "data" / "ceb" / "imdb"
+
+SYNNO_DATA_DIR = os.getenv("SYNNO_DATA_DIR", default=None)
+assert SYNNO_DATA_DIR is not None, "SYNNO_DATA_DIR environment variable is not set"
+SYNNO_DATA_DIR = Path(SYNNO_DATA_DIR)
+
+CEB_DIR = SYNNO_DATA_DIR / "workloads" / "ceb"
 
 # Fraction of memory_budget_mb that goes to the generated engine's paged
 # frame pool. The remainder is implicit headroom for mmap_col regions and
@@ -88,11 +92,9 @@ class OLAPWorkloadProvider(WorkloadProvider):
             repetitions = 1
 
             if self.benchmark == OLAPWorkload.TPC_H:
-                # scale_factors = [1, 2]
-                scale_factors = [1]
+                scale_factors = [1, 2]
             elif self.benchmark == OLAPWorkload.CEB:
-                # scale_factors = [0.25, 0.5]
-                scale_factors = [0.25]
+                scale_factors = [0.25, 0.5]
             else:
                 raise ValueError(f"Unknown benchmark: {self.benchmark}")
 
@@ -142,12 +144,29 @@ class OLAPWorkloadProvider(WorkloadProvider):
             cli_call_args_str = f"{parquet_path}"
 
             query_list = []
+            sql_set = (
+                set()
+            )  # for debugging - track generated SQL queries to check for duplicates
 
             for inst_idx in range(instantiations):
                 for query_id in queries_to_generate:
-                    _, sql, placeholders = self._get_query_gen_fn()(
-                        query_name=f"Q{query_id}", rnd=rnd
-                    )
+                    for _ in range(
+                        10
+                    ):  # try up to 10 times to generate a unique query (in case of random generation leading to duplicates)
+                        _, sql, placeholders = self._get_query_gen_fn()(
+                            query_name=f"Q{query_id}", rnd=rnd
+                        )
+
+                        if sql in sql_set:
+                            continue
+                        else:
+                            sql_set.add(sql)
+                            break
+                    else:
+                        logger.debug(
+                            f"Failed to generate unique SQL for query_id={query_id} (inst_idx={inst_idx}) after 10 attempts, skipping this instantiation"
+                        )
+                        continue
 
                     # Extract order by information
                     order_by_info = extract_order_by_columns(sql)

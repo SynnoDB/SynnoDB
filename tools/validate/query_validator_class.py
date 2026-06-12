@@ -72,7 +72,6 @@ class QueryValidator:
         all_query_ids: list[str],
         git_snapshotter: Optional[Any] = None,
         output_stdout_stderr: bool = False,  # whether to include stdout and stderr in the validation result message also in case of correct validation (not only in case of errors)
-        output_stdout_stderr_for_max_sf: bool = False,  # include stdout and stderr for max scale factor
         runtime_tracker: Optional[RuntimeTracker] = None,
         do_not_cache: bool = False,
         only_from_cache: bool = False,
@@ -169,7 +168,7 @@ class QueryValidator:
                 # execute queries via callback
                 args_list = [entry.query_args for entry in query_batch.query_list]
                 exec_result = exec_callback_fn(
-                    args_list, timeout_s=query_batch.timeout_s
+                    args_list=args_list, timeout_s=query_batch.timeout_s
                 )
                 ingest_ms = exec_result.ingest_time_ms
                 exec_query_results = exec_result.query_results

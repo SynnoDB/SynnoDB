@@ -185,7 +185,13 @@ class UmbraRunner:
     def _db_name_for_sf(self, scale_factor: float) -> str:
         return f"{self._benchmark}_sf{self._format_sf(scale_factor)}"
 
+    def _ensure_admin_con(self) -> None:
+        if not hasattr(self, "_admin_con"):
+            self._admin_con = self._create_admin_con()
+            self._admin_con.autocommit = True
+
     def _load_sf(self, scale_factor: float, verbose: bool = True) -> None:
+        self._ensure_admin_con()
         db_name = self._db_name_for_sf(scale_factor)
         self._db_names[scale_factor] = db_name
         tables = self.dataset_tables
@@ -211,7 +217,16 @@ class UmbraRunner:
             self._reset_existing_tables(con, tables)
         else:
             admin_cur = self._admin_con.cursor()
-            admin_cur.execute(f"CREATE DATABASE {db_name}")
+            try:
+                admin_cur.execute(f"CREATE DATABASE {db_name}")
+            except Exception as exc:
+                logger.error(
+                    "Failed to create database '%s' for SF%s: %s",
+                    db_name,
+                    scale_factor,
+                    exc,
+                )
+                raise exc
             admin_cur.close()
 
             con = self._create_db_con(db_name)
@@ -496,7 +511,7 @@ class UmbraRunner:
             raise ValueError(f"Unknown db source: {self._db_storage}")
 
         results: list[tuple[dict, float]] = []
-        for sql in sql_list:
+        for sql in tqdm(sql_list, desc=f"Umbra running queries (SF{scale_factor})"):
             if self._db_storage == DBStorage.IN_MEMORY:
                 pass
             elif self._db_storage in [DBStorage.LABSTORE, DBStorage.SSD]:

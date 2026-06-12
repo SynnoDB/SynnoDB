@@ -29,8 +29,9 @@ def get_disk_db_dir(
     db_storage: DBStorage, workspace_path: Path
 ) -> tuple[Path | None, Path | None]:
     if db_storage == DBStorage.LABSTORE:
-        disk_db_dir = Path("/mnt/labstore/bespoke_olap/dbs")
-        bespoke_db_dir = Path("/mnt/labstore/bespoke_olap/tmp")
+        raise NotImplementedError("LABSTORE storage is not supported in this codebase. Please use SSD or IN_MEMORY.")
+        # disk_db_dir = Path("/mnt/labstore/bespoke_olap/dbs")
+        # bespoke_db_dir = Path("/mnt/labstore/bespoke_olap/tmp")
     elif db_storage == DBStorage.SSD:
         disk_db_dir = Path(__file__).parent.parent / "dbs"
         bespoke_db_dir = workspace_path.absolute() / "tmp"
@@ -80,6 +81,8 @@ class _PathEncoder(json.JSONEncoder):
     def default(self, obj: Any) -> Any:
         if isinstance(obj, Path):
             return str(obj)
+        if isinstance(obj, enum.Enum):
+            return obj.value
         return super().default(obj)
 
 

@@ -9,7 +9,8 @@ from utils import utils
 
 
 class Workload(enum.Enum):
-    pass
+    def __str__(self) -> str:
+        return str(self.value)
 
 
 @dataclass

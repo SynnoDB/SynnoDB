@@ -1,11 +1,15 @@
 import argparse
 import logging
+import os
 import random
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
+
 from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
@@ -17,12 +21,14 @@ from tools.run import RunTool, RunToolMode, RunWorkerResult
 from tools.validate.query_validator_class import QueryValidator
 from utils.utils import DBStorage
 from workloads.query_execution_cache import QueryExecutionCache
-from workloads.system_factory import SystemFactory
+from workloads.system_factory_olap import OLAPSystemFactory
 from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 setup_logging(level=logging.DEBUG)
 
 logger = logging.getLogger(__name__)
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 
 def main(args):
@@ -34,17 +40,36 @@ def main(args):
     # random values: date_time_random
     rnd_str = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
 
+    synno_data_dir = os.getenv("SYNNO_DATA_DIR", default=None)
+    if synno_data_dir is not None:
+        synno_data_dir = Path(synno_data_dir)
+
     ##### CONFIGURATION #####
     benchmark = OLAPWorkload.TPC_H
     db_storage = DBStorage.IN_MEMORY
     parallelism = False
     core_ids = None  # [3, 4, 5, 6]
+    run_with_validate = True
+    query_do_not_cache = False
+    query_only_from_cache = False
     ##########################
 
+    # assemble cache paths
+    prepare_cache_dir = (
+        synno_data_dir / "cache" / "prepare_workspace"
+        if synno_data_dir is not None
+        else None
+    )
+    query_execution_cache_dir = (
+        synno_data_dir / "cache" / "query_execution"
+        if synno_data_dir is not None
+        else None
+    )
+
     dataset_name = OLAPWorkloadProvider._get_dataset_name(benchmark)
-    # parquet_dir = f"/mnt/labstore/bespoke_olap/{dataset_name}_parquet/"
+    assert synno_data_dir is not None, "SYNNO_DATA_DIR environment variable is not set"
     parquet_dir = (
-        Path(__file__).parent.parent.parent / "data" / f"{dataset_name}_parquet"
+        synno_data_dir / "workloads" / benchmark.value / f"{dataset_name}_parquet"
     )
     workload_provider = OLAPWorkloadProvider(
         benchmark=benchmark,
@@ -59,7 +84,7 @@ def main(args):
             workload_provider=workload_provider,
             workspace_dir=work_dir,
             git_snapshotter=snapshotter,
-            prepare_cache_dir=None,
+            prepare_cache_dir=prepare_cache_dir,
         )
 
         prepare_repo_and_load_snapshot(
@@ -84,8 +109,14 @@ def main(args):
     comp_result, _, _ = compiler.build_cached(skip_cache=True, write_cache=False)
     assert comp_result is None, f"Compilation failed with error: {comp_result}"
 
+    assert query_execution_cache_dir is not None, (
+        "Query execution cache directory is not set"
+    )
     query_exec_cache = QueryExecutionCache(
-        query_execution_cache_dir=None, system_factory=SystemFactory()
+        query_execution_cache_dir=query_execution_cache_dir,
+        system_factory=OLAPSystemFactory(),
+        do_not_cache=query_do_not_cache,
+        only_from_cache=query_only_from_cache,
     )
 
     query_validator = QueryValidator(
@@ -98,7 +129,7 @@ def main(args):
 
     bespoke_engine = RunTool(
         cwd=work_dir,
-        query_validator=query_validator,
+        query_validator=query_validator if run_with_validate else None,
         dataset_name=workload_provider.dataset_name,
         base_parquet_dir=parquet_dir,
         run_stats_collector=None,
@@ -108,15 +139,6 @@ def main(args):
         parallelism=parallelism,
         core_ids=core_ids,
     )
-
-    # instantiations = 2
-    # repetitions = 2
-    # inst_query_list, inst_sql_list, inst_args_list, inst_hash_list = _make_query_batch(
-    #     gen_query_fn=workload_provider.get_query_gen_fn(),
-    #     query_ids=workload_provider.query_ids,
-    #     instantiations=instantiations,
-    #     repetitions=repetitions,
-    # )
 
     result: RunWorkerResult = bespoke_engine.run_worker(
         mode=RunToolMode.FAST_CHECK,
@@ -128,10 +150,12 @@ def main(args):
         core_ids=core_ids,
     )
 
-    assert result.query_results is not None, "Expected query results, but got None"
+    if not run_with_validate:
+        # since we load empty repo, validate must fail.
+        assert result.query_results is not None, "Expected query results, but got None"
 
-    for res in result.query_results:
-        logger.info(res)
+        for res in result.query_results:
+            logger.info(res)
 
 
 if __name__ == "__main__":

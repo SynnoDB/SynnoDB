@@ -2,7 +2,7 @@ from observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
 from observability.benchmark.systems.umbra import UmbraRunner
-from workloads.system_factory import SystemFactory
+from workloads.system_factory import System, SystemFactory
 from workloads.workload_provider import ExecSettings, GeneralSystemConfig, Workload
 from workloads.workload_provider_olap import (
     OLAPExecSettings,
@@ -21,7 +21,7 @@ class OLAPSystemFactory(SystemFactory):
 
     def get_system(
         self,
-        system_name: str,
+        system_name: System,
         benchmark: Workload,
         exec_settings: ExecSettings,
         general_system_config: GeneralSystemConfig,
@@ -33,7 +33,7 @@ class OLAPSystemFactory(SystemFactory):
             "benchmark must be an instance of OLAPWorkload"
         )
 
-        if system_name == "duckdb":
+        if system_name == System.DUCKDB:
             if exec_settings.scale_factor not in self.duckdb_cons:
                 if general_system_config.num_threads == 1:
                     val_pin_worker = True
@@ -55,7 +55,7 @@ class OLAPSystemFactory(SystemFactory):
                     disk_db_dir=exec_settings.disk_db_dir,
                 )
             return self.duckdb_cons[exec_settings.scale_factor]
-        elif system_name == "umbra":
+        elif system_name == System.UMBRA:
             if self.umbra_runner is None:
                 self.umbra_runner = UmbraRunner(
                     parquet_path=exec_settings.parquet_dir,

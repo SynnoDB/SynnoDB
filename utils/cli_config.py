@@ -7,8 +7,6 @@ from utils.utils import DBStorage
 
 # DEFAULT_MODEL = "gpt-5.3-codex"
 DEFAULT_MODEL = "gpt-5.4"
-DEFAULT_ARTIFACTS_DIR = "/mnt/labstore/bespoke_olap/"
-DEFAULT_PARQUET_DIR = "/mnt/labstore/bespoke_olap/"
 
 
 @dataclass
@@ -27,8 +25,6 @@ class RunConfig:
     disable_openai_tracing: bool = False
     disable_wandb: bool = False
     model: str = DEFAULT_MODEL
-    base_parquet_dir: str = DEFAULT_PARQUET_DIR
-    artifacts_dir: str = DEFAULT_ARTIFACTS_DIR
     no_preload: bool = False
     disable_repo_sync: bool = False
     replay_cache: bool = False

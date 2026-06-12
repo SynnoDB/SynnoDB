@@ -10,6 +10,7 @@ import wandb
 from observability.logging.wandb_plots_gen import create_wandb_speedup_plot
 from utils.utils import prefix_dict
 from workloads.query_execution_cache import QueryExecutionCache
+from workloads.system_factory import System
 from workloads.workload_provider import ExecSettings, QueryBatch
 
 logger = logging.getLogger(__name__)
@@ -98,10 +99,10 @@ def check_output_correctness(
 
     # run queries against duckdb
     duckdb_reference_results = query_execution_cache.lookup_or_execute_query_batch(
-        system="duckdb", batch=query_batch
+        system=System.DUCKDB, batch=query_batch
     )
     umbra_reference_results = query_execution_cache.lookup_or_execute_query_batch(
-        system="umbra", batch=query_batch
+        system=System.UMBRA, batch=query_batch
     )
     assert len(duckdb_reference_results) == len(query_batch.query_list), (
         f"Expected number of reference results from DuckDB ({len(duckdb_reference_results)}) to match number of queries in batch ({len(query_batch.query_list)})."
