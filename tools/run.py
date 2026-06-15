@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -32,8 +33,9 @@ class RunWorkerResult:
     out: Optional[str] = None
     err: Optional[str] = None
     trace_output: Optional[str] = None
-    query_batches: list[QueryBatch] | None = None
+    query_batch: QueryBatch | None = None
     query_results: list | None = None
+    ingest_time_ms: Optional[float] = None
 
 
 class RunTool:
@@ -208,24 +210,23 @@ class RunTool:
         if self.delete_result_csv_before_execution:
             delete_result_csv_files(self.cwd)
 
+        #################
+        # COMPILATION
+        #################
+
         # set compile mode
         self.compiler.set_compile_options(optimize=optimize, trace_mode=trace_mode)
 
         import time as _time
 
-        logger.info(
-            "build_cached: starting compilation (trace=%s)",
-            trace_mode,
-        )
+        logger.info(f"build_cached: starting compilation (trace={trace_mode})")
         _compile_start = _time.monotonic()
         err, compile_used_cache, compile_key_hash = self.compiler.build_cached(
             skip_cache=force_compile,
             current_git_snapshot=current_git_snapshot,
         )
         logger.info(
-            "build_cached: done in %.1fs (cached=%s)",
-            _time.monotonic() - _compile_start,
-            compile_used_cache,
+            f"build_cached: done in {_time.monotonic() - _compile_start:.1f}s (cached={compile_used_cache})"
         )
 
         if err is not None:
@@ -264,12 +265,20 @@ class RunTool:
             "compile_key_hash should not be None if compile did not return an error. This should not happen."
         )
 
+        #################
+        # PRODUCE WORKLOAD
+        #################
+
         query_batches = self.workload_provider.produce_workload(
             run_mode=mode,
             num_threads=current_num_threads,
             core_ids=current_core_ids,
             query_ids=query_ids,
         )
+
+        #################
+        # RUN & VALIDATE QUERIES
+        #################
 
         result_list = []
         for batch in query_batches:
@@ -285,11 +294,12 @@ class RunTool:
                 external_call=external_call,
                 current_parallelism=current_parallelism,
                 current_core_ids=current_core_ids,
+                run_tool_mode=mode,
             )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
             result_list.append(result)
 
             if not result.success:
-                # eraly return
+                # early return
                 break
 
         return result_list[-1]
@@ -306,6 +316,7 @@ class RunTool:
         general_extra_env: dict[str, str],
         external_call: bool,
         current_parallelism: bool,
+        run_tool_mode: RunToolMode,
         current_core_ids: list[int] | None,
     ) -> RunWorkerResult:
         # assemble call cmd
@@ -374,35 +385,42 @@ class RunTool:
             )
 
             # this branch is cached via validation tool cache
-            msg, success, metrics, exec_used_cache, trace_output = (
-                self.query_validator.exec_and_validate(
-                    exec_callback_fn=execute_fn,
-                    query_batch=batch,
-                    other_config={
-                        "optimize": optimize,
-                        "memory_budget_mb": self.memory_budget_mb,
-                    },
-                    skip_validate=not self.parse_out_and_validate_output,
-                    compile_key_hash=compile_key_hash,  # via this hash we ensure val is correctly chained to cache.
-                    recompile_if_necessary_callback=fn_compile_callback,
-                    trace_mode=trace_mode,
-                )
+            val_result = self.query_validator.exec_and_validate(
+                exec_callback_fn=execute_fn,
+                query_batch=batch,
+                other_config={
+                    "optimize": optimize,
+                    "memory_budget_mb": self.memory_budget_mb,
+                },
+                skip_validate=not self.parse_out_and_validate_output,
+                compile_key_hash=compile_key_hash,  # via this hash we ensure val is correctly chained to cache.
+                recompile_if_necessary_callback=fn_compile_callback,
+                trace_mode=trace_mode,
             )
 
+            msg = val_result.message
+            success = val_result.success
+            metrics = val_result.metrics
+            trace_output = val_result.trace_output
+            resp = val_result.resp
+            stdout = val_result.stdout
+            stderr = val_result.stderr
+            ingest_time_ms = val_result.ingest_time_ms
+
+            if success and run_tool_mode == RunToolMode.INGEST:
+                assert val_result.ingest_time_ms is not None, (
+                    "ingest_time_ms should be set in ingest mode. This should not happen."
+                )
+                msg = f"Query results are correct. Ingest/build time: {val_result.ingest_time_ms:.2f}ms with call args:\n```\n{json.dumps(asdict(batch.exec_settings), indent=2)}\n```\nStdout:\n```\n{stdout}\n```\n\nStderr:\n```\n{stderr}\n```"
+
             # this assertion does unfortunately not work: it is valid that args for validate change, but compile is the same. E.g. different scale factors.
-            # assert compile_used_cache == exec_used_cache, (
+            # assert compile_used_cache == val_result.replayed_from_cache, (
             #     "Inconsistent cache usage between compile and execute. This should always be chained! If this happens, potentially a change in the wrapper code/... happened. Please delete both cache entries (compile & exec), check your changes and re-run."
             # )
-            if exec_used_cache:
+            if val_result.replayed_from_cache:
                 assert compile_used_cache, (
                     "Inconsistent cache usage between compile and execute: if exec was cached then compile also needs to be cached. This should always be chained! If this happens, potentially a change in the wrapper code/... happened. Please delete the corresponding cache entry (validate cache), check your changes and re-run."
                 )
-            resp = None
-            out = None
-            err = None
-            assert metrics is not None, (
-                "Metrics should not be None if query_validator is provided and stdin_args_data is not provided. This should not happen."
-            )
             query_results = None
         else:
             # this branch is not cached
@@ -425,6 +443,7 @@ class RunTool:
             resp = run_result.resp
             out = run_result.out
             err = run_result.err
+            ingest_time_ms = run_result.ingest_time_ms
 
             # extract queries with error
             per_query_errors = [qr.error for qr in run_result.query_results if qr.error]
@@ -490,25 +509,34 @@ class RunTool:
             out=out,
             err=err,
             trace_output=trace_output,
+            query_batch=batch,
             query_results=query_results,
             success=success,
+            ingest_time_ms=ingest_time_ms,
         )
 
     def __call__(
         self,
-        fast_check: bool,
+        mode: str,
         optimize: bool,
         query_ids: Optional[List[str]] = None,
         trace_mode: bool = False,  # sets trace flag for the run
     ) -> str:
         # update tool interface
-        if fast_check:
-            mode = RunToolMode.FAST_CHECK
+
+        if mode in ["fast_check", "FAST_CHECK"]:
+            rt_mode = RunToolMode.FAST_CHECK
+        elif mode in ["exhaustive", "EXHAUSTIVE"]:
+            rt_mode = RunToolMode.EXHAUSTIVE
+        elif mode in ["benchmark", "BENCHMARK"]:
+            rt_mode = RunToolMode.BENCHMARK
+        elif mode in ["ingest", "INGEST"]:
+            rt_mode = RunToolMode.INGEST
         else:
-            mode = RunToolMode.EXHAUSTIVE
+            return f"Invalid mode specified. Available: fast_check, exhaustive, benchmark, ingest. Got {mode}."
 
         return self.run(
-            mode=mode,
+            mode=rt_mode,
             optimize=optimize,
             query_ids=query_ids,
             trace_mode=trace_mode,

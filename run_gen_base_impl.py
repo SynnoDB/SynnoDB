@@ -7,6 +7,7 @@ from utils.cli_config import RunConfig, add_common_args
 from utils.confirm_dialog import await_user_confirmation
 from utils.gen_common import parse_query_ids
 from utils.utils import DBStorage
+from workloads.workload_provider import Workload
 
 ### RUN CMD
 # python run_gen_base_impl.py --conv initial1-22v66 --benchmark tpch --bespoke_storage --auto_u --auto_finish
@@ -21,22 +22,20 @@ def validate_snapshot(
     model: str | None,
 ):
     # run validation
-    snapshot_benchmark = snapshot_config["benchmark"]
+    snapshot_benchmark: str = snapshot_config["benchmark"]
     snapshot_queries_str = snapshot_config["queries_str"]
     snapshot_model = snapshot_config["model"]
     snapshot_db_storage = snapshot_config["db_storage"]
 
-    assert snapshot_benchmark == benchmark, (
-        f"Expected benchmark {benchmark} in storage plan run, got {snapshot_benchmark}"
+    assert snapshot_benchmark.upper() == benchmark.name.upper(), (
+        f"Expected benchmark {benchmark.name.upper()} in storage plan run, got {snapshot_benchmark}"
     )
     if queries_str is not None:
         assert snapshot_queries_str == queries_str, (
             f"Expected queries str {queries_str} in storage plan run, got {snapshot_queries_str}"
         )
-    assert query_ids == parse_query_ids(
-        snapshot_queries_str, benchmark=snapshot_benchmark
-    ), (
-        f"Expected query ids {query_ids} in storage plan run, got {parse_query_ids(snapshot_queries_str, benchmark=snapshot_benchmark)}"
+    assert query_ids == parse_query_ids(snapshot_queries_str, benchmark=benchmark), (
+        f"Expected query ids {query_ids} in storage plan run, got {parse_query_ids(snapshot_queries_str, benchmark=benchmark)}"
     )
 
     # convert snapshot db source to enum
@@ -170,7 +169,7 @@ class BaseArgs(TypedDict):
     model: str
     disable_repo_sync: bool
     replay_cache: bool
-    benchmark: str
+    benchmark: Workload
     disable_wandb: bool
     disable_openai_tracing: bool
     auto_u: bool

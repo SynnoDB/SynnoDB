@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import Any
 
 from agents.run_context import RunContextWrapper
 from agents.tool import FunctionTool
@@ -8,12 +8,12 @@ from tools.run import RunTool
 
 
 class RunArgs(BaseModel):
-    fast_check: bool = Field(
+    mode: str = Field(
         ...,
-        description="Whether to perform a fast check run (e.g., using a smaller scale factor or a subset of queries). Turn off for performance measurements with the full dataset and all queries.",
+        description="Mode of operation e.g., 'fast_check' (quick validation check), 'exhaustive' (full validation), 'benchmark' (performance testing), 'ingest' (ingestion time measurement)",
     )
     optimize: bool = Field(..., description="Enable compiler optimization")
-    query_ids: List[str] | None = Field(
+    query_ids: list[str] | None = Field(
         None,
         description="List of Query-IDs to execute. None means all queries. Example: ['1', '2b', '5']",
     )
@@ -44,14 +44,14 @@ def make_openai_run_tool(
 
         if run_tool_offer_trace_option:
             return run_tool(
-                fast_check=args.fast_check,
+                mode=args.mode,
                 optimize=args.optimize,
                 query_ids=args.query_ids,
                 trace_mode=args.trace_mode,  # type: ignore
             )
         else:
             return run_tool(
-                fast_check=args.fast_check,
+                mode=args.mode,
                 optimize=args.optimize,
                 query_ids=args.query_ids,
             )

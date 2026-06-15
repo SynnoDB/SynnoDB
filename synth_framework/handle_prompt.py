@@ -48,7 +48,7 @@ async def handle_prompt(
     if text == BENCHMARK_MARKER:
         logger.info(f"Triggering benchmarking at prompt index {idx}")
         run_tool.run(
-            mode=RunToolMode.EXHAUSTIVE,
+            mode=RunToolMode.BENCHMARK,
             optimize=True,
             query_ids=None,
             trace_mode=False,

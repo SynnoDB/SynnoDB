@@ -13,7 +13,7 @@ DEFAULT_MODEL = "gpt-5.4"
 
 @dataclass
 class RunConfig:
-    benchmark: str
+    benchmark: Workload
     query_list: str
     queries_str: str
     notify: bool

@@ -1,7 +1,7 @@
 import functools
 import logging
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from conversations.checkpointed_conversation import (
     CheckpointedConversation,
@@ -33,8 +33,11 @@ from conversations.stage_config import (
     StaticStageConfig,
 )
 from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
+from tools.run import RunTool
 from tools.run_tool_mode import RunToolMode
 from utils.utils import DBStorage
+from workloads.workload_provider import Workload
+from workloads.workload_provider_olap import OLAPWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +45,11 @@ logger = logging.getLogger(__name__)
 class BaseImplConversation(CheckpointedConversation):
     def __init__(
         self,
-        verify_sf_list: list[float],
-        max_scale_factor: int | float,
-        benchmark: str,
+        benchmark: Workload,
         workspace_path: Path,
         sql_dict: dict[str, str],
         db_storage: DBStorage,
+        parquet_dir: Path,
         read_storage_plan: bool = False,
         sample_query_args_dict: Optional[dict[str, str]] = None,
         use_master_prompt: bool = False,
@@ -55,8 +57,6 @@ class BaseImplConversation(CheckpointedConversation):
     ):
         super().__init__(**kwargs)
 
-        self.verify_sf_list = verify_sf_list
-        self.max_scale_factor = max_scale_factor
         self.benchmark = benchmark
         self.read_storage_plan = read_storage_plan
         self.sample_query_args_dict = sample_query_args_dict
@@ -64,9 +64,10 @@ class BaseImplConversation(CheckpointedConversation):
         self.use_master_prompt = use_master_prompt
         self.sql_dict = sql_dict
         self.persistent_storage = db_storage in [DBStorage.LABSTORE, DBStorage.SSD]
+        self.parquet_dir = parquet_dir
 
     def _validate_no_crazy_slow_queries(
-        self, sf: float, query_ids: list[str], query_impl_path: str, builder_path: str
+        self, query_ids: list[str], query_impl_path: str, builder_path: str
     ) -> str | None:
         """Check all queries for critical slowness (speedup < 0.2x vs DuckDB).
 
@@ -75,7 +76,7 @@ class BaseImplConversation(CheckpointedConversation):
         slow_queries = []
         for qid in query_ids:
             _, metrics, _ = self.run_tool.run(
-                mode=RunToolMode.EXHAUSTIVE,
+                mode=RunToolMode.BENCHMARK,
                 optimize=True,
                 query_ids=[qid],
                 trace_mode=False,
@@ -85,9 +86,10 @@ class BaseImplConversation(CheckpointedConversation):
                 continue
             try:
                 impl_rt_s, duckdb_rt_s, speedup = extract_speedup_of_last_snapshot(
-                    metrics, qid, sf
+                    metrics, qid
                 )
                 if speedup < 0.2:
+                    assert duckdb_rt_s is not None, "DuckDB runtime is None"
                     slow_queries.append(
                         (qid, impl_rt_s * 1000, duckdb_rt_s * 1000, speedup)
                     )
@@ -132,7 +134,7 @@ class BaseImplConversation(CheckpointedConversation):
         def _base_impl_descriptor(qid: str) -> str:
             return f"base impl Q{qid}"
 
-        def _base_impl_prompt(_sf, _rt, *, idx: int, qid: str, sql: str):
+        def _base_impl_prompt(_exec_settings, _rt, *, idx: int, qid: str, sql: str):
             return base_impl_query_prompt(
                 is_first_query=(idx == 0),
                 query_id=qid,
@@ -145,10 +147,10 @@ class BaseImplConversation(CheckpointedConversation):
                 persistent_storage=self.persistent_storage,
             )
 
-        def _exec_validate_prompt(_sf, _rt, *, qid: str):
+        def _exec_validate_prompt(_exec_settings, _rt, *, qid: str):
             return base_exec_validate_for_query_prompt(
                 query_id=qid,
-                sf_verify_str=sf_verify_str,
+                run_tool_mode=RunToolMode.EXHAUSTIVE,
                 builder_path=builder_path,
                 sql=self.sql_dict[f"Q{qid}"],
                 show_ssd_error_hints=self.persistent_storage,
@@ -158,21 +160,10 @@ class BaseImplConversation(CheckpointedConversation):
         # Paths & Co
         # ==========
 
-        # assemble sf verify string
-        if len(self.verify_sf_list) == 1:
-            sf_verify_str = str(self.verify_sf_list[0])
-        elif len(self.verify_sf_list) == 2:
-            sf_verify_str = f"{self.verify_sf_list[0]} and {self.verify_sf_list[1]}"
-        else:
-            sf_verify_str = (
-                ", ".join(map(str, self.verify_sf_list[:-1]))
-                + f", and {self.verify_sf_list[-1]}"
-            )
-
-        if self.benchmark == "tpch":
+        if self.benchmark == OLAPWorkload.TPCH:
             example_query = "Q42"
             example_query_params = "42"
-        elif self.benchmark == "ceb":
+        elif self.benchmark == OLAPWorkload.CEB:
             example_query = "Q42a"
             example_query_params = "42a"
         else:
@@ -208,7 +199,7 @@ class BaseImplConversation(CheckpointedConversation):
             VALIDATE_OFF,
             StaticStageConfig(
                 descriptor="base impl planner",
-                get_prompt=lambda _sf, _rt: base_planner_prompt(
+                get_prompt=lambda _exec_settings, _rt: base_planner_prompt(
                     queries_path=queries_path,
                     num_queries=len(self.all_query_ids),
                     builder_path=builder_path,
@@ -218,7 +209,7 @@ class BaseImplConversation(CheckpointedConversation):
                     example_query=example_query,
                     example_query_params=example_query_params,
                     args_path=args_path,
-                    parquet_path=parquet_path.as_posix(),
+                    parquet_path=self.parquet_dir.as_posix(),
                     base_impl_todo_file=base_impl_todo_filename,
                     persistent_storage=self.persistent_storage,
                 ),
@@ -229,7 +220,7 @@ class BaseImplConversation(CheckpointedConversation):
             ),
             StaticStageConfig(
                 descriptor="base impl storage",
-                get_prompt=lambda _sf, _rt: base_impl_storage(
+                get_prompt=lambda _exec_settings, _rt: base_impl_storage(
                     builder_path=builder_path,
                     query_impl_path=query_impl_path,
                     base_impl_todo_file=base_impl_todo_filename,
@@ -242,13 +233,11 @@ class BaseImplConversation(CheckpointedConversation):
             COMPACTION_MARKER,
             OptimizeBuildStage(
                 builder_path=builder_path,
-                sf_list=self.verify_sf_list + [self.max_scale_factor],
-                get_current_benchmark_result_or_rerun_callback=self.get_current_benchmark_result_or_rerun,
+                run_tool=self.run_tool,
                 persistent_storage=self.persistent_storage,
             ),
             ValidateAndFixStage(
-                sf_list=self.verify_sf_list + [self.max_scale_factor],
-                get_current_benchmark_result_or_rerun_callback=self.get_current_benchmark_result_or_rerun,
+                run_tool=self.run_tool,
                 query_impl_path=query_impl_path,
                 args_path=args_path,
                 builder_path=builder_path,
@@ -300,7 +289,6 @@ class BaseImplConversation(CheckpointedConversation):
                         feedback_on_incorrect=True,  # go into retry loop if query is incorrect
                         post_stage_validate=functools.partial(
                             self._validate_no_crazy_slow_queries,
-                            sf=self.verify_sf_list[-1],
                             query_ids=[query_id],
                             query_impl_path=query_impl_path,
                             builder_path=builder_path,
@@ -317,14 +305,15 @@ class BaseImplConversation(CheckpointedConversation):
             [
                 StaticStageConfig(
                     descriptor="base check correctness all",
-                    get_prompt=lambda _sf, _rt: base_check_correctness_all_prompt(
-                        sf_verify_str=sf_verify_str,
+                    get_prompt=lambda _exec_settings, _rt: (
+                        base_check_correctness_all_prompt(
+                            run_tool_mode=RunToolMode.EXHAUSTIVE
+                        )
                     ),
                     measure_performance_after_stage=False,
                     auto_revert_on_regression=False,
                     post_stage_validate=functools.partial(
                         self._validate_no_crazy_slow_queries,
-                        sf=self.verify_sf_list[-1],
                         query_ids=self.all_query_ids,
                         query_impl_path=query_impl_path,
                         builder_path=builder_path,
@@ -332,15 +321,14 @@ class BaseImplConversation(CheckpointedConversation):
                 ),
                 StaticStageConfig(
                     descriptor="run all queries and fix any errors",
-                    get_prompt=lambda _sf, _rt: base_run_all_and_fix_prompt(
-                        max_scale_factor=self.max_scale_factor,
+                    get_prompt=lambda _exec_settings, _rt: base_run_all_and_fix_prompt(
+                        run_tool_mode=RunToolMode.EXHAUSTIVE,
                         query_impl_path=query_impl_path,
                     ),
                     measure_performance_after_stage=False,
                     auto_revert_on_regression=False,
                     post_stage_validate=functools.partial(
                         self._validate_no_crazy_slow_queries,
-                        sf=self.benchmark_sf,
                         query_ids=self.all_query_ids,
                         query_impl_path=query_impl_path,
                         builder_path=builder_path,
@@ -352,9 +340,7 @@ class BaseImplConversation(CheckpointedConversation):
                 # VALIDATE_OUTPUT_STDOUT_MAXSF_ON,  # include stdout and stderr for largest (benchmarking) scale factor to have more info in case of regressions
                 StaticStageConfig(
                     descriptor="optimize build",
-                    get_prompt=lambda _sf, _rt: base_optimize_build_prompt(
-                        sf_verify_str=sf_verify_str,
-                        max_scale_factor=self.max_scale_factor,
+                    get_prompt=lambda _exec_settings, _rt: base_optimize_build_prompt(
                         builder_path_cpp=builder_cpp_path,
                         builder_path_hpp=builder_hpp_path,
                         persistent_storage=self.persistent_storage,
@@ -375,16 +361,12 @@ class OptimizeBuildStage(DynamicStageConfig):
     def __init__(
         self,
         builder_path: str,
-        sf_list: list[float],
-        get_current_benchmark_result_or_rerun_callback: Callable,
+        run_tool: RunTool,
         persistent_storage: bool,
     ):
         super().__init__(descriptor="optimize build", max_turns=None)
         self.builder_path = builder_path
-        self.sf_list = sf_list
-        self.get_current_benchmark_result_or_rerun_callback = (
-            get_current_benchmark_result_or_rerun_callback
-        )
+        self.run_tool = run_tool
         self.executed = False
         self.persistent_storage = persistent_storage
 
@@ -395,24 +377,27 @@ class OptimizeBuildStage(DynamicStageConfig):
         self.executed = True
 
         # fetch last validate results or rerun benchmark if not available
-        last_validate = self.get_current_benchmark_result_or_rerun_callback(
-            self.sf_list[-1],
-            False,
-            None,
+        # TODO: fetch last benchmark without rerunning if possible
+        run_result = self.run_tool.run_worker(
+            mode=RunToolMode.INGEST,
+            optimize=True,
+            query_ids=None,
+            trace_mode=False,
+            external_call=True,
         )
 
-        # extract ingest time
-        assert "validation/ingest_time_ms" in last_validate, (
-            f"Ingest time not found in benchmark results: {last_validate}"
+        assert run_result.ingest_time_ms is not None, (
+            "Ingest time must be available for optimize build stage"
         )
-        ingest_time_ms = last_validate["validation/ingest_time_ms"]
+        assert run_result.query_batch is not None, (
+            "Query batch must be available for optimize build stage"
+        )
 
         # generate prompt
         prompt = base_optimize_build_simple(
             builder_path=self.builder_path,
-            sf_list=sorted(list(set(self.sf_list))),
-            current_ingest_time_ms=ingest_time_ms,
-            current_ingest_sf=self.sf_list[-1],
+            current_ingest_time_ms=run_result.ingest_time_ms,
+            current_exec_config=run_result.query_batch.exec_settings,
             persistent_storage=self.persistent_storage,
         )
         return prompt
@@ -421,8 +406,7 @@ class OptimizeBuildStage(DynamicStageConfig):
 class ValidateAndFixStage(DynamicStageConfig):
     def __init__(
         self,
-        sf_list: list[float],
-        get_current_benchmark_result_or_rerun_callback: Callable,
+        run_tool: RunTool,
         query_impl_path: str,
         args_path: str,
         builder_path: str,
@@ -430,10 +414,7 @@ class ValidateAndFixStage(DynamicStageConfig):
     ):
         super().__init__(descriptor="exec & validate", max_turns=None)
         self.executed = False
-        self.sf_list = sf_list
-        self.get_current_benchmark_result_or_rerun_callback = (
-            get_current_benchmark_result_or_rerun_callback
-        )
+        self.run_tool = run_tool
         self.query_impl_path = query_impl_path
         self.args_path = args_path
         self.builder_path = builder_path
@@ -445,26 +426,18 @@ class ValidateAndFixStage(DynamicStageConfig):
             return None
         self.executed = True
 
-        # check if for all scale factors the validation is correct
-        all_correct = True
-        for sf in self.sf_list:
-            last_validate = self.get_current_benchmark_result_or_rerun_callback(
-                sf,
-                False,
-                None,
-            )
+        result = self.run_tool.run_worker(
+            mode=RunToolMode.EXHAUSTIVE,
+            optimize=True,
+            query_ids=None,
+            trace_mode=False,
+        )
 
-            if not last_validate or not last_validate.get("validation/correct", False):
-                all_correct = False
-                break
-
-        if all_correct:
+        if result.success:
             logger.info("All validations passed, no need to fix.")
             return None
 
         prompt = base_exec_validate_prompt(
-            sf_verify_str=", ".join(map(str, self.sf_list)),
-            max_scale_factor=self.sf_list[-1],
             query_impl_path=self.query_impl_path,
             args_path=self.args_path,
             show_ssd_error_hints=self.persistent_storage,

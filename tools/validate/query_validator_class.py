@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from agents import custom_span
 
@@ -15,7 +15,6 @@ from tools.validate.run_and_check_queries import (
     assemble_exec,
     check_output_correctness,
 )
-from tools.validate.validate_cache_type import ValidateCacheType
 from utils import utils
 from workloads.query_execution_cache import QueryExecutionCache
 from workloads.workload_provider import (
@@ -43,6 +42,36 @@ class ExecCallbackResult:
     err: str
     ingest_time_ms: float
     query_results: list[QueryResult]
+
+
+@dataclass
+class ExecValidateResult:
+    """Unified outcome of exec_and_validate.
+
+    The exact same object is returned to the caller and pickled to the
+    validation cache, so every field here is replayed verbatim on a cache hit.
+    `replayed_from_cache` and `snapshot_hash` are cache bookkeeping; everything
+    else is the actual run/validation result.
+    """
+
+    message: str
+    success: bool
+    metrics: Dict[str, Any]
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    resp: Optional[str] = None
+    ingest_time_ms: Optional[float] = None
+    trace_output: Optional[str] = None
+    snapshot_hash: Optional[str] = None
+    replayed_from_cache: bool = False
+
+    def cmd_output(self) -> str:
+        """Combined stdout/stderr/response block, as written to the debug log."""
+        return (
+            f"stdout:\n{(self.stdout or '').rstrip()}\n"
+            f"stderr:\n{(self.stderr or '').rstrip()}\n"
+            f"{self.resp or ''}"
+        )
 
 
 def _format_per_query_errors(query_results: list[QueryResult]) -> str:
@@ -98,16 +127,17 @@ class QueryValidator:
         trace_mode: bool,
         other_config: Dict[str, Any] = {},
         skip_validate: bool = False,
-        recompile_if_necessary_callback: Optional[
-            Callable
-        ] = None,  # will internally check if recompilation is necessary (i.e. if compile result was from cache) and call the callback if it is necessary
-    ) -> Tuple[str, bool, Dict[str, Any], bool, Optional[str]]:
+        recompile_if_necessary_callback: Callable
+        | None = None,  # will internally check if recompilation is necessary (i.e. if compile result was from cache) and call the callback if it is necessary
+    ) -> ExecValidateResult:
         with custom_span(
             f"exec_and_validate ({query_batch.exec_settings}, trace_mode={trace_mode}, {'no-validate' if skip_validate else ''})",
         ):
             logger.debug(f"Run with timeout: {query_batch.timeout_s} seconds")
 
-            result, cache_path, hash_payload, hash = self._check_answer_from_cache(
+            query_id = sorted({entry.query_id for entry in query_batch.query_list})
+
+            result, cache_path, hash, hash_payload = self._check_answer_from_cache(
                 query_batch=query_batch,
                 skip_validate=skip_validate,
                 other_config=other_config,
@@ -115,168 +145,48 @@ class QueryValidator:
                 compile_key_hash=compile_key_hash,
             )
 
-            query_id = list(set([entry.query_id for entry in query_batch.query_list]))
-
-            replayed_from_cache = False
             if result is not None:
-                # Found in cache
-                msg = result.outputs
-                success = result.success
-                metrics = result.metrics
-                trace_output = result.trace_output
-
-                replayed_from_cache = True
-
+                # Cache hit: the cached object IS the result.
+                result.replayed_from_cache = True
                 if self.runtime_tracker is not None:
-                    # add skipped time to the runtime tracker
                     self.runtime_tracker.add_skipped_time(
-                        metrics["validation/runtime_seconds"]
-                        if "validation/runtime_seconds" in metrics
-                        else 0
+                        result.metrics.get("validation/runtime_seconds", 0)
                     )
-
-                # write to logger
-                if hasattr(result, "cmd_output") and result.cmd_output is not None:
-                    logger.debug(result.cmd_output)
-                else:
-                    logger.debug("No cmd output in cache result (old cache)")
-
+                logger.debug(result.cmd_output())
             else:
-                if self.only_from_cache:
-                    raise Exception(
-                        f"Validation result not found in cache for key {compile_key_hash} and only_from_cache is set. Cache path: {cache_path}"
-                    )
-
-                # not found in cache - execute and validate
-                if recompile_if_necessary_callback is not None:
-                    # call recompile_if_necessary_callback to recompile if necessary (i.e. if compile result was from cache)
-                    recompile_if_necessary_callback()
-
-                validate_time_start = time.perf_counter()
-
-                # execute queries via callback
-                args_list = [entry.query_args for entry in query_batch.query_list]
-                exec_result = exec_callback_fn(
-                    args_list=args_list, timeout_s=query_batch.timeout_s
-                )
-                ingest_ms = exec_result.ingest_time_ms
-                exec_query_results = exec_result.query_results
-                exec_trace = _format_query_traces(
-                    exec_query_results, query_batch.query_list
+                result = self._execute_and_validate(
+                    exec_callback_fn=exec_callback_fn,
+                    query_batch=query_batch,
+                    compile_key_hash=compile_key_hash,
+                    trace_mode=trace_mode,
+                    skip_validate=skip_validate,
+                    cache_path=cache_path,
+                    snapshot_name=hash,
+                    query_id=query_id,
+                    recompile_if_necessary_callback=recompile_if_necessary_callback,
                 )
 
-                if not skip_validate:
-                    # validate output
-                    validation_output = self._validate_query(
-                        exec_settings=query_batch.exec_settings,
-                        query_batch=query_batch,
-                        query_execution_cache=self.query_execution_cache,
-                        query_results=exec_query_results,
-                        stdout=exec_result.out,
-                        stderr=exec_result.err,
-                        cmd=None,
-                        stop_on_first_error=True,
-                        trace_mode=trace_mode,
-                        trace_data=exec_trace,
-                        resp=exec_result.resp,
-                    )
-
-                else:
-                    logger.warning(
-                        f"Skipping correctness validation as requested ({query_id=}, {query_batch.exec_settings=}). Only return stdout/stderr."
-                    )
-                    validation_output = ValidationOutput(
-                        result_message=f"stdout: {exec_result.out.rstrip()}\nstderr: {exec_result.err.rstrip()}\n{exec_result.resp}",
-                        correct=True,
-                        metrics=assemble_exec(
-                            exec_settings=query_batch.exec_settings,
-                            num_queries_executed=len(args_list),
-                        ),
-                        trace_output=None,
-                    )
-
-                if ingest_ms is not None:
-                    validation_output.result_message += (
-                        f"Build time (ms): {ingest_ms}\n"
-                    )
-
-                # extend metrics
-
-                validation_output.metrics["validation/executed_queries"] = len(
-                    args_list
-                )
-                validation_output.metrics["validation/runtime_seconds"] = (
-                    time.perf_counter() - validate_time_start
-                )
-                validation_output.metrics["validation/ingest_time_ms"] = ingest_ms
-
-                # create snapshot of current source code - use response hash as snapshot name
-                if not self.do_not_cache and self.git_snapshotter is not None:
-                    # Truncate result CSVs immediately before snapshotting so
-                    # the snapshot captures the post-truncation tree and
-                    # current_hash stays in sync with on-disk state on replay.
-                    if self.max_snapshot_csv_size_mb is not None:
-                        truncate_csvs_recursively(
-                            self.workspace_path,
-                            max_size_mb=self.max_snapshot_csv_size_mb,
-                        )
-                    _, commit = self.git_snapshotter.snapshot(hash)
-                else:
-                    commit = None
-
-                if exec_result is not None:
-                    cmd_output = f"stdout:\n{exec_result.out.rstrip()}\nstderr:\n{exec_result.err.rstrip()}\n{exec_result.resp}"
-                    logger.debug(cmd_output)
-                else:
-                    cmd_output = None
-
-                # write to cache
-                if cache_path is not None and not self.do_not_cache:
-                    assert commit is not None, (
-                        "Git snapshot commit is None, but cache path is not None and do_not_cache is False. This should not happen, as the cache key is based on the git snapshot hash. Please check the GitSnapshotter implementation."
-                    )
-                    utils.dump_pickle(
-                        cache_path,
-                        ValidateCacheType(
-                            outputs=validation_output.result_message,
-                            success=validation_output.correct,
-                            metrics=validation_output.metrics,
-                            hash_payload=hash_payload,
-                            snapshot_hash=commit,
-                            trace_output=validation_output.trace_output,
-                            cmd_output=cmd_output,
-                        ),
-                        do_not_cache=self.do_not_cache,
-                    )
-                    logger.debug(f"Saved validation result to cache: {cache_path}")
-
-                # extract info
-                metrics = validation_output.metrics
-                msg = validation_output.result_message
-                success = validation_output.correct
-                trace_output = validation_output.trace_output
-
-            metrics["validation/skip_validate"] = skip_validate
+            result.metrics["validation/skip_validate"] = skip_validate
 
         # compute speedup
-        if "validation/total_speedup" in metrics:
-            total_speedup = f"{metrics['validation/total_speedup']:.2f}"
+        if "validation/total_speedup" in result.metrics:
+            total_speedup = f"{result.metrics['validation/total_speedup']:.2f}"
         else:
             total_speedup = "N/A"
-        optimize_flags = other_config["optimize"]
 
         logger.info(
-            f"Validate Tool Result: {'correct' if success else 'incorrect'} (Query ID: {query_id}, ExecSettings: {query_batch.exec_settings}, Replayed from cache: {replayed_from_cache}, trace_mode: {trace_mode}, optim-flags: {optimize_flags}) - Total Speedup: {total_speedup}x"
+            f"Validate Tool Result: {'correct' if result.success else 'incorrect'} (Query ID: {query_id}, ExecSettings: {query_batch.exec_settings}, Replayed from cache: {result.replayed_from_cache}, trace_mode: {trace_mode}, optim-flags: {other_config['optimize']}) - Total Speedup: {total_speedup}x"
         )
 
         # truncate msg if too long for logging
-        if len(msg) > 1000:
-            shortened_msg = msg[:1000] + "...(truncated)"
-        else:
-            shortened_msg = msg
+        shortened_msg = (
+            result.message[:1000] + "...(truncated)"
+            if len(result.message) > 1000
+            else result.message
+        )
 
         with custom_span(
-            f"exec_and_validate [result] ({'correct' if success else 'incorrect'}, {'replayed from cache' if replayed_from_cache else ''})",
+            f"exec_and_validate [result] ({'correct' if result.success else 'incorrect'}, {'replayed from cache' if result.replayed_from_cache else ''})",
             {
                 "result": shortened_msg,
                 "sql": query_id,
@@ -285,7 +195,113 @@ class QueryValidator:
                 else None,
             },
         ):
-            return msg, success, metrics, replayed_from_cache, trace_output
+            return result
+
+    def _execute_and_validate(
+        self,
+        exec_callback_fn: Callable[..., ExecCallbackResult],
+        query_batch: QueryBatch,
+        compile_key_hash: str,
+        trace_mode: bool,
+        skip_validate: bool,
+        cache_path: Optional[Path],
+        snapshot_name: str | None,
+        query_id: list[str],
+        recompile_if_necessary_callback: Callable | None,
+    ) -> ExecValidateResult:
+        """Run + validate a batch that was not found in cache, then cache it."""
+        if self.only_from_cache:
+            raise Exception(
+                f"Validation result not found in cache for key {compile_key_hash} and only_from_cache is set. Cache path: {cache_path}"
+            )
+
+        # recompile if necessary (i.e. if compile result was from cache)
+        if recompile_if_necessary_callback is not None:
+            recompile_if_necessary_callback()
+
+        validate_time_start = time.perf_counter()
+
+        # execute queries via callback
+        args_list = [entry.query_args for entry in query_batch.query_list]
+        exec_result = exec_callback_fn(
+            args_list=args_list, timeout_s=query_batch.timeout_s
+        )
+        ingest_ms = exec_result.ingest_time_ms
+
+        if not skip_validate:
+            validation_output = self._validate_query(
+                exec_settings=query_batch.exec_settings,
+                query_batch=query_batch,
+                query_execution_cache=self.query_execution_cache,
+                query_results=exec_result.query_results,
+                stdout=exec_result.out,
+                stderr=exec_result.err,
+                cmd=None,
+                stop_on_first_error=True,
+                trace_mode=trace_mode,
+                trace_data=_format_query_traces(
+                    exec_result.query_results, query_batch.query_list
+                ),
+                resp=exec_result.resp,
+            )
+        else:
+            logger.warning(
+                f"Skipping correctness validation as requested ({query_id=}, {query_batch.exec_settings=}). Only return stdout/stderr."
+            )
+            validation_output = ValidationOutput(
+                result_message=f"stdout: {exec_result.out.rstrip()}\nstderr: {exec_result.err.rstrip()}\n{exec_result.resp}",
+                correct=True,
+                metrics=assemble_exec(
+                    exec_settings=query_batch.exec_settings,
+                    num_queries_executed=len(args_list),
+                ),
+                trace_output=None,
+            )
+
+        message = validation_output.result_message
+        if ingest_ms is not None:
+            message += f"Build time (ms): {ingest_ms}\n"
+
+        metrics = validation_output.metrics
+        metrics["validation/executed_queries"] = len(args_list)
+        metrics["validation/runtime_seconds"] = (
+            time.perf_counter() - validate_time_start
+        )
+        metrics["validation/ingest_time_ms"] = ingest_ms
+
+        result = ExecValidateResult(
+            message=message,
+            success=validation_output.correct,
+            metrics=metrics,
+            stdout=exec_result.out,
+            stderr=exec_result.err,
+            resp=exec_result.resp,
+            ingest_time_ms=ingest_ms,
+            trace_output=validation_output.trace_output,
+        )
+
+        # create snapshot of current source code - use response hash as snapshot name
+        if not self.do_not_cache and self.git_snapshotter is not None:
+            # Truncate result CSVs immediately before snapshotting so the
+            # snapshot captures the post-truncation tree and current_hash stays
+            # in sync with on-disk state on replay.
+            if self.max_snapshot_csv_size_mb is not None:
+                truncate_csvs_recursively(
+                    self.workspace_path, max_size_mb=self.max_snapshot_csv_size_mb
+                )
+            _, result.snapshot_hash = self.git_snapshotter.snapshot(snapshot_name)
+
+        logger.debug(result.cmd_output())
+
+        # write to cache
+        if cache_path is not None and not self.do_not_cache:
+            assert result.snapshot_hash is not None, (
+                "Git snapshot commit is None, but cache path is not None and do_not_cache is False. This should not happen, as the cache key is based on the git snapshot hash. Please check the GitSnapshotter implementation."
+            )
+            utils.dump_pickle(cache_path, result, do_not_cache=self.do_not_cache)
+            logger.debug(f"Saved validation result to cache: {cache_path}")
+
+        return result
 
     def _check_answer_from_cache(
         self,
@@ -294,55 +310,40 @@ class QueryValidator:
         stop_on_first_error: bool,
         compile_key_hash: str,
         query_batch: QueryBatch,
-    ) -> Tuple[ValidateCacheType | None, Optional[Path], str, str | None]:
-        if self.git_snapshotter is not None:
-            hash_payload = {
-                "query_batch": utils.stable_json(asdict(query_batch)),
-                "snapshotter_hash": self.git_snapshotter.current_hash,
-                "skip_validate": skip_validate,
-                "stop_on_first_error": stop_on_first_error,
-                "compile_key_hash": compile_key_hash,
-                **other_config,
-            }
-
-            stable_payload = utils.stable_json(hash_payload)
-            hash = utils.sha256(stable_payload)
-
-            if self.validate_cache_dir is None:
-                cache_path = None
-            else:
-                cache_path = _cache_path_for_hash(self.validate_cache_dir, hash)
-
-            # check validation-tool cache - replay validation result from val-tool cache if available
-            if cache_path is not None and cache_path.exists():
-                cached: Optional[ValidateCacheType] = utils.load_pickle(
-                    cache_path, ValidateCacheType
-                )
-                assert cached is not None
-                logger.debug(f"Loaded validation result from cache: {cache_path}")
-
-                # restore snapshot hash
-                self.git_snapshotter.restore(cached.snapshot_hash)
-
-                return (
-                    cached,
-                    cache_path,
-                    stable_payload,
-                    hash,
-                )
-            else:
-                # logger.info(f"No matching validation-tool cache found at {cache_path=}")
-                pass
-
-        else:
+    ) -> tuple[ExecValidateResult | None, Optional[Path], str | None, dict | None]:
+        if self.git_snapshotter is None:
             logger.warning(
                 "I don't know the current code version because GitSnapshotter is None. Hence I can't search for matching validation-tool cache."
             )
-            cache_path = None
-            stable_payload = ""
-            hash = None
+            return None, None, None, None
 
-        return None, cache_path, stable_payload, hash
+        hash_payload = {
+            "query_batch": utils.stable_json(asdict(query_batch)),
+            "snapshotter_hash": self.git_snapshotter.current_hash,
+            "skip_validate": skip_validate,
+            "stop_on_first_error": stop_on_first_error,
+            "compile_key_hash": compile_key_hash,
+            **other_config,
+        }
+
+        hash = utils.sha256(utils.stable_json(hash_payload))
+
+        if self.validate_cache_dir is None:
+            return None, None, hash, hash_payload
+
+        cache_path = _cache_path_for_hash(self.validate_cache_dir, hash)
+        if not cache_path.exists():
+            return None, cache_path, hash, hash_payload
+
+        # replay validation result from val-tool cache
+        cached = utils.load_pickle(cache_path, ExecValidateResult)
+        assert cached is not None
+        logger.debug(f"Loaded validation result from cache: {cache_path}")
+
+        # restore snapshot hash
+        self.git_snapshotter.restore(cached.snapshot_hash)
+
+        return cached, cache_path, hash, hash_payload
 
     def _validate_query(
         self,

@@ -2,6 +2,25 @@
 SynnoDB Repository (internal)
 
 
+## CMDs at the moment:
+
+```
+# gen storage plan
+python run_gen_storage_plan.py --model anthropic/claude-sonnet-4-6 --queries 1-22 --benchmark tpch --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
+
+# run gen base
+python run_gen_base_impl.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --storage_plan_run_id 8xn0t04p --queries 1-22 --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
+
+# run optim
+python run_optim_loop.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --base_impl_run_id q45vm9fz --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
+
+# test correctness at larger SF
+python run_check_sf_correctness.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --source_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd --target_sf 50
+
+# add multi-threading
+python run_add_multi_threading.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --optim_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
+```
+
 ## Prerequisites
 
 - Linux (x86-64)

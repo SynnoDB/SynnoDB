@@ -1,2 +1,2 @@
-Add timing instrumentation to the execution code of the following queries: ${qids_str}. Verify your tracing implementation by using the RUN tool with tracing enabled (with scale factor ${sf}). 
+Add timing instrumentation to the execution code of the following queries: ${qids_str}. Verify your tracing implementation by using the RUN tool with tracing enabled and mode ${run_tool_mode}.
 Check that the tracing output returned by the run tool contains all required timing and counting information for these queries, and that the numbers make sense given the data size and query logic. If output is empty/null/0 where it shouldn't be, investigate and fix the instrumentation.${refer_to_prev}

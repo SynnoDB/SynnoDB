@@ -91,6 +91,11 @@ class CheckpointedConversation(AbstractConversation):
 
     # ---------- helpers ----------
 
+    @property
+    def _olap_provider(self):
+        """The workload provider backing the run tool (source of exec settings / SFs)."""
+        return self.run_tool.workload_provider
+
     def _run_tool_benchmark(
         self,
         query_ids=None,
@@ -98,12 +103,42 @@ class CheckpointedConversation(AbstractConversation):
     ):
         """Thin wrapper around run_tool.run with standard benchmark parameters."""
         return self.run_tool.run(
-            mode=RunToolMode.EXHAUSTIVE,
+            mode=RunToolMode.BENCHMARK,
             optimize=True,
             query_ids=query_ids,
             trace_mode=trace_mode,
             external_call=True,
         )
+
+    def _assemble_stage_prompt(
+        self,
+        stage_config: StaticStageConfig,
+        rt_before_s: float | None,
+        tracing_data: str | None,
+    ) -> str:
+        """Build the prompt for a static stage from its get_prompt callback.
+
+        Exactly one of ``get_prompt`` / ``get_prompt_with_tracing`` must be set.
+        The callback receives the stage's exec settings and the previous impl
+        runtime in milliseconds (0 if not yet measured).
+        """
+        rt_before_ms = rt_before_s * 1000 if rt_before_s is not None else 0
+
+        if stage_config.get_prompt is not None:
+            assert stage_config.get_prompt_with_tracing is None, (
+                "get_prompt and get_prompt_with_tracing cannot both be set. Please choose one."
+            )
+            return stage_config.get_prompt(stage_config.exec_settings, rt_before_ms)
+
+        if stage_config.get_prompt_with_tracing is not None:
+            assert tracing_data is not None, (
+                "Tracing data is required for get_prompt_with_tracing but is None."
+            )
+            return stage_config.get_prompt_with_tracing(
+                stage_config.exec_settings, rt_before_ms, tracing_data
+            )
+
+        raise ValueError("Either get_prompt or get_prompt_with_tracing must be set.")
 
     async def _run_stages(
         self,
@@ -175,42 +210,11 @@ class CheckpointedConversation(AbstractConversation):
         if prompt_pretext is not None and prompt_pretext.strip() != "":
             pretext_str = prompt_pretext.strip() + "\n"
 
-        # run the LLM optimization loop
-        assert (
-            stage_config.get_prompt is not None
-            or stage_config.get_prompt_with_tracing is not None
-        ), "get_prompt callback is required for StaticStageConfig"
-
-        # stage.sf overrides the default benchmark_sf for all measurements in this stage
-        stage_sf = (
-            stage_config.sf if stage_config.sf is not None else None
-        )  # TODO: remove all this sf stuff
-
-        # assemble prompt
-        if stage_config.get_prompt is not None:
-            assert stage_config.get_prompt_with_tracing is None, (
-                "get_prompt and get_prompt_with_tracing cannot both be set. Please choose one."
-            )
-            prompt = stage_config.get_prompt(
-                stage_sf,
-                rt_before_s * 1000 if rt_before_s is not None else 0,
-            )  # pass sf and runtime in ms to the prompt
-        elif stage_config.get_prompt_with_tracing is not None:
-            assert tracing_data is not None, (
-                "Tracing data is required for get_prompt_with_tracing but is None."
-            )
-            prompt = stage_config.get_prompt_with_tracing(
-                stage_sf,
-                rt_before_s * 1000 if rt_before_s is not None else 0,
-                tracing_data,
-            )
-        else:
-            raise ValueError(
-                "Either get_prompt or get_prompt_with_tracing must be set."
-            )
+        # assemble and execute the stage prompt
+        prompt = self._assemble_stage_prompt(stage_config, rt_before_s, tracing_data)
 
         await self._exec(
-            pretext_str + prompt,  # pass runtime in ms to the prompt
+            pretext_str + prompt,
             stage_config.descriptor,
             max_turns=stage_config.max_turns,
             current_stage_nr=current_stage_nr,
@@ -252,7 +256,7 @@ class CheckpointedConversation(AbstractConversation):
                 )
 
                 rt_after_s, _, speedup = extract_speedup_of_last_snapshot(
-                    metrics, query_id, stage_sf
+                    metrics, query_id
                 )
                 self.query_rt_log[query_id] = rt_after_s
             except ValidationStillFailsException as ve:
@@ -288,46 +292,9 @@ class CheckpointedConversation(AbstractConversation):
             )
 
             if not result.improved and stage_config.auto_revert_on_regression:
-                # roll back to the state before this stage (discard changes from this stage)
-                logger.warning(
-                    f"Reverting changes from stage '{stage_config.descriptor}' for query {query_id} due to no improvement (revert to: {current_snapshot}). Turn: {self.run_stats_collector.last_turn}"
+                await self._revert_stage(
+                    stage_config, current_snapshot, query_id, current_stage_nr
                 )
-
-                # clear all untracked & tracked changes
-                self.git_snapshotter.reset_changes()
-                self.git_snapshotter.clear_untracked()
-
-                self.git_snapshotter.restore(current_snapshot)
-
-                # measure and log performance after the rollback
-                out_str, metrics, trace_output = self._run_tool_benchmark(
-                    query_ids=[query_id],
-                )
-                assert metrics is not None, (
-                    f"Metrics is None after reverting stage '{stage_config.descriptor}' for query {query_id}."
-                )
-
-                if not metrics["validation/correct"]:
-                    logger.warning(
-                        f"Reverted stage '{stage_config.descriptor}' for query {query_id} but the reverted version is not correct ('{out_str}'). This should not happen!"
-                    )
-                    await self._exec(
-                        f"I rolled back your changes since the output was not correct. But after rollback, the results are still wrong ('{out_str}'). Please re-evaluate your implementation of query {query_id} (and also with all queries query_id=None) and make sure that it is correct for all scale-factors!",
-                        stage_config.descriptor,
-                        max_turns=stage_config.max_turns,
-                        current_stage_nr=current_stage_nr,
-                    )
-                    _, metrics, _ = self._run_tool_benchmark(
-                        query_ids=[query_id],
-                    )
-                    assert metrics is not None, (
-                        f"Metrics is None after reverting stage '{stage_config.descriptor}' for query {query_id}."
-                    )
-
-                rt_after_s, _, speedup = extract_speedup_of_last_snapshot(
-                    metrics, query_id, stage_sf
-                )
-                self.query_rt_log[query_id] = rt_after_s
             elif not result.improved:
                 logger.warning(
                     f"Keeping changes from stage '{stage_config.descriptor}' for query {query_id} despite no improvement."
@@ -336,38 +303,95 @@ class CheckpointedConversation(AbstractConversation):
             result = None
 
         if stage_config.post_stage_validate is not None:
-            # apply validate post stage callback
-            max_validate_attempts = 10
-            attempts = max_validate_attempts
-            while True:
-                attempts -= 1
-                feedback = stage_config.post_stage_validate()
-                if feedback is not None:
-                    logger.info(
-                        f"Stage '{stage_config.descriptor}': validate callback returned feedback, re-prompting LLM."
-                    )
-                    # After 3 failed attempts, add explicit hint about optimize/trace flags
-                    if attempts <= max_validate_attempts - 3:
-                        feedback += (
-                            "\nIMPORTANT: You have failed this check multiple times. "
-                            "Have you checked whether the issue is related to running with or without tracing enabled (trace_mode=True/False)? "
-                            "Make sure to test with trace_mode=True and False (and optimize=True) in your run tool calls to reproduce the issue. "
-                        )
-                    await self._exec(
-                        feedback,
-                        stage_config.descriptor,
-                        max_turns=stage_config.max_turns,
-                        current_stage_nr=current_stage_nr,
-                    )
-                else:
-                    break
-
-                if attempts == 0:
-                    raise Exception(
-                        f"Stage '{stage_config.descriptor}': validate callback still returns feedback after {max_validate_attempts} attempts. Please investigate. This can be just the model behaving not well, a problem on the model provider side, or a problemm with the framework (in case you have edits under test)."
-                    )
+            await self._run_post_stage_validate(stage_config, current_stage_nr)
 
         return result
+
+    async def _revert_stage(
+        self,
+        stage_config: StaticStageConfig,
+        current_snapshot: str,
+        query_id: str,
+        current_stage_nr: int,
+    ) -> None:
+        """Roll back to ``current_snapshot`` and re-measure, updating query_rt_log.
+
+        Used when a stage regressed (or didn't improve) and the stage is
+        configured with ``auto_revert_on_regression``.
+        """
+        logger.warning(
+            f"Reverting changes from stage '{stage_config.descriptor}' for query {query_id} due to no improvement (revert to: {current_snapshot}). Turn: {self.run_stats_collector.last_turn}"
+        )
+
+        # clear all untracked & tracked changes
+        self.git_snapshotter.reset_changes()
+        self.git_snapshotter.clear_untracked()
+        self.git_snapshotter.restore(current_snapshot)
+
+        # measure and log performance after the rollback
+        out_str, metrics, _ = self._run_tool_benchmark(query_ids=[query_id])
+        assert metrics is not None, (
+            f"Metrics is None after reverting stage '{stage_config.descriptor}' for query {query_id}."
+        )
+
+        if not metrics["validation/correct"]:
+            logger.warning(
+                f"Reverted stage '{stage_config.descriptor}' for query {query_id} but the reverted version is not correct ('{out_str}'). This should not happen!"
+            )
+            await self._exec(
+                f"I rolled back your changes since the output was not correct. But after rollback, the results are still wrong ('{out_str}'). Please re-evaluate your implementation of query {query_id} (and also with all queries query_id=None) and make sure that it is correct for all scale-factors!",
+                stage_config.descriptor,
+                max_turns=stage_config.max_turns,
+                current_stage_nr=current_stage_nr,
+            )
+            _, metrics, _ = self._run_tool_benchmark(query_ids=[query_id])
+            assert metrics is not None, (
+                f"Metrics is None after reverting stage '{stage_config.descriptor}' for query {query_id}."
+            )
+
+        rt_after_s, _, _ = extract_speedup_of_last_snapshot(metrics, query_id)
+        self.query_rt_log[query_id] = rt_after_s
+
+    async def _run_post_stage_validate(
+        self,
+        stage_config: StaticStageConfig,
+        current_stage_nr: int,
+    ) -> None:
+        """Run the stage's post_stage_validate callback, re-prompting on feedback.
+
+        Loops until the callback returns None (passing) or the attempt budget is
+        exhausted, in which case it raises.
+        """
+        assert stage_config.post_stage_validate is not None
+        max_validate_attempts = 10
+        attempts = max_validate_attempts
+        while True:
+            attempts -= 1
+            feedback = stage_config.post_stage_validate()
+            if feedback is None:
+                break
+
+            logger.info(
+                f"Stage '{stage_config.descriptor}': validate callback returned feedback, re-prompting LLM."
+            )
+            # After 3 failed attempts, add explicit hint about optimize/trace flags
+            if attempts <= max_validate_attempts - 3:
+                feedback += (
+                    "\nIMPORTANT: You have failed this check multiple times. "
+                    "Have you checked whether the issue is related to running with or without tracing enabled (trace_mode=True/False)? "
+                    "Make sure to test with trace_mode=True and False (and optimize=True) in your run tool calls to reproduce the issue. "
+                )
+            await self._exec(
+                feedback,
+                stage_config.descriptor,
+                max_turns=stage_config.max_turns,
+                current_stage_nr=current_stage_nr,
+            )
+
+            if attempts == 0:
+                raise Exception(
+                    f"Stage '{stage_config.descriptor}': validate callback still returns feedback after {max_validate_attempts} attempts. Please investigate. This can be just the model behaving not well, a problem on the model provider side, or a problemm with the framework (in case you have edits under test)."
+                )
 
     @abstractmethod
     async def run(self) -> Optional[List[str]]:
@@ -487,65 +511,8 @@ class CheckpointedConversation(AbstractConversation):
             return False, metrics, msg
         return True, metrics, None
 
-    def get_current_benchmark_result_or_rerun(
-        self, sf: float, trace_mode: bool = False, query_id: Optional[List[str]] = None
-    ) -> dict:
-        # Find the last validate entry in the metrics log
-        last_validate_idx = None
-        for i, m in enumerate(self.run_stats_collector.metrics_list):
-            if (
-                m.get("type") == "validate"
-                and m.get("trace_mode") == trace_mode
-                and m.get("validation/scale_factor") == sf
-            ):
-                # check query_id
-                if query_id is None or query_id == self.all_query_ids:
-                    # match to both None or explicitly specified all queries
-                    if m.get("validation/query_ids_executed") in [
-                        None,
-                        self.all_query_ids,
-                    ]:
-                        last_validate_idx = i
-                else:
-                    if m.get("validation/query_ids_executed") == query_id:
-                        last_validate_idx = i
 
-        if last_validate_idx is not None:
-            # Check whether any apply_patch or shell_command actions happened after it
-            interceding_types = {"apply_patch", "shell"}
-            has_interceding = any(
-                m.get("type") in interceding_types
-                for m in self.run_stats_collector.metrics_list[last_validate_idx + 1 :]
-            )
-            if not has_interceding:
-                return self.run_stats_collector.metrics_list[last_validate_idx]
-
-        # No usable cached result — rerun the benchmark
-        logger.info(
-            f"Could not find a recent validate benchmark result without interceding changes (sf={sf}, trace_mode={trace_mode}, query_id={query_id}). Rerunning the benchmark to get fresh results."
-        )
-        _, metrics, _ = self._run_tool_benchmark(
-            trace_mode=trace_mode, query_ids=query_id
-        )
-        assert metrics is not None, "Metrics is None after rerunning benchmark."
-        return metrics
-
-
-def extract_speedup_of_last_snapshot(
-    statistics: Dict, query: str, current_reference_scalefactor: float
-):
-
-    assert "validation/scale_factor" in statistics, (
-        f"Expected 'validation/scale_factor' in statistics: {statistics.keys()}"
-    )
-    scale_factor = statistics["validation/scale_factor"]
-    assert scale_factor is not None, f"Scale factor in statistics is None: {statistics}"
-
-    # sometimes old runs have slightly different scale factors - adjust runtimes accordingly
-    scale_factor_multiplicant = (
-        current_reference_scalefactor / scale_factor
-    )  # translate runtimes to this scalefactor
-
+def extract_speedup_of_last_snapshot(statistics: Dict, query: str):
     # extract row from statistics
     # prepend with zeros until three chars long
     query_3chars = query.zfill(3)
@@ -565,15 +532,9 @@ def extract_speedup_of_last_snapshot(
         )
         return float("inf"), None, 0.0
 
-    impl_runtime_ms = float(statistics[impl_key])
-    duckdb_runtime_ms = float(statistics[duckdb_key])
-
-    last_impl_rt = (
-        impl_runtime_ms / 1000 / scale_factor_multiplicant
-    )  # translate runtime to seconds and adjust for scale factor if needed
-    duckdb_rt = (
-        duckdb_runtime_ms / 1000 / scale_factor_multiplicant
-    )  # translate runtime to seconds and adjust for scale factor if needed
+    # translate runtimes from ms to seconds
+    last_impl_rt = float(statistics[impl_key]) / 1000
+    duckdb_rt = float(statistics[duckdb_key]) / 1000
 
     # calculate speedup
     speedup = duckdb_rt / last_impl_rt if last_impl_rt > 0 else float("inf")

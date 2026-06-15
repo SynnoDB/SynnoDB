@@ -1,22 +1,18 @@
 import random
 from collections import defaultdict
-from pathlib import Path
 
 from tools.run_tool_mode import RunToolMode
 from workloads.workload_provider import WorkloadProvider
 
 
-def get_sample_query_args(args, workload_provider: WorkloadProvider, seed=42):
-    workspace_path = Path("./output")
-    workspace_path.mkdir(exist_ok=True)
-
+def get_sample_query_args(workload_provider: WorkloadProvider, seed=42):
     query_ids = workload_provider.query_ids
 
     # generate a batch with all
-    query_batch = workload_provider.produce_workload(
+    query_batch_list = workload_provider.produce_workload(
         run_mode=RunToolMode.FAST_CHECK, num_threads=1, core_ids=None, query_ids=None
     )
-    query_batch = query_batch[0]  # use the first: we don't care about SFs, ...
+    query_batch = query_batch_list[0]  # use the first: we don't care about SFs, ...
 
     sample_arg_list_dict = defaultdict(list)
 
@@ -35,3 +31,11 @@ def get_sample_query_args(args, workload_provider: WorkloadProvider, seed=42):
     )
 
     return final_sample_arg_dict
+
+
+def get_sample_exec_settings(workload_provider: WorkloadProvider):
+    # generate a batch with all
+    query_batch_list = workload_provider.produce_workload(
+        run_mode=RunToolMode.BENCHMARK, num_threads=1, core_ids=None, query_ids=None
+    )
+    return query_batch_list[0].exec_settings

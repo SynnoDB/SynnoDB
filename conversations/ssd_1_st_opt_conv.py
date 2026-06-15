@@ -41,18 +41,16 @@ class SSD1STOptimConv(InMem1OptimizationConversation):
                 # Trace data is now collected fresh and fed into the prompt so the
                 # LLM can spot algorithmic mismatches (e.g. an operator dominating
                 # runtime that the sample plan does not expect).
-                get_prompt_with_tracing=lambda sf, rt, tracing_data: (
+                get_prompt_with_tracing=lambda _exec_settings, rt, tracing_data: (
                     optim_prompt_w_sample_plan(
                         query_id=query_id,
                         constraints_str=mandatory_constraints,
                         query_plan=sample_plan,
-                        sf=sf,
                         engine=self.plan_source,  # type: ignore
                         general_pretext=general_pretext,
                         current_rt_ms=rt,
                         model=self.model,
                         tracing_data=tracing_data,
-                        sf_list=self.verify_sf_list,
                         persistent_storage=self.persistent_storage,
                     )
                 ),

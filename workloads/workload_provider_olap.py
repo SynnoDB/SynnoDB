@@ -68,12 +68,21 @@ class OLAPWorkloadProvider(WorkloadProvider):
         self.dataset_schema = self._get_dataset_schema(self.benchmark)
         self.bespoke_ssd_storage_dir = bespoke_ssd_storage_dir
 
+        # Scale factor used for BENCHMARK-mode runs. Conversations can override this
+        # via set_benchmark_sf to drive perf/large-scale checks off the workload
+        # provider (exec-config) rather than passing fixed scale factors around.
+        self.benchmark_sf: float = 20 if self.benchmark == OLAPWorkload.TPCH else 5
+
         super().__init__(
             benchmark_name=self.benchmark.value,
             query_ids=_get_all_query_ids(self.benchmark.value),
             sql_dict=self._get_sql_dict(self.benchmark),
             **kwargs,
         )
+
+    def set_benchmark_sf(self, sf: float) -> None:
+        """Override the scale factor emitted for BENCHMARK-mode workloads."""
+        self.benchmark_sf = sf
 
     def produce_workload(
         self,
@@ -88,7 +97,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
             queries_to_generate = query_ids
 
         if run_mode == RunToolMode.FAST_CHECK:
-            instantiations = 3
+            instantiations = 20
             repetitions = 1
 
             if self.benchmark == OLAPWorkload.TPCH:
@@ -99,15 +108,32 @@ class OLAPWorkloadProvider(WorkloadProvider):
                 raise ValueError(f"Unknown benchmark: {self.benchmark}")
 
         elif run_mode == RunToolMode.EXHAUSTIVE:
-            instantiations = 5
-            repetitions = 3
+            instantiations = 20
+            repetitions = 1
 
             if self.benchmark == OLAPWorkload.TPCH:
-                scale_factors = [1, 2, 20]
+                scale_factors: list[float] = [1, 2, 20]
             elif self.benchmark == OLAPWorkload.CEB:
-                scale_factors = [0.25, 0.5, 5]
+                scale_factors: list[float] = [0.25, 0.5, 5]
             else:
                 raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+            if scale_factors[-1] != self.benchmark_sf:
+                scale_factors.append(self.benchmark_sf)
+
+        elif run_mode == RunToolMode.BENCHMARK:
+            instantiations = 1
+            repetitions = 3
+            # benchmark SF is configurable via set_benchmark_sf (exec-config driven)
+            scale_factors = [self.benchmark_sf]
+        elif run_mode == RunToolMode.INGEST:
+            instantiations = 3
+            repetitions = 1
+
+            if self.benchmark == OLAPWorkload.TPCH:
+                scale_factors = [20]
+            elif self.benchmark == OLAPWorkload.CEB:
+                scale_factors = [5]
 
         else:
             raise ValueError(f"Unknown run mode: {run_mode}")
@@ -148,11 +174,13 @@ class OLAPWorkloadProvider(WorkloadProvider):
                 set()
             )  # for debugging - track generated SQL queries to check for duplicates
 
+            gen_attempts = 100
+
             for inst_idx in range(instantiations):
                 for query_id in queries_to_generate:
                     for _ in range(
-                        10
-                    ):  # try up to 10 times to generate a unique query (in case of random generation leading to duplicates)
+                        gen_attempts
+                    ):  # try up to 100 times to generate a unique query (in case of random generation leading to duplicates)
                         _, sql, placeholders = self._get_query_gen_fn()(
                             query_name=f"Q{query_id}", rnd=rnd
                         )
@@ -164,7 +192,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
                             break
                     else:
                         logger.debug(
-                            f"Failed to generate unique SQL for query_id={query_id} (inst_idx={inst_idx}) after 10 attempts, skipping this instantiation"
+                            f"Failed to generate unique SQL for query_id={query_id} (inst_idx={inst_idx}) after {gen_attempts} attempts, skipping this instantiation"
                         )
                         continue
 

@@ -16,8 +16,10 @@ from conversations.utils.cleanup_plans import (
     cleanup_umbra_plan,
 )
 from tools.run import delete_result_csv_files
+from tools.run_tool_mode import RunToolMode
 from tools.validate.query_validator_class import QueryValidator
 from utils.utils import DBStorage
+from workloads.system_factory import System
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,6 @@ QUERIES_PER_TIMING_BATCH = 3
 @dataclass
 class OptimConvArgs:
     query_ids: List[str]
-    verify_sf_list: List[float]
     query_validator: QueryValidator
     model: str
     db_storage: DBStorage
@@ -49,7 +50,6 @@ class OptimizationConversation(CheckpointedConversation):
 
         self.query_ids = optim_conv_args.query_ids
         self.bespoke_storage = optim_conv_args.bespoke_storage
-        self.verify_sf_list = optim_conv_args.verify_sf_list
         self.model = optim_conv_args.model
         self.query_validator = optim_conv_args.query_validator
         self.persistent_storage = optim_conv_args.db_storage in [
@@ -65,32 +65,62 @@ class OptimizationConversation(CheckpointedConversation):
             "Replay mode is not supported for OptimizationConversation. Use replay_cache if you want to replay from cache without user interaction."
         )
 
-        # retrieve sample plans / instantiations for the queries
-        self.sample_plan_dict = dict()
-        for query_id in self.query_ids:
-            instantiations, _ = self.query_validator._get_instantiations(
-                scale_factor=self.benchmark_sf,
-                query_id=[query_id],
-                trace_mode=False,
+        # retrieve reference sample plans / runtimes for the queries from the
+        # workload provider (exec-config source) + query-execution cache.
+        self.sample_plan_dict: Dict[str, str | dict] = dict()
+        self.reference_rt_ms: Dict[str, float] = dict()
+        self._init_reference_plans_and_runtimes()
+
+    def _init_reference_plans_and_runtimes(self) -> None:
+        """Populate ``sample_plan_dict`` / ``reference_rt_ms`` from the reference engine.
+
+        The workload provider is the single source of exec-configs: we produce a
+        BENCHMARK-mode batch (at the provider's ``benchmark_sf``) and resolve it
+        against the query-execution cache, which returns the reference engine's
+        query plan and runtime for each query (executing + caching on a miss).
+        """
+        if self.plan_source is None:
+            return
+
+        if self.plan_source == "umbra":
+            system = System.UMBRA
+            cleanup_fn = cleanup_umbra_plan
+        elif self.plan_source == "duckdb":
+            system = System.DUCKDB
+            cleanup_fn = cleanup_duckdb_plan
+        else:
+            raise ValueError(
+                f"Unknown plan source {self.plan_source} for sample plans."
             )
 
-            if self.plan_source is None:
-                pass
-            elif self.plan_source == "umbra":
-                plan = instantiations[0].umbra_plan
-                assert plan is not None
-                self.sample_plan_dict[query_id] = (
-                    cleanup_umbra_plan(plan) if self.cleanup_plans else plan
-                )
-            elif self.plan_source == "duckdb":
-                plan = instantiations[0].duckdb_plan
-                self.sample_plan_dict[query_id] = (
-                    cleanup_duckdb_plan(plan) if self.cleanup_plans else plan
-                )
-            else:
-                raise ValueError(
-                    f"Unknown plan source {self.plan_source} for sample plans."
-                )
+        # one BENCHMARK batch at the provider's benchmark scale factor
+        batches = self._olap_provider.produce_workload(
+            run_mode=RunToolMode.BENCHMARK,
+            query_ids=self.query_ids,
+            num_threads=1,
+            core_ids=None,
+        )
+        assert len(batches) == 1, (
+            f"BENCHMARK mode should emit exactly one batch, got {len(batches)}"
+        )
+
+        results = self.query_validator.query_execution_cache.lookup_or_execute_query_batch(
+            batches[0], system
+        )
+
+        # take the first result per query (BENCHMARK repeats the same query)
+        for res in results:
+            query_id = res.query_entry.query_id
+            if query_id in self.sample_plan_dict:
+                continue
+            plan = res.plan
+            assert plan is not None, (
+                f"Reference engine {system} returned no plan for query {query_id}."
+            )
+            self.sample_plan_dict[query_id] = (
+                cleanup_fn(plan) if self.cleanup_plans else plan
+            )
+            self.reference_rt_ms[query_id] = res.exec_time_ms
 
     def _build_stages(
         self, query_id: str, mandatory_constraints: str, general_pretext: str
@@ -160,12 +190,9 @@ class OptimizationConversation(CheckpointedConversation):
                     start_stage_nr + stage_id * len(self.query_ids) + query_idx
                 )
 
-                # stage.sf overrides the default benchmark_sf for reference runtime collection
-                stage_sf = stage.sf if stage.sf is not None else self.benchmark_sf
-
                 # collect initial runtime for this query before starting with the first stage of optimization
                 _, metrics, _ = self.run_tool.run(
-                    scale_factor=stage_sf, query_id=[query_id], optimize=True
+                    mode=RunToolMode.BENCHMARK, query_ids=[query_id], optimize=True
                 )
                 assert metrics is not None
 
@@ -173,7 +200,6 @@ class OptimizationConversation(CheckpointedConversation):
                     impl_rt_s, _, _ = extract_speedup_of_last_snapshot(
                         statistics=metrics,
                         query=query_id,
-                        current_reference_scalefactor=stage_sf,
                     )
                     self.query_rt_log[query_id] = impl_rt_s
                 except AssertionError as e:
@@ -186,8 +212,8 @@ class OptimizationConversation(CheckpointedConversation):
                 if stage.get_prompt_with_tracing is not None:
                     # collect tracing data
                     _, _, tracing_output = self.run_tool.run(
-                        scale_factor=stage_sf,
-                        query_id=[query_id],
+                        mode=RunToolMode.BENCHMARK,
+                        query_ids=[query_id],
                         trace_mode=True,
                         optimize=True,
                     )  # collect fresh tracing stats
@@ -222,7 +248,7 @@ class OptimizationConversation(CheckpointedConversation):
             delete_result_csv_files(self.run_tool.cwd)
             stage_end_msg, stage_end_metrics, stage_end_tracing_output = (
                 self.run_tool.run(
-                    scale_factor=self.benchmark_sf, query_id=None, optimize=True
+                    mode=RunToolMode.BENCHMARK, query_ids=None, optimize=True
                 )
             )
 

@@ -50,7 +50,7 @@ from utils.cli_config import RunConfig, add_common_args
 from utils.confirm_dialog import await_user_confirmation
 from utils.conv_name_utils import ConvMode, generate_conv_name
 from utils.core_utils import get_cores_for_current_machine
-from utils.get_sample_q_args import get_sample_query_args
+from utils.get_sample_q_args import get_sample_exec_settings, get_sample_query_args
 from utils.hugepages import get_num_numa_nodes, set_hugepages
 from utils.pkgconfig import check_pkg
 from utils.snapshot_utils import load_storage_plan_from_snapshot
@@ -62,7 +62,11 @@ from utils.utils import (
 )
 from workloads.query_execution_cache import QueryExecutionCache
 from workloads.system_factory_olap import OLAPSystemFactory
-from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from workloads.workload_provider_olap import (
+    OLAPExecSettings,
+    OLAPWorkload,
+    OLAPWorkloadProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -513,13 +517,15 @@ async def main(args: argparse.Namespace) -> None:
         elif args.conv_mode == ConvMode.BASE:
             # get sample query args for later use in the conversation (e.g. for better prompt formatting)
             sample_query_args_dict: Dict[str, str] = get_sample_query_args(
-                args, workload_provider=workload_provider
+                workload_provider=workload_provider
             )
 
             # load the base impl conversation
+            exec_settings = get_sample_exec_settings(
+                workload_provider=workload_provider
+            )
+            assert isinstance(exec_settings, OLAPExecSettings)
             conv = BaseImplConversation(
-                verify_sf_list=verify_sf_list,
-                max_scale_factor=max_scale_factor,
                 benchmark=args.benchmark,
                 read_storage_plan=args.bespoke_storage,
                 sample_query_args_dict=sample_query_args_dict,
@@ -527,6 +533,7 @@ async def main(args: argparse.Namespace) -> None:
                 use_master_prompt=args.use_autonomy_master_prompt,
                 sql_dict=workload_provider.sql_dict,
                 db_storage=db_storage,
+                parquet_dir=exec_settings.parquet_dir,
                 **auto_conversation_args,
                 **conv_args,
             )
@@ -537,7 +544,6 @@ async def main(args: argparse.Namespace) -> None:
             conv = CheckSFCorrectnessConv(
                 query_ids=query_list,
                 target_sf=args.target_sf,
-                verify_sf_list=verify_sf_list,
                 bespoke_storage=args.bespoke_storage,
                 db_storage=db_storage,
                 **auto_conversation_args,
@@ -551,7 +557,6 @@ async def main(args: argparse.Namespace) -> None:
             optim_conv_args = OptimConvArgs(
                 query_ids=query_list,
                 bespoke_storage=args.bespoke_storage,
-                verify_sf_list=verify_sf_list,
                 query_validator=query_validator,
                 plan_source=args.optimize_sample_plan_source,
                 cleanup_plans=True,
@@ -592,8 +597,8 @@ async def main(args: argparse.Namespace) -> None:
                     )
                 elif db_storage == DBStorage.SSD:
                     conv = SSD2MTOptConv(
+                        benchmark=args.benchmark,
                         optim_conv_args=optim_conv_args,
-                        benchmark_sf_pre=pre_sf,
                         **auto_conversation_args,
                         **conv_args,
                     )
