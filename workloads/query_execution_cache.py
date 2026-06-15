@@ -156,11 +156,10 @@ class QueryExecutionCache:
         exec_settings: ExecSettings,
         general_system_config: GeneralSystemConfig,
     ) -> tuple[Path, str]:
-        # Create a stable hash of the query entry and args by converting them to a JSON string with sorted keys
-        # strip query_args since it includes a request id
-        query_entry_json = asdict(query_entry)
-        query_entry_json.pop("query_args")
-        query_entry_json = utils.stable_json(query_entry_json)
+        # Create a stable hash of the query entry by converting it to a JSON string with sorted keys.
+        # query_exec_cache_hash_entries() omits the non-deterministic query_args (req_id) and
+        # includes the repetition info so every repetition gets its own cache entry / runtime.
+        query_entry_json = utils.stable_json(query_entry.query_exec_cache_hash_entries())
 
         entry_dict = {
             "system": system,

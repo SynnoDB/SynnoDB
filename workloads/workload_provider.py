@@ -35,6 +35,27 @@ class QueryEntry:
     query_args: str
     placeholders: dict[str, str]
     order_by_info: list[tuple[str, str]]
+    # Index of this repetition within its query group. A batch repeats the same query multiple times (benchmark mode); each repetition is identical except for this index. It is the deterministic distinguisher used by the query execution cache so that every repetition gets its own cache entry (and thus its own measured runtime) without colliding on the same cache file.
+    rep_index: int = 0
+    num_reps: int = 1  # total number of repetitions in the batch for this query. Necessary for query execution cache.
+
+    def hash_entries(self) -> dict:
+        # validate / run cache keys: is ignoring repetition stuff, and req_id of query_args (this is not determinstic - info is covered deterministically by placeholders dict and sql)
+        return {
+            "benchmark": self.benchmark,
+            "query_id": self.query_id,
+            "sql": self.sql,
+            "placeholders": self.placeholders,
+            "order_by_info": self.order_by_info,
+        }
+
+    def query_exec_cache_hash_entries(self) -> dict:
+        # cache keys for query-execution-cache: is taking repetitions into account
+        return {
+            **self.hash_entries(),
+            "rep_index": self.rep_index,
+            "num_reps": self.num_reps,
+        }
 
 
 @dataclass

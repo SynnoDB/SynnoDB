@@ -93,13 +93,14 @@ def _query_batch_cache_payload(query_batch: QueryBatch) -> dict[str, Any]:
 
     QueryEntry.query_args includes a generated req_id. That id is intentionally
     different for every execution because it is used in result filenames and
-    response matching, but it is not part of the query semantics. The stable
-    fields below still include the SQL/placeholders, batch order/repetition,
-    execution settings, timeout, system config, and environment.
+    response matching, but it is not part of the query semantics. hash_entries()
+    keeps only the semantic per-query fields (SQL/placeholders/order-by). The
+    repetition count is still reflected by the length of query_list, and the
+    batch-level fields below cover execution settings, timeout, system config,
+    and environment.
     """
     payload = asdict(query_batch)
-    for entry in payload["query_list"]:
-        entry.pop("query_args", None)
+    payload["query_list"] = [entry.hash_entries() for entry in query_batch.query_list]
     return payload
 
 

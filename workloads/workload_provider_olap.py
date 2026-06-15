@@ -2,7 +2,7 @@ import functools
 import logging
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tools.run_tool_mode import RunToolMode
@@ -204,10 +204,13 @@ class OLAPWorkloadProvider(WorkloadProvider):
                         query_args=format_args_element(str(query_id), placeholders),
                         placeholders=placeholders,
                         order_by_info=order_by_info,
+                        num_reps=repetitions,
                     )
 
-                    for _ in range(repetitions):
-                        query_list.append(query_entry)
+                    for rep in range(repetitions):
+                        # distinct rep_index per repetition so each gets its own
+                        # (deterministic) query-execution-cache entry / runtime
+                        query_list.append(replace(query_entry, rep_index=rep))
 
             query_batch_list.append(
                 QueryBatch(
