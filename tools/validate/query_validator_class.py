@@ -88,6 +88,21 @@ def _format_per_query_errors(query_results: list[QueryResult]) -> str:
     return "Per-query errors:\n" + "\n".join(lines)
 
 
+def _query_batch_cache_payload(query_batch: QueryBatch) -> dict[str, Any]:
+    """Return the semantic QueryBatch payload used for validation caching.
+
+    QueryEntry.query_args includes a generated req_id. That id is intentionally
+    different for every execution because it is used in result filenames and
+    response matching, but it is not part of the query semantics. The stable
+    fields below still include the SQL/placeholders, batch order/repetition,
+    execution settings, timeout, system config, and environment.
+    """
+    payload = asdict(query_batch)
+    for entry in payload["query_list"]:
+        entry.pop("query_args", None)
+    return payload
+
+
 class QueryValidator:
     ############
     # WARNING: add all call args to cache hash to ensure correct cache hits. If you change the call args, old cache entries will not be hit anymore and validation results will not be replayed from cache anymore until new cache entries for the new call args are generated.
@@ -318,7 +333,7 @@ class QueryValidator:
             return None, None, None, None
 
         hash_payload = {
-            "query_batch": utils.stable_json(asdict(query_batch)),
+            "query_batch": utils.stable_json(_query_batch_cache_payload(query_batch)),
             "snapshotter_hash": self.git_snapshotter.current_hash,
             "skip_validate": skip_validate,
             "stop_on_first_error": stop_on_first_error,
