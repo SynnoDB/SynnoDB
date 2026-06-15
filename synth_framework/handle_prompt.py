@@ -24,6 +24,28 @@ from tools.validate.query_validator_class import QueryValidator
 logger = logging.getLogger(__name__)
 
 
+def _extract_agent_config(wrapper) -> dict | None:
+    """Serialize the agent's model, instructions, and tool definitions for observability."""
+    agent = getattr(wrapper, "agent", None)
+    if agent is None:
+        return None
+    tools = []
+    for t in getattr(agent, "tools", []):
+        tool_info: dict = {"name": getattr(t, "name", str(t))}
+        desc = getattr(t, "description", None)
+        if desc:
+            tool_info["description"] = desc
+        schema = getattr(t, "params_json_schema", None)
+        if schema:
+            tool_info["schema"] = schema
+        tools.append(tool_info)
+    return {
+        "model": str(getattr(wrapper, "model", "")),
+        "instructions": getattr(agent, "instructions", None),
+        "tools": tools,
+    }
+
+
 async def handle_prompt(
     text: str,
     short_desc: str | None,
@@ -86,10 +108,10 @@ async def handle_prompt(
         logger.info("=" * 80)
 
     # Update prompt index in hooks
-
     run_stats_collector.prompt_idx = idx
     run_stats_collector.current_prompt = text
     run_stats_collector.current_prompt_descriptor = short_desc
+    run_stats_collector.current_agent_config = _extract_agent_config(agent_sdk_wrapper)
 
     # Run with hooks for automatic metric tracking
     try:

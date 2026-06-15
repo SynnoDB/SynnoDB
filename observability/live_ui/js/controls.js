@@ -15,18 +15,100 @@ document.getElementById('prompt-list').addEventListener('mouseleave', () => {
 });
 
 // ── Prompt-list click → show full prompt in modal ────────────────────────
-const promptModal      = document.getElementById('prompt-modal');
-const promptModalClose = document.getElementById('prompt-modal-close');
-const promptModalTitle = document.getElementById('prompt-modal-title');
-const promptModalBody  = document.getElementById('prompt-modal-body');
+const promptModal        = document.getElementById('prompt-modal');
+const promptModalClose   = document.getElementById('prompt-modal-close');
+const promptModalCopy    = document.getElementById('prompt-modal-copy');
+const promptModalTitle   = document.getElementById('prompt-modal-title');
+const promptModalBody    = document.getElementById('prompt-modal-body');
+const promptModalConfig  = document.getElementById('prompt-modal-config');
+const promptModalTabsEl  = document.querySelector('.prompt-modal-tabs');
+
+let _promptModalText = '';
+let _activePromptTab = 'prompt';
+
+function setPromptModalTab(tab) {
+  _activePromptTab = tab;
+  document.querySelectorAll('.pm-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  promptModalBody.hidden   = tab !== 'prompt';
+  promptModalConfig.hidden = tab !== 'config';
+  promptModalCopy.hidden   = tab !== 'prompt';
+}
+
+promptModalTabsEl.addEventListener('click', e => {
+  const btn = e.target.closest('.pm-tab');
+  if (btn) setPromptModalTab(btn.dataset.tab);
+});
+
+function _renderSchemaParams(schema) {
+  if (!schema || !schema.properties) return '';
+  const props = Object.entries(schema.properties);
+  if (!props.length) return '';
+  const rows = props.map(([name, def]) => {
+    const type = def.type || (def.$ref ? 'object' : '');
+    const desc = def.description || '';
+    const req  = (schema.required || []).includes(name);
+    return `<tr><td class="cfg-param-name">${esc(name)}${req ? '<span class="cfg-req">*</span>' : ''}</td><td class="cfg-param-type">${esc(type)}</td><td class="cfg-param-desc">${esc(desc)}</td></tr>`;
+  }).join('');
+  return `<table class="cfg-param-table"><thead><tr><th>Param</th><th>Type</th><th>Description</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderAgentConfig(config) {
+  if (!config) return '<p class="cfg-empty">No config available for this stage.</p>';
+  const parts = [];
+
+  if (config.model) {
+    parts.push(`<div class="cfg-section"><div class="cfg-label">Model</div><div class="cfg-model-val">${esc(config.model)}</div></div>`);
+  }
+
+  if (config.tools && config.tools.length) {
+    const toolItems = config.tools.map(t => {
+      const paramTable = _renderSchemaParams(t.schema);
+      return `<div class="cfg-tool">
+        <div class="cfg-tool-name">${esc(t.name)}</div>
+        ${t.description ? `<div class="cfg-tool-desc">${esc(t.description)}</div>` : ''}
+        ${paramTable}
+      </div>`;
+    }).join('');
+    parts.push(`<div class="cfg-section"><div class="cfg-label">Tools (${config.tools.length})</div><div class="cfg-tools">${toolItems}</div></div>`);
+  }
+
+  if (config.instructions) {
+    parts.push(`<div class="cfg-section"><div class="cfg-label">Instructions</div><details class="cfg-instructions"><summary>Show / Hide</summary><pre class="cfg-pre">${esc(config.instructions)}</pre></details></div>`);
+  }
+
+  return parts.join('') || '<p class="cfg-empty">No config details available.</p>';
+}
 
 function openPromptModal(desc) {
-  const text = _promptsByDesc.get(desc);
-  if (!text) return;
+  const text   = _promptsByDesc.get(desc);
+  const config = _configByDesc.get(desc);
+  if (!text && !config) return;
+
+  _promptModalText = text || '';
   promptModalTitle.textContent = desc;
-  promptModalBody.textContent  = text;
+  promptModalBody.innerHTML    = text ? renderMarkdown(text) : '<p style="color:var(--muted)">No prompt text recorded.</p>';
+  promptModalBody.scrollTop    = 0;
+  promptModalConfig.innerHTML  = renderAgentConfig(config || null);
+  promptModalCopy.textContent  = 'Copy';
+
+  setPromptModalTab(text ? 'prompt' : 'config');
   promptModal.hidden = false;
 }
+
+promptModalCopy.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(_promptModalText);
+  } catch (_) {
+    const ta = document.createElement('textarea');
+    ta.value = _promptModalText;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  promptModalCopy.textContent = 'Copied!';
+  setTimeout(() => { promptModalCopy.textContent = 'Copy'; }, 1500);
+});
 
 document.getElementById('prompt-list').addEventListener('click', e => {
   const item = e.target.closest('.pl-item[data-desc]');

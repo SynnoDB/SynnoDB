@@ -7,6 +7,8 @@ import pickle
 from pathlib import Path
 from typing import Any, TypeVar
 
+from utils.json_utils import JsonEncoder
+
 logger = logging.getLogger(__name__)
 
 
@@ -79,18 +81,9 @@ def sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-class _PathEncoder(json.JSONEncoder):
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, Path):
-            return str(obj)
-        if isinstance(obj, enum.Enum):
-            return obj.value
-        return super().default(obj)
-
-
 def stable_json(obj: Any) -> str:
     return json.dumps(
-        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, cls=_PathEncoder
+        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, cls=JsonEncoder
     )
 
 

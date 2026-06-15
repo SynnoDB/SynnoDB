@@ -110,6 +110,15 @@ async def main(args: argparse.Namespace) -> None:
     shell_cache_dir = cache_dir / "tool" / "shell"
     llm_cache_dir = cache_dir / "llm"
 
+    create_dir_and_set_permissions(prepare_workspace_cache_dir)
+    create_dir_and_set_permissions(query_execution_cache_dir)
+    create_dir_and_set_permissions(cloc_cache_dir)
+    create_dir_and_set_permissions(compile_cache_dir)
+    create_dir_and_set_permissions(validate_cache_dir)
+    create_dir_and_set_permissions(apply_patch_cache_dir)
+    create_dir_and_set_permissions(shell_cache_dir)
+    create_dir_and_set_permissions(llm_cache_dir)
+
     # snapshotter cache repo
     snapshotter_cache_repo = (
         None

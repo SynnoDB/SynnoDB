@@ -46,7 +46,7 @@ class OLAPSystemFactory(SystemFactory):
                     benchmark=benchmark,
                     dataset_tables=OLAPWorkloadProvider._dataset_tables(benchmark),
                     pre_load_duckdb_tables=False,
-                    parquet_path=exec_settings.parquet_dir,
+                    parquet_path=exec_settings.parquet_dir.parent,
                     sf=exec_settings.scale_factor,
                     pin_worker=val_pin_worker,
                     pin_core=val_pin_core,
@@ -58,7 +58,7 @@ class OLAPSystemFactory(SystemFactory):
         elif system_name == System.UMBRA:
             if self.umbra_runner is None:
                 self.umbra_runner = UmbraRunner(
-                    parquet_path=exec_settings.parquet_dir,
+                    parquet_path=exec_settings.parquet_dir.parent,
                     benchmark=benchmark,
                     scale_factors=[exec_settings.scale_factor],
                     container_num_cores=general_system_config.num_threads,

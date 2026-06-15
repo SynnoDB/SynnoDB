@@ -161,13 +161,11 @@ class OLAPWorkloadProvider(WorkloadProvider):
                 storage_dir = None
 
             # assemble parquet path where data is loaded from
-            parquet_path = (
-                self.base_parquet_dir / f"sf{scale_factor}"
-            ).as_posix() + "/"
-            assert parquet_path.endswith("/"), (
-                f"Parquet path must end with '/': {parquet_path}"
+            parquet_dir = (self.base_parquet_dir / f"sf{scale_factor}").as_posix() + "/"
+            assert parquet_dir.endswith("/"), (
+                f"Parquet directory must end with '/': {parquet_dir}"
             )
-            cli_call_args_str = f"{parquet_path}"
+            cli_call_args_str = f"{parquet_dir}"
 
             query_list = []
             sql_set = (
@@ -228,7 +226,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
                     exec_settings=OLAPExecSettings(
                         scale_factor=scale_factor,
                         db_storage=self.db_storage,
-                        parquet_dir=self.base_parquet_dir,
+                        parquet_dir=Path(parquet_dir),
                         disk_db_dir=storage_dir,
                     ),
                 )

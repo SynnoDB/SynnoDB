@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import os
 from dataclasses import asdict, dataclass
@@ -18,6 +17,7 @@ from tools.validate.query_validator_class import (
     QueryValidator,
 )
 from tools.validate.run_and_check_queries import assemble_error
+from utils.json_utils import json_dumps
 from utils.utils import DBStorage
 from workloads.workload_provider import QueryBatch, WorkloadProvider
 
@@ -411,7 +411,7 @@ class RunTool:
                 assert val_result.ingest_time_ms is not None, (
                     "ingest_time_ms should be set in ingest mode. This should not happen."
                 )
-                msg = f"Query results are correct. Ingest/build time: {val_result.ingest_time_ms:.2f}ms with call args:\n```\n{json.dumps(asdict(batch.exec_settings), indent=2)}\n```\nStdout:\n```\n{stdout}\n```\n\nStderr:\n```\n{stderr}\n```"
+                msg = f"Query results are correct. Ingest/build time: {val_result.ingest_time_ms:.2f}ms with call args:\n```\n{json_dumps(asdict(batch.exec_settings), indent=2)}\n```\nStdout:\n```\n{stdout}\n```\n\nStderr:\n```\n{stderr}\n```"
 
             # this assertion does unfortunately not work: it is valid that args for validate change, but compile is the same. E.g. different scale factors.
             # assert compile_used_cache == val_result.replayed_from_cache, (
@@ -441,8 +441,8 @@ class RunTool:
             msg = f"stdout: {run_result.out.rstrip()}\nstderr: {run_result.err.rstrip()}\n{run_result.resp}"
             trace_output = ",".join(qr.trace for qr in run_result.query_results)
             resp = run_result.resp
-            out = run_result.out
-            err = run_result.err
+            stdout = run_result.out
+            stderr = run_result.err
             ingest_time_ms = run_result.ingest_time_ms
 
             # extract queries with error
@@ -506,8 +506,8 @@ class RunTool:
             msg=msg,
             metrics=metrics,
             resp=resp,
-            out=out,
-            err=err,
+            out=stdout,
+            err=stderr,
             trace_output=trace_output,
             query_batch=batch,
             query_results=query_results,
