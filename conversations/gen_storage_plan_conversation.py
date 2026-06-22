@@ -5,6 +5,7 @@ from conversations.checkpointed_conversation import CheckpointedConversation
 from conversations.prompts_gen import gen_storage_plan_prompt
 from conversations.stage_config import StaticStageConfig
 from utils.utils import DBStorage
+from workloads.workload_provider import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 class GenStoragePlanConversation(CheckpointedConversation):
     def __init__(
         self,
-        benchmark: str,
+        benchmark: Workload,
         schema: str,
         workspace_path: Path,
         db_storage: DBStorage,
@@ -29,7 +30,7 @@ class GenStoragePlanConversation(CheckpointedConversation):
         await self._run_stages(self.assemble_stages())
 
     def assemble_stages(self):
-        queries_filename = "queries.txt"
+        queries_filename = "queries.md"
         storage_plan_filename = "storage_plan.txt"
 
         def _validate_storage_plan_exists() -> str | None:

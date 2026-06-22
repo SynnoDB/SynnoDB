@@ -7,6 +7,8 @@ import pickle
 from pathlib import Path
 from typing import Any, TypeVar
 
+from utils.json_utils import JsonEncoder
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,7 +16,10 @@ def parse_db_storage(s: str) -> "DBStorage":
     try:
         return DBStorage(s)
     except ValueError:
-        raise ValueError(f"Invalid db storage: {s}. Valid options are: {[e.value for e in DBStorage]}")
+        raise ValueError(
+            f"Invalid db storage: {s}. Valid options are: {[e.value for e in DBStorage]}"
+        )
+
 
 class DBStorage(str, enum.Enum):
     LABSTORE = "labstore"
@@ -26,8 +31,11 @@ def get_disk_db_dir(
     db_storage: DBStorage, workspace_path: Path
 ) -> tuple[Path | None, Path | None]:
     if db_storage == DBStorage.LABSTORE:
-        disk_db_dir = Path("/mnt/labstore/bespoke_olap/dbs")
-        bespoke_db_dir = Path("/mnt/labstore/bespoke_olap/tmp")
+        raise NotImplementedError(
+            "LABSTORE storage is not supported in this codebase. Please use SSD or IN_MEMORY."
+        )
+        # disk_db_dir = Path("/mnt/labstore/bespoke_olap/dbs")
+        # bespoke_db_dir = Path("/mnt/labstore/bespoke_olap/tmp")
     elif db_storage == DBStorage.SSD:
         disk_db_dir = Path(__file__).parent.parent / "dbs"
         bespoke_db_dir = workspace_path.absolute() / "tmp"
@@ -73,16 +81,9 @@ def sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-class _PathEncoder(json.JSONEncoder):
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, Path):
-            return str(obj)
-        return super().default(obj)
-
-
 def stable_json(obj: Any) -> str:
     return json.dumps(
-        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, cls=_PathEncoder
+        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, cls=JsonEncoder
     )
 
 
@@ -156,15 +157,6 @@ def load_pickle(path: Path, expected: type[T]) -> T | None:
         logger.exception(f"Failed to read from {path}: {e}")
         raise e
 
-    # quarantine corrupted / unexpected cache entry
-    # TODO activate this!
-    # try:
-    #     os.replace(path, path.with_suffix(path.suffix + ".corrupt"))
-    # except Exception:
-    #     pass
-
-    return None
-
 
 def dump_pickle(
     path: Path, obj: T, do_not_cache: bool, assert_not_exists: bool = True
@@ -190,3 +182,7 @@ def dump_pickle(
     except Exception as e:
         logger.exception(f"Failed to write to {path}: {e}")
         raise e
+
+
+def prefix_dict(d: dict[str, Any], prefix: str) -> dict[str, Any]:
+    return {f"{prefix}_{k}": v for k, v in d.items()}

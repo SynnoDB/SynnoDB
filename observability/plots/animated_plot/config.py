@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 W = 1920
@@ -9,7 +10,11 @@ MAX_VISIBLE_LINES = 38
 PLOT_WINDOW_TITLE = "metrics_live.py"
 PROMPT_WINDOW_TITLE = "current_prompt.txt"
 COST_WINDOW_TITLE = "Cost"
-WANDB_RUN_CACHE_PATH = Path("/mnt/labstore/bespoke_olap/wandb_cache")
+
+SYNNO_DATA_DIR = os.getenv("SYNNO_DATA_DIR", default=None)
+assert SYNNO_DATA_DIR is not None, "SYNNO_DATA_DIR environment variable is not set"
+SYNNO_DATA_DIR = Path(SYNNO_DATA_DIR)
+WANDB_RUN_CACHE_PATH = SYNNO_DATA_DIR / "wandb_cache"
 DEFAULT_VIDEO_PATH = Path(__file__).resolve().parent / "terminal_demo.mp4"
 
 BG = (30, 34, 40)

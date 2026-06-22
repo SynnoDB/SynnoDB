@@ -72,8 +72,9 @@ function updateCards(steps, data) {
   tickTimer();
 }
 
-// Maps section desc → full prompt text, populated by updatePrompts.
+// Maps section desc → full prompt text / agent config, populated by updatePrompts.
 const _promptsByDesc = new Map();
+const _configByDesc  = new Map();
 
 // ── Prompts list (per-section turn / time / cost summary) ────────────────
 function updatePrompts(steps, data) {
@@ -95,9 +96,12 @@ function updatePrompts(steps, data) {
   const valueBefore = (startIdx, key, fallback = 0) => valueAtOrBefore(startIdx - 1, key, fallback);
 
   _promptsByDesc.clear();
+  _configByDesc.clear();
   for (const sec of sections) {
     const promptText = (data[steps[sec.startIdx]] || {}).current_prompt || null;
     if (promptText) _promptsByDesc.set(sec.desc, promptText);
+    const configRaw = (data[steps[sec.startIdx]] || {}).agent_config || null;
+    if (configRaw) _configByDesc.set(sec.desc, parseJsonField(configRaw));
   }
 
   const costKey = costMode === 'real' ? 'total/real_cost_usd' : 'total/cost_usd';

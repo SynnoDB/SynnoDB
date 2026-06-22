@@ -95,9 +95,17 @@
   <div class="modal-box prompt-modal-box">
     <div class="modal-hdr">
       <span class="modal-title" id="prompt-modal-title"></span>
-      <button class="modal-close" id="prompt-modal-close" aria-label="Close">&#10005;</button>
+      <div class="modal-hdr-actions">
+        <button class="modal-copy" id="prompt-modal-copy" title="Copy prompt">Copy</button>
+        <button class="modal-close" id="prompt-modal-close" aria-label="Close">&#10005;</button>
+      </div>
     </div>
-    <pre id="prompt-modal-body" class="prompt-modal-body"></pre>
+    <div class="prompt-modal-tabs">
+      <button class="pm-tab active" data-tab="prompt">Prompt</button>
+      <button class="pm-tab" data-tab="config">Config</button>
+    </div>
+    <div id="prompt-modal-body" class="prompt-modal-body markdown-body"></div>
+    <div id="prompt-modal-config" class="prompt-modal-config" hidden></div>
   </div>
 </div>
 

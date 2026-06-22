@@ -60,6 +60,9 @@ class RunStatsCollector(RunHooks):
         self.current_prompt_descriptor: Optional[str] = (
             None  # set externally by conversation loop
         )
+        self.current_agent_config: Optional[dict] = (
+            None  # set externally by conversation loop
+        )
 
         if len(self.drains) == 0:
             logger.warning(
@@ -244,6 +247,7 @@ class RunStatsCollector(RunHooks):
             "context_window_usage": token_stats["context_window_usage"],
             "current_prompt": self.current_prompt,
             "current_prompt_descriptor": self.current_prompt_descriptor,
+            "agent_config": self.current_agent_config,
             "llm_hash": self.last_llm_hash,
         }
 
@@ -284,9 +288,10 @@ class RunStatsCollector(RunHooks):
 
             metrics["supervisor/approved"] = output_text == SUPERVISION_SUCCESS_KW
 
-        # reset current prompt
+        # reset current prompt and config
         self.current_prompt = None
         self.current_prompt_descriptor = None
+        self.current_agent_config = None
 
         self.total_stats["input_tokens"] += token_stats["input_tokens"]
         self.total_stats["cached_tokens"] += token_stats["cached_tokens"]

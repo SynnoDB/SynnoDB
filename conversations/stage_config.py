@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from workloads.workload_provider import ExecSettings
+
 
 @dataclass
 class StageConfig(ABC):
@@ -19,10 +21,14 @@ class StageConfig(ABC):
 class StaticStageConfig(StageConfig):
     """Stage configuration with a static prompt that is always executed as-is."""
 
-    # Called with the current impl runtime (ms) just before the stage runs.
-    # Returns the full prompt string for this stage.
-    get_prompt: Optional[Callable[[float, float], str]] = None
-    get_prompt_with_tracing: Optional[Callable[[float, float, str], str]] = None
+    # Called just before the stage runs to build the prompt. Receives the stage's
+    # exec settings (sourced from the workload provider's query batch, or None) and
+    # the previous impl runtime in ms. Returns the full prompt string for this stage.
+    get_prompt: Optional[Callable[[ExecSettings | None, float], str]] = None
+    # Same as get_prompt, but additionally receives the tracing data string.
+    get_prompt_with_tracing: Optional[
+        Callable[[ExecSettings | None, float, str], str]
+    ] = None
 
     def __post_init__(self):
         if self.get_prompt is None and self.get_prompt_with_tracing is None:
@@ -40,8 +46,8 @@ class StaticStageConfig(StageConfig):
     post_stage_validate: Optional[Callable[[], Optional[str]]] = (
         None  # called after stage; return None if valid, or a feedback string for the LLM
     )
-    sf: Optional[float] = (
-        None  # which scale factor to use for all performance measurements for this stage -- reference runtime collected before the stage, tracing run, and post-stage measurement (None = use conversation's benchmark_sf)
+    exec_settings: Optional[ExecSettings] = (
+        None  # exec settings to use for providing current runtime statistics to the prompt
     )
 
 

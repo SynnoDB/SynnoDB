@@ -6,7 +6,6 @@ duckdb
 *.parquet
 *.csv
 *.pdf
-*.json
 wandb/
 *.png
 *.jpg

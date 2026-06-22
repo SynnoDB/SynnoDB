@@ -6,8 +6,9 @@ import json
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from wandb import Table
 from wandb.plot.custom_chart import CustomChart
+
+from wandb import Table
 
 _DUCKDB_TYPE_MAP = {
     int: "BIGINT",
@@ -27,6 +28,8 @@ def _duckdb_col_value(value):
         return value
     elif isinstance(value, str):
         return value
+    elif isinstance(value, Path):
+        return value.as_posix()
     elif isinstance(value, Table) or isinstance(value, CustomChart):
         return None
     return json.dumps(value)

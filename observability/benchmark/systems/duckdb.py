@@ -2,10 +2,12 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from tools.validate.duckdb_connection_manager import (
+from observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
 from utils.utils import DBStorage
+from workloads.workload_provider import Workload
+from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +18,7 @@ class DuckDBRunner:
     def __init__(
         self,
         parquet_path: Path,
-        benchmark: str,
+        benchmark: Workload,
         db_storage: DBStorage,
         disk_db_dir: Optional[Path] = None,
         num_threads: int = 1,
@@ -37,10 +39,12 @@ class DuckDBRunner:
         args_list: list[str],
     ) -> list[float | None]:
         logger.info("Running DuckDB timings (num_threads=%d)...", self._num_threads)
+        assert isinstance(self._benchmark, OLAPWorkload)
         duckdb_con = DuckDBConnectionManager(
             pre_load_duckdb_tables=True,
-            parquet_path=self._parquet_path.as_posix(),
+            parquet_path=self._parquet_path,
             sf=scale_factor,
+            dataset_tables=OLAPWorkloadProvider._dataset_tables(self._benchmark),
             pin_worker=self._pin_worker,
             benchmark=self._benchmark,
             num_threads=self._num_threads,

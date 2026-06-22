@@ -1,10 +1,10 @@
 import logging
-import re
 from abc import abstractmethod
 from pathlib import Path
 
 from cpp_runner.prepare_repo.assemble_args_parser import assemble_args_parser_file
 from cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
+from cpp_runner.prepare_repo.retrieve_framework_version_hash import extract_version_id
 from synth_framework.git_snapshotter import GitSnapshotter
 from utils import utils
 from workloads.workload_provider import WorkloadProvider
@@ -33,7 +33,7 @@ class PrepareWorkspace:
         prepare_cache_dir: Path | None = None,
     ):
         self.workload_provider = workload_provider
-        self.workspace_dir = workspace_dir
+        self.workspace_dir = workspace_dir.resolve()
         self.git_snapshotter = git_snapshotter
         self.prepare_cache_dir = prepare_cache_dir
 
@@ -73,7 +73,7 @@ class PrepareWorkspace:
         }
 
         readonly_files_to_be_git_tracked = {
-            "queries.txt",
+            "queries.md",
         }
 
         return readonly_files_not_git_tracked, readonly_files_to_be_git_tracked
@@ -82,7 +82,7 @@ class PrepareWorkspace:
         self,
         add_thread_pool_to_query_impl: bool,
         add_sample_trace: bool,
-        only_query_txt: bool = False,
+        only_query_md: bool = False,
         write_non_tracked_only: bool = False,
         only_from_cache: bool = False,
         do_not_cache: bool = False,
@@ -126,7 +126,7 @@ class PrepareWorkspace:
 
         file_ids_in_context = self._write_files(
             files,
-            only_query_txt=only_query_txt,
+            only_query_md=only_query_md,
             write_non_tracked_only=write_non_tracked_only,
             only_from_cache=only_from_cache,
             do_not_cache=do_not_cache,
@@ -215,7 +215,7 @@ class PrepareWorkspace:
     def _write_files(
         self,
         files: dict[str, str],
-        only_query_txt: bool = False,
+        only_query_md: bool = False,
         write_non_tracked_only: bool = False,
         only_from_cache: bool = False,
         do_not_cache: bool = False,
@@ -225,11 +225,11 @@ class PrepareWorkspace:
             assert content is not None, f"Content for file {filename} is None"
 
         # filter out files
-        if only_query_txt:
-            assert "queries.txt" in files, (
-                "queries.txt must be generated to use only_query_txt mode"
+        if only_query_md:
+            assert "queries.md" in files, (
+                "queries.md must be generated to use only_query_md mode"
             )
-            files = {"queries.txt": files["queries.txt"]}
+            files = {"queries.md": files["queries.md"]}
 
         # split into read-only and regular files
         ro_files_not_git: dict[str, str] = {}
@@ -354,7 +354,7 @@ def _get_files_identifier_str(
     # extract version str for each file: if found add the version, if not, add the full file content
     artifacts_str = []
     for name, content in sorted(files.items()):
-        file_version, content_without_version = _extract_version_id(
+        file_version, content_without_version = extract_version_id(
             file_path=None, content=content, must_be_version=must_be_version
         )
 
@@ -367,27 +367,3 @@ def _get_files_identifier_str(
 
     # Stable string for cache key and LLM context
     return "\n\n".join(artifacts_str)
-
-
-def _extract_version_id(
-    file_path: Path | None, content: str | None, must_be_version: bool = False
-) -> tuple[str | None, str | None]:
-    if content is None:
-        assert file_path is not None, "Either file_path or content must be provided"
-        content = file_path.read_text()
-
-    # apply regex
-    file_version_regex = r"// FILE_VERSION: ([0-9]+)"
-    match = re.search(file_version_regex, content)
-
-    if must_be_version:
-        assert match, (
-            f"Expected to find version string in {file_path}. Ensure the file contains a line like '// FILE_VERSION: 123'. E.g. file was marked as read-only, then requires such a version string to be used in cache keys / ..."
-        )
-
-    if match:
-        version = match.group(1)
-        return version, None
-
-    else:
-        return None, content
