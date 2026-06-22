@@ -24,6 +24,7 @@ from llm.sdk.agents_sdk.openai_make_compile_tool import make_openai_compile_tool
 from llm.sdk.agents_sdk.openai_make_run_tool import make_openai_run_tool
 from llm.sdk.agents_sdk.openai_sdk_tools import (
     make_custom_openai_apply_patch_tool,
+    make_custom_openai_replace_in_file_tool,
     make_custom_openai_shell_tool,
 )
 from llm.sdk.agents_sdk.openai_token_usage import (
@@ -78,6 +79,13 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
             openai_compile_tool,
             openai_run_tool,
         ]
+
+        # Always expose the search/replace edit tool alongside apply_patch. It
+        # needs only a locally-unique old_string (no verbatim context hunks), so
+        # weak local models avoid apply_patch's context-match failures.
+        self.tools.append(
+            make_custom_openai_replace_in_file_tool(editor=self.editor)
+        )
 
         if self.args.tool_search_tool:
             logger.info("Utilizing tool search tool.")

@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -10,6 +11,7 @@ from observability.logging.logger import PLAIN
 from observability.logging.run_stats_collector import RunStatsCollector
 from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker
+from tools.tool_call_error_logger import log_tool_call_error
 from utils import utils
 
 logger = logging.getLogger(__name__)
@@ -87,6 +89,17 @@ class WorkspaceEditor:
         if self._cache_dir is not None:
             utils.create_dir_and_set_permissions(self._cache_dir)
 
+    def set_readonly(self, filename: str, readonly: bool) -> None:
+        """Add or remove a workspace-relative filename from the read-only set at
+        runtime. Used to lock query stubs during the storage-build stages and
+        release them when per-query implementation begins."""
+        path = self._root / filename
+        if readonly:
+            if path not in self._readonly_files:
+                self._readonly_files.append(path)
+        elif path in self._readonly_files:
+            self._readonly_files.remove(path)
+
     # ---------- public ops (cached) ----------
 
     def create_file(self, operation: ApplyPatchOperation) -> ApplyPatchResult:
@@ -97,6 +110,31 @@ class WorkspaceEditor:
 
     def delete_file(self, operation: ApplyPatchOperation) -> ApplyPatchResult:
         return self._cached_op("delete_file", operation, self._delete_file_impl)
+
+    def replace_in_file(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> ApplyPatchResult:
+        # Search/replace edit primitive (sibling of apply_patch update_file).
+        # Needs only a locally-unique `old_string`, not surrounding context, so
+        # it sidesteps the verbatim-context failures that weak models hit with
+        # V4A diffs. Routed through the same cache/snapshot wrapper.
+        return self._run_cached(
+            op_type="replace_in_file",
+            path=path,
+            cache_extra={
+                "old_string": old_string,
+                "new_string": new_string,
+                "replace_all": replace_all,
+            },
+            run_impl=lambda: self._replace_in_file_impl(
+                path, old_string, new_string, replace_all
+            ),
+            legacy_activity=lambda _status, _output: None,
+        )
 
     # ---------- cache wrapper ----------
 
@@ -114,22 +152,43 @@ class WorkspaceEditor:
     def _cached_op(
         self, op_type: str, operation: ApplyPatchOperation, impl
     ) -> ApplyPatchResult:
+        # Thin wrapper preserving the apply_patch cache-key shape. `stable_json`
+        # sorts keys, so the {diff} payload here hashes identically to the
+        # pre-refactor version - existing apply_patch caches stay valid.
+        return self._run_cached(
+            op_type=op_type,
+            path=operation.path,
+            cache_extra={"diff": operation.diff},
+            run_impl=lambda: impl(operation),
+            legacy_activity=lambda status, output: self._legacy_activity_summary_entry_for_cached_result(
+                op_type, operation, status, output
+            ),
+        )
+
+    def _run_cached(
+        self,
+        op_type: str,
+        path: str,
+        cache_extra: dict,
+        run_impl,
+        legacy_activity,
+    ) -> ApplyPatchResult:
         # Build cache key from current workspace state + operation. The cache
         # entry captures both the result and the post-op snapshot so a hit can
-        # restore the workspace without re-applying the patch.
+        # restore the workspace without re-applying the patch. `cache_extra`
+        # carries the op-specific key fields (apply_patch: {diff};
+        # replace_in_file: {old_string, new_string, replace_all}).
         if not self._cache_enabled():
             raise RuntimeError(
                 "Cache is not enabled for WorkspaceEditor. Check initialization parameters."
             )
 
-            # return impl(operation)
-
         assert self._snapshotter is not None
         payload = {
             "snapshotter_hash": self._snapshotter.current_hash,
             "op_type": op_type,
-            "path": operation.path,
-            "diff": operation.diff,
+            "path": path,
+            **cache_extra,
             "untracked_cpp_runner_content": self._untracked_cpp_runner_content,
         }
         hash_payload = utils.stable_json(payload)
@@ -144,35 +203,28 @@ class WorkspaceEditor:
             self._snapshotter.restore(cached.snapshot_hash)
             activity_summary_entry = getattr(
                 cached, "activity_summary_entry", None
-            ) or self._legacy_activity_summary_entry_for_cached_result(
-                op_type,
-                operation,
-                cached.result_status,
-                cached.result_output,
-            )
+            ) or legacy_activity(cached.result_status, cached.result_output)
             self._record_activity_summary(activity_summary_entry)
-            logger.debug(
-                f"Apply_patch ({op_type} {operation.path}) replayed from cache"
-            )
+            logger.debug(f"Apply_patch ({op_type} {path}) replayed from cache")
             return ApplyPatchResult(
                 status=cached.result_status,  # type: ignore[arg-type]
                 output=cached.result_output,
             )
         elif self._only_from_cache:
             raise ValueError(
-                f"Apply_patch result not found in cache for operation {op_type} {operation.path} and only_from_cache is enabled. Cache path: {cache_path}\nPayload: {hash_payload}"
+                f"Apply_patch result not found in cache for operation {op_type} {path} and only_from_cache is enabled. Cache path: {cache_path}\nPayload: {hash_payload}"
             )
 
         start = time.perf_counter()
         try:
-            result, activity_summary_entry = impl(operation)
+            result, activity_summary_entry = run_impl()
         except Exception as e:
             # catch the exception and write to result
             result = ApplyPatchResult(
                 status="failed", output=f"Error applying patch: {e}"
             )
             activity_summary_entry = (
-                f"Apply_patch called: {operation.type} {operation.path} (FAILED - {e})"
+                f"Apply_patch called: {op_type} {path} (FAILED - {e})"
             )
 
         runtime_seconds = time.perf_counter() - start
@@ -194,9 +246,6 @@ class WorkspaceEditor:
             ),
             do_not_cache=self._do_not_cache,
         )
-        # logger.debug(
-        #     f"Apply_patch ({op_type} {operation.path}) wrote to cache: {cache_path}"
-        # )
         return result
 
     def _record_activity_summary(self, entry: str | None) -> None:
@@ -416,6 +465,153 @@ class WorkspaceEditor:
                 f"Apply_patch called: Delete file {operation.path}",
             )
 
+    def _replace_in_file_impl(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool,
+    ) -> tuple[ApplyPatchResult, str | None]:
+        with custom_span(
+            f"replace_in_file ({path})",
+            {
+                "file": path,
+                "old_string": old_string[:1000],
+                "replace_all": replace_all,
+            },
+        ):
+            relative = self._relative_path(path)
+            target = self._resolve(path)
+            logger.info(f"Replacing in: {target} (replace_all={replace_all})")
+
+            if target in self._readonly_files:
+                return self._replace_failed(
+                    path,
+                    f"Error: Attempting to modify read-only file: {relative}",
+                    summary="read-only",
+                )
+
+            if old_string == "":
+                return self._replace_failed(
+                    path,
+                    "Error: old_string must not be empty. Use apply_patch create_file "
+                    "to create a new file.",
+                    summary="empty old_string",
+                )
+
+            if old_string == new_string:
+                return self._replace_failed(
+                    path,
+                    "Error: old_string and new_string are identical; nothing to change.",
+                    summary="no-op",
+                )
+
+            if not target.exists():
+                return self._replace_failed(
+                    path,
+                    f"Error: file {relative} does not exist. Use apply_patch "
+                    "create_file to create it.",
+                    summary="missing file",
+                )
+
+            original = target.read_text(encoding="utf-8")
+
+            # Exact substring first, then a narrow quote-normalized fallback.
+            actual_old = _find_actual_string(original, old_string)
+            if actual_old is None:
+                return self._replace_failed(
+                    path,
+                    f"String to replace was not found in {relative}. The file may have "
+                    "changed since you last read it. Re-anchor old_string on the CURRENT "
+                    "content shown below; it must match exactly.\n\n"
+                    f"{_current_content_block(relative, original)}",
+                    summary="string not found",
+                    log_error=True,
+                )
+
+            matches = original.count(actual_old)
+            if matches > 1 and not replace_all:
+                return self._replace_failed(
+                    path,
+                    f"Found {matches} occurrences of old_string in {relative}, but "
+                    "replace_all is false. Add surrounding lines so old_string uniquely "
+                    "identifies ONE location, or set replace_all=true to change all of "
+                    "them.",
+                    summary=f"{matches} matches, replace_all=false",
+                    log_error=True,
+                )
+
+            new_final = (
+                new_string
+                if _is_markdown(relative)
+                else _strip_trailing_whitespace(new_string)
+            )
+            n_repl = matches if replace_all else 1
+            patched = (
+                original.replace(actual_old, new_final)
+                if replace_all
+                else original.replace(actual_old, new_final, 1)
+            )
+
+            if patched == original:
+                return self._replace_failed(
+                    path,
+                    f"Error: replace produced no change in {relative}.",
+                    summary="no change",
+                )
+
+            target.write_text(patched, encoding="utf-8")
+
+            added = (new_final.count("\n") + 1) if new_final else 0
+            deleted = actual_old.count("\n") + 1
+            str_diff = (
+                f"=== REPLACE_IN_FILE: {target} (x{n_repl}) ===\n"
+                f"- {actual_old[:500]}\n+ {new_final[:500]}\n"
+            )
+            self._run_stats_collector.log_apply_patch_stats(
+                "replace",
+                added_lines=added * n_repl,
+                deleted_lines=deleted * n_repl,
+                string_diff=str_diff,
+                file_touched=Path(path).name,
+            )
+
+            occ = f"{n_repl} occurrence{'s' if n_repl != 1 else ''}"
+            return (
+                ApplyPatchResult(
+                    status="completed",
+                    output=f"Replaced {occ} in {relative}",
+                ),
+                f"replace_in_file called: {path}",
+            )
+
+    def _replace_failed(
+        self,
+        path: str,
+        message: str,
+        summary: str,
+        log_error: bool = False,
+    ) -> tuple[ApplyPatchResult, str | None]:
+        self._run_stats_collector.log_apply_patch_stats(
+            "replace",
+            added_lines=0,
+            deleted_lines=0,
+            string_diff="",
+            file_touched=Path(path).name,
+            failed=summary,
+        )
+        if log_error:
+            log_tool_call_error(
+                error_type="ReplaceInFileFailed",
+                error=ValueError(summary),
+                model=self._run_stats_collector.model,
+                turn=self._run_stats_collector.last_turn,
+            )
+        return (
+            ApplyPatchResult(status="failed", output=message),
+            f"replace_in_file called: {path} (FAILED - {summary})",
+        )
+
     def _relative_path(self, value: str) -> str:
         resolved = self._resolve(value)
         return resolved.relative_to(self._root).as_posix()
@@ -436,6 +632,63 @@ class WorkspaceEditor:
         if ensure_parent:
             target.parent.mkdir(parents=True, exist_ok=True)
         return target
+
+
+# Curly -> straight quotes only. Length-preserving (1 char -> 1 char), which lets
+# _find_actual_string map a normalized match back to the file's real bytes by
+# index. Deliberately narrow: we must NOT collapse whitespace, because a
+# substring replace writes back exact bytes/indentation.
+_QUOTE_NORMALIZATION = {
+    "‘": "'",  # left single
+    "’": "'",  # right single
+    "“": '"',  # left double
+    "”": '"',  # right double
+}
+
+
+def _normalize_quotes(text: str) -> str:
+    for src, dst in _QUOTE_NORMALIZATION.items():
+        text = text.replace(src, dst)
+    return text
+
+
+def _find_actual_string(file_content: str, search: str) -> str | None:
+    """Return the real file substring matching `search`, or None.
+
+    Tries an exact substring match first, then a curly/straight quote-normalized
+    match - returning the file's true bytes at that position so the subsequent
+    replace preserves the file's existing typography.
+    """
+    if search in file_content:
+        return search
+    idx = _normalize_quotes(file_content).find(_normalize_quotes(search))
+    if idx != -1:
+        return file_content[idx : idx + len(search)]
+    return None
+
+
+def _is_markdown(path: str) -> bool:
+    return path.lower().endswith((".md", ".mdx"))
+
+
+def _strip_trailing_whitespace(text: str) -> str:
+    # Drop trailing spaces/tabs on each line (assumes LF; the workspace is LF).
+    return re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
+
+
+def _current_content_block(relative: str, original: str) -> str:
+    """Render the current file content (bounded) for a failed-edit response so the
+    model can re-anchor without an extra round-trip."""
+    lines = original.splitlines()
+    MAX_LINES = 2000
+    if len(lines) <= MAX_LINES:
+        current = original
+    else:
+        current = (
+            "\n".join(lines[:MAX_LINES])
+            + f"\n... (truncated, {len(lines)} lines total — cat the file for the full content)"
+        )
+    return f"=== CURRENT CONTENT OF {relative} ===\n{current}\n=== END ==="
 
 
 def count_diff_operations(diff: str) -> tuple[int, int]:
