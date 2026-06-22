@@ -11,6 +11,7 @@ from agents.tool import FunctionTool
 from pydantic import BaseModel, Field
 
 from tools.custom_apply_patch import CustomApplyPatchTool
+from tools.custom_replace_in_file import CustomReplaceInFileTool
 from tools.shell_executor import ShellExecutor
 from tools.workspace_editor import WorkspaceEditor
 
@@ -232,8 +233,83 @@ def make_custom_openai_apply_patch_tool(
 
     return FunctionTool(
         name="apply_patch",
-        description="Applies a unified diff to create/update/delete a file",
+        description=(
+            "Applies a unified diff to create/update/delete a file. A created file is always empty. "
+            "To EDIT an existing file, prefer the `replace_in_file` tool - it is far more reliable "
+            "than an update_file diff. Read-only files that cannot be modified: "
+            "parquet_reader.cpp, parquet_reader.hpp, query_impl.cpp, query_impl.hpp, args_parser.hpp."
+        ),
         params_json_schema=schema,
+        on_invoke_tool=on_invoke,
+        defer_loading=False,  # always shown to the model
+    )
+
+
+class ReplaceInFileArgs(BaseModel):
+    file_path: str = Field(..., description="Path relative to workspace root")
+    old_string: str = Field(..., description="The exact text to find and replace")
+    new_string: str = Field(..., description="The text to replace it with")
+    replace_all: bool = Field(
+        False,
+        description="Replace every occurrence instead of requiring a unique match",
+    )
+
+
+_REPLACE_IN_FILE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "file_path": {
+            "type": "string",
+            "description": "Path relative to workspace root",
+        },
+        "old_string": {
+            "type": "string",
+            "description": (
+                "The exact text to find in the file. Must match the current file content "
+                "byte-for-byte (indentation included) and must uniquely identify ONE location "
+                "- include a few surrounding lines if a snippet would otherwise be ambiguous. "
+                "Do NOT wrap in markdown code fences."
+            ),
+        },
+        "new_string": {
+            "type": "string",
+            "description": "The replacement text (use \"\" only to delete the matched text).",
+        },
+        "replace_all": {
+            "type": "boolean",
+            "description": (
+                "Set true to replace every occurrence. If old_string matches more than once "
+                "and this is false, the edit fails and asks you to disambiguate."
+            ),
+        },
+    },
+    "required": ["file_path", "old_string", "new_string"],
+}
+
+
+def make_custom_openai_replace_in_file_tool(
+    editor: WorkspaceEditor,
+) -> FunctionTool:
+    impl = CustomReplaceInFileTool(editor=editor)
+
+    async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
+        args = ReplaceInFileArgs.model_validate_json(args_json)
+        return await impl(
+            args.file_path, args.old_string, args.new_string, args.replace_all
+        )
+
+    return FunctionTool(
+        name="replace_in_file",
+        description=(
+            "Edits an existing file by replacing an exact string. The preferred way to modify "
+            "files: provide `old_string` (the exact current text, uniquely identifying one spot) "
+            "and `new_string`. No diff syntax or surrounding-context hunks needed. If old_string "
+            "is not found or is ambiguous, the call fails with the current file content so you can "
+            "retry. Use replace_all=true to change every occurrence. Read-only files that cannot "
+            "be modified: parquet_reader.cpp, parquet_reader.hpp, query_impl.cpp, query_impl.hpp, "
+            "args_parser.hpp."
+        ),
+        params_json_schema=_REPLACE_IN_FILE_SCHEMA,
         on_invoke_tool=on_invoke,
         defer_loading=False,  # always shown to the model
     )

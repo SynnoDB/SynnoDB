@@ -331,7 +331,7 @@ class RunStatsCollector(RunHooks):
         tool_name = tool.name if hasattr(tool, "name") else str(tool)
         logger.debug(f"starting tool: {tool_name} (turn {self.last_turn})")
 
-        if tool_name == "apply_patch":
+        if tool_name in ("apply_patch", "replace_in_file"):
             self.apply_patch_added_ctr = 0
             self.apply_patch_deleted_ctr = 0
             self.apply_patch_str = ""
@@ -353,7 +353,7 @@ class RunStatsCollector(RunHooks):
             self.current_turn_tools.get(tool_name, 0) + 1
         )
 
-        if tool_name == "apply_patch":
+        if tool_name in ("apply_patch", "replace_in_file"):
             operation_type_dict = dict()
             for operation_type, count in self.apply_patch_stats.items():
                 operation_type_dict[f"apply_patch/{operation_type}_count"] = count
