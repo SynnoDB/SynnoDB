@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import List
 
+from workloads.workload_provider import Workload
+from workloads.workload_provider_olap import OLAPWorkload
 
-def parse_query_ids(short_name: str, benchmark: str = "tpch") -> List[str] | None:
+
+def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:
     assert "v" not in short_name, (
         f"Unexpected 'v' in short name: {short_name}"
     )  # this was old logic to parse query ids from conversation name - we now pass the query short name directly as an argument, so this is no longer needed
@@ -14,7 +17,7 @@ def parse_query_ids(short_name: str, benchmark: str = "tpch") -> List[str] | Non
     start_q = qnums[0]
     end_q = qnums[1]
 
-    if benchmark == "tpch":
+    if benchmark == OLAPWorkload.TPCH:
         start_q = int(start_q)
         end_q = int(end_q)
 
@@ -23,7 +26,7 @@ def parse_query_ids(short_name: str, benchmark: str = "tpch") -> List[str] | Non
         # convert to strings
         return [str(qid) for qid in qids]
 
-    elif benchmark == "ceb":
+    elif benchmark == OLAPWorkload.CEB:
         ceb_query_order = [
             "1a",
             "2a",

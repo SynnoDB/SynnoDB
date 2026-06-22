@@ -22,6 +22,7 @@ from conversations.prompts_gen import (
 from conversations.stage_config import StageConfig, StaticStageConfig
 from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
 from tools.run import delete_result_csv_files
+from tools.run_tool_mode import RunToolMode
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,6 @@ class InMem1OptimizationConversation(OptimizationConversation):
         pretext: str,
     ) -> list[StageConfig | str]:
         """Return the ordered flat list of setup stages before per-query optimization."""
-        sf = self.benchmark_sf
         # pinning_prompt = optim_prompt_pinning(core_id=3)
         add_timings_prompt_pretext = optim_prompt_add_timings_pretext()
 
@@ -56,11 +56,10 @@ class InMem1OptimizationConversation(OptimizationConversation):
             qids_str = ", ".join(qids)
             is_first = i == 0
 
-            def _timings_prompt(_sf, _rt, *, qids_str=qids_str, is_first=is_first):
+            def _timings_prompt(_exec_settings, _rt, *, qids_str=qids_str, is_first=is_first):
                 prompt = optim_prompt_add_timings_per_query(
                     qids_str=qids_str,
                     refer_to_prev_queries=not is_first,
-                    scale_factor=_sf,
                 )
                 return (
                     (add_timings_prompt_pretext + "\n" + prompt) if is_first else prompt
@@ -69,10 +68,10 @@ class InMem1OptimizationConversation(OptimizationConversation):
             def _validate_timings(*, qids=qids) -> str | None:
                 for trace_mode in [False, True]:
                     _, metrics, tracing_output = self.run_tool.run(
-                        sf,
-                        True,
+                        mode=RunToolMode.EXHAUSTIVE,
+                        optimize=True,
+                        query_ids=qids,
                         trace_mode=trace_mode,
-                        query_id=qids,
                         external_call=True,
                     )
                     if metrics is None or not metrics["validation/correct"]:
@@ -99,10 +98,10 @@ class InMem1OptimizationConversation(OptimizationConversation):
         def _assert_tracing_output() -> str | None:
             # run in trace mode and check that trace data was returned via the pipe
             _, _, trace_output = self.run_tool.run(
-                sf,
-                True,
+                mode=RunToolMode.BENCHMARK,
+                optimize=True,
+                query_ids=None,
                 trace_mode=True,
-                query_id=None,
                 external_call=True,
             )
 
@@ -125,7 +124,6 @@ class InMem1OptimizationConversation(OptimizationConversation):
         general_pretext: str,
     ) -> List[StaticStageConfig]:
         """Return the ordered list of optimization stages for a single query."""
-        sf = self.benchmark_sf
         sample_plan = self.sample_plan_dict[query_id]
 
         # load expert knowledge once - shared across all query optimization stages
@@ -142,31 +140,28 @@ class InMem1OptimizationConversation(OptimizationConversation):
                 descriptor=f"Optim w. Sample Plan ({query_id})",
                 # Stage 1: use the DuckDB sample plan for cardinality / optimizer hints.
                 # The current runtime is not yet known, so `_rt` is ignored.
-                get_prompt_with_tracing=lambda _sf, _rt, _tracing_data: (
+                get_prompt_with_tracing=lambda _exec_settings, _rt, _tracing_data: (
                     optim_prompt_w_sample_plan(
                         query_id=query_id,
                         constraints_str=mandatory_constraints,
                         query_plan=sample_plan,
                         current_rt_ms=_rt,
-                        sf=_sf,
                         engine=self.plan_source,  # type: ignore
                         general_pretext=general_pretext,
                         model=self.model,
                         persistent_storage=self.persistent_storage,
                         tracing_data=_tracing_data,
-                        sf_list=self.verify_sf_list,
                     )
                 ),
             ),
             StaticStageConfig(
                 descriptor=f"Optim w. Tracing Stats ({query_id})",
                 # Stage 2: use tracing statistics; target 10x improvement.
-                get_prompt_with_tracing=lambda _sf, rt, tracing_data: (
+                get_prompt_with_tracing=lambda _exec_settings, rt, tracing_data: (
                     optim_prompt_w_trace(
                         query_id=query_id,
                         constraints_str=mandatory_constraints,
                         current_rt_ms=rt,
-                        sf=_sf,
                         storage_is_bespoke=self.bespoke_storage,
                         tracing_data=tracing_data,
                         general_pretext=general_pretext,
@@ -179,12 +174,11 @@ class InMem1OptimizationConversation(OptimizationConversation):
             StaticStageConfig(
                 descriptor=f"Optim w. Expert Knowledge ({query_id})",
                 # Stage 3: apply domain-expert best practices; target 2x improvement.
-                get_prompt=lambda _sf, rt: optim_prompt_w_expert_knowledge(
+                get_prompt=lambda _exec_settings, rt: optim_prompt_w_expert_knowledge(
                     query_id=query_id,
                     constraints_str=mandatory_constraints,
                     expert_knowledge=expert_knowledge,
                     current_rt_ms=rt,
-                    sf=_sf,
                     storage_is_bespoke=self.bespoke_storage,
                     general_pretext=general_pretext,
                     model=self.model,
@@ -195,12 +189,11 @@ class InMem1OptimizationConversation(OptimizationConversation):
             StaticStageConfig(
                 descriptor=f"Optim w. Human Reference ({query_id})",
                 # Stage 4: final polish in the style of Thomas Neumann / Matthias Jasny.
-                get_prompt_with_tracing=lambda _sf, rt, tracing_data: (
+                get_prompt_with_tracing=lambda _exec_settings, rt, tracing_data: (
                     optim_prompt_w_human_reference(
                         query_id=query_id,
                         constraints_str=mandatory_constraints,
                         current_rt_ms=rt,
-                        sf=_sf,
                         storage_is_bespoke=self.bespoke_storage,
                         tracing_data=tracing_data,
                         general_pretext=general_pretext,
@@ -234,9 +227,7 @@ class InMem1OptimizationConversation(OptimizationConversation):
         )
 
         # ensure initial implementation is correct
-        correct, _, _ = self._check_correctness(
-            self.query_ids, trace_mode=False, sf=self.benchmark_sf
-        )
+        correct, _, _ = self._check_correctness(self.query_ids, trace_mode=False)
         assert correct, (
             "Initial implementation does not produce correct results according to the validation tool. Please fix the implementation until it is correct before starting with optimization."
         )

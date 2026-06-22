@@ -10,6 +10,7 @@ from conversations.prompts_gen import (
 )
 from conversations.stage_config import StaticStageConfig
 from utils.utils import DBStorage
+from workloads.workload_provider_olap import OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,6 @@ class CheckSFCorrectnessConv(CheckpointedConversation):
         *,
         query_ids: List[str],
         target_sf: float,
-        verify_sf_list: List[float],
         bespoke_storage: bool,
         db_storage: DBStorage,
         **kwargs,
@@ -35,7 +35,6 @@ class CheckSFCorrectnessConv(CheckpointedConversation):
         super().__init__(**kwargs)
         self.query_ids = query_ids
         self.target_sf = target_sf
-        self.verify_sf_list = verify_sf_list
         self.bespoke_storage = bespoke_storage
         self.persistent_storage = db_storage in [DBStorage.LABSTORE, DBStorage.SSD]
         self.file_paths = get_filenames()
@@ -54,14 +53,17 @@ class CheckSFCorrectnessConv(CheckpointedConversation):
             persistent_storage=self.persistent_storage,
         )
 
+        # drive the target scale factor through the workload provider: BENCHMARK
+        # mode will then emit target_sf for this correctness check
+        assert isinstance(self._olap_provider, OLAPWorkloadProvider)
+        self._olap_provider.set_benchmark_sf(self.target_sf)
+
         stage = StaticStageConfig(
             descriptor=f"Check correctness at sf {self.target_sf}",
-            get_prompt=lambda _sf, _rt: optim2_prompt_check_large_sf(
-                target_sf=self.target_sf,
+            get_prompt=lambda _exec_settings, _rt: optim2_prompt_check_large_sf(
                 general_pretext=general_pretext,
                 constraints_str=mandatory_constraints,
                 storage_is_bespoke=self.bespoke_storage,
-                sf_list=self.verify_sf_list + [self.benchmark_sf],
             ),
             max_turns=150,
             measure_performance_after_stage=False,

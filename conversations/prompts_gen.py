@@ -2,6 +2,9 @@ import textwrap
 from pathlib import Path
 from string import Template
 
+from tools.run_tool_mode import RunToolMode
+from workloads.workload_provider import ExecSettings
+
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
@@ -154,9 +157,8 @@ def base_storage_invariant_check_prompt(
 
 def base_optimize_build_simple(
     builder_path: str,
-    sf_list: list[float],
     current_ingest_time_ms: float,
-    current_ingest_sf: float,
+    current_exec_config: ExecSettings,
     persistent_storage: bool,
 ) -> str:
     if persistent_storage:
@@ -166,18 +168,15 @@ def base_optimize_build_simple(
 
     template_str = _load_txt(prompt_path)
     template = Template(template_str)
-    sf_list_str = ", ".join([str(sf) for sf in sf_list])
     return template.substitute(
         builder_path=builder_path,
-        sf_list=sf_list_str,
+        config_str=str(current_exec_config),
         current_ingest_time_ms=f"{int(current_ingest_time_ms)} ms",
-        current_ingest_sf=current_ingest_sf,
+        run_tool_mode=RunToolMode.INGEST.name,
     )
 
 
 def base_exec_validate_prompt(
-    sf_verify_str: str,
-    max_scale_factor: float,
     query_impl_path: str,
     args_path: str,
     builder_path: str,
@@ -186,8 +185,7 @@ def base_exec_validate_prompt(
     template_str = _load_txt(_PROMPTS_DIR / "base_exec_validate.txt")
     template = Template(template_str)
     return template.substitute(
-        sf_verify_str=sf_verify_str,
-        max_scale_factor=max_scale_factor,
+        run_tool_mode=RunToolMode.EXHAUSTIVE.name,
         query_impl_path=query_impl_path,
         args_parser=args_path,
         builder_path=builder_path,
@@ -240,7 +238,7 @@ def base_impl_query_prompt(
 
 def base_exec_validate_for_query_prompt(
     query_id: str,
-    sf_verify_str: str,
+    run_tool_mode: RunToolMode,
     builder_path: str,
     sql: str,
     show_ssd_error_hints: bool,
@@ -255,26 +253,26 @@ def base_exec_validate_for_query_prompt(
 
     return template.substitute(
         query_id=query_id,
-        sf_verify_str=sf_verify_str,
+        run_tool_mode=run_tool_mode.name,
         builder_path=builder_path,
         sql=sql,
         error_hints=error_hints,
     )
 
 
-def base_check_correctness_all_prompt(sf_verify_str: str) -> str:
+def base_check_correctness_all_prompt(run_tool_mode: RunToolMode) -> str:
     template_str = _load_txt(_PROMPTS_DIR / "base_correctness_all.txt")
     template = Template(template_str)
-    return template.substitute(
-        sf_verify_str=sf_verify_str,
-    )
+    return template.substitute(run_tool_mode=run_tool_mode.name)
 
 
-def base_run_all_and_fix_prompt(max_scale_factor: float, query_impl_path: str) -> str:
+def base_run_all_and_fix_prompt(
+    query_impl_path: str, run_tool_mode: RunToolMode
+) -> str:
     template_str = _load_txt(_PROMPTS_DIR / "base_run_all_and_fix.txt")
     template = Template(template_str)
     return template.substitute(
-        max_scale_factor=max_scale_factor,
+        run_tool_mode=run_tool_mode.name,
         query_impl_path=query_impl_path,
     )
 
@@ -305,8 +303,6 @@ def base_fix_slow_queries_prompt(
 
 
 def base_optimize_build_prompt(
-    max_scale_factor: float,
-    sf_verify_str: str,
     builder_path_cpp: str,
     builder_path_hpp: str,
     persistent_storage: bool,
@@ -320,8 +316,7 @@ def base_optimize_build_prompt(
     template = Template(template_str)
 
     return template.substitute(
-        max_scale_factor=max_scale_factor,
-        sf_verify_str=sf_verify_str,
+        run_tool_mode=RunToolMode.INGEST.name,
         builder_path_cpp=builder_path_cpp,
         builder_path_hpp=builder_path_hpp,
     )
@@ -405,7 +400,6 @@ def optim_prompt_add_timings_pretext() -> str:
 def optim_prompt_add_timings_per_query(
     qids_str: str,
     refer_to_prev_queries: bool,
-    scale_factor: float,
 ) -> str:
     template_str = _load_txt(
         _PROMPTS_DIR / "optim_add_timings_collect_stats_per_query.txt"
@@ -416,7 +410,7 @@ def optim_prompt_add_timings_per_query(
         refer_to_prev=" Align instrumentation with previous queries."
         if refer_to_prev_queries
         else "",
-        sf=scale_factor,
+        run_tool_mode=RunToolMode.FAST_CHECK.name,
     )
 
 
@@ -435,13 +429,12 @@ def optim_prompt_w_sample_plan(
     query_id: str,
     constraints_str: str,
     query_plan: str,
-    sf: float,
     engine: str,
     general_pretext: str,
     model: str,
     current_rt_ms: float,
+    current_exec_settings: ExecSettings,
     tracing_data: str,
-    sf_list: list,
     persistent_storage: bool,
 ) -> str:
     template_str = _load_txt(_PROMPTS_DIR / "optim_w_sample_plan.txt")
@@ -450,7 +443,7 @@ def optim_prompt_w_sample_plan(
     additional_instructions = ""
     tracing_block = ""
     if persistent_storage:
-        tracing_block = f"Initial tracing/profiling output (sf {sf}, single-threaded):\n```\n{tracing_data}\n```\n"
+        tracing_block = f"Initial tracing/profiling output (single-threaded):\n```\n{tracing_data}\n```\n"
         additional_instructions += "- Storage access pattern alignment (which columns to scan, in what order, with what zone-map pruning).\n"
         additional_instructions += "Choose algorithms that will parallelize cleanly later (prefer sort-merge or partitioned hash over shared-mutable-hash designs; prefer per-row-range processing that can be split across threads).\n"
 
@@ -458,13 +451,14 @@ def optim_prompt_w_sample_plan(
         query_id=query_id,
         constraints=constraints_str,
         query_plan=query_plan,
-        sf=sf,
         engine=engine,
         general_pretext=general_pretext,
         misc=target_rt_prompt(model, current_rt_ms),
         tracing_block=tracing_block,
-        sf_list=", ".join([str(sf) for sf in sf_list]),
         additional_instructions=additional_instructions,
+        run_tool_mode_correctness=RunToolMode.EXHAUSTIVE.name,
+        run_tool_mode_benchmark=RunToolMode.BENCHMARK.name,
+        exec_settings_str=str(current_exec_settings),
     )
 
 
@@ -472,7 +466,7 @@ def optim_prompt_w_trace(
     query_id: str,
     constraints_str: str,
     current_rt_ms: float,
-    sf: float,
+    current_exec_settings: ExecSettings,
     storage_is_bespoke: bool,
     tracing_data: str,
     general_pretext: str,
@@ -495,7 +489,6 @@ def optim_prompt_w_trace(
     return template.substitute(
         query_id=query_id,
         constraints=constraints_str,
-        sf=sf,
         bespoke_storage_related=" e.g. changes to the storage layout and especially ordering of columns"
         if storage_is_bespoke
         else "",
@@ -504,6 +497,7 @@ def optim_prompt_w_trace(
         misc=target_rt_prompt(model, current_rt_ms),
         analyze_hints=hints,
         more_constraints=more_constraints,
+        exec_settings_str=str(current_exec_settings),
     )
 
 
@@ -513,7 +507,7 @@ def optim_prompt_w_human_reference(
     general_pretext: str,
     constraints_str: str,
     current_rt_ms: float,
-    sf: float,
+    current_exec_settings: ExecSettings,
     storage_is_bespoke: bool,
     model: str,
     num_turns: int,
@@ -523,7 +517,6 @@ def optim_prompt_w_human_reference(
     return template.substitute(
         query_id=query_id,
         constraints=constraints_str,
-        sf=sf,
         bespoke_storage_related=" e.g. changes to the storage layout and especially ordering of columns"
         if storage_is_bespoke
         else "",
@@ -531,6 +524,7 @@ def optim_prompt_w_human_reference(
         general_pretext=general_pretext,
         misc=target_rt_prompt(model, current_rt_ms),
         num_turns=num_turns,
+        exec_settings_str=str(current_exec_settings),
     )
 
 
@@ -547,7 +541,6 @@ def optim_prompt_w_expert_knowledge(
     constraints_str: str,
     expert_knowledge: str,
     current_rt_ms: float,
-    sf: float,
     storage_is_bespoke: bool,
     general_pretext: str,
     model: str,
@@ -564,7 +557,6 @@ def optim_prompt_w_expert_knowledge(
         query_id=query_id,
         constraints=constraints_str,
         expert_knowledge=expert_knowledge,
-        sf=sf,
         bespoke_storage_related=" e.g. changes to the storage layout and especially ordering of columns"
         if storage_is_bespoke
         else "",
@@ -615,12 +607,10 @@ def optim2_prompt_introduce_threading(
     query_id: str,
     constraints_str: str,
     current_rt_ms: float,
-    sf: float,
     general_pretext: str,
     storage_is_bespoke: bool,
     thread_pool_filename: str,
     db_loader_header_filename: str,
-    run_tool_sf: float,
     persistent_storage: bool,
     tracing_data: str,
 ) -> str:
@@ -636,35 +626,32 @@ def optim2_prompt_introduce_threading(
         constraints=constraints_str,
         query_id=query_id,
         current_rt=f"{int(current_rt_ms)}ms",
-        sf=sf,
         bespoke_storage_related=" e.g. changes to the storage layout and especially ordering of columns"
         if storage_is_bespoke
         else "",
         general_pretext=general_pretext,
         thread_pool_filename=thread_pool_filename,
         db_loader_filename=db_loader_header_filename,
-        run_tool_sf=run_tool_sf,
         tracing_block=tracing_block,
+        run_tool_mode_correctness=RunToolMode.EXHAUSTIVE.name,
+        run_tool_mode_benchmark=RunToolMode.BENCHMARK.name,
     )
 
 
 def optim2_prompt_check_large_sf(
-    target_sf: float,
     general_pretext: str,
     constraints_str: str,
     storage_is_bespoke: bool,
-    sf_list: list[float],
 ) -> str:
     template_str = _load_txt(_PROMPTS_DIR / "optim2_check_large_sf.txt")
     template = Template(template_str)
     return template.substitute(
-        target_sf=target_sf,
         general_pretext=general_pretext,
         constraints=constraints_str,
         bespoke_storage_related=" e.g. changes to the storage layout and especially ordering of columns"
         if storage_is_bespoke
         else "",
-        sf_list=", ".join([str(sf) for sf in sf_list]),
+        run_tool_mode=RunToolMode.BENCHMARK.name,
     )
 
 
@@ -672,7 +659,7 @@ def optim2_prompt_optimize_w_trace(
     query_id: str,
     constraints_str: str,
     current_rt_ms: float,
-    sf: float,
+    current_exec_settings: ExecSettings,
     tracing_data: str,
     general_pretext: str,
     storage_is_bespoke: bool,
@@ -684,13 +671,13 @@ def optim2_prompt_optimize_w_trace(
         constraints=constraints_str,
         query_id=query_id,
         current_rt=f"{int(current_rt_ms)}ms",
-        sf=sf,
         tracing_data=tracing_data,
         bespoke_storage_related=" e.g. changes to the storage layout and especially ordering of columns"
         if storage_is_bespoke
         else "",
         general_pretext=general_pretext,
         st_rt=f"{int(single_threaded_rt_ms)}ms",
+        exec_settings_str=str(current_exec_settings),
     )
 
 

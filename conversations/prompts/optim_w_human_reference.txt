@@ -1,10 +1,11 @@
 Optimize query ${query_id} as Prof. Thomas Neumann or Matthias Jasny would: apply every low-level technique available, leave nothing on the table. Focus on the bottlenecks identified in the tracing output, but also reconsider the overall approach if it unlocks significantly larger speedups.
 First output a short plan with candidate strategies, expected bottleneck addressed, and files to edit. Then implement and evaluate the most 1-2 promising candidates.
 
-Tracing/profiling data collected with sf ${sf} for query ${query_id}:
+Tracing/profiling data collected for query ${query_id}:
 ```
 ${tracing_data}
 ```
+(exec settings: ${exec_settings_str})
 
 ${general_pretext}
 

@@ -1,10 +1,10 @@
 Analyze the build implementation in ${builder_path} regarding performance. Identify any bottlenecks or inefficiencies in the serialization (Arrow → column files on disk).
 Based on your analysis, speedup the serialization in ${builder_path}.
-The current serialization time for sf ${current_ingest_sf} is ${current_ingest_time_ms} ms.
+The current serialization time is ${current_ingest_time_ms} ms (${config_str}).
 `file_loader_utils.hpp`/`.cpp` may contain shared SSD serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Use or improve those helpers when the issue is generic. Keep writes large and page-aligned where practical.
 
 Limit file inspection to `${builder_path}`, directly referenced headers, and `file_loader_utils.hpp`/`.cpp` when present. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch. Do not use broad find, repo-wide grep, or directory scans unless the prompt names no target files. If a needed file is missing, inspect at most one directory level around the named files.
 
 Batch all code edits. Compile only once after a coherent set of changes, or after a concrete compile error. Not after every individual edit.
 
-Check that the serialization time reduces by calling the run-tool for all scale factors: ${sf_list}.
+Check that the serialization time reduces by calling the run-tool in mode "${run_tool_mode}" to get the ingest time.

@@ -1,66 +1,41 @@
 import random
-from pathlib import Path
+from collections import defaultdict
 
-from tools.validate.query_validator_class import QueryValidator
-from tools.validate.sf_list_gen import gen_sf
-from utils.utils import DBStorage
-from workloads.dataset.dataset_tables_dict import get_dataset_name
-from workloads.dataset.query_gen_factory import get_placeholders_fn, get_query_gen
+from tools.run_tool_mode import RunToolMode
+from workloads.workload_provider import WorkloadProvider
 
 
-def get_sample_query_args(args, seed=42):
-    workspace_path = Path("./output")
-    workspace_path.mkdir(exist_ok=True)
+def get_sample_query_args(workload_provider: WorkloadProvider, seed=42):
+    query_ids = workload_provider.query_ids
 
-    cache_path = Path(args.artifacts_dir) / "cache"
-
-    snapshotter = None
-
-    # prepare query gen
-    gen_query_fn = get_query_gen(args.benchmark)
-    gen_placeholders_fn = get_placeholders_fn(
-        args.benchmark,
-        do_not_cache=args.do_not_cache,
-        cache_dir=cache_path / "placeholders_cache",
+    # generate a batch with all
+    query_batch_list = workload_provider.produce_workload(
+        run_mode=RunToolMode.FAST_CHECK, num_threads=1, core_ids=None, query_ids=None
     )
-    parquet_path = args.artifacts_dir + f"/{get_dataset_name(args.benchmark)}_parquet/"
+    query_batch = query_batch_list[0]  # use the first: we don't care about SFs, ...
 
-    query_list = [q.strip() for q in args.query_list.split(",")]
+    sample_arg_list_dict = defaultdict(list)
 
-    # assemble default sf values for the selected benchmark
-    verify_sf_list, max_scale_factor = gen_sf(args.benchmark)
-
-    query_validator = QueryValidator(
-        benchmark=args.benchmark,
-        gen_query_fn=gen_query_fn,
-        sf_list=verify_sf_list + [max_scale_factor],
-        parquet_path=parquet_path,
-        wandb_pin_worker=True,
-        all_query_ids=query_list,
-        num_random_query_instantiations=10,
-        query_cache_dir=cache_path / "query_cache",
-        validate_cache_dir=cache_path / "validate",
-        workspace_path=workspace_path,
-        git_snapshotter=snapshotter,
-        db_storage=DBStorage.IN_MEMORY,
-    )
-
-    sample_arg_list_dict = {}
+    # split the batch into individual queries and pick a random arg list for each query
+    for query in query_batch.query_list:
+        qid_str = query.query_id
+        sample_arg_list_dict[qid_str].append(query.query_args)
 
     rnd = random.Random(seed)
+    final_sample_arg_dict = {}
+    for qid, arg_list in sample_arg_list_dict.items():
+        final_sample_arg_dict[qid] = rnd.choice(arg_list)
 
-    for query_id in query_list:
-        # get query instantiations and convert to arg list
-        args_list, instantiations, num_queries = (
-            query_validator._get_instantiations_and_convert_to_arg_list(
-                scale_factor=verify_sf_list[-1],
-                query_id=[query_id],
-                repetitions=1,
-                trace_mode=False,
-            )
-        )
+    assert set(final_sample_arg_dict.keys()) == set(query_ids), (
+        f"Expected to have sample args for all query ids {query_ids}, but got {list(final_sample_arg_dict.keys())}"
+    )
 
-        # pick a random entry from args_list
-        sample_arg_list_dict[query_id] = rnd.choice(args_list)
+    return final_sample_arg_dict
 
-    return sample_arg_list_dict
+
+def get_sample_exec_settings(workload_provider: WorkloadProvider):
+    # generate a batch with all
+    query_batch_list = workload_provider.produce_workload(
+        run_mode=RunToolMode.BENCHMARK, num_threads=1, core_ids=None, query_ids=None
+    )
+    return query_batch_list[0].exec_settings

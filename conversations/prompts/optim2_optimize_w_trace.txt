@@ -1,8 +1,9 @@
-Optimize the multi-threaded implementation of query $query_id using the tracing/profiling data collected with sf ${sf}:
+Optimize the multi-threaded implementation of query $query_id using the tracing/profiling data collected with the run tool:
 
 ```
 ${tracing_data}
 ```
+(exec settings: ${exec_settings_str})
 
 Focus on multi-threading specific bottlenecks:
 - Load imbalance: threads finishing at different times (idle cores while work remains).
@@ -12,7 +13,7 @@ Focus on multi-threading specific bottlenecks:
 - Remaining sequential sections that limit parallel speedup (Amdahl's law).
 
 After making changes, validate correctness and confirm performance improved.
-Target: reduce runtime further from $current_rt for sf $sf. Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: $st_rt for sf $sf).
+Target: reduce runtime further from $current_rt (${exec_settings_str}). Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: $st_rt).
 
 Turn off trace instrumentation in the run-tool for reliable benchmarking. Call run-tool with trace to gather updated statistics for bottleneck identification.
 Make sure the performance improved. Otherwise, try again or remove your changes.

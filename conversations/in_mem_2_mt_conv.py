@@ -18,6 +18,8 @@ from conversations.prompts_gen import (
 )
 from conversations.stage_config import StageConfig, StaticStageConfig
 from tools.run import delete_result_csv_files
+from tools.run_tool_mode import RunToolMode
+from workloads.workload_provider_olap import OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 
@@ -50,17 +52,15 @@ class InMem2MTConversation(OptimizationConversation):
         configs: list[StaticStageConfig] = [
             StaticStageConfig(
                 descriptor=f"Introduce Multi-Threading ({query_id})",
-                get_prompt_with_tracing=lambda _sf, rt, tracing_data: (
+                get_prompt_with_tracing=lambda _exec_settings, rt, tracing_data: (
                     optim2_prompt_introduce_threading(
                         query_id=query_id,
                         constraints_str=mandatory_constraints,
                         current_rt_ms=rt,
-                        sf=_sf,
                         general_pretext=general_pretext,
                         storage_is_bespoke=self.bespoke_storage,
                         thread_pool_filename=self.file_paths["thread_pool_filename"],
                         db_loader_header_filename=self.file_paths["builder_hpp_path"],
-                        run_tool_sf=_sf,
                         persistent_storage=self.persistent_storage,
                         tracing_data=tracing_data,
                     )
@@ -69,12 +69,11 @@ class InMem2MTConversation(OptimizationConversation):
             ),
             StaticStageConfig(
                 descriptor=f"Optimize Multi-Threading w. Trace ({query_id})",
-                get_prompt_with_tracing=lambda sf, rt, tracing_data: (
+                get_prompt_with_tracing=lambda _exec_settings, rt, tracing_data: (
                     optim2_prompt_optimize_w_trace(
                         query_id=query_id,
                         constraints_str=mandatory_constraints,
                         current_rt_ms=rt,
-                        sf=sf,
                         tracing_data=tracing_data,
                         general_pretext=general_pretext,
                         storage_is_bespoke=self.bespoke_storage,
@@ -94,7 +93,7 @@ class InMem2MTConversation(OptimizationConversation):
         return [
             StaticStageConfig(
                 descriptor="Add ThreadPool",
-                get_prompt=lambda _sf, _rt: optim2_prompt_add_threadpool(
+                get_prompt=lambda _exec_settings, _rt: optim2_prompt_add_threadpool(
                     db_loader_filename=self.file_paths["builder_hpp_path"],
                     thread_pool_filename=self.file_paths["thread_pool_filename"],
                     general_pretext=general_pretext,
@@ -130,9 +129,7 @@ class InMem2MTConversation(OptimizationConversation):
         )
 
         # ensure the starting implementation (from round 1) is still correct
-        correct, _, _ = self._check_correctness(
-            self.query_ids, trace_mode=False, sf=self.benchmark_sf
-        )
+        correct, _, _ = self._check_correctness(self.query_ids, trace_mode=False)
         assert correct, (
             "Initial implementation does not produce correct results. "
             "Please fix it before starting multi-threading optimization."
@@ -142,26 +139,23 @@ class InMem2MTConversation(OptimizationConversation):
         await self._exec(VALIDATE_ON, None, current_stage_nr=0)
         await self._exec(VALIDATE_OUTPUT_STDOUT_ON, None, current_stage_nr=1)
 
-        # run initial validation to confirm correctness and collect baseline runtimes
-        # measure single-threaded runtimes to use as a baseline for the multi-threading optimization
+        # measure single-threaded runtimes at the benchmark scale to use as a
+        # baseline for the multi-threading optimization
         self.single_threaded_rt_ms = {}
-        for sf in self.verify_sf_list + [self.benchmark_sf]:
-            _, metrics, _ = self.run_tool.run(
-                scale_factor=sf,
-                optimize=True,
-                query_id=self.query_ids,
-                external_call=True,
+        _, metrics, _ = self.run_tool.run(
+            mode=RunToolMode.BENCHMARK,
+            optimize=True,
+            query_ids=self.query_ids,
+            external_call=True,
+        )
+        assert metrics is not None
+        for query_id in self.query_ids:
+            q_3d_str = query_id.zfill(3)
+            key = f"validation/query_{q_3d_str}/impl_runtime_ms"
+            assert key in metrics, (
+                f"Expected metric {key} not found in {metrics.keys()}"
             )
-
-            if sf == self.benchmark_sf:
-                assert metrics is not None
-                for query_id in self.query_ids:
-                    q_3d_str = query_id.zfill(3)
-                    key = f"validation/query_{q_3d_str}/impl_runtime_ms"
-                    assert key in metrics, (
-                        f"Expected metric {key} not found in {metrics.keys()}"
-                    )
-                    self.single_threaded_rt_ms[query_id] = metrics[key]
+            self.single_threaded_rt_ms[query_id] = metrics[key]
 
         # tracing instrumentation is already present from round 1; no need to re-add it.
         # delete any stale result.csv files before starting the loop
@@ -212,24 +206,24 @@ class InMem2MTConversation(OptimizationConversation):
             )
         )
 
-        # run a check with SF100 to confirm that the optimized implementation is correct and performant on the benchmark SF
+        # run a check at a large scale factor to confirm the optimized
+        # implementation is correct and performant beyond the default benchmark
+        # scale. We drive this off the workload provider: temporarily raise its
+        # BENCHMARK scale factor, run the check, then restore the default.
         large_sf = 100 if self.benchmark == "tpch" else 10
-
-        self.query_validator._init_with_sf_list(
-            self.query_validator.sf_list + [large_sf]
-        )
+        assert isinstance(self._olap_provider, OLAPWorkloadProvider)
+        default_benchmark_sf = self._olap_provider.benchmark_sf
+        self._olap_provider.set_benchmark_sf(large_sf)
 
         await self._run_stages(
             stage_list=[
                 COMPACTION_MARKER,
                 StaticStageConfig(
-                    descriptor="Check SF100",
-                    get_prompt=lambda _sf, _rt: optim2_prompt_check_large_sf(
-                        target_sf=large_sf,
+                    descriptor="Check large SF",
+                    get_prompt=lambda _exec_settings, _rt: optim2_prompt_check_large_sf(
                         general_pretext=pretext_optim,
                         constraints_str=mandatory_constraints,
                         storage_is_bespoke=self.bespoke_storage,
-                        sf_list=self.verify_sf_list + [self.benchmark_sf],
                     ),
                     max_turns=125,
                     measure_performance_after_stage=False,
@@ -240,6 +234,9 @@ class InMem2MTConversation(OptimizationConversation):
             stage_nr_offset=optim_stage_offset
             + len(self.query_ids) * per_query_stage_count,
         )
+
+        # restore the default benchmark scale factor for any subsequent runs
+        self._olap_provider.set_benchmark_sf(default_benchmark_sf)
 
         logger.info(f"Final validation metrics after MT optimization: {stage_end_msg}")
 

@@ -42,7 +42,7 @@ def prepare_repo_and_load_snapshot(
         if not snapshotter.has_snapshot(snapshot):
             raise ValueError(f"Snapshot {snapshot} not found in repo.")
 
-        # Avoid stale untracked files from previous snapshots (e.g. queries.txt).
+        # Avoid stale untracked files from previous snapshots (e.g. queries.md).
         is_dirty, git_status_output = snapshotter.is_dirty()
         if is_dirty:
             if await_user_confirmation(
@@ -95,7 +95,7 @@ def prepare_repo_and_load_snapshot(
 
         artifacts_in_context += prepare_workspace_provider.prepare(
             add_thread_pool_to_query_impl=prepare == "mt",
-            only_query_txt=prepare == "storage_plan",
+            only_query_md=prepare == "storage_plan",
             add_sample_trace=add_sample_trace,
             write_non_tracked_only=write_non_tracked_only,
             only_from_cache=only_from_cache,

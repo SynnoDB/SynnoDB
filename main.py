@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-import wandb
 from dotenv import load_dotenv
 
+import wandb
 from conversations.base_impl_conversation import BaseImplConversation
 from conversations.check_sf_correctness_conv import CheckSFCorrectnessConv
 from conversations.filenames import get_filenames
@@ -45,13 +45,12 @@ from tools.compile import CompileTool
 from tools.run import RunTool
 from tools.shell_executor import ShellExecutor
 from tools.validate.query_validator_class import QueryValidator
-from tools.validate.sf_list_gen import gen_sf
 from tools.workspace_editor import WorkspaceEditor
 from utils.cli_config import RunConfig, add_common_args
 from utils.confirm_dialog import await_user_confirmation
 from utils.conv_name_utils import ConvMode, generate_conv_name
 from utils.core_utils import get_cores_for_current_machine
-from utils.get_sample_q_args import get_sample_query_args
+from utils.get_sample_q_args import get_sample_exec_settings, get_sample_query_args
 from utils.hugepages import get_num_numa_nodes, set_hugepages
 from utils.pkgconfig import check_pkg
 from utils.snapshot_utils import load_storage_plan_from_snapshot
@@ -61,47 +60,110 @@ from utils.utils import (
     create_dir_and_set_permissions,
     get_disk_db_dir,
 )
-from workloads.dataset.dataset_tables_dict import get_benchmark_schema, get_dataset_name
-from workloads.dataset.query_gen_factory import get_query_gen
-from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from workloads.query_execution_cache import QueryExecutionCache
+from workloads.system_factory_olap import OLAPSystemFactory
+from workloads.workload_provider_olap import (
+    OLAPExecSettings,
+    OLAPWorkload,
+    OLAPWorkloadProvider,
+)
 
 logger = logging.getLogger(__name__)
 
+# load environment variables
+load_dotenv()
+
+synnodb_data_dir_tmp = os.getenv("SYNNO_DATA_DIR", default=None)
+assert synnodb_data_dir_tmp is not None, (
+    "SYNNO_DATA_DIR environment variable is not set"
+)
+synnodb_data_dir = Path(synnodb_data_dir_tmp)
+
+log_dir = synnodb_data_dir / "logs" / "logfiles"
+create_dir_and_set_permissions(log_dir)
+duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
+create_dir_and_set_permissions(duckdb_drain_dir)
+
 
 async def main(args: argparse.Namespace) -> None:
-    # check that pyarrow exists before any operations that might need it
-    if not check_pkg("arrow", "parquet"):
-        raise Exception("arrow and parquet are not available. See README.")
+    # check all dependencies exist
+    test_deps()
 
-    # check that cloc is available (used by run_stats_collector to count LOC)
-    if shutil.which("cloc") is None:
-        raise Exception("cloc is not installed. See README.")
-
-    # check that pyarrow library exists
-    try:
-        import importlib.util
-
-        if importlib.util.find_spec("pyarrow") is None:
-            raise ImportError
-    except ImportError:
-        raise Exception("pyarrow Python package is not installed. Run: uv sync")
-
+    #####
+    # Assemble Paths
+    #####
+    # workspace
     workspace_path = Path("./output")
     workspace_path.mkdir(exist_ok=True)
 
-    cache_path = Path(args.artifacts_dir) / "cache"
-    create_dir_and_set_permissions(cache_path)
-    cache_repo = (
+    # cache paths
+
+    cache_dir = synnodb_data_dir / "cache"
+    create_dir_and_set_permissions(cache_dir)
+
+    prepare_workspace_cache_dir = cache_dir / "prepare_workspace"
+    query_execution_cache_dir = cache_dir / "query_execution"
+    cloc_cache_dir = cache_dir / "cloc_cache"
+    compile_cache_dir = cache_dir / "tool" / "compile"
+    validate_cache_dir = cache_dir / "tool" / "validate"
+    apply_patch_cache_dir = cache_dir / "tool" / "apply_patch"
+    shell_cache_dir = cache_dir / "tool" / "shell"
+    llm_cache_dir = cache_dir / "llm"
+
+    create_dir_and_set_permissions(prepare_workspace_cache_dir)
+    create_dir_and_set_permissions(query_execution_cache_dir)
+    create_dir_and_set_permissions(cloc_cache_dir)
+    create_dir_and_set_permissions(compile_cache_dir)
+    create_dir_and_set_permissions(validate_cache_dir)
+    create_dir_and_set_permissions(apply_patch_cache_dir)
+    create_dir_and_set_permissions(shell_cache_dir)
+    create_dir_and_set_permissions(llm_cache_dir)
+
+    # snapshotter cache repo
+    snapshotter_cache_repo = (
         None
         if args.disable_repo_sync
         else os.environ.get("GIT_SNAPSHOTTER_SERVER", None)
     )
 
-    conversations_dir = Path(args.artifacts_dir) / "conversations"
+    # conversations dir
+    conversations_dir = synnodb_data_dir / "conversations"
+
+    # parquet dir and workload provider
+    dataset_name = OLAPWorkloadProvider._get_dataset_name(args.benchmark)
+    parquet_dir = (
+        synnodb_data_dir
+        / "workloads"
+        / args.benchmark.value
+        / f"{dataset_name}_parquet"
+    )
+
+    #####
+    # Other preparations
+    #####
 
     notify.SEND_NOTIFICATIONS = args.notify
 
-    workload_provider = OLAPWorkloadProvider(benchmark=OLAPWorkload(args.benchmark))
+    # storage related setup
+    db_storage = args.db_storage
+    assert db_storage in [
+        DBStorage.IN_MEMORY,
+        DBStorage.SSD,
+    ]  # labstore is not yet fully supported
+
+    disk_db_dir, bespoke_db_dir = get_disk_db_dir(db_storage, workspace_path)
+
+    logger.info(f"Using database source: {db_storage}. Disk DB dir: {disk_db_dir}")
+
+    if disk_db_dir is not None:
+        create_dir_and_set_permissions(disk_db_dir)
+
+    workload_provider = OLAPWorkloadProvider(
+        benchmark=OLAPWorkload(args.benchmark),
+        base_parquet_dir=parquet_dir,
+        db_storage=args.db_storage,
+        bespoke_ssd_storage_dir=bespoke_db_dir,
+    )
 
     # get files that should be marked as read-only - they will be untracked in git and excluded from snapshot hashed / ... (i.e. unless their version number changes, they will not affect caches)
     readonly_files_not_git_tracked, readonly_files_git_tracked = (
@@ -131,7 +193,7 @@ async def main(args: argparse.Namespace) -> None:
         dataset_version = "3"
 
     snapshotter = GitSnapshotter(
-        cache_repo=cache_repo,
+        cache_repo=snapshotter_cache_repo,
         working_dir=workspace_path,
         extra_gitignore=extra_gitignore,
         do_not_snapshot=args.do_not_cache,  # if caching is disabled, also disable snapshotting to avoid confusion about what is actually cached and what is not.
@@ -154,25 +216,9 @@ async def main(args: argparse.Namespace) -> None:
                 f'Please remove all uncommitted changes in "{workspace_path}". We expect a clean working directory to ensure reproducibility.'
             )
 
-    db_storage = args.db_storage
-    assert db_storage in [
-        DBStorage.IN_MEMORY,
-        DBStorage.SSD,
-    ]  # labstore is not yet fully supported
-
-    disk_db_dir, bespoke_db_dir = get_disk_db_dir(db_storage, workspace_path)
-
-    logger.info(f"Using database source: {db_storage}. Disk DB dir: {disk_db_dir}")
-
-    if disk_db_dir is not None:
-        create_dir_and_set_permissions(disk_db_dir)
-
     ##############################
     # Prepare workspace / snapshot
     ##############################
-
-    # prepare query gen
-    gen_query_fn = get_query_gen(args.benchmark)
 
     query_list = [q.strip() for q in args.query_list.split(",")]
 
@@ -229,9 +275,7 @@ async def main(args: argparse.Namespace) -> None:
                 workload_provider=workload_provider,
                 workspace_dir=workspace_path,
                 git_snapshotter=snapshotter,
-                prepare_cache_dir=cache_path / "prepare_cache"
-                if cache_path is not None
-                else None,
+                prepare_cache_dir=prepare_workspace_cache_dir,
             ),
         )
 
@@ -239,14 +283,10 @@ async def main(args: argparse.Namespace) -> None:
     # Misc setup
     ###############
 
-    parquet_path = args.artifacts_dir + f"/{get_dataset_name(args.benchmark)}_parquet/"
-
     # measure total time including cache hits - start the timer
     runtime_tracker = RuntimeTracker()
 
     # Create hooks instance for tracking metrics
-    log_path = Path(args.artifacts_dir) / "logs"
-    create_dir_and_set_permissions(log_path)
     import socket
 
     data_drains: list[DataDrain] = [
@@ -255,7 +295,7 @@ async def main(args: argparse.Namespace) -> None:
             wandb_run_id=getattr(args, "wandb_run_id", None),
             system_name=socket.gethostname(),
         ),
-        DuckDBDrain(db_path=log_path / f"{args.run_name}.duckdb"),
+        DuckDBDrain(db_path=duckdb_drain_dir / f"{args.run_name}.duckdb"),
     ]
     if not args.disable_wandb:
         data_drains.append(WandbDrain())
@@ -263,30 +303,12 @@ async def main(args: argparse.Namespace) -> None:
     collector_args = dict(
         model=args.model,
         git_snapshotter=snapshotter,
-        cloc_cache_dir=cache_path / "cloc_cache",
+        cloc_cache_dir=cloc_cache_dir,
         runtime_tracker=runtime_tracker,
         do_not_cache=args.do_not_cache,
         drains=data_drains,
     )
     run_stats_collector = RunStatsCollector(**collector_args)
-
-    # assemble default sf values for the selected benchmark
-    verify_sf_list, max_scale_factor = gen_sf(
-        args.benchmark,
-        benchmark_sf=args.max_scale_factor,
-        multi_threaded_mode=args.conv_mode == ConvMode.MAKE_MT
-        or (args.conv_mode == ConvMode.CHECK_SF and prepare_mode == "mt"),
-    )
-
-    if args.conv_mode == ConvMode.MAKE_MT:
-        # get pre_sf
-        _, pre_sf = gen_sf(
-            args.benchmark,
-            benchmark_sf=args.max_scale_factor,
-            multi_threaded_mode=False,  # pre-sf is always generated with single-threaded settings
-        )
-
-    compile_cache_dir = cache_path / "compile"
 
     # run tool parallelism setup (must be determined before QueryValidator so the
     # num_threads value is included in the query-cache key)
@@ -308,40 +330,25 @@ async def main(args: argparse.Namespace) -> None:
     # exposed in the LLM cache key via config_kwargs below for cache stability)
     max_snapshot_csv_size_mb = 5.0
 
-    validator_sf_list = verify_sf_list + [max_scale_factor]
-    if args.conv_mode == ConvMode.CHECK_SF and args.target_sf is not None:
-        # the check-sf conversation validates correctness at target_sf, so the
-        # validator must precompute reference results for it as well
-        if args.target_sf not in validator_sf_list:
-            validator_sf_list = validator_sf_list + [args.target_sf]
-    if args.conv_mode == ConvMode.MAKE_MT and pre_sf not in validator_sf_list:
-        # the MT-introduction stage measures the pre-MT reference runtime at pre_sf,
-        # so the validator must precompute reference results for it as well
-        validator_sf_list = validator_sf_list + [pre_sf]
+    query_execution_cache = QueryExecutionCache(
+        query_execution_cache_dir=query_execution_cache_dir,
+        system_factory=OLAPSystemFactory(),
+        do_not_cache=args.do_not_cache,
+        only_from_cache=args.only_from_cache,
+    )
 
     query_validator: QueryValidator | None = None
     if not args.disable_valtool:
         query_validator = QueryValidator(
-            benchmark=args.benchmark,
-            gen_query_fn=gen_query_fn,
-            sf_list=validator_sf_list,
-            parquet_path=parquet_path,
-            wandb_pin_worker=True,
-            all_query_ids=query_list,
-            num_random_query_instantiations=10,
-            query_cache_dir=cache_path / "query_cache",
-            validate_cache_dir=cache_path / "validate",
+            validate_cache_dir=validate_cache_dir,
             workspace_path=workspace_path,
+            query_execution_cache=query_execution_cache,
+            all_query_ids=query_list,
             git_snapshotter=snapshotter,
             runtime_tracker=runtime_tracker,
             do_not_cache=args.do_not_cache,
-            run_umbra_as_well=True,
             only_from_cache=args.only_from_cache,
-            num_threads=num_threads,
-            core_ids=core_ids,
             max_snapshot_csv_size_mb=max_snapshot_csv_size_mb,
-            db_storage=db_storage,
-            disk_db_dir=disk_db_dir,
         )
 
     logger.info(f"Workspace root: {workspace_path}")
@@ -360,7 +367,7 @@ async def main(args: argparse.Namespace) -> None:
         run_stats_collector=run_stats_collector,
         readonly_files=readonly_files_not_git_tracked.union(readonly_files_git_tracked),
         snapshotter=snapshotter,
-        cache_dir=cache_path / "apply_patch",
+        cache_dir=apply_patch_cache_dir,
         do_not_cache=args.do_not_cache,
         runtime_tracker=runtime_tracker,
         only_from_cache=args.only_from_cache,
@@ -369,7 +376,7 @@ async def main(args: argparse.Namespace) -> None:
     shell = ShellExecutor(
         workspace_path,
         snapshotter=snapshotter,
-        cache_dir=cache_path / "shell",
+        cache_dir=shell_cache_dir,
         do_not_cache=args.do_not_cache,
         run_stats_collector=run_stats_collector,
         runtime_tracker=runtime_tracker,
@@ -392,19 +399,17 @@ async def main(args: argparse.Namespace) -> None:
         untracked_cpp_runner_content=framework_code_content,
     )
 
-    dataset_name = get_dataset_name(args.benchmark)
     run_tool = RunTool(
         cwd=workspace_path,
-        query_validator=query_validator,  # do not cache and co passed via query validator
+        query_validator=query_validator,
+        dataset_name=workload_provider.dataset_name,
+        base_parquet_dir=parquet_dir,
+        workload_provider=workload_provider,
         run_stats_collector=run_stats_collector,
-        dataset_name=dataset_name,
-        base_parquet_dir=os.path.join(args.base_parquet_dir, f"{dataset_name}_parquet"),
-        bespoke_storage_dir=bespoke_db_dir,
         memory_budget_mb=args.memory_budget_mb,
         include_mem_budget_for_in_mem_in_hashes=args.include_mem_budget_for_in_mem_in_hashes,
         validate_output_truncation=validate_output_truncate,
         compile_output_truncation=compile_output_truncate,
-        only_from_cache=args.only_from_cache,
         parallelism=parallelism,
         core_ids=core_ids,
         db_storage=db_storage,
@@ -440,7 +445,7 @@ async def main(args: argparse.Namespace) -> None:
             compile_tool=compile_tool,
             run_tool=run_tool,
             args=args,
-            cache_path=cache_path,
+            cache_path=llm_cache_dir,
             config_kwargs=config_kwargs,
             workspace_path=workspace_path.as_posix(),
             workspace_path_absolute=workspace_path.absolute(),
@@ -481,7 +486,6 @@ async def main(args: argparse.Namespace) -> None:
             callback=functools.partial(
                 handle_prompt,
                 run_tool=run_tool,
-                max_scale_factor=max_scale_factor,
                 run_stats_collector=run_stats_collector,
                 query_validator=query_validator,
                 agent_sdk_wrapper=agent_sdk_wrapper,
@@ -497,7 +501,6 @@ async def main(args: argparse.Namespace) -> None:
         )
         auto_conversation_args = dict(
             run_tool=run_tool,
-            benchmark_sf=max_scale_factor,
             git_snapshotter=snapshotter,
             run_stats_collector=run_stats_collector,
             supervision_agent=supervision_agent,
@@ -511,7 +514,7 @@ async def main(args: argparse.Namespace) -> None:
         if args.conv_mode == ConvMode.STORAGE_PLAN:
             conv = GenStoragePlanConversation(
                 benchmark=args.benchmark,
-                schema=get_benchmark_schema(args.benchmark),
+                schema=workload_provider.dataset_schema,
                 workspace_path=workspace_path,
                 db_storage=db_storage,
                 **auto_conversation_args,
@@ -522,13 +525,16 @@ async def main(args: argparse.Namespace) -> None:
             conv = ScriptedConversation(**conv_args)
         elif args.conv_mode == ConvMode.BASE:
             # get sample query args for later use in the conversation (e.g. for better prompt formatting)
-            sample_query_args_dict: Dict[str, str] = get_sample_query_args(args)
+            sample_query_args_dict: Dict[str, str] = get_sample_query_args(
+                workload_provider=workload_provider
+            )
 
             # load the base impl conversation
+            exec_settings = get_sample_exec_settings(
+                workload_provider=workload_provider
+            )
+            assert isinstance(exec_settings, OLAPExecSettings)
             conv = BaseImplConversation(
-                verify_sf_list=verify_sf_list,
-                max_scale_factor=max_scale_factor,
-                artifacts_dir=Path(args.artifacts_dir),
                 benchmark=args.benchmark,
                 read_storage_plan=args.bespoke_storage,
                 sample_query_args_dict=sample_query_args_dict,
@@ -536,6 +542,7 @@ async def main(args: argparse.Namespace) -> None:
                 use_master_prompt=args.use_autonomy_master_prompt,
                 sql_dict=workload_provider.sql_dict,
                 db_storage=db_storage,
+                parquet_dir=exec_settings.parquet_dir,
                 **auto_conversation_args,
                 **conv_args,
             )
@@ -546,7 +553,6 @@ async def main(args: argparse.Namespace) -> None:
             conv = CheckSFCorrectnessConv(
                 query_ids=query_list,
                 target_sf=args.target_sf,
-                verify_sf_list=verify_sf_list,
                 bespoke_storage=args.bespoke_storage,
                 db_storage=db_storage,
                 **auto_conversation_args,
@@ -560,7 +566,6 @@ async def main(args: argparse.Namespace) -> None:
             optim_conv_args = OptimConvArgs(
                 query_ids=query_list,
                 bespoke_storage=args.bespoke_storage,
-                verify_sf_list=verify_sf_list,
                 query_validator=query_validator,
                 plan_source=args.optimize_sample_plan_source,
                 cleanup_plans=True,
@@ -601,8 +606,8 @@ async def main(args: argparse.Namespace) -> None:
                     )
                 elif db_storage == DBStorage.SSD:
                     conv = SSD2MTOptConv(
+                        benchmark=args.benchmark,
                         optim_conv_args=optim_conv_args,
-                        benchmark_sf_pre=pre_sf,
                         **auto_conversation_args,
                         **conv_args,
                     )
@@ -699,8 +704,6 @@ def run_conv_wrapper(
     args.conv_name = conv_name
     args.conv_name_withdatetime = conv_name_withdatetime
 
-    # load environment variables
-    load_dotenv()
     if args.sdk == "openai":
         if args.disable_openai_tracing:
             # disable agents sdk tracing
@@ -748,8 +751,6 @@ def run_conv_wrapper(
         _wandb_run = None
 
     # create log dir and setup logging
-    log_path = Path(args.artifacts_dir) / "logs"
-    create_dir_and_set_permissions(log_path)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # assemble log filename
@@ -766,7 +767,7 @@ def run_conv_wrapper(
         args.wandb_run_id = None
 
     log_filename = f"{run_name}.log"
-    setup_logging(logging.DEBUG, log_path / log_filename)
+    setup_logging(logging.DEBUG, log_dir / log_filename)
 
     if args.notify:
         logger.info(
@@ -798,6 +799,25 @@ def run_conv_wrapper(
         raise e
 
 
+def test_deps():
+    # check that pyarrow exists before any operations that might need it
+    if not check_pkg("arrow", "parquet"):
+        raise Exception("arrow and parquet are not available. See README.")
+
+    # check that cloc is available (used by run_stats_collector to count LOC)
+    if shutil.which("cloc") is None:
+        raise Exception("cloc is not installed. See README.")
+
+    # check that pyarrow library exists
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("pyarrow") is None:
+            raise ImportError
+    except ImportError:
+        raise Exception("pyarrow Python package is not installed. Run: uv sync")
+
+
 # Run manually e.g. with:
 # python main.py manual --model gpt-5.4 --conv_name debugq1-22v1 --start_snapshot eb0d178ebc7be2cacec11ea474823daecf7eb013 --benchmark tpch --bespoke_storage --query_list 1,2 --do_not_cache
 
@@ -818,7 +838,6 @@ if __name__ == "__main__":
         include_disable_wandb=True,
         include_query_list=True,
         include_continue_run=True,
-        include_artifacts_dir=True,
         include_no_preload=True,
         include_notify=True,
         include_start_snapshot=True,
@@ -832,7 +851,6 @@ if __name__ == "__main__":
         include_run_tool_offer_trace_option=True,
         include_bespoke_storage=True,
         include_only_from_llm_cache=True,
-        include_base_parquet_dir=True,
         include_only_from_cache=True,
         include_do_not_cache=True,
         include_tool_search_tool=True,

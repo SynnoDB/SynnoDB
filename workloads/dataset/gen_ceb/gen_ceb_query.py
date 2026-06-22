@@ -534,5 +534,8 @@ def gen_query(
 
 if __name__ == "__main__":
     # Example usage
-    CEB_DIR = Path("/mnt/labstore/bespoke_olap/datasets/ceb/imdb")
+    SYNNO_DATA_DIR = os.getenv("SYNNO_DATA_DIR", default=None)
+    assert SYNNO_DATA_DIR is not None, "SYNNO_DATA_DIR environment variable is not set"
+    SYNNO_DATA_DIR = Path(SYNNO_DATA_DIR)
+    CEB_DIR = SYNNO_DATA_DIR / "workloads" / "ceb"
     template, sqls, bindings = gen_query(CEB_DIR, query_name="Q1a", num_queries=100)

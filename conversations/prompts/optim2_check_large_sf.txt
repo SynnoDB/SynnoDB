@@ -1,6 +1,5 @@
-Verify the implementation is correct at scale-factor ${target_sf}. It was 
-previously tested successfully at ${sf_list}. Call the run-tool with sf 
-${target_sf}, optimize=True, trace=False.
+Verify the implementation is correct at the benchmark scale. Call the run tool in
+${run_tool_mode} mode (optimize=True, trace=False) and fix any scaling issues you find.
 
 If it produces errors, the most common causes when scaling to a larger dataset are:
 

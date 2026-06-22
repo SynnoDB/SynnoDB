@@ -86,12 +86,12 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             result["storage_plan.txt"] = storage_plan
 
         sql_template_list = [
-            f"Query {q}:\n{self.workload_provider.sql_dict[f'Q{q}']}"
+            f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
             for q in self.workload_provider.query_ids
         ]
-        qf_string = "\n\n".join(sql_template_list)
+        qf_string = "\n".join(sql_template_list)
 
-        result["queries.txt"] = qf_string
+        result["queries.md"] = qf_string
 
         return result
 

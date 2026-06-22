@@ -124,3 +124,4 @@ def setup_logging(
         logging.getLogger("openai.agents").setLevel(logging.DEBUG)
         logging.getLogger("weave").setLevel(logging.WARNING)
         logging.getLogger("matplotlib").setLevel(logging.WARNING)
+        logging.getLogger("anthropic").setLevel(logging.INFO)

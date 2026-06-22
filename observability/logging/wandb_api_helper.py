@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -9,20 +10,27 @@ from observability.plots.utils.wandb_utils import (
     get_wandb_snapshot_hash,
     get_wandb_stats,
 )
+from workloads.workload_provider import Workload
 
 logger = logging.getLogger(__name__)
 
 
 def wandb_retrieve_metrics_for_run(
-    benchmark: str,
+    benchmark: Workload,
     run_id: str,
-    entity: str = "learneddb",
-    project: str = "bespoke-olap-internal",
+    entity: str | None = None,
+    project: str | None = None,
     output_hist: bool = False,
     fetch_latest_runtimes: bool = False,
     wandb_run_cache_path: Optional[Path] = None,
 ) -> tuple[dict, dict, object | None]:
     run = None
+
+    if entity is None or project is None:
+        # lookup from .evn file
+        entity = os.getenv("WANDB_ENTITY", "learneddb")
+        project = os.getenv("WANDB_PROJECT", "SynnoDB")
+
     summary, history, config = get_wandb_stats(
         run_id=run_id,
         entity=entity,
@@ -38,7 +46,9 @@ def wandb_retrieve_metrics_for_run(
     assert isinstance(run_name, str), (
         f"Expected run name to be a string, got {type(run_name)}"
     )
-    assert benchmark in run_name, f"Expected benchmark name in run name, got {run_name}"
+    assert benchmark.value in run_name, (
+        f"Expected benchmark name in run name, got {run_name}"
+    )
 
     last_commit_hash = get_wandb_snapshot_hash(summary)
     assert last_commit_hash != "N/A", (

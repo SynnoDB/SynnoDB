@@ -31,6 +31,7 @@ dependencies = [
     "weave>=0.52.22",
     "pyarrow>=23.0.1",
     "wandb>=0.26.0",
+    "dotenv>=0.9.9",
 ]
 
 [build-system]

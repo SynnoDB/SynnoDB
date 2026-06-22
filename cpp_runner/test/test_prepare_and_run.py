@@ -1,11 +1,15 @@
 import argparse
 import logging
+import os
 import random
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
+
 from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
@@ -13,14 +17,18 @@ from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
 from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from observability.logging.logger import setup_logging
 from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run import RunTool, RunWorkerResult
-from tools.validate.query_validator_class import format_args_string
-from utils.utils import DBStorage, sha256
+from tools.run import RunTool, RunToolMode, RunWorkerResult
+from tools.validate.query_validator_class import QueryValidator
+from utils.utils import DBStorage
+from workloads.query_execution_cache import QueryExecutionCache
+from workloads.system_factory_olap import OLAPSystemFactory
 from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 setup_logging(level=logging.DEBUG)
 
 logger = logging.getLogger(__name__)
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 
 def main(args):
@@ -32,28 +40,44 @@ def main(args):
     # random values: date_time_random
     rnd_str = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
 
+    synno_data_dir = os.getenv("SYNNO_DATA_DIR", default=None)
+    if synno_data_dir is not None:
+        synno_data_dir = Path(synno_data_dir)
+
     ##### CONFIGURATION #####
-    benchmark = OLAPWorkload.TPC_H
-    workload_provider = OLAPWorkloadProvider(benchmark=benchmark)
+    benchmark = OLAPWorkload.CEB
     db_storage = DBStorage.IN_MEMORY
-    parquet_dir = (
-        f"/mnt/labstore/bespoke_olap/{workload_provider.dataset_name}_parquet/"
-    )
-    parquet_dir = (
-        Path(__file__).parent.parent.parent
-        / "data"
-        / f"{workload_provider.dataset_name}_parquet"
-    )
     parallelism = False
-    core_ids = None
+    core_ids = None  # [3, 4, 5, 6]
+    run_with_validate = True
+    query_do_not_cache = False
+    query_only_from_cache = False
     ##########################
 
-    if benchmark == OLAPWorkload.CEB:
-        scale_factor = 0.25
-    elif benchmark == OLAPWorkload.TPC_H:
-        scale_factor = 1
-    else:
-        raise ValueError(f"Unknown benchmark: {benchmark}")
+    # assemble cache paths
+    prepare_cache_dir = (
+        synno_data_dir / "cache" / "prepare_workspace"
+        if synno_data_dir is not None
+        else None
+    )
+    query_execution_cache_dir = (
+        synno_data_dir / "cache" / "query_execution"
+        if synno_data_dir is not None
+        else None
+    )
+
+    dataset_name = OLAPWorkloadProvider._get_dataset_name(benchmark)
+    assert synno_data_dir is not None, "SYNNO_DATA_DIR environment variable is not set"
+    parquet_dir = (
+        synno_data_dir / "workloads" / benchmark.value / f"{dataset_name}_parquet"
+    )
+    workload_provider = OLAPWorkloadProvider(
+        benchmark=benchmark,
+        base_parquet_dir=parquet_dir,
+        db_storage=db_storage,
+        bespoke_ssd_storage_dir=None,
+        query_cache_dir=None,
+    )
 
     if not args.skip_prep:
         prepare_workspace_provider = OLAPPrepareWorkspace(
@@ -61,7 +85,7 @@ def main(args):
             workload_provider=workload_provider,
             workspace_dir=work_dir,
             git_snapshotter=snapshotter,
-            prepare_cache_dir=None,
+            prepare_cache_dir=prepare_cache_dir,
         )
 
         prepare_repo_and_load_snapshot(
@@ -86,78 +110,53 @@ def main(args):
     comp_result, _, _ = compiler.build_cached(skip_cache=True, write_cache=False)
     assert comp_result is None, f"Compilation failed with error: {comp_result}"
 
+    assert query_execution_cache_dir is not None, (
+        "Query execution cache directory is not set"
+    )
+    query_exec_cache = QueryExecutionCache(
+        query_execution_cache_dir=query_execution_cache_dir,
+        system_factory=OLAPSystemFactory(),
+        do_not_cache=query_do_not_cache,
+        only_from_cache=query_only_from_cache,
+    )
+
+    query_validator = QueryValidator(
+        validate_cache_dir=None,
+        workspace_path=work_dir,
+        query_execution_cache=query_exec_cache,
+        all_query_ids=workload_provider.query_ids,
+        git_snapshotter=snapshotter,
+    )
+
     bespoke_engine = RunTool(
         cwd=work_dir,
-        query_validator=None,
+        query_validator=query_validator if run_with_validate else None,
         dataset_name=workload_provider.dataset_name,
         base_parquet_dir=parquet_dir,
         run_stats_collector=None,
         db_storage=db_storage,
         compiler=compiler,
-    )
-
-    instantiations = 2
-    repetitions = 2
-    inst_query_list, inst_sql_list, inst_args_list, inst_hash_list = _make_query_batch(
-        gen_query_fn=workload_provider.get_query_gen_fn(),
-        query_ids=workload_provider.query_ids,
-        instantiations=instantiations,
-        repetitions=repetitions,
+        workload_provider=workload_provider,
+        parallelism=parallelism,
+        core_ids=core_ids,
     )
 
     result: RunWorkerResult = bespoke_engine.run_worker(
-        scale_factor=scale_factor,
+        mode=RunToolMode.FAST_CHECK,
         optimize=True,
+        query_ids=None,  # ["1"],
         trace_mode=True,
-        query_id=inst_query_list,
-        stdin_args_data=inst_args_list,
         echo_output=True,
         parallelism=parallelism,
         core_ids=core_ids,
     )
 
-    assert result.query_results is not None, "No query results returned"
-    assert (
-        len(result.query_results)
-        == len(workload_provider.query_ids) * instantiations * repetitions
-    ), (
-        f"Number of query results does not match number of queries run: {len(result.query_results)} != {len(workload_provider.query_ids) * instantiations * repetitions}"
-    )
-    for res in result.query_results:
-        logger.info(res)
+    if not run_with_validate:
+        # since we load empty repo, validate must fail.
+        assert result.query_results is not None, "Expected query results, but got None"
 
-
-def _make_query_batch(
-    gen_query_fn,
-    query_ids: list[str],
-    instantiations: int,
-    repetitions: int,
-) -> tuple[list[str], list[str], list[str], list[str]]:
-    sql_list: list[str] = []
-    placeholder_list: list[dict] = []
-    query_list: list[str] = []
-    hash_list: list[str] = []
-
-    for inst_idx in range(instantiations):
-        rnd = random.Random(42 + inst_idx)
-        inst_queries: list[str] = []
-        inst_sql: list[str] = []
-        inst_placeholders: list[dict] = []
-        inst_hash_list: list[str] = []
-        for query_id in query_ids:
-            _, query, placeholders = gen_query_fn(query_name=f"Q{query_id}", rnd=rnd)
-            inst_queries.append(str(query_id))
-            inst_sql.append(query)
-            inst_placeholders.append(placeholders)
-            inst_hash_list.append(sha256(query))
-        for _ in range(repetitions):
-            query_list.extend(inst_queries)
-            sql_list.extend(inst_sql)
-            placeholder_list.extend(inst_placeholders)
-            hash_list.extend(inst_hash_list)
-
-    args_list = format_args_string(query_list, placeholder_list)
-    return query_list, sql_list, args_list, hash_list
+        for res in result.query_results:
+            logger.info(res)
 
 
 if __name__ == "__main__":

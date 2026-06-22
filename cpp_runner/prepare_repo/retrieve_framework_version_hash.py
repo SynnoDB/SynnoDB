@@ -1,11 +1,12 @@
+import re
 from pathlib import Path
-
-from cpp_runner.prepare_repo.old.prepare import extract_version_id
 
 
 def get_framework_version_artifacts_str() -> str:
     # load the framework files and extract IDs
-    framework_dir = Path(__file__).parent.parent / "pipeline/cpp_runner"
+    framework_dir = Path(__file__).parent.parent
+
+    assert framework_dir.name == "cpp_runner"
 
     assert framework_dir.exists(), f"Framework directory {framework_dir} does not exist"
 
@@ -29,3 +30,27 @@ def get_framework_version_artifacts_str() -> str:
     )
 
     return artifacts_str
+
+
+def extract_version_id(
+    file_path: Path | None, content: str | None, must_be_version: bool = False
+) -> tuple[str | None, str | None]:
+    if content is None:
+        assert file_path is not None, "Either file_path or content must be provided"
+        content = file_path.read_text()
+
+    # apply regex
+    file_version_regex = r"// FILE_VERSION: ([0-9]+)"
+    match = re.search(file_version_regex, content)
+
+    if must_be_version:
+        assert match, (
+            f"Expected to find version string in {file_path}. Ensure the file contains a line like '// FILE_VERSION: 123'. E.g. file was marked as read-only, then requires such a version string to be used in cache keys / ..."
+        )
+
+    if match:
+        version = match.group(1)
+        return version, None
+
+    else:
+        return None, content

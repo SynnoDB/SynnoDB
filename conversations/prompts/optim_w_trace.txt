@@ -1,8 +1,9 @@
-Optimize the implementation of query ${query_id} using the tracing/profiling data collected with sf ${sf}:
+Optimize the implementation of query ${query_id} using the tracing/profiling data collected with the run tool:
 
 ```
 ${tracing_data}
 ```
+(exec settings: ${exec_settings_str})
 
 Analyze the tracing/profiling data to identify bottlenecks in the query execution, e.g. operators which consume the most time, cardinalities that require significant processing and optimized code implementation.
 ${analyze_hints}

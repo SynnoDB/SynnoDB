@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import subprocess
@@ -10,6 +11,7 @@ from tqdm import tqdm
 
 from utils.drop_caches import drop_os_caches, is_memory_backed
 from utils.utils import DBStorage, create_dir_and_set_permissions
+from workloads.workload_provider import Workload
 from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
@@ -34,7 +36,7 @@ class UmbraRunner:
     def __init__(
         self,
         parquet_path: Path,
-        benchmark: str,
+        benchmark: Workload,
         scale_factors: list[float],
         db_storage: DBStorage,
         disk_db_dir: Path | None = None,
@@ -67,7 +69,12 @@ class UmbraRunner:
         self._container_image = container_image
         self._scale_factors = scale_factors
 
-        self.workload_provider = OLAPWorkloadProvider(benchmark=OLAPWorkload(benchmark))
+        # for now accept only olap workload
+        assert isinstance(benchmark, OLAPWorkload), (
+            "benchmark must be an instance of OLAPWorkload"
+        )
+        self.dataset_tables = OLAPWorkloadProvider._dataset_tables(benchmark)
+        self.dataset_schema = OLAPWorkloadProvider._get_dataset_schema(benchmark)
 
         if self._db_storage in [DBStorage.LABSTORE, DBStorage.SSD] and host not in {
             "127.0.0.1",
@@ -178,10 +185,16 @@ class UmbraRunner:
     def _db_name_for_sf(self, scale_factor: float) -> str:
         return f"{self._benchmark}_sf{self._format_sf(scale_factor)}"
 
+    def _ensure_admin_con(self) -> None:
+        if not hasattr(self, "_admin_con"):
+            self._admin_con = self._create_admin_con()
+            self._admin_con.autocommit = True
+
     def _load_sf(self, scale_factor: float, verbose: bool = True) -> None:
+        self._ensure_admin_con()
         db_name = self._db_name_for_sf(scale_factor)
         self._db_names[scale_factor] = db_name
-        tables = self.workload_provider.dataset_tables
+        tables = self.dataset_tables
 
         con = None
         if self._database_exists(db_name):
@@ -204,7 +217,16 @@ class UmbraRunner:
             self._reset_existing_tables(con, tables)
         else:
             admin_cur = self._admin_con.cursor()
-            admin_cur.execute(f"CREATE DATABASE {db_name}")
+            try:
+                admin_cur.execute(f"CREATE DATABASE {db_name}")
+            except Exception as exc:
+                logger.error(
+                    "Failed to create database '%s' for SF%s: %s",
+                    db_name,
+                    scale_factor,
+                    exc,
+                )
+                raise exc
             admin_cur.close()
 
             con = self._create_db_con(db_name)
@@ -213,7 +235,7 @@ class UmbraRunner:
         assert con is not None
         cur = con.cursor()
 
-        cur.execute(self.workload_provider.dataset_schema)
+        cur.execute(self.dataset_schema)
 
         for table in tqdm(
             tables,
@@ -473,7 +495,7 @@ class UmbraRunner:
         query_list: list[str],
         sql_list: list[str],
         args_list: list[str],
-    ) -> list[float | None]:
+    ) -> list[tuple[dict, float]]:
         if self._db_storage == DBStorage.IN_MEMORY:
             # in-memory: just switch connections if needed; no restarts or cache drops.
             if self._loaded_sf != scale_factor:
@@ -488,8 +510,8 @@ class UmbraRunner:
         else:
             raise ValueError(f"Unknown db source: {self._db_storage}")
 
-        results: list[float | None] = []
-        for sql in sql_list:
+        results: list[tuple[dict, float]] = []
+        for sql in tqdm(sql_list, desc=f"Umbra running queries (SF{scale_factor})"):
             if self._db_storage == DBStorage.IN_MEMORY:
                 pass
             elif self._db_storage in [DBStorage.LABSTORE, DBStorage.SSD]:
@@ -504,12 +526,20 @@ class UmbraRunner:
             assert self._con is not None, "Umbra connection not initialized."
             cur = self._con.cursor()
             try:
-                t0 = time.perf_counter()
-                cur.execute(sql)
-                cur.fetchall()
-                results.append((time.perf_counter() - t0) * 1000.0)
+                cur.execute(f"EXPLAIN (ANALYZE, FORMAT JSON) {sql}")
+                row = cur.fetchone()
+                if row is None:
+                    raise ValueError("EXPLAIN returned no rows.")
+                plan = json.loads(row[0])
+
+                analyze_pipelines = plan["analyzePlanPipelines"]
+                runtime_ms = (
+                    sum([p["duration"] for p in analyze_pipelines]) / 1000
+                )  # originally in ns, convert to ms
+                results.append((plan, runtime_ms))
             finally:
                 cur.close()
+
         return results
 
     def _cold_restart_for_query(self, scale_factor: float) -> None:
