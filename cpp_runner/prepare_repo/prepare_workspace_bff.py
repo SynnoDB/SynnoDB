@@ -123,6 +123,14 @@ class BFFPrepareWorkspace(PrepareWorkspace):
 
         result["queries.md"] = self._assemble_queries_md()
 
+        sql_template_list = [
+            f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
+            for q in self.workload_provider.query_ids
+        ]
+        qf_string = "\n".join(sql_template_list)
+
+        result["queries.md"] = qf_string
+
         return result
 
     def _assemble_query_files(self, bff_template_dir: Path) -> dict[str, str]:
