@@ -2,8 +2,6 @@ import logging
 from abc import abstractmethod
 from pathlib import Path
 
-from cpp_runner.prepare_repo.assemble_args_parser import assemble_args_parser_file
-from cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
 from cpp_runner.prepare_repo.retrieve_framework_version_hash import extract_version_id
 from synth_framework.git_snapshotter import GitSnapshotter
 from utils import utils
@@ -73,8 +71,6 @@ class PrepareWorkspace:
 
     def prepare(
         self,
-        add_thread_pool_to_query_impl: bool,
-        add_sample_trace: bool,
         only_query_md: bool = False,
         write_non_tracked_only: bool = False,
         only_from_cache: bool = False,
@@ -86,30 +82,8 @@ class PrepareWorkspace:
         # assemble per usecase files
         usecase_files = self._assemble_usecase_files(**usecase_args)
 
-        # assemble
-        general_files = dict()
-        general_files["query_impl.cpp"] = assemble_query_impl_file(
-            add_thread_pool_to_query_impl=add_thread_pool_to_query_impl,
-            add_sample_trace_to_query_impl=add_sample_trace,
-            query_list=self.workload_provider.query_ids,
-            pin_to_core=3,
-            drop_os_caches_for_each_query=False,
-        )
-
-        general_files["args_parser.hpp"] = assemble_args_parser_file(
-            query_ids=self.workload_provider.query_ids,
-            gen_placeholders_fn=self.workload_provider.get_placeholders_fn(),
-        )
-
-        # assert no filename conflicts between file dicts
-        assert not set(usecase_files.keys()) & set(general_files.keys()), (
-            f"Filename conflict between usecase_files and general_files: {set(usecase_files.keys()) & set(general_files.keys())}"
-        )
-
-        files = {**usecase_files, **general_files}
-
         file_ids_in_context = self._write_files(
-            files,
+            usecase_files,
             only_query_md=only_query_md,
             write_non_tracked_only=write_non_tracked_only,
             only_from_cache=only_from_cache,

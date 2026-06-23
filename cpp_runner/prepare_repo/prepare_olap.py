@@ -7,26 +7,34 @@ logger = logging.getLogger(__name__)
 
 
 def prepare_storage_plan(ctx: PrepareContext) -> str:
+
+    usecase_args = {
+        **ctx.usecase_prepare_args,
+        "add_thread_pool_to_query_impl": False,
+        "add_sample_trace": ctx.add_sample_trace,
+    }
+
     return ctx.prepare_workspace_provider.prepare(
-        add_thread_pool_to_query_impl=False,
         only_query_md=True,
-        add_sample_trace=ctx.add_sample_trace,
         write_non_tracked_only=ctx.write_non_tracked_only,
         only_from_cache=ctx.only_from_cache,
         do_not_cache=ctx.do_not_cache,
-        usecase_args=ctx.usecase_prepare_args,
+        usecase_args=usecase_args,
     )
 
 
 def prepare_base(ctx: PrepareContext) -> str:
+    usecase_args = {
+        **ctx.usecase_prepare_args,
+        "add_thread_pool_to_query_impl": False,
+        "add_sample_trace": ctx.add_sample_trace,
+    }
     return ctx.prepare_workspace_provider.prepare(
-        add_thread_pool_to_query_impl=False,
         only_query_md=False,
-        add_sample_trace=ctx.add_sample_trace,
         write_non_tracked_only=ctx.write_non_tracked_only,
         only_from_cache=ctx.only_from_cache,
         do_not_cache=ctx.do_not_cache,
-        usecase_args=ctx.usecase_prepare_args,
+        usecase_args=usecase_args,
     )
 
 
@@ -50,14 +58,18 @@ def prepare_optim(ctx: PrepareContext) -> str:
 def prepare_mt(ctx: PrepareContext) -> str:
     query_impl_filename = get_filenames()["query_impl_path"]
 
+    usecase_args = {
+        **ctx.usecase_prepare_args,
+        "add_thread_pool_to_query_impl": True,
+        "add_sample_trace": ctx.add_sample_trace,
+    }
+
     artifacts = ctx.prepare_workspace_provider.prepare(
-        add_thread_pool_to_query_impl=True,
         only_query_md=False,
-        add_sample_trace=ctx.add_sample_trace,
         write_non_tracked_only=ctx.write_non_tracked_only,
         only_from_cache=ctx.only_from_cache,
         do_not_cache=ctx.do_not_cache,
-        usecase_args=ctx.usecase_prepare_args,
+        usecase_args=usecase_args,
     )
 
     logger.info(
