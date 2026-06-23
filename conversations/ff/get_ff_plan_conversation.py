@@ -3,6 +3,7 @@ from pathlib import Path
 
 from conversations.checkpointed_conversation import CheckpointedConversation
 from conversations.ff.prompts_gen import gen_ff_plan_prompt
+from conversations.filenames import get_filenames
 from conversations.stage_config import StaticStageConfig
 from workloads.workload_provider import Workload
 
@@ -27,8 +28,9 @@ class GenFFPlanConversation(CheckpointedConversation):
         await self._run_stages(self.assemble_stages())
 
     def assemble_stages(self):
-        queries_filename = "queries.md"
-        file_format_plan_filename = "file_format_plan.txt"
+        filenames = get_filenames("bff")
+        queries_filename = filenames["queries_path"]
+        file_format_plan_filename = filenames["plan_filename"]
 
         def _validate_file_format_plan_exists() -> str | None:
             plan_path = self.workspace_path / file_format_plan_filename

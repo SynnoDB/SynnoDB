@@ -20,7 +20,7 @@ from conversations.stage_config import (
 )
 from tools.run_tool_mode import RunToolMode
 from workloads.workload_provider import Workload
-from workloads.workload_provider_olap import OLAPWorkload
+from workloads.workload_provider_bff import BFFWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -116,14 +116,14 @@ class BaseFFImplConversation(CheckpointedConversation):
         # Paths & Co
         # ==========
 
-        if self.benchmark == OLAPWorkload.TPCH:
+        if self.benchmark == BFFWorkload.TPCH:
             example_query = "Q12"
             example_query_params = "12"
         else:
             raise ValueError(f"Unknown benchmark {self.benchmark}")
 
         # paths
-        filenames_dict = get_filenames()
+        filenames_dict = get_filenames("bff")
         queries_path = filenames_dict["queries_path"]
         builder_path = filenames_dict["builder_path"]
         builder_cpp_path = filenames_dict["builder_cpp_path"]
@@ -131,7 +131,7 @@ class BaseFFImplConversation(CheckpointedConversation):
         query_impl_path = filenames_dict["query_impl_path"]
         args_path = filenames_dict["args_path"]
         base_impl_todo_filename = filenames_dict["base_impl_todo_filename"]
-        storage_plan_filename = filenames_dict["storage_plan_filename"]
+        plan_filename = filenames_dict["plan_filename"]
 
         def _validate_plan_exists() -> str | None:
             plan_path = self.workspace_path / base_impl_todo_filename
@@ -157,7 +157,7 @@ class BaseFFImplConversation(CheckpointedConversation):
                     num_queries=len(self.all_query_ids),
                     builder_path=builder_path,
                     read_storage_plan=self.read_storage_plan,
-                    storage_plan_path=storage_plan_filename,
+                    storage_plan_path=plan_filename,
                     query_impl_path=query_impl_path,
                     example_query=example_query,
                     example_query_params=example_query_params,
