@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import enum
 import functools
 import logging
 import os
@@ -8,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
+import wandb
 from dotenv import load_dotenv
 
-import wandb
 from conversations.base_impl_conversation import BaseImplConversation
 from conversations.check_sf_correctness_conv import CheckSFCorrectnessConv
 from conversations.filenames import get_filenames
@@ -61,7 +62,9 @@ from utils.utils import (
     get_disk_db_dir,
 )
 from workloads.query_execution_cache import QueryExecutionCache
+from workloads.system_factory_bff import BFFSystemFactory
 from workloads.system_factory_olap import OLAPSystemFactory
+from workloads.workload_provider_bff import BFFWorkload, BFFWorkloadProvider
 from workloads.workload_provider_olap import (
     OLAPExecSettings,
     OLAPWorkload,
@@ -83,6 +86,11 @@ log_dir = synnodb_data_dir / "logs" / "logfiles"
 create_dir_and_set_permissions(log_dir)
 duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
 create_dir_and_set_permissions(duckdb_drain_dir)
+
+
+class Usecase(enum.Enum):
+    OLAP = "olap"
+    BFF = "bff"  # bespoke file format
 
 
 async def main(args: argparse.Namespace) -> None:
@@ -129,8 +137,16 @@ async def main(args: argparse.Namespace) -> None:
     # conversations dir
     conversations_dir = synnodb_data_dir / "conversations"
 
+    usecase = args.usecase
+
     # parquet dir and workload provider
-    dataset_name = OLAPWorkloadProvider._get_dataset_name(args.benchmark)
+    if usecase == Usecase.OLAP:
+        dataset_name = OLAPWorkloadProvider._get_dataset_name(args.benchmark)
+    elif usecase == Usecase.BFF:
+        dataset_name = BFFWorkloadProvider._get_dataset_name(args.benchmark)
+    else:
+        raise Exception(f"Unsupported usecase: {usecase}")
+
     parquet_dir = (
         synnodb_data_dir
         / "workloads"
@@ -158,12 +174,21 @@ async def main(args: argparse.Namespace) -> None:
     if disk_db_dir is not None:
         create_dir_and_set_permissions(disk_db_dir)
 
-    workload_provider = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload(args.benchmark),
-        base_parquet_dir=parquet_dir,
-        db_storage=args.db_storage,
-        bespoke_ssd_storage_dir=bespoke_db_dir,
-    )
+    if usecase == Usecase.OLAP:
+        workload_provider = OLAPWorkloadProvider(
+            benchmark=OLAPWorkload(args.benchmark),
+            base_parquet_dir=parquet_dir,
+            db_storage=args.db_storage,
+            bespoke_ssd_storage_dir=bespoke_db_dir,
+        )
+    elif usecase == Usecase.BFF:
+        workload_provider = BFFWorkloadProvider(
+            benchmark=BFFWorkload(args.benchmark),
+            base_parquet_dir=parquet_dir,
+            bespoke_ssd_storage_dir=bespoke_db_dir,
+        )
+    else:
+        raise Exception(f"Unsupported usecase: {usecase}")
 
     # get files that should be marked as read-only - they will be untracked in git and excluded from snapshot hashed / ... (i.e. unless their version number changes, they will not affect caches)
     readonly_files_not_git_tracked, readonly_files_git_tracked = (
@@ -330,9 +355,16 @@ async def main(args: argparse.Namespace) -> None:
     # exposed in the LLM cache key via config_kwargs below for cache stability)
     max_snapshot_csv_size_mb = 5.0
 
+    if usecase == Usecase.OLAP:
+        system_factory = OLAPSystemFactory()
+    elif usecase == Usecase.BFF:
+        system_factory = BFFSystemFactory()
+    else:
+        raise Exception(f"Unsupported usecase: {usecase}")
+
     query_execution_cache = QueryExecutionCache(
         query_execution_cache_dir=query_execution_cache_dir,
-        system_factory=OLAPSystemFactory(),
+        system_factory=system_factory,
         do_not_cache=args.do_not_cache,
         only_from_cache=args.only_from_cache,
     )
