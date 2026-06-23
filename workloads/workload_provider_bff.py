@@ -1,0 +1,339 @@
+import functools
+import logging
+import os
+import random
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from tools.run_tool_mode import RunToolMode
+from utils import utils
+from utils.sql_utils import extract_order_by_columns
+from workloads.dataset.gen_ceb.ceb_queries import ceb_templates
+from workloads.dataset.gen_tpch.tpch_queries import tpc_h
+from workloads.workload_provider import (
+    ExecSettings,
+    GeneralSystemConfig,
+    QueryBatch,
+    QueryEntry,
+    Workload,
+    WorkloadProvider,
+    format_args_element,
+)
+
+logger = logging.getLogger(__name__)
+
+
+SYNNO_DATA_DIR = os.getenv("SYNNO_DATA_DIR", default=None)
+assert SYNNO_DATA_DIR is not None, "SYNNO_DATA_DIR environment variable is not set"
+SYNNO_DATA_DIR = Path(SYNNO_DATA_DIR)
+
+CEB_QUERY_DIR = SYNNO_DATA_DIR / "workloads" / "ceb" / "queries"
+
+# Fraction of memory_budget_mb that goes to the generated engine's paged
+# frame pool. The remainder is implicit headroom for mmap_col regions and
+# other working memory; both are bounded together by RLIMIT_AS.
+FRAME_POOL_SHARE = 0.60
+
+
+class BFFWorkload(Workload):
+    WL1 = "wl1"
+
+
+@dataclass
+class BFFExecSettings(ExecSettings):
+    scale_factor: float
+    parquet_dir: Path
+    disk_db_dir: Path
+
+
+class BFFWorkloadProvider(WorkloadProvider):
+    def __init__(
+        self,
+        benchmark: BFFWorkload,
+        base_parquet_dir: Path,
+        bespoke_ssd_storage_dir: Path | None = None,
+        query_cache_dir: Path | None = None,
+        **kwargs,
+    ):
+        self.benchmark = benchmark
+        self.query_cache_dir = query_cache_dir
+        self.base_parquet_dir = base_parquet_dir
+        self.dataset_tables = self._dataset_tables(self.benchmark)
+        self.dataset_name = self._get_dataset_name(self.benchmark)
+        self.dataset_schema = self._get_dataset_schema(self.benchmark)
+        self.bespoke_ssd_storage_dir = bespoke_ssd_storage_dir
+
+        # Scale factor used for BENCHMARK-mode runs. Conversations can override this
+        # via set_benchmark_sf to drive perf/large-scale checks off the workload
+        # provider (exec-config) rather than passing fixed scale factors around.
+        self.benchmark_sf: float = 1
+
+        super().__init__(
+            benchmark_name=self.benchmark.value,
+            query_ids=_get_all_query_ids(self.benchmark),
+            sql_dict=self._get_sql_dict(self.benchmark),
+            **kwargs,
+        )
+
+    def set_benchmark_sf(self, sf: float) -> None:
+        """Override the scale factor emitted for BENCHMARK-mode workloads."""
+        self.benchmark_sf = sf
+
+    def produce_workload(
+        self,
+        run_mode: RunToolMode,
+        query_ids: list[str] | None,
+        num_threads: int,
+        core_ids: list[int] | None,
+    ) -> list[QueryBatch]:
+        if query_ids is None or len(query_ids) == 0:
+            queries_to_generate = self.query_ids
+        else:
+            queries_to_generate = query_ids
+
+        if run_mode == RunToolMode.FAST_CHECK:
+            instantiations = 20
+            repetitions = 1
+
+            if self.benchmark == BFFWorkload.WL1:
+                scale_factors = [1, 2]
+            else:
+                raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        elif run_mode == RunToolMode.EXHAUSTIVE:
+            instantiations = 20
+            repetitions = 1
+
+            if self.benchmark == BFFWorkload.WL1:
+                scale_factors: list[float] = [1, 2, 20]
+            else:
+                raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+            if scale_factors[-1] != self.benchmark_sf:
+                scale_factors.append(self.benchmark_sf)
+
+        elif run_mode == RunToolMode.BENCHMARK:
+            instantiations = 1
+            repetitions = 3
+            # benchmark SF is configurable via set_benchmark_sf (exec-config driven)
+            scale_factors = [self.benchmark_sf]
+        elif run_mode == RunToolMode.INGEST:
+            instantiations = 3
+            repetitions = 1
+
+            if self.benchmark == BFFWorkload.WL1:
+                scale_factors = [1]
+            else:
+                raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        else:
+            raise ValueError(f"Unknown run mode: {run_mode}")
+
+        extra_env = dict()
+        # assemble storage dir path
+
+        query_batch_list = []
+        rnd = random.Random(42)
+        for scale_factor in scale_factors:
+            assert self.bespoke_ssd_storage_dir is not None
+            storage_dir = self.bespoke_ssd_storage_dir / f"sf{scale_factor}"
+            extra_env["STORAGE_DIR"] = str(storage_dir) + os.sep
+            if self.memory_limit_mb is not None:
+                # Apply the frame-pool / mmap-headroom split here so the generated
+                # C++ only sees its directly-usable frame budget.
+                buffer_pool_mb = int(self.memory_limit_mb * FRAME_POOL_SHARE)
+                extra_env["BUFFER_POOL_MB"] = str(buffer_pool_mb)
+
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            # create sentinel file to indicate that this is a bespoke storage dir (so that it can be cleaned up without accidentally deleting other files)
+            (storage_dir / ".bespoke_storage_dir").touch()
+
+            # assemble parquet path where data is loaded from
+            parquet_dir = (self.base_parquet_dir / f"sf{scale_factor}").as_posix() + "/"
+            assert parquet_dir.endswith("/"), (
+                f"Parquet directory must end with '/': {parquet_dir}"
+            )
+            cli_call_args_str = f"{parquet_dir}"
+
+            query_list = []
+            sql_set = (
+                set()
+            )  # for debugging - track generated SQL queries to check for duplicates
+
+            gen_attempts = 100
+
+            for inst_idx in range(instantiations):
+                for query_id in queries_to_generate:
+                    for _ in range(
+                        gen_attempts
+                    ):  # try up to 100 times to generate a unique query (in case of random generation leading to duplicates)
+                        _, sql, placeholders = self._get_query_gen_fn()(
+                            query_name=f"Q{query_id}", rnd=rnd
+                        )
+
+                        if sql in sql_set:
+                            continue
+                        else:
+                            sql_set.add(sql)
+                            break
+                    else:
+                        logger.debug(
+                            f"Failed to generate unique SQL for query_id={query_id} (inst_idx={inst_idx}) after {gen_attempts} attempts, skipping this instantiation"
+                        )
+                        continue
+
+                    # Extract order by information
+                    order_by_info = extract_order_by_columns(sql)
+
+                    query_entry = QueryEntry(
+                        query_id=str(query_id),
+                        sql=sql,
+                        benchmark=self.benchmark,
+                        query_args=format_args_element(str(query_id), placeholders),
+                        placeholders=placeholders,
+                        order_by_info=order_by_info,
+                        num_reps=repetitions,
+                    )
+
+                    for rep in range(repetitions):
+                        # distinct rep_index per repetition so each gets its own
+                        # (deterministic) query-execution-cache entry / runtime
+                        query_list.append(replace(query_entry, rep_index=rep))
+
+            query_batch_list.append(
+                QueryBatch(
+                    query_list=query_list,
+                    benchmark=self.benchmark,
+                    cli_call_args=cli_call_args_str,
+                    extra_env=extra_env,
+                    general_system_config=GeneralSystemConfig(
+                        memory_limit_mb=self.memory_limit_mb,
+                        num_threads=num_threads,
+                        core_ids=core_ids,
+                    ),
+                    timeout_s=approx_timeout_for_validation(
+                        scale_factor, len(query_list)
+                    ),
+                    exec_settings=BFFExecSettings(
+                        scale_factor=scale_factor,
+                        parquet_dir=Path(parquet_dir),
+                        disk_db_dir=storage_dir,
+                    ),
+                )
+            )
+
+        return query_batch_list
+
+    def _get_query_gen_fn(self):
+        # prepare query gen
+        if self.benchmark == BFFWorkload.WL1:
+            
+
+            gen_query_fn = ???
+        # elif self.benchmark == OLAPWorkload.CEB:
+        #     from workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
+
+        #     gen_query_fn = functools.partial(
+        #         gen_query_single_only, ceb_dir=CEB_QUERY_DIR
+        #     )
+        else:
+            raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        return gen_query_fn
+
+    def get_placeholders_fn(self, do_not_cache: bool = False):
+        # prepare query gen
+        gen_fn = None
+        if self.benchmark == BFFWorkload.WL1:
+            from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
+
+            def gen_placeholder_tpch(**kwargs):
+                # we only need the placeholders dict
+                return gen_query(**kwargs)[2]
+
+            gen_fn = gen_placeholder_tpch
+
+        else:
+            raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        return gen_fn
+
+    @staticmethod
+    def _dataset_tables(benchmark: BFFWorkload) -> list[str]:
+        tables_lists = {
+            BFFWorkload.WL1: [
+                "customer",
+                "lineitem",
+                "nation",
+                "orders",
+                "part",
+                "partsupp",
+                "region",
+                "supplier",
+            ],
+            
+        }
+        if benchmark not in tables_lists:
+            raise ValueError(f"Unknown benchmark {benchmark}")
+        return tables_lists[benchmark]
+
+    @staticmethod
+    def _get_dataset_name(benchmark: BFFWorkload) -> str:
+        if benchmark == BFFWorkload.WL1:
+            return "tpch"
+        else:
+            raise ValueError(f"Unknown benchmark {benchmark}")
+
+    @staticmethod
+    def _get_dataset_schema(benchmark: BFFWorkload) -> str:
+        if benchmark == BFFWorkload.WL1:
+            from workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
+
+            return tpc_h_schema
+        else:
+            raise ValueError(f"Unknown benchmark {benchmark}")
+
+    def _get_sql_dict(self, benchmark: BFFWorkload):
+        if benchmark == BFFWorkload.WL1:
+            return tpc_h
+        else:
+            raise ValueError(f"Unknown benchmark: {benchmark}")
+
+
+def _get_all_query_ids(benchmark: BFFWorkload) -> list[str]:
+    if benchmark == BFFWorkload.WL1:
+        query_ids = [str(i) for i in range(1, 23)]
+    
+    else:
+        raise ValueError(f"Unknown benchmark: {benchmark}")
+
+    return query_ids
+
+
+def _cache_path_for_hash(cache_dir: Path, hash: str) -> Path:
+    return cache_dir / f"{hash}.pkl"
+
+
+class PlaceholdersCacheType:
+    def __init__(self, placeholders: dict, hash_payload: str):
+        self.placeholders = placeholders
+        self.hash_payload = hash_payload
+
+
+def approx_timeout_for_validation(
+    scale_factor: float,
+    num_executions: int,
+) -> int:
+    # approximate a timeout for validation based on scale factor and number of queries
+    timeout = (
+        scale_factor * num_executions * 2
+    )  # 2 seconds per query with sf=1 as a rough estimate, can be adjusted as needed
+    timeout = max(timeout, 120)  # at least 1 minute total timeout
+    timeout = min(
+        timeout, 1200
+    )  # at most 20 minutes total timeout - for sf100 or similar this might take long
+
+    # round up to minutes
+    timeout = ((timeout + 59) // 60) * 60
+
+    return int(timeout)

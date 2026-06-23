@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import enum
 import functools
 import logging
 import os
@@ -51,7 +52,9 @@ from utils.utils import (
     get_disk_db_dir,
 )
 from workloads.query_execution_cache import QueryExecutionCache
+from workloads.system_factory_bff import BFFSystemFactory
 from workloads.system_factory_olap import OLAPSystemFactory
+from workloads.workload_provider_bff import BFFWorkload, BFFWorkloadProvider
 from workloads.workload_provider_olap import (
     OLAPWorkload,
     OLAPWorkloadProvider,
@@ -74,11 +77,16 @@ duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
 create_dir_and_set_permissions(duckdb_drain_dir)
 
 
+class Usecase(enum.Enum):
+    OLAP = "olap"
+    BFF = "bff"  # bespoke file format
+
+
 def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStorage:
     return db_storage
 
 
-async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
+async def main(args: argparse.Namespace) -> None:
     # check all dependencies exist
     test_deps()
 
@@ -127,6 +135,8 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # parquet dir and workload provider
     if usecase == Usecase.OLAP:
         dataset_name = OLAPWorkloadProvider._get_dataset_name(args.benchmark)
+    elif usecase == Usecase.BFF:
+        dataset_name = BFFWorkloadProvider._get_dataset_name(args.benchmark)
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
 
@@ -164,7 +174,13 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         workload_provider = OLAPWorkloadProvider(
             benchmark=OLAPWorkload(args.benchmark),
             base_parquet_dir=parquet_dir,
-            db_storage=db_storage,
+            db_storage=args.db_storage,
+            bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
+        )
+    elif usecase == Usecase.BFF:
+        workload_provider = BFFWorkloadProvider(
+            benchmark=BFFWorkload(args.benchmark),
+            base_parquet_dir=parquet_dir,
             bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
         )
     else:
@@ -341,6 +357,8 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
 
     if usecase == Usecase.OLAP:
         system_factory = OLAPSystemFactory()
+    elif usecase == Usecase.BFF:
+        system_factory = BFFSystemFactory()
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
 
