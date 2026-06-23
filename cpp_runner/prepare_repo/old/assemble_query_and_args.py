@@ -1,5 +1,7 @@
 from typing import Callable, List, Optional
 
+from conversations.filenames import get_plan_filename
+
 
 def build_query_and_args_files(
     benchmark_name: str,
@@ -37,6 +39,6 @@ def build_query_and_args_files(
     }
 
     if storage_plan is not None:
-        result["storage_plan.txt"] = storage_plan
+        result[get_plan_filename("olap")] = storage_plan
 
     return result

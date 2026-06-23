@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 import wandb
 from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from conversations.filenames import get_filenames
+from conversations.filenames import get_filenames, get_plan_filename
 from conversations.prompts_gen import gen_incorrect_output_prompt
 from conversations.supervision_agent import SupervisionAgent
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
@@ -231,12 +231,13 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     ##############################
 
     query_list = [q.strip() for q in args.query_list.split(",")]
+    plan_filename = get_plan_filename(usecase)
 
     if args.storage_plan_snapshot is not None:
         # load storage plan snapshot and read storage plan form it.
         # afterwards a clean or other snapshot will be loaded
         storage_plan = load_storage_plan_from_snapshot(
-            args, snapshotter, workspace_path
+            args, snapshotter, workspace_path, plan_filename=plan_filename
         )
 
         assert args.start_snapshot is None, (
@@ -245,7 +246,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     else:
         storage_plan = None
 
-    filenames_dict = get_filenames()
+    filenames_dict = get_filenames(usecase)
 
     framework_code_content = get_framework_version_artifacts_str()
 

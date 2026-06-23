@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+from conversations.filenames import PLAN_FILENAME_BY_USECASE
 from synth_framework.git_snapshotter import GitSnapshotter
 from utils import utils
 
@@ -65,7 +66,7 @@ def prepare_repo_for_optim(
     # delete base impl files:
     delete_kw = "<<DELETE>>"
     for filename in [
-        "storage_plan.txt",
+        *PLAN_FILENAME_BY_USECASE.values(),
         "base_impl_todo.txt",
         "trace.hpp",  # in old snapshot versions trace.hpp was in llm workspace
     ]:

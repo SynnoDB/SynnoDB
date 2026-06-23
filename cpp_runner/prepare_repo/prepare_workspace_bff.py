@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from conversations.filenames import get_plan_filename
 from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from workloads.workload_provider_bff import BFFWorkloadProvider
 
@@ -49,7 +50,7 @@ class BFFPrepareWorkspace(PrepareWorkspace):
             result[filename] = file_content
 
         if storage_plan is not None:
-            result["storage_plan.txt"] = storage_plan
+            result[get_plan_filename("bff")] = storage_plan
 
         sql_template_list = [
             f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"

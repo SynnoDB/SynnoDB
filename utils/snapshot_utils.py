@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_storage_plan_from_snapshot(
-    args, snapshotter: GitSnapshotter, workspace_path: Path
+    args, snapshotter: GitSnapshotter, workspace_path: Path, plan_filename: str
 ):
     assert not args.continue_run, (
         "storage_plan_snapshot and continue_current_snapshot not compatible"
@@ -23,11 +23,10 @@ def load_storage_plan_from_snapshot(
     snapshotter.restore(args.storage_plan_snapshot)
 
     # read storage plan
-    file_name = "storage_plan.txt"
-    storage_plan_path = workspace_path / file_name
+    storage_plan_path = workspace_path / plan_filename
 
     assert storage_plan_path.exists(), (
-        f"{file_name} not found in snapshot {args.storage_plan_snapshot}"
+        f"{plan_filename} not found in snapshot {args.storage_plan_snapshot}"
     )
 
     # read storage plan from file

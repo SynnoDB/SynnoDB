@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 from string import Template
 
+from conversations.filenames import get_plan_filename
 from cpp_runner.prepare_repo.assemble_args_parser import assemble_args_parser_file
 from cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
 from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
@@ -85,7 +86,7 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             result[filename] = file_content
 
         if storage_plan is not None:
-            result["storage_plan.txt"] = storage_plan
+            result[get_plan_filename("olap")] = storage_plan
 
         sql_template_list = [
             f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
