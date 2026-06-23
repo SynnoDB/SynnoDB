@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import enum
 from dataclasses import dataclass
 
 from utils.utils import DBStorage
 from workloads.workload_provider import Workload
 from workloads.workload_provider_olap import OLAPWorkload
+
+
+class Usecase(enum.Enum):
+    OLAP = "olap"
+    BFF = "bff"  # bespoke file format
 
 # DEFAULT_MODEL = "gpt-5.3-codex"
 DEFAULT_MODEL = "gpt-5.4"
@@ -67,11 +73,13 @@ class RunConfig:
     target_sf: float | None = (
         None  # target scale factor for the check-sf correctness conversation
     )
+    usecase: Usecase = Usecase.OLAP
 
 
 def add_common_args(
     parser: argparse.ArgumentParser,
     *,
+    benchmark_class: type = OLAPWorkload,
     include_model: bool = False,
     include_benchmark: bool = False,
     include_replay: bool = False,
@@ -119,9 +127,9 @@ def add_common_args(
     if include_benchmark:
         parser.add_argument(
             "--benchmark",
-            type=Workload.of,
-            choices=list(OLAPWorkload),
-            default=OLAPWorkload.TPCH,
+            type=benchmark_class,
+            choices=list(benchmark_class),
+            default=benchmark_class.TPCH,
             help="Benchmark to use for the agent.",
         )
     if include_replay:

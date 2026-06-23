@@ -2,7 +2,7 @@ import argparse
 from typing import TypedDict
 
 from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_base
+from cpp_runner.prepare_repo.prepare_olap import prepare_base
 from main import run_conv_wrapper
 from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
 from utils.cli_config import RunConfig, add_common_args

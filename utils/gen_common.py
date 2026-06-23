@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List
 
 from workloads.workload_provider import Workload
+from workloads.workload_provider_bff import BFFWorkload
 from workloads.workload_provider_olap import OLAPWorkload
 
 
@@ -17,7 +18,7 @@ def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:
     start_q = qnums[0]
     end_q = qnums[1]
 
-    if benchmark == OLAPWorkload.TPCH:
+    if benchmark in (OLAPWorkload.TPCH, BFFWorkload.TPCH):
         start_q = int(start_q)
         end_q = int(end_q)
 

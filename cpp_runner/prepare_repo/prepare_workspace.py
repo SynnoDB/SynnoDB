@@ -55,13 +55,6 @@ class PrepareWorkspace:
             "assemble_usecase_files is not implemented in the base PrepareWorkspace. Use a specific implementation like OLAPPrepareWorkspace."
         )
 
-    @abstractmethod
-    def _assemble_query_files(self) -> dict[str, str]:
-        """Build query file contents without writing to disk."""
-        raise NotImplementedError(
-            "assemble_query_files is not implemented in the base PrepareWorkspace. Use a specific implementation like OLAPPrepareWorkspace."
-        )
-
     @staticmethod
     def _get_readonly_files() -> tuple[set[str], set[str]]:
         readonly_files_not_git_tracked = {
@@ -93,9 +86,6 @@ class PrepareWorkspace:
         # assemble per usecase files
         usecase_files = self._assemble_usecase_files(**usecase_args)
 
-        # assemble query source files
-        query_source_files = self._assemble_query_files()
-
         # assemble
         general_files = dict()
         general_files["query_impl.cpp"] = assemble_query_impl_file(
@@ -115,14 +105,8 @@ class PrepareWorkspace:
         assert not set(usecase_files.keys()) & set(general_files.keys()), (
             f"Filename conflict between usecase_files and general_files: {set(usecase_files.keys()) & set(general_files.keys())}"
         )
-        assert not set(general_files.keys()) & set(query_source_files.keys()), (
-            f"Filename conflict between general_files and query_source_files: {set(general_files.keys()) & set(query_source_files.keys())}"
-        )
-        assert not set(usecase_files.keys()) & set(query_source_files.keys()), (
-            f"Filename conflict between usecase_files and query_source_files: {set(usecase_files.keys()) & set(query_source_files.keys())}"
-        )
 
-        files = {**usecase_files, **general_files, **query_source_files}
+        files = {**usecase_files, **general_files}
 
         file_ids_in_context = self._write_files(
             files,

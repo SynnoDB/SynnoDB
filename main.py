@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import enum
 import functools
 import logging
 import os
@@ -9,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-import wandb
 from dotenv import load_dotenv
 
+import wandb
 from conversations.conversation_spec import ConversationSpec, FrameworkContext
 from conversations.filenames import get_filenames
 from conversations.prompts_gen import gen_incorrect_output_prompt
@@ -20,6 +19,7 @@ from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
 from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from cpp_runner.prepare_repo.prepare_workspace_bff import BFFPrepareWorkspace
 from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
@@ -39,7 +39,7 @@ from tools.run import RunTool
 from tools.shell_executor import ShellExecutor
 from tools.validate.query_validator_class import QueryValidator
 from tools.workspace_editor import WorkspaceEditor
-from utils.cli_config import RunConfig, add_common_args
+from utils.cli_config import RunConfig, Usecase, add_common_args
 from utils.confirm_dialog import await_user_confirmation
 from utils.conv_name_utils import generate_conv_name
 from utils.core_utils import get_cores_for_current_machine
@@ -76,11 +76,6 @@ log_dir = synnodb_data_dir / "logs" / "logfiles"
 create_dir_and_set_permissions(log_dir)
 duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
 create_dir_and_set_permissions(duckdb_drain_dir)
-
-
-class Usecase(enum.Enum):
-    OLAP = "olap"
-    BFF = "bff"  # bespoke file format
 
 
 async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
@@ -259,6 +254,24 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # args.prepare_mode). None for every other conv mode.
     source_run_prepare_mode = getattr(args, "prepare_mode", None)
 
+    if usecase == Usecase.OLAP:
+        prepare_ws = OLAPPrepareWorkspace(
+            db_storage=db_storage,
+            workload_provider=workload_provider,
+            workspace_dir=workspace_path,
+            git_snapshotter=snapshotter,
+            prepare_cache_dir=prepare_workspace_cache_dir,
+        )
+    elif usecase == Usecase.BFF:
+        prepare_ws = BFFPrepareWorkspace(
+            workload_provider=workload_provider,
+            workspace_dir=workspace_path,
+            git_snapshotter=snapshotter,
+            prepare_cache_dir=prepare_workspace_cache_dir,
+        )
+    else:
+        raise Exception(f"Unsupported usecase: {usecase}")
+
     # setup snapshot / workspace according to mode
     if args.start_snapshot is None and args.continue_run:
         # continue from current ./output state - nothing to set up
@@ -280,13 +293,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             do_not_cache=args.do_not_cache,
             conv_name=args.conv_name,
             only_from_cache=args.only_from_cache,
-            prepare_workspace_provider=OLAPPrepareWorkspace(
-                db_storage=db_storage,
-                workload_provider=workload_provider,
-                workspace_dir=workspace_path,
-                git_snapshotter=snapshotter,
-                prepare_cache_dir=prepare_workspace_cache_dir,
-            ),
+            prepare_workspace_provider=prepare_ws,
         )
 
     ###############

@@ -93,6 +93,8 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
 
         result["queries.md"] = qf_string
 
+        result.update(self._assemble_query_files())
+
         return result
 
     def _assemble_query_files(self) -> dict[str, str]:
