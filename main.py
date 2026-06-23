@@ -86,7 +86,7 @@ def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStora
     return db_storage
 
 
-async def main(args: argparse.Namespace) -> None:
+async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # check all dependencies exist
     test_deps()
 
