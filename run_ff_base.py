@@ -3,15 +3,16 @@ from typing import TypedDict
 
 from conversations.conversation_spec import ConversationSpec, FrameworkContext
 from conversations.ff.base_ff_impl_conversation import BaseFFImplConversation
+from cpp_runner.prepare_repo.prepare_ff import prepare_base_ff
 from main import run_conv_wrapper
 from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from utils.cli_config import RunConfig, add_common_args
+from utils.cli_config import RunConfig, Usecase, add_common_args
 from utils.confirm_dialog import await_user_confirmation
 from utils.conv_name_utils import ConvMode
 from utils.gen_common import parse_query_ids
 from utils.utils import DBStorage
 from workloads.workload_provider import Workload
-from workloads.workload_provider_bff import BFFExecSettings
+from workloads.workload_provider_bff import BFFExecSettings, BFFWorkload
 
 ### RUN CMD
 # python run_gen_base_impl.py --conv initial1-22v66 --benchmark tpch --bespoke_storage --auto_u --auto_finish
@@ -93,7 +94,7 @@ def validate_snapshot(
 
 def main(args):
     # extract parameters
-    bespoke_storage = args.bespoke_storage
+    bespoke_storage = args.bespoke_storage or args.storage_plan_run_id is not None
     queries_str = args.queries_str
     benchmark = args.benchmark
 
@@ -152,6 +153,7 @@ def main(args):
         use_autonomy_master_prompt=False,
         memory_budget_mb=memory_budget_mb,
         include_mem_budget_for_in_mem_in_hashes=args.include_mem_budget_for_in_mem_in_hashes,
+        usecase=Usecase.BFF,
     )
 
     # run conversation
@@ -164,11 +166,12 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--storage_plan_run_id",
         type=str,
         default=None,
-        help="Wandb run id to read the storage plan from (required if --bespoke_storage is set)",
+        help="Wandb run id to read the storage plan from. Supplying this implies --bespoke_storage.",
     )
 
     add_common_args(
         parser,
+        benchmark_class=BFFWorkload,
         include_bespoke_storage=True,
         **base_args(),
     )
