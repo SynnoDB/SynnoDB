@@ -12,17 +12,9 @@ from typing import Any, Dict
 import wandb
 from dotenv import load_dotenv
 
-from conversations.base_impl_conversation import BaseImplConversation
-from conversations.check_sf_correctness_conv import CheckSFCorrectnessConv
+from conversations.conversation_spec import ConversationSpec, FrameworkContext
 from conversations.filenames import get_filenames
-from conversations.gen_storage_plan_conversation import GenStoragePlanConversation
-from conversations.in_mem_1_optim_conv import InMem1OptimizationConversation
-from conversations.in_mem_2_mt_conv import InMem2MTConversation
-from conversations.optimization_conversation import OptimConvArgs
 from conversations.prompts_gen import gen_incorrect_output_prompt
-from conversations.scripted_conversation import ScriptedConversation
-from conversations.ssd_1_st_opt_conv import SSD1STOptimConv
-from conversations.ssd_2_mt_conv import SSD2MTOptConv
 from conversations.supervision_agent import SupervisionAgent
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
@@ -49,9 +41,8 @@ from tools.validate.query_validator_class import QueryValidator
 from tools.workspace_editor import WorkspaceEditor
 from utils.cli_config import RunConfig, add_common_args
 from utils.confirm_dialog import await_user_confirmation
-from utils.conv_name_utils import ConvMode, generate_conv_name
+from utils.conv_name_utils import generate_conv_name
 from utils.core_utils import get_cores_for_current_machine
-from utils.get_sample_q_args import get_sample_exec_settings, get_sample_query_args
 from utils.hugepages import get_num_numa_nodes, set_hugepages
 from utils.pkgconfig import check_pkg
 from utils.snapshot_utils import load_storage_plan_from_snapshot
@@ -66,7 +57,6 @@ from workloads.system_factory_bff import BFFSystemFactory
 from workloads.system_factory_olap import OLAPSystemFactory
 from workloads.workload_provider_bff import BFFWorkload, BFFWorkloadProvider
 from workloads.workload_provider_olap import (
-    OLAPExecSettings,
     OLAPWorkload,
     OLAPWorkloadProvider,
 )
@@ -93,7 +83,7 @@ class Usecase(enum.Enum):
     BFF = "bff"  # bespoke file format
 
 
-async def main(args: argparse.Namespace) -> None:
+async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # check all dependencies exist
     test_deps()
 
@@ -264,6 +254,11 @@ async def main(args: argparse.Namespace) -> None:
 
     framework_code_content = get_framework_version_artifacts_str()
 
+    # Dynamic prepare mode of the source run, only set for CHECK_SF (where the
+    # prepare steps and parallelism are replayed from the source run via
+    # args.prepare_mode). None for every other conv mode.
+    source_run_prepare_mode = getattr(args, "prepare_mode", None)
+
     # setup snapshot / workspace according to mode
     if args.start_snapshot is None and args.continue_run:
         # continue from current ./output state - nothing to set up
@@ -272,17 +267,6 @@ async def main(args: argparse.Namespace) -> None:
         if args.start_snapshot is not None:
             assert not args.continue_run
 
-        if args.conv_mode == ConvMode.STORAGE_PLAN:
-            prepare_mode = "storage_plan"
-        elif args.conv_mode == ConvMode.OPTIM:
-            prepare_mode = "optim"
-        elif args.conv_mode == ConvMode.MAKE_MT:
-            prepare_mode = "mt"
-        elif args.conv_mode == ConvMode.CHECK_SF:
-            prepare_mode = args.prepare_mode
-        else:
-            prepare_mode = "base"
-
         usecase_prepare_args = dict()
         if storage_plan is not None:
             usecase_prepare_args["storage_plan"] = storage_plan
@@ -290,7 +274,8 @@ async def main(args: argparse.Namespace) -> None:
         framework_code_content += prepare_repo_and_load_snapshot(
             snapshotter=snapshotter,
             snapshot=args.start_snapshot,
-            prepare=prepare_mode,
+            prepare_fn=spec.prepare,
+            source_run_prepare_mode=source_run_prepare_mode,
             usecase_prepare_args=usecase_prepare_args,
             do_not_cache=args.do_not_cache,
             conv_name=args.conv_name,
@@ -337,10 +322,13 @@ async def main(args: argparse.Namespace) -> None:
 
     # run tool parallelism setup (must be determined before QueryValidator so the
     # num_threads value is included in the query-cache key)
-    if args.conv_mode == ConvMode.MAKE_MT or (
-        args.conv_mode == ConvMode.CHECK_SF and prepare_mode == "mt"
-    ):  # make multi-threaded
-        # configuration for the run tool.
+    # For CHECK_SF the need for parallelism is derived from the dynamic prepare
+    # mode replayed from the source run; every other mode uses spec.needs_parallelism.
+    if source_run_prepare_mode is not None:
+        effective_needs_parallelism = source_run_prepare_mode == "mt"
+    else:
+        effective_needs_parallelism = spec.needs_parallelism
+    if effective_needs_parallelism:
         parallelism = True
         num_threads, core_ids = get_cores_for_current_machine(
             leave_core_0_out=True,
@@ -498,8 +486,7 @@ async def main(args: argparse.Namespace) -> None:
         supervision_agent = SupervisionAgent(
             agent_sdk_wrapper=agent_sdk_wrapper,
             run_stats_collector=run_stats_collector,
-            be_relaxed_if_runtime_goal_not_reached=args.conv_mode
-            in [ConvMode.OPTIM, ConvMode.MAKE_MT],
+            be_relaxed_if_runtime_goal_not_reached=spec.be_relaxed_supervision,
         )
     else:
         supervision_agent = None
@@ -543,116 +530,24 @@ async def main(args: argparse.Namespace) -> None:
                 persistent_storage=db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
             ),
         )
-        if args.conv_mode == ConvMode.STORAGE_PLAN:
-            conv = GenStoragePlanConversation(
-                benchmark=args.benchmark,
-                schema=workload_provider.dataset_schema,
-                workspace_path=workspace_path,
-                db_storage=db_storage,
-                **auto_conversation_args,
-                **conv_args,
-            )
-        elif args.conv_mode == ConvMode.SCRIPTED:
-            # all prompts are pre-defined and are listed in the json file (hence "scripted") - user can still give input.
-            conv = ScriptedConversation(**conv_args)
-        elif args.conv_mode == ConvMode.BASE:
-            # get sample query args for later use in the conversation (e.g. for better prompt formatting)
-            sample_query_args_dict: Dict[str, str] = get_sample_query_args(
-                workload_provider=workload_provider
-            )
-
-            # load the base impl conversation
-            exec_settings = get_sample_exec_settings(
-                workload_provider=workload_provider
-            )
-            assert isinstance(exec_settings, OLAPExecSettings)
-            conv = BaseImplConversation(
-                benchmark=args.benchmark,
-                read_storage_plan=args.bespoke_storage,
-                sample_query_args_dict=sample_query_args_dict,
-                workspace_path=workspace_path,
-                use_master_prompt=args.use_autonomy_master_prompt,
-                sql_dict=workload_provider.sql_dict,
-                db_storage=db_storage,
-                parquet_dir=exec_settings.parquet_dir,
-                **auto_conversation_args,
-                **conv_args,
-            )
-        elif args.conv_mode == ConvMode.CHECK_SF:
-            assert args.target_sf is not None, (
-                "target_sf must be provided for check-sf correctness conversation"
-            )
-            conv = CheckSFCorrectnessConv(
-                query_ids=query_list,
-                target_sf=args.target_sf,
-                bespoke_storage=args.bespoke_storage,
-                db_storage=db_storage,
-                **auto_conversation_args,
-                **conv_args,
-            )
-        elif args.conv_mode in [ConvMode.OPTIM, ConvMode.MAKE_MT]:
-            assert query_validator is not None, (
-                "query_validator must be provided for optim conversation"
-            )
-
-            optim_conv_args = OptimConvArgs(
-                query_ids=query_list,
-                bespoke_storage=args.bespoke_storage,
-                query_validator=query_validator,
-                plan_source=args.optimize_sample_plan_source,
-                cleanup_plans=True,
-                model=args.model,
-                db_storage=db_storage,
-            )
-
-            if args.conv_mode == ConvMode.OPTIM:
-                # optim single threaded
-                if db_storage == DBStorage.IN_MEMORY:
-                    conv = InMem1OptimizationConversation(
-                        optim_conv_args=optim_conv_args,
-                        **auto_conversation_args,
-                        **conv_args,
-                    )
-                elif db_storage == DBStorage.SSD:
-                    conv = SSD1STOptimConv(
-                        optim_conv_args=optim_conv_args,
-                        **auto_conversation_args,
-                        **conv_args,
-                    )
-                else:
-                    raise Exception(
-                        f"Unsupported db source for optimization conversation: {db_storage}"
-                    )
-            elif args.conv_mode == ConvMode.MAKE_MT:
-                # second optimization round: adds multi-threading on top of the single-threaded result
-                assert query_validator is not None, (
-                    "query_validator must be provided for make_mt conversation"
-                )
-
-                if db_storage == DBStorage.IN_MEMORY:
-                    conv = InMem2MTConversation(
-                        benchmark=args.benchmark,
-                        optim_conv_args=optim_conv_args,
-                        **auto_conversation_args,
-                        **conv_args,
-                    )
-                elif db_storage == DBStorage.SSD:
-                    conv = SSD2MTOptConv(
-                        benchmark=args.benchmark,
-                        optim_conv_args=optim_conv_args,
-                        **auto_conversation_args,
-                        **conv_args,
-                    )
-                else:
-                    raise Exception(
-                        f"Unsupported db source for make_mt conversation: {db_storage}"
-                    )
-            else:
-                raise ValueError(f"Unknown conversation mode: {args.conv_mode}")
-
-        else:
-            raise ValueError(f"Unknown conversation mode: {args.conv_mode}")
-
+        ctx = FrameworkContext(
+            args=args,
+            workload_provider=workload_provider,
+            workspace_path=workspace_path,
+            db_storage=db_storage,
+            query_list=query_list,
+            run_tool=run_tool,
+            compile_tool=compile_tool,
+            agent_sdk_wrapper=agent_sdk_wrapper,
+            snapshotter=snapshotter,
+            run_stats_collector=run_stats_collector,
+            supervision_agent=supervision_agent,
+            query_validator=query_validator,
+            conv_args=conv_args,
+            auto_conversation_args=auto_conversation_args,
+            spec=spec,
+        )
+        conv = spec.factory(ctx)
         await conv.run()
 
     # run conversation with sdk tracing
@@ -706,7 +601,9 @@ def _setup() -> None:
 
 
 def run_conv_wrapper(
-    args: argparse.Namespace | None, run_config: RunConfig | None
+    args: argparse.Namespace | None,
+    run_config: RunConfig | None,
+    spec: ConversationSpec,
 ) -> None:
     # assemble args from run_config if main.py is started from run scripts
     if args is None and run_config is None:
@@ -807,7 +704,7 @@ def run_conv_wrapper(
         )
 
     try:
-        asyncio.run(main(args))
+        asyncio.run(main(args, spec))
 
         if args.notify:
             # notify about successful completion
@@ -898,6 +795,11 @@ if __name__ == "__main__":
     args.write_query_and_args_files = True
 
     if args.command == "manual":
-        run_conv_wrapper(args, run_config=None)
+        # the manual debug entry point is the only consumer that resolves a spec
+        # by name; the run_*.py scripts pass their own spec directly.
+        from conversations.manual_specs import get_spec
+
+        spec = get_spec(args.conv_mode)
+        run_conv_wrapper(args, run_config=None, spec=spec)
     else:
         raise Exception(f"Unknown {args.command}")

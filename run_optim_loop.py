@@ -1,9 +1,12 @@
 import argparse
 
+from conversations.conversation_spec import ConversationSpec, FrameworkContext
+from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_optim
 from main import run_conv_wrapper
 from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
 from run_gen_base_impl import base_args, base_args_extract, validate_snapshot
 from utils.cli_config import RunConfig, add_common_args
+from utils.conv_name_utils import ConvMode
 from utils.gen_common import parse_query_ids
 from utils.utils import DBStorage
 
@@ -13,6 +16,57 @@ from utils.utils import DBStorage
 ## for litellm it is recommended to run with disabled openai tracing (throws randomly errors sometimes) - wandb tracing collects all necessary information
 
 # python run_optim_loop.py --model anthropic/claude-opus-4-6 --conv optim1-22v1 --benchmark tpch --bespoke_storage --disable_openai_tracing
+
+
+def build_optim_conv_args(ctx: FrameworkContext):
+    """Shared between the optim (this module) and make-mt conversation factories."""
+    from conversations.optimization_conversation import OptimConvArgs
+
+    assert ctx.query_validator is not None, (
+        "query_validator must be provided for optimization conversations (disable_valtool is set?)"
+    )
+    return OptimConvArgs(
+        query_ids=ctx.query_list,
+        bespoke_storage=ctx.args.bespoke_storage,
+        query_validator=ctx.query_validator,
+        plan_source=ctx.args.optimize_sample_plan_source,
+        cleanup_plans=True,
+        model=ctx.args.model,
+        db_storage=ctx.db_storage,
+    )
+
+
+def _factory(ctx: FrameworkContext):
+    optim_conv_args = build_optim_conv_args(ctx)
+
+    if ctx.db_storage == DBStorage.IN_MEMORY:
+        from conversations.in_mem_1_optim_conv import InMem1OptimizationConversation
+
+        return InMem1OptimizationConversation(
+            optim_conv_args=optim_conv_args,
+            **ctx.auto_conversation_args,
+            **ctx.conv_args,
+        )
+    elif ctx.db_storage == DBStorage.SSD:
+        from conversations.ssd_1_st_opt_conv import SSD1STOptimConv
+
+        return SSD1STOptimConv(
+            optim_conv_args=optim_conv_args,
+            **ctx.auto_conversation_args,
+            **ctx.conv_args,
+        )
+    else:
+        raise Exception(
+            f"Unsupported db_storage for optim conversation: {ctx.db_storage}"
+        )
+
+
+SPEC = ConversationSpec(
+    prepare=prepare_optim,
+    needs_parallelism=False,
+    be_relaxed_supervision=True,
+    factory=_factory,
+)
 
 
 def main(args):
@@ -71,7 +125,7 @@ def main(args):
 
     config = RunConfig(
         **base_args_extract(args),
-        conv_mode="optim",  # delegate the optimization loop logic to the conversation instead of hardcoding it in the main function
+        conv_mode=ConvMode.OPTIM,  # delegate the optimization loop logic to the conversation instead of hardcoding it in the main function
         query_list=",".join(map(str, query_ids)),
         start_snapshot=commit_hash,
         storage_plan_snapshot=None,
@@ -86,7 +140,7 @@ def main(args):
     )
 
     # run conversation
-    run_conv_wrapper(args=None, run_config=config)
+    run_conv_wrapper(args=None, run_config=config, spec=SPEC)
 
 
 def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
