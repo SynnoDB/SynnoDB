@@ -1,0 +1,89 @@
+You are an expert database engineer and skilled programmer.
+
+# Context
+
+You will implement a specialized high-performance database file format in C++ that is optimized for a predefined set of SQL queries. The system has two phases:
+
+1. **Write-to-fileformat phase**: Convert ArrowTable inputs into a workload-specialized custom on-disk file format. The writer should persist compact column representations, encodings, page/block metadata, pruning structures, dictionaries, offsets, and any other file-format structures needed for efficient later reads. Datatypes, encodings, metadata, and layout decisions can be hard-coded for the given workload.
+
+2. **Read-from-fileformat phase**: Execute the predefined queries by reading from the custom file format and writing query results to CSV files. The reader should avoid loading the full dataset into RAM unless explicitly justified. It should use projection pushdown, predicate pushdown, page/block pruning, late materialization, encoded predicate evaluation, and sequential SSD-friendly reads wherever possible.
+
+# System Overview
+
+Queries: Defined in `${queries_path}` (`${query_str}`).
+
+The write-to-fileformat phase is implemented in `${builder_path}`, which predefines the file-format writer entry point and/or a `Database`/manifest structure. Your job is to populate the custom file format from ArrowTable inputs using an efficient workload-specialized physical representation. `${storage_hint}`
+
+The read-from-fileformat / execution phase interface is predefined in `${query_impl_path}`. It accepts a `QueryRequest` list and calls the corresponding query implementation for each request.
+
+Sample query implementations are provided in e.g., `query1.cpp/hpp`.
+
+The output of each query should be written to `result<RUN_NR>.csv`, where `<RUN_NR>` is the 1-based position in the arg list, using:
+
+```text
+delimiter=','
+escapechar='\\'
+quotechar='"'
+header=True
+```
+
+Table schemas can be inspected with:
+
+```bash
+parquet-dump-schema `${parquet_path}/lineitem.parquet`
+```
+
+# Your Task
+
+Create a TODO plan for implementing this workload-specialized database file format. Write your plan to `${base_impl_todo_file}`.
+
+The plan should include concrete implementation steps in order, formatted so individual steps can later be marked as done.
+
+The plan must cover both phases:
+
+1. **Write-to-fileformat phase**
+
+   * Inspect the query workload and schema.
+   * Decide the physical representation for each required table and column.
+   * Choose compact physical types based on observed or expected value ranges, not only SQL logical types.
+   * Choose per-column encodings such as raw fixed-width, dictionary encoding, frame-of-reference, delta encoding, RLE, bit-packing, or workload-specific packed representations.
+   * Define the on-disk file layout: files, streams, pages/blocks, headers, footers, metadata, dictionaries, offsets, null masks, and string payloads.
+   * Define page/block size and compression or encoding boundaries.
+   * Define pruning metadata such as min/max zone maps, value bitsets, Bloom filters, dictionary membership, null counts, and sparse indexes.
+   * Define how the writer streams ArrowTable input into the custom file format without assuming the full dataset fits in memory.
+   * If sorting or clustering is needed, describe how it is produced using external sort, partitioned sort, or row-group-local ordering.
+
+2. **Read-from-fileformat phase**
+
+   * Define the reader contract for opening the custom file format.
+   * Define how schema, footer metadata, dictionaries, page indexes, and pruning metadata are loaded.
+   * Identify which metadata should stay resident in RAM and which structures should be paged from SSD.
+   * Define how query execution determines projected columns and predicate columns.
+   * Define how predicates are pushed into the reader.
+   * Define how pages/blocks are skipped using metadata.
+   * Define how selected pages are read in mostly sequential page order.
+   * Define how encoded data is decoded, including vectorized decode, late materialization, dictionary comparison, or predicate evaluation on encoded values.
+   * Define how query kernels consume decoded or partially decoded vectors.
+   * Define how query outputs are written to CSV.
+
+The plan should also include conceptual notes on:
+
+* file-format design,
+* physical layout,
+* metadata layout,
+* column encoding choices,
+* page/block pruning strategy,
+* resident vs. paged structures,
+* query execution strategy,
+* byte-read minimization,
+* correctness and lossless reconstruction.
+
+Do not start executing any of your TODO steps yet.
+
+Do not use broad `find`, repo-wide `grep`, or directory scans when writing the plan. Limit inspection to `${queries_path}`, `${builder_path}`, `${query_impl_path}`, `${args_path}`, and the parquet schema output of `parquet-dump-schema`.
+
+Do not read build scripts, framework internals, system paths, or unrelated files.
+
+Note: `parquet-dump-schema` reports logical types. At runtime, Arrow may expose a different physical type, for example `DECIMAL128` instead of `INT64`, or `DOUBLE` instead of `DECIMAL`. When planning the write-to-fileformat phase, do not assume the Arrow `type_id` exactly matches the logical schema type for numeric columns. Plan for runtime type dispatch and robust conversion into the chosen persisted physical representation.
+
+The final TODO plan should be implementation-oriented, not just conceptual. It should make clear which files/classes/functions need to be implemented or extended, how the custom file format is written, how it is read back, and how the query implementations should use the reader efficiently.

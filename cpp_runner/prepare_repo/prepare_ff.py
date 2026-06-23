@@ -11,3 +11,15 @@ def prepare_ff_plan(ctx: PrepareContext) -> str:
         do_not_cache=ctx.do_not_cache,
         usecase_args=ctx.usecase_prepare_args,
     )
+
+
+def prepare_base_ff(ctx: PrepareContext) -> str:
+    return ctx.prepare_workspace_provider.prepare(
+        add_thread_pool_to_query_impl=False,
+        only_query_md=False,
+        add_sample_trace=ctx.add_sample_trace,
+        write_non_tracked_only=ctx.write_non_tracked_only,
+        only_from_cache=ctx.only_from_cache,
+        do_not_cache=ctx.do_not_cache,
+        usecase_args=ctx.usecase_prepare_args,
+    )
