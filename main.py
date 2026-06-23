@@ -78,12 +78,20 @@ duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
 create_dir_and_set_permissions(duckdb_drain_dir)
 
 
+
 class Usecase(enum.Enum):
     OLAP = "olap"
     BFF = "bff"  # bespoke file format
 
 
+
+def get_bff_bespoke_ssd_storage_dir(workspace_path: Path) -> Path:
+    return workspace_path.absolute() / "tmp"
+
+
 def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStorage:
+    if usecase == Usecase.BFF:
+        return DBStorage.SSD
     return db_storage
 
 
@@ -162,7 +170,15 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         DBStorage.SSD,
     ]  # labstore is not yet fully supported
 
+
     if usecase == Usecase.OLAP:
+        # TODO: for OLAP, we should support labstore as well, but for now we only support in-memory and SSD.
+    elif usecase == Usecase.BFF:
+        disk_db_dir = None
+        bespoke_ssd_storage_dir = get_bff_bespoke_ssd_storage_dir(workspace_path)
+        create_dir_and_set_permissions(bespoke_ssd_storage_dir)
+        logger.info(f"Using BFF bespoke SSD storage dir: {bespoke_ssd_storage_dir}")
+    else:
         disk_db_dir, bespoke_ssd_storage_dir = get_disk_db_dir(
             db_storage, workspace_path
         )
@@ -175,7 +191,8 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         workload_provider = OLAPWorkloadProvider(
             benchmark=OLAPWorkload(args.benchmark),
             base_parquet_dir=parquet_dir,
-            db_storage=args.db_storage,
+            db_storage=db_storage,
+
             bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
         )
     elif usecase == Usecase.BFF:
@@ -549,7 +566,8 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
                 gen_incorrect_output_prompt,
                 query_impl_path=query_impl_path,
                 builder_path=builder_path,
-                persistent_storage=db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
+                persistent_storage=usecase == Usecase.BFF
+                or db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
             ),
         )
         ctx = FrameworkContext(
