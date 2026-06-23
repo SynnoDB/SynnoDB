@@ -48,10 +48,13 @@ class BFFWorkloadProvider(WorkloadProvider):
         self,
         benchmark: BFFWorkload,
         base_parquet_dir: Path,
-        bespoke_ssd_storage_dir: Path | None = None,
+        bespoke_ssd_storage_dir: Path,
         query_cache_dir: Path | None = None,
         **kwargs,
     ):
+        if bespoke_ssd_storage_dir is None:
+            raise ValueError("BFFWorkloadProvider requires bespoke_ssd_storage_dir")
+
         self.benchmark = benchmark
         self.query_cache_dir = query_cache_dir
         self.base_parquet_dir = base_parquet_dir
@@ -128,13 +131,10 @@ class BFFWorkloadProvider(WorkloadProvider):
         else:
             raise ValueError(f"Unknown run mode: {run_mode}")
 
-        extra_env = dict()
-        # assemble storage dir path
-
         query_batch_list = []
         rnd = random.Random(42)
         for scale_factor in scale_factors:
-            assert self.bespoke_ssd_storage_dir is not None
+            extra_env = dict()
             storage_dir = self.bespoke_ssd_storage_dir / f"sf{scale_factor}"
             extra_env["STORAGE_DIR"] = str(storage_dir) + os.sep
             if self.memory_limit_mb is not None:
