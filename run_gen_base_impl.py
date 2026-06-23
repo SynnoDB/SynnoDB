@@ -184,7 +184,7 @@ def base_args() -> dict:
         include_disable_repo_sync=True,
         include_replay_cache=True,
         include_benchmark=True,
-        include_disable_wandb=True,
+        include_log_to_wandb=True,
         include_disable_openai_tracing=True,
         include_auto_u=True,
         include_auto_finish=True,
@@ -206,7 +206,7 @@ class BaseArgs(TypedDict):
     disable_repo_sync: bool
     replay_cache: bool
     benchmark: Workload
-    disable_wandb: bool
+    log_to_wandb: bool
     disable_openai_tracing: bool
     auto_u: bool
     auto_finish: bool
@@ -229,7 +229,7 @@ def base_args_extract(args) -> BaseArgs:
         "disable_repo_sync": args.disable_repo_sync,
         "replay_cache": args.replay_cache,
         "benchmark": args.benchmark,
-        "disable_wandb": args.disable_wandb,
+        "log_to_wandb": args.log_to_wandb,
         "disable_openai_tracing": args.disable_openai_tracing,
         "auto_u": args.auto_u,
         "auto_finish": args.auto_finish,

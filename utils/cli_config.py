@@ -31,7 +31,7 @@ class RunConfig:
     continue_run: bool = False
     replay: bool = False
     disable_openai_tracing: bool = False
-    disable_wandb: bool = False
+    log_to_wandb: bool = False
     model: str = DEFAULT_MODEL
     no_preload: bool = False
     disable_repo_sync: bool = False
@@ -84,7 +84,7 @@ def add_common_args(
     include_benchmark: bool = False,
     include_replay: bool = False,
     include_disable_openai_tracing: bool = False,
-    include_disable_wandb: bool = False,
+    include_log_to_wandb: bool = False,
     include_query_list: bool = False,
     include_queries_str: bool = False,
     include_continue_run: bool = False,
@@ -146,12 +146,12 @@ def add_common_args(
             default=False,
             help="Disable OpenAI tracing if set.",
         )
-    if include_disable_wandb:
+    if include_log_to_wandb:
         parser.add_argument(
-            "--disable_wandb",
+            "--log_to_wandb",
             action="store_true",
             default=False,
-            help="Disable wandb if set.",
+            help="Log run metrics and traces to Weights & Biases if set.",
         )
     if include_queries_str:
         parser.add_argument(

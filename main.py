@@ -10,7 +10,6 @@ from typing import Any, Dict
 
 from dotenv import load_dotenv
 
-import wandb
 from conversations.conversation_spec import ConversationSpec, FrameworkContext
 from conversations.filenames import get_filenames, get_plan_filename
 from conversations.prompts_gen import gen_incorrect_output_prompt
@@ -76,6 +75,16 @@ log_dir = synnodb_data_dir / "logs" / "logfiles"
 create_dir_and_set_permissions(log_dir)
 duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
 create_dir_and_set_permissions(duckdb_drain_dir)
+
+
+def get_bff_bespoke_ssd_storage_dir(workspace_path: Path) -> Path:
+    return workspace_path.absolute() / "tmp"
+
+
+def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStorage:
+    if usecase == Usecase.BFF:
+        return DBStorage.SSD
+    return db_storage
 
 
 async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
@@ -146,15 +155,23 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     notify.SEND_NOTIFICATIONS = args.notify
 
     # storage related setup
-    db_storage = args.db_storage
+    db_storage = get_effective_db_storage(usecase, args.db_storage)
+    args.db_storage = db_storage
     assert db_storage in [
         DBStorage.IN_MEMORY,
         DBStorage.SSD,
     ]  # labstore is not yet fully supported
 
-    disk_db_dir, bespoke_db_dir = get_disk_db_dir(db_storage, workspace_path)
-
-    logger.info(f"Using database source: {db_storage}. Disk DB dir: {disk_db_dir}")
+    if usecase == Usecase.BFF:
+        disk_db_dir = None
+        bespoke_ssd_storage_dir = get_bff_bespoke_ssd_storage_dir(workspace_path)
+        create_dir_and_set_permissions(bespoke_ssd_storage_dir)
+        logger.info(f"Using BFF bespoke SSD storage dir: {bespoke_ssd_storage_dir}")
+    else:
+        disk_db_dir, bespoke_ssd_storage_dir = get_disk_db_dir(
+            db_storage, workspace_path
+        )
+        logger.info(f"Using database source: {db_storage}. Disk DB dir: {disk_db_dir}")
 
     if disk_db_dir is not None:
         create_dir_and_set_permissions(disk_db_dir)
@@ -163,14 +180,14 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         workload_provider = OLAPWorkloadProvider(
             benchmark=OLAPWorkload(args.benchmark),
             base_parquet_dir=parquet_dir,
-            db_storage=args.db_storage,
-            bespoke_ssd_storage_dir=bespoke_db_dir,
+            db_storage=db_storage,
+            bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
         )
     elif usecase == Usecase.BFF:
         workload_provider = BFFWorkloadProvider(
             benchmark=BFFWorkload(args.benchmark),
             base_parquet_dir=parquet_dir,
-            bespoke_ssd_storage_dir=bespoke_db_dir,
+            bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
         )
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
@@ -315,7 +332,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         ),
         DuckDBDrain(db_path=duckdb_drain_dir / f"{args.run_name}.duckdb"),
     ]
-    if not args.disable_wandb:
+    if args.log_to_wandb:
         data_drains.append(WandbDrain())
 
     collector_args = dict(
@@ -535,7 +552,8 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
                 gen_incorrect_output_prompt,
                 query_impl_path=query_impl_path,
                 builder_path=builder_path,
-                persistent_storage=db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
+                persistent_storage=usecase == Usecase.BFF
+                or db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
             ),
         )
         ctx = FrameworkContext(
@@ -583,8 +601,10 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         f"Cost: ${run_stats_collector.total_stats['cost_usd']:.6f} (real cost: ${run_stats_collector.total_stats['real_cost_usd']:.6f}, including cache hits)"
     )
 
-    if not args.disable_wandb:
+    if args.log_to_wandb:
         # Log final summary to wandb
+        import wandb
+
         wandb.log(
             {
                 "final/total_cost_usd": run_stats_collector.total_stats["cost_usd"],
@@ -622,6 +642,9 @@ def run_conv_wrapper(
     else:
         pass
 
+    args.db_storage = get_effective_db_storage(args.usecase, args.db_storage)
+    args.log_to_wandb = getattr(args, "log_to_wandb", False)
+
     _setup()
     if args.continue_run:
         ask_yes_no(
@@ -650,9 +673,10 @@ def run_conv_wrapper(
     else:
         raise Exception(f"Unsupported SDK: {args.sdk}")
 
-    if not args.disable_wandb:
+    if args.log_to_wandb:
         # add weave (wandb) tracing in addition to openai tracing
         configure_weave_cache_dirs()
+        import wandb
         import weave
 
         entity = os.getenv("WANDB_ENTITY", "learneddb")
@@ -772,7 +796,7 @@ if __name__ == "__main__":
         include_benchmark=True,
         include_replay=True,
         include_disable_openai_tracing=True,
-        include_disable_wandb=True,
+        include_log_to_wandb=True,
         include_query_list=True,
         include_continue_run=True,
         include_no_preload=True,

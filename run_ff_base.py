@@ -10,7 +10,6 @@ from utils.cli_config import RunConfig, Usecase, add_common_args
 from utils.confirm_dialog import await_user_confirmation
 from utils.conv_name_utils import ConvMode
 from utils.gen_common import parse_query_ids
-from utils.utils import DBStorage
 from workloads.workload_provider import Workload
 from workloads.workload_provider_bff import BFFExecSettings, BFFWorkload
 
@@ -35,7 +34,6 @@ def _factory(ctx: FrameworkContext):
         workspace_path=ctx.workspace_path,
         use_master_prompt=ctx.args.use_autonomy_master_prompt,
         sql_dict=ctx.workload_provider.sql_dict,
-        db_storage=ctx.db_storage,
         parquet_dir=exec_settings.parquet_dir,
         **ctx.auto_conversation_args,
         **ctx.conv_args,
@@ -55,14 +53,12 @@ def validate_snapshot(
     benchmark,
     queries_str,
     query_ids,
-    db_storage: DBStorage | None,
     model: str | None,
 ):
     # run validation
     snapshot_benchmark: str = snapshot_config["benchmark"]
     snapshot_queries_str = snapshot_config["queries_str"]
     snapshot_model = snapshot_config["model"]
-    snapshot_db_storage = snapshot_config["db_storage"]
 
     assert snapshot_benchmark.upper() == benchmark.name.upper(), (
         f"Expected benchmark {benchmark.name.upper()} in storage plan run, got {snapshot_benchmark}"
@@ -74,12 +70,6 @@ def validate_snapshot(
     assert query_ids == parse_query_ids(snapshot_queries_str, benchmark=benchmark), (
         f"Expected query ids {query_ids} in storage plan run, got {parse_query_ids(snapshot_queries_str, benchmark=benchmark)}"
     )
-
-    # convert snapshot db source to enum
-    if db_storage is not None:
-        assert snapshot_db_storage.lower() == db_storage.value.lower(), (
-            f"Expected db_storage {db_storage.value.lower()} (type: {type(db_storage.value)}) in storage plan run, got {snapshot_db_storage.lower()} (type: {type(snapshot_db_storage)})"
-        )
 
     if model is not None and snapshot_model != model:
         response = await_user_confirmation(
@@ -119,7 +109,6 @@ def main(args):
             benchmark,
             queries_str,
             query_ids,
-            db_storage=args.db_storage,
             model=args.model,
         )
 
@@ -135,10 +124,8 @@ def main(args):
     # only for persistent storage runs (in-memory uses the full available RAM).
     if args.memory_budget_mb is not None:
         memory_budget_mb = args.memory_budget_mb
-    elif args.db_storage in [DBStorage.LABSTORE, DBStorage.SSD]:
-        memory_budget_mb = 50 * 1024
     else:
-        memory_budget_mb = None
+        memory_budget_mb = 50 * 1024
 
     config = RunConfig(
         **base_args_extract(
@@ -187,7 +174,7 @@ def base_args() -> dict:
         include_disable_repo_sync=True,
         include_replay_cache=True,
         include_benchmark=True,
-        include_disable_wandb=True,
+        include_log_to_wandb=True,
         include_disable_openai_tracing=True,
         include_auto_u=True,
         include_auto_finish=True,
@@ -198,7 +185,6 @@ def base_args() -> dict:
         include_tool_search_tool=True,
         include_queries_str=True,
         include_glm_thinking=True,
-        include_db_storage=True,
         include_include_mem_budget_for_in_mem_in_hashes=True,
         include_memory_budget_mb=True,
     )
@@ -209,7 +195,7 @@ class BaseArgs(TypedDict):
     disable_repo_sync: bool
     replay_cache: bool
     benchmark: Workload
-    disable_wandb: bool
+    log_to_wandb: bool
     disable_openai_tracing: bool
     auto_u: bool
     auto_finish: bool
@@ -222,7 +208,6 @@ class BaseArgs(TypedDict):
     queries_str: str
     api_base: str | None
     glm_thinking: bool
-    db_storage: DBStorage
 
 
 def base_args_extract(args) -> BaseArgs:
@@ -232,7 +217,7 @@ def base_args_extract(args) -> BaseArgs:
         "disable_repo_sync": args.disable_repo_sync,
         "replay_cache": args.replay_cache,
         "benchmark": args.benchmark,
-        "disable_wandb": args.disable_wandb,
+        "log_to_wandb": args.log_to_wandb,
         "disable_openai_tracing": args.disable_openai_tracing,
         "auto_u": args.auto_u,
         "auto_finish": args.auto_finish,
@@ -244,7 +229,6 @@ def base_args_extract(args) -> BaseArgs:
         "queries_str": args.queries_str,
         "api_base": getattr(args, "api_base", None),
         "glm_thinking": getattr(args, "glm_thinking", False),
-        "db_storage": args.db_storage,
     }
     # # ensure overwrite keys are valid
     # orig_keys = set(args_dict.keys())
