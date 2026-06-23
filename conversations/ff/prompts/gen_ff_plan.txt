@@ -1,0 +1,249 @@
+Your task is to analyze the workload and produce a workload-specialized SSD-backed database file-format plan for the tables accessed by the queries. The goal is to design a physical file format that could serve as an alternative to Parquet for this workload.
+
+The dataset is expected to be substantially larger than the available RAM/cache budget. Under that regime, **bytes read from disk is the dominant cost**: every byte not persisted is a byte not read later, and every page/block skipped by metadata pruning is a page/block not read at all. The file-format design must reflect this priority.
+
+You have flexibility to explore creative encodings, hybrid layouts, page/block organizations, metadata structures, and unconventional ideas — but every design choice must be justified by its expected effect on bytes-on-disk and bytes-read-per-query.
+
+# Mandatory design dimensions
+
+For every table accessed by the workload, the plan must explicitly state:
+
+1. **Per-column physical type, chosen from observed cardinality — not the SQL nominal type**
+
+Declare the smallest physical type that fits the actual value range or representation needs.
+
+Examples:
+
+* `col ∈ [1,50]` → `uint8`, not `int32`, even if the SQL type is `INTEGER`
+* `date` with bounded range → days since epoch in `int16` or `int32`
+* fixed-scale decimal → scaled integer if possible
+
+State the observed or estimated `(min, max, distinct)` the choice is based on.
+
+2. **Per-column encoding**
+
+Pick one of: raw fixed-width, frame-of-reference (FOR), bit-packing, RLE, dictionary, delta encoding, patched/base encoding, or packed-tuple encoding for correlated narrow columns combined into a single code.
+
+For each column, justify the choice in one line tied to:
+
+* cardinality,
+* value range,
+* clustering/sortedness,
+* predicate usage,
+* expected compression ratio,
+* decode cost.
+
+For non-raw encodings, state the decode strategy at query time:
+
+* vectorized decode,
+* late materialization,
+* predicate evaluation on encoded values,
+* dictionary comparison,
+* page-local decode,
+* full decode only after pruning.
+
+3. **File-format organization and page/block layout**
+
+Define the physical structure of the file format.
+
+For each table, specify:
+
+* whether the table is stored as one file or multiple files,
+* whether the layout is columnar, row-wise, PAX-style, hybrid, or adaptive per column group,
+* the page/block size,
+* whether pages are independently compressed/encoded,
+* how nulls are represented,
+* how variable-length fields are stored,
+* where metadata is located: header, footer, sidecar, page index, or embedded page headers.
+
+The design should favor sequential I/O and predictable page reads. Avoid random I/O unless the skipped bytes clearly justify it.
+
+4. **Workload-wide sort / clustering order, chosen for maximum pruning**
+
+Pick one clustering key per table, or declare the table unsorted.
+
+Justify the choice by expected pruning across the **entire workload**, not per query.
+
+For every column with a range predicate, estimate selectivity from the predicate shape and value distribution:
+
+* one-sided predicates near a column extreme prune far less than middle-window ranges,
+* equality predicates on clustered low-cardinality columns may enable strong page skipping,
+* correlated predicates may justify hierarchical clustering.
+
+The chosen clustering key should maximize the **sum of bytes-read-saved across the workload**, weighted by query frequency and query cost.
+
+If no single key dominates, consider:
+
+* hierarchical clustering, e.g. sort by `A`, then `B`,
+* partitioned clustering,
+* page-local reordering,
+* clustered row groups with independent ordering,
+* storing only a permutation/order vector if it avoids payload duplication.
+
+5. **Per-page pruning metadata**
+
+For every column used in range or equality predicates, define page/block-level pruning metadata.
+
+At minimum, consider:
+
+* `(min, max)` zone maps,
+* null count,
+* distinct count estimate,
+* low-cardinality value bitsets,
+* Bloom filters,
+* dictionary membership,
+* prefix/suffix summaries for strings,
+* page-level histograms where justified.
+
+For low-distinct columns, a per-page bitset of present values may be more selective than min/max — declare which columns use bitsets and why.
+
+State:
+
+* metadata schema,
+* metadata placement,
+* expected metadata size,
+* lookup strategy during query planning/execution.
+
+6. **Compact derived metadata and side structures for out-of-core shortcuts**
+
+Compact derived structures are allowed when all of the following hold:
+
+(a) the structure is metadata-scale relative to the base data,
+(b) it can be recomputed from the persisted columns,
+(c) it eliminates full scans or large reads for recurring workload patterns.
+
+Examples:
+
+* page/prefix aggregates,
+* per-page counts/sums/min/max,
+* dictionaries,
+* string dictionaries,
+* page indexes,
+* sparse indexes over clustering keys,
+* permutation vectors,
+* join-key summaries,
+* lightweight CSR-style lookup structures if small enough.
+
+Do not store row-level duplicate payload. Side structures must be metadata, summaries, dictionaries, indexes, or permutations only.
+
+For every auxiliary structure, state:
+
+* schema,
+* purpose,
+* expected size,
+* rebuild rule,
+* which queries benefit.
+
+7. **Byte budget per query**
+
+For each query, estimate **bytes read from disk under the proposed file format**, including:
+
+* base column pages,
+* decoded pages,
+* metadata pages,
+* dictionaries,
+* offsets,
+* string payload,
+* auxiliary structures.
+
+Include expected page/block pruning from zone maps, bitsets, Bloom filters, clustering, and side structures.
+
+Sum across all queries and report the workload total.
+
+A plan that increases bytes-read for one query versus an obvious columnar DSM/Parquet-like layout must justify the tradeoff elsewhere. A plan that halves workload-level bytes-read is the target.
+
+8. **Resident vs. paged structures**
+
+Identify which parts of the file-format metadata should be pinned permanently in RAM versus paged from SSD.
+
+Examples of resident structures:
+
+* file footer,
+* schema metadata,
+* small dictionaries,
+* low-cardinality value maps,
+* page indexes,
+* zone maps,
+* tiny dimension-table metadata,
+* clustering-key sparse indexes.
+
+Examples of paged structures:
+
+* base column pages,
+* large string payloads,
+* large dictionaries,
+* large auxiliary indexes.
+
+Compute the resident footprint explicitly. The resident footprint must fit comfortably inside the RAM/cache budget with room left for paged query execution.
+
+# Hard constraints
+
+* Store all data losslessly. The file format must be able to reconstruct the original logical tables exactly.
+* Do not store payload data redundantly. Compression, encoding, metadata, dictionaries, summaries, and permutations are allowed, but avoid secondary full or partial copies of columns.
+* For every column used by the workload, specify the concrete persisted representation and the logical reader interface that exposes it to query execution.
+* Represent variable-length strings as offsets plus bytes, dictionary-encoded strings, or another explicitly specified lossless representation.
+* Represent dates, timestamps, and decimals as documented fixed-width physical values when possible.
+* The file-format writer must be able to stream input data table-by-table or row-group-by-row-group. Do not assume the full dataset fits in memory.
+* Do not assume the input data is already sorted. If a clustering order is required, state how it is produced using streaming or external sort.
+* Design for sequential I/O: prefer access patterns that read pages in ascending page-index order.
+* Metadata reads should be small and predictable. Avoid metadata structures that are larger than the savings they provide.
+* Identify which acceleration structures are small enough to fit permanently in RAM, and which must be streamed, paged, or replaced by scan/merge-join patterns.
+* The proposed format should have a clear reader contract: given a projected column set and predicates, the reader should be able to determine which pages to read, which pages to skip, and how to decode the selected pages.
+
+# Output
+
+Write the plan to `${file_format_plan_filename}`.
+
+For each table accessed by the queries, include:
+
+* A table of per-column declarations:
+
+  `column → physical type → encoding → file-format stream/page name → expected on-disk size`
+
+* The physical file organization:
+
+  * file(s),
+  * footer/header metadata,
+  * page/block size,
+  * column stream layout,
+  * null representation,
+  * string representation,
+  * compression/encoding boundaries.
+
+* The chosen clustering key and justification:
+
+  * which queries benefit,
+  * expected pruning,
+  * weighted workload-level byte savings.
+
+* A bytes-read estimate per query under the proposed file format, including expected metadata reads and page pruning.
+
+* The resident footprint:
+
+  * always-pinned metadata,
+  * dictionaries,
+  * page indexes,
+  * pruning structures,
+  * expected total RAM footprint.
+
+* Any auxiliary structures:
+
+  * zone maps,
+  * value bitsets,
+  * dictionaries,
+  * FOR minima,
+  * offset streams,
+  * sparse indexes,
+  * page aggregates,
+  * permutation vectors,
+  * expected sizes and rebuild rules.
+
+The queries are listed in the file: `${queries_path}`.
+
+The schema is:
+
+`${schema}`
+
+Be inventive and free-form on file-format ideas — speculative or unconventional encodings, layouts, and pruning metadata are welcome — but every choice must be tied back to its effect on bytes-on-disk and bytes-read-per-query.
+
+Do not read build scripts, system paths, repository internals, or unrelated files. Limit inspection to `${queries_path}` and the provided schema. Do not use broad `find`, repo-wide `grep`, or directory scans.

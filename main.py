@@ -19,6 +19,7 @@ from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
 from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from cpp_runner.prepare_repo.prepare_workspace_bff import BFFPrepareWorkspace
 from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
@@ -269,6 +270,13 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     if usecase == Usecase.OLAP:
         prepare_ws = OLAPPrepareWorkspace(
             db_storage=db_storage,
+            workload_provider=workload_provider,
+            workspace_dir=workspace_path,
+            git_snapshotter=snapshotter,
+            prepare_cache_dir=prepare_workspace_cache_dir,
+        )
+    elif usecase == Usecase.BFF:
+        prepare_ws = BFFPrepareWorkspace(
             workload_provider=workload_provider,
             workspace_dir=workspace_path,
             git_snapshotter=snapshotter,

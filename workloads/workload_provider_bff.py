@@ -1,4 +1,3 @@
-import functools
 import logging
 import os
 import random
@@ -6,9 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tools.run_tool_mode import RunToolMode
-from utils import utils
 from utils.sql_utils import extract_order_by_columns
-from workloads.dataset.gen_ceb.ceb_queries import ceb_templates
 from workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from workloads.workload_provider import (
     ExecSettings,
@@ -36,7 +33,7 @@ FRAME_POOL_SHARE = 0.60
 
 
 class BFFWorkload(Workload):
-    WL1 = "wl1"
+    TPCH = "tpch"
 
 
 @dataclass
@@ -95,16 +92,18 @@ class BFFWorkloadProvider(WorkloadProvider):
             instantiations = 20
             repetitions = 1
 
-            if self.benchmark == BFFWorkload.WL1:
+            if self.benchmark == BFFWorkload.TPCH:
                 scale_factors = [1, 2]
             else:
-                raise ValueError(f"Unknown benchmark: {self.benchmark}")
+                raise ValueError(
+                    f"Unknown benchmark: {self.benchmark} ({type(self.benchmark)})"
+                )
 
         elif run_mode == RunToolMode.EXHAUSTIVE:
             instantiations = 20
             repetitions = 1
 
-            if self.benchmark == BFFWorkload.WL1:
+            if self.benchmark == BFFWorkload.TPCH:
                 scale_factors: list[float] = [1, 2, 20]
             else:
                 raise ValueError(f"Unknown benchmark: {self.benchmark}")
@@ -121,7 +120,7 @@ class BFFWorkloadProvider(WorkloadProvider):
             instantiations = 3
             repetitions = 1
 
-            if self.benchmark == BFFWorkload.WL1:
+            if self.benchmark == BFFWorkload.TPCH:
                 scale_factors = [1]
             else:
                 raise ValueError(f"Unknown benchmark: {self.benchmark}")
@@ -226,16 +225,11 @@ class BFFWorkloadProvider(WorkloadProvider):
 
     def _get_query_gen_fn(self):
         # prepare query gen
-        if self.benchmark == BFFWorkload.WL1:
-            
+        if self.benchmark == BFFWorkload.TPCH:
+            from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
 
-            gen_query_fn = ???
-        # elif self.benchmark == OLAPWorkload.CEB:
-        #     from workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
+            gen_query_fn = gen_query
 
-        #     gen_query_fn = functools.partial(
-        #         gen_query_single_only, ceb_dir=CEB_QUERY_DIR
-        #     )
         else:
             raise ValueError(f"Unknown benchmark: {self.benchmark}")
 
@@ -244,7 +238,7 @@ class BFFWorkloadProvider(WorkloadProvider):
     def get_placeholders_fn(self, do_not_cache: bool = False):
         # prepare query gen
         gen_fn = None
-        if self.benchmark == BFFWorkload.WL1:
+        if self.benchmark == BFFWorkload.TPCH:
             from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
 
             def gen_placeholder_tpch(**kwargs):
@@ -261,7 +255,7 @@ class BFFWorkloadProvider(WorkloadProvider):
     @staticmethod
     def _dataset_tables(benchmark: BFFWorkload) -> list[str]:
         tables_lists = {
-            BFFWorkload.WL1: [
+            BFFWorkload.TPCH: [
                 "customer",
                 "lineitem",
                 "nation",
@@ -271,7 +265,6 @@ class BFFWorkloadProvider(WorkloadProvider):
                 "region",
                 "supplier",
             ],
-            
         }
         if benchmark not in tables_lists:
             raise ValueError(f"Unknown benchmark {benchmark}")
@@ -279,14 +272,14 @@ class BFFWorkloadProvider(WorkloadProvider):
 
     @staticmethod
     def _get_dataset_name(benchmark: BFFWorkload) -> str:
-        if benchmark == BFFWorkload.WL1:
+        if benchmark == BFFWorkload.TPCH:
             return "tpch"
         else:
-            raise ValueError(f"Unknown benchmark {benchmark}")
+            raise ValueError(f"Unknown benchmark {benchmark} ({type(benchmark)})")
 
     @staticmethod
     def _get_dataset_schema(benchmark: BFFWorkload) -> str:
-        if benchmark == BFFWorkload.WL1:
+        if benchmark == BFFWorkload.TPCH:
             from workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
 
             return tpc_h_schema
@@ -294,16 +287,16 @@ class BFFWorkloadProvider(WorkloadProvider):
             raise ValueError(f"Unknown benchmark {benchmark}")
 
     def _get_sql_dict(self, benchmark: BFFWorkload):
-        if benchmark == BFFWorkload.WL1:
+        if benchmark == BFFWorkload.TPCH:
             return tpc_h
         else:
             raise ValueError(f"Unknown benchmark: {benchmark}")
 
 
 def _get_all_query_ids(benchmark: BFFWorkload) -> list[str]:
-    if benchmark == BFFWorkload.WL1:
+    if benchmark == BFFWorkload.TPCH:
         query_ids = [str(i) for i in range(1, 23)]
-    
+
     else:
         raise ValueError(f"Unknown benchmark: {benchmark}")
 
