@@ -43,4 +43,12 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         if storage_plan is not None:
             result["storage_plan.txt"] = storage_plan
 
+        sql_template_list = [
+            f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
+            for q in self.workload_provider.query_ids
+        ]
+        qf_string = "\n".join(sql_template_list)
+
+        result["queries.md"] = qf_string
+
         return result
