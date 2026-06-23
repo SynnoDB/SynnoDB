@@ -83,9 +83,7 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
         # Always expose the search/replace edit tool alongside apply_patch. It
         # needs only a locally-unique old_string (no verbatim context hunks), so
         # weak local models avoid apply_patch's context-match failures.
-        self.tools.append(
-            make_custom_openai_replace_in_file_tool(editor=self.editor)
-        )
+        self.tools.append(make_custom_openai_replace_in_file_tool(editor=self.editor))
 
         if self.args.tool_search_tool:
             logger.info("Utilizing tool search tool.")
@@ -145,7 +143,7 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
                 "<BEGIN_FILES> and <END_FILES> in your prompt. ",
                 "You can run shell commands using the shell tool. Do not emit argv form. ",
                 "You can compile the code using the compile tool. ",
-                "You can run a list of queries using the run tool. The run tool automatically compiles the code. You can specify the queries to run and the scale factors to use. If no queries are specified, all queries will be run.",
+                "You can run a list of queries using the run tool. The run tool automatically compiles the code. You can specify the queries to run and the run mode. If no queries are specified, all queries will be run.",
             ]
         else:
             self.model = CachedOpenAIResponsesModel(
@@ -171,7 +169,7 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
                 "<BEGIN_FILES> and <END_FILES> in your prompt. ",
                 "You can run shell commands using the shell tool. Do not emit argv form. ",
                 "You can compile the code using the compile tool. ",
-                "You can run a list of queries using the run tool. The run tool automatically compiles the code. You can specify the queries to run and the scale factors to use. If no queries are specified, all queries will be run.",
+                "You can run a list of queries using the run tool. The run tool automatically compiles the code. You can specify the queries to run and the run mode. If no queries are specified, all queries will be run.",
             ]
 
         model_settings = ModelSettings(tool_choice="auto", parallel_tool_calls=False)

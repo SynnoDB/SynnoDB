@@ -27,12 +27,12 @@ Long:
 
 Jigao:
 - CPP Header for Ingest (write to our fileformat) & read (read from fileformat)
+- Investigate DuckDB Filesystem Plugin (and implement blueprint)
 
 Johannes:
 - Agent Stuff
 
 Upcoming:
 - Runner (single table)
-- Investigate DuckDB Filesystem Plugin (and implement blueprint)
 - Collect Expert Knowledge on what makes an efficient file format
 - Datasets searching (internet) - ~2 datasets (collection of schema + data)
