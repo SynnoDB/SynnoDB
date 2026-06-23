@@ -19,9 +19,15 @@ static const IngestApi INGEST = {
         .describe_table = &describe_bff_table,
         .describe_row_group = &describe_bff_row_group,
         .describe_page = &describe_bff_page,
+        .plan_scan = &plan_bff_scan,
         .read_row_group = &read_bff_row_group,
         .read_page = &read_bff_page,
         .release_buffer = &release_bff_buffer,
+    },
+    .binding = {
+        .plan_scan = &plan_bff_binding_scan,
+        .read_batch = &read_bff_binding_batch,
+        .release_batch = &release_bff_binding_batch,
     },
 };
 

@@ -18,7 +18,7 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         """Build template file contents without writing to disk."""
         project_dir = Path(__file__).parent
         src_dir = project_dir / "templates"
-        ssd_dir = src_dir / "olap" / "ssd"
+        bff_api_dir = project_dir.parent / "api" / "bff"
 
         file_sources = [
             ("parquet_reader.hpp", src_dir / "parquet_reader.hpp"),
@@ -26,6 +26,12 @@ class BFFPrepareWorkspace(PrepareWorkspace):
             ("db_loader.hpp", src_dir / "db_loader.hpp"),
             ("db_loader.cpp", src_dir / "db_loader.cpp"),
             ("query_impl.hpp", src_dir / "query_impl.hpp"),
+            ("ingest_api.hpp", bff_api_dir / "ingest_api.hpp"),
+            ("read_api.hpp", bff_api_dir / "read_api.hpp"),
+            ("write_api.hpp", bff_api_dir / "write_api.hpp"),
+            ("filter_pushdown.hpp", bff_api_dir / "filter_pushdown.hpp"),
+            ("system_binding.hpp", bff_api_dir / "system_binding.hpp"),
+            ("ingest_types.hpp", bff_api_dir / "ingest_types.hpp"),
         ]
 
         assert isinstance(self.workload_provider, BFFWorkloadProvider), (
@@ -38,6 +44,8 @@ class BFFPrepareWorkspace(PrepareWorkspace):
                 raise FileNotFoundError(f"Source file not found: {source_path}")
 
             file_content = source_path.read_text()
+            if filename == "query_impl.hpp":
+                file_content = _add_bff_ingest_include(file_content)
             result[filename] = file_content
 
         if storage_plan is not None:
@@ -52,3 +60,15 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         result["queries.md"] = qf_string
 
         return result
+
+
+def _add_bff_ingest_include(file_content: str) -> str:
+    include_line = '#include "ingest_api.hpp"'
+    if include_line in file_content:
+        return file_content
+
+    anchor = '#include "query_api.hpp"'
+    if anchor not in file_content:
+        raise ValueError("query_impl.hpp template is missing query_api.hpp include")
+
+    return file_content.replace(anchor, anchor + "\n" + include_line, 1)
