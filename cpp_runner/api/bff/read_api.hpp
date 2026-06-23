@@ -1,5 +1,6 @@
 #pragma once
 
+#include "filter_pushdown.hpp"
 #include "ingest_types.hpp"
 
 #include <cstdint>
@@ -25,6 +26,7 @@ BffPageInfo describe_bff_page(
     std::uint32_t row_group_id,
     std::uint32_t column_id,
     std::uint32_t page_id);
+BffScanPlan plan_bff_scan(BffTable* table, const BffScanRequest& request);
 
 // Granular reads return encoded or decoded buffers depending on read options.
 // Direct I/O implementations should return buffers aligned to
@@ -60,6 +62,7 @@ struct BffReadApi {
         std::uint32_t,
         std::uint32_t,
         std::uint32_t);
+    BffScanPlan (*plan_scan)(BffTable*, const BffScanRequest&);
 
     BffBuffer* (*read_row_group)(
         BffTable*,
