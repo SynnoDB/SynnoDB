@@ -22,6 +22,57 @@ def gen_ff_plan_prompt(
     )
 
 
+def base_ff_impl_storage(
+    builder_cpp_path: str,
+    builder_hpp_path: str,
+    query_impl_path: str,
+    base_impl_todo_file: str,
+    args_path: str,
+) -> str:
+    prompt_path = _PROMPTS_DIR / "base_ff_impl_storage.txt"
+    template = Template(_load_txt(prompt_path))
+    return template.substitute(
+        builder_cpp_path=builder_cpp_path,
+        builder_hpp_path=builder_hpp_path,
+        query_impl_path=query_impl_path,
+        base_impl_todo_file=base_impl_todo_file,
+        args_path=args_path,
+    )
+
+
+def base_ff_impl_query_prompt(
+    is_first_query: bool,
+    sample_query_args_dict: dict | None,
+    query_id: str,
+    args_path: str,
+    builder_path: str,
+    query_impl_path: str,
+    sql: str,
+) -> str:
+    prompt_path = _PROMPTS_DIR / "base_ff_impl_query.txt"
+    template = Template(_load_txt(prompt_path))
+
+    if is_first_query:
+        prefix = "Lets start implementing the query execution logic. Implement all queries in the next steps step by step. Start with"
+    else:
+        prefix = "Next, continue implementing the query execution logic for"
+
+    if sample_query_args_dict is not None and query_id in sample_query_args_dict:
+        sample_args_str = f" Example instantiation of the query placeholders are:\n{sample_query_args_dict[query_id]}\nNULL values might appear in IN-Lists and are represented with the string '<<NULL>>'."
+    else:
+        sample_args_str = ""
+
+    return template.substitute(
+        prefix=prefix,
+        query_id=query_id,
+        sample_args_str=sample_args_str,
+        args_path=args_path,
+        builder_path=builder_path,
+        query_impl_path=query_impl_path,
+        sql=sql,
+    )
+
+
 def base_ff_planner_prompt(
     queries_path: str,
     builder_path: str,
@@ -44,10 +95,10 @@ def base_ff_planner_prompt(
     query_str = f"{num_queries} {'query' if num_queries == 1 else 'queries'}"
 
     if read_storage_plan:
-        storage_hint = f"The file format plan is described in the file `{storage_plan_path}`. It describes the SSD-backed columnar storage layout: which columns to serialize to binary files, their sort order, and any zone-map or acceleration structures that fit within the RAM budget. Implement the ColumnHandle<T> and StringColumnHandle fields in the Database struct according to this plan, and make sure build() streams Parquet row groups and writes/registers every referenced persisted column. "
+        storage_hint = f"The bespoke file-format plan is described in the file `{storage_plan_path}`. It specifies the on-disk layout: per-column physical types and encodings, row-group/page organization, footer metadata, and the pruning structures (zone maps, bitsets, dictionaries, ...) that fit within the RAM budget. Declare the matching on-disk handles in `bff_format.hpp` and make the writer stream each table's Arrow row batches into the `.bff` files exactly as the plan describes, recording the footer/page metadata the reader needs. "
 
     else:
-        storage_hint = """Use ColumnHandle<T> (from column_handle.hpp) for page-safe fixed-width numeric columns and StringColumnHandle for variable-length string columns. The minimum should be one binary file per page-safe fixed-width column and offsets + bytes files for each string column, struct-of-arrays layout. Flat fixed-width storage is valid only when BP_PAGE_BYTES % sizeof(T) == 0; otherwise use StringColumnHandle or the page-aligned fixed-char helpers. The Database struct must declare a handle for every column needed by the queries, and build() must stream Parquet row groups, serialize, register, and assign each handle."""
+        storage_hint = """Choose a compact per-column physical type and encoding for each column the queries touch, and lay each table out as row groups of column pages with a self-describing footer carrying the schema plus per-row-group and per-page min/max/null stats (the footer is the reader's main pruning surface). Write one `.bff` file per table, struct-of-arrays / columnar, with variable-length strings stored as offsets + bytes (optionally dictionary-encoded). The writer must stream the Arrow tables row-group by row-group rather than assuming the whole dataset fits in RAM, and must record enough footer/page metadata for the read API to prune row groups/pages and locate every column buffer."""
 
     return template.substitute(
         queries_path=queries_path,
