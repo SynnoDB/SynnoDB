@@ -5,12 +5,12 @@ SynnoDB Repository (internal)
 ## BFF CMDs at the moment:
 Plan File Format Layout:
 ```
- python run_ff_planning.py --model anthropic/claude-sonnet-4-6 --queries 1-22 --benchmark tpch --auto_finish --disable_openai_tracing --notify --auto_u
+ python run_ff_planning.py --model anthropic/claude-sonnet-4-6 --benchmark tpch_st --queries 1-8 --auto_finish --disable_openai_tracing --notify --auto_u --log_to_wandb
  ```
 
  Run base implementation:
  ```
- python run_ff_base.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --storage_plan_run_id 5ik1lg97 --queries 1-22 --auto_finish --disable_openai_tracing --notify --auto_u
+ python run_ff_base.py --model anthropic/claude-sonnet-4-6 --storage_plan_run_id splsfwyp --benchmark tpch_st --queries 1-8 --auto_finish --disable_openai_tracing --notify --auto_u --log_to_wandb
  ```
 
 

@@ -26,8 +26,6 @@ class BFFPrepareWorkspace(PrepareWorkspace):
             ("parquet_reader.cpp", src_dir / "parquet_reader.cpp"),
             ("db_loader.hpp", src_dir / "db_loader.hpp"),
             ("db_loader.cpp", src_dir / "db_loader.cpp"),
-            ("query_impl.hpp", src_dir / "query_impl.hpp"),
-            ("ingest_api.hpp", bff_api_dir / "ingest_api.hpp"),
             ("read_api.hpp", bff_api_dir / "read_api.hpp"),
             ("write_api.hpp", bff_api_dir / "write_api.hpp"),
             ("filter_pushdown.hpp", bff_api_dir / "filter_pushdown.hpp"),
@@ -53,7 +51,7 @@ class BFFPrepareWorkspace(PrepareWorkspace):
             result[get_plan_filename("bff")] = storage_plan
 
         sql_template_list = [
-            f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
+            f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[self.workload_provider._query_key(q)]}\n```\n\n---\n"
             for q in self.workload_provider.query_ids
         ]
         qf_string = "\n".join(sql_template_list)
