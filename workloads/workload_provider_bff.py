@@ -34,6 +34,7 @@ FRAME_POOL_SHARE = 0.60
 
 class BFFWorkload(Workload):
     TPCH = "tpch"
+    TPCH_ST = "tpch_st"
 
 
 @dataclass
@@ -95,7 +96,7 @@ class BFFWorkloadProvider(WorkloadProvider):
             instantiations = 20
             repetitions = 1
 
-            if self.benchmark == BFFWorkload.TPCH:
+            if self.benchmark in (BFFWorkload.TPCH, BFFWorkload.TPCH_ST):
                 scale_factors = [1, 2]
             else:
                 raise ValueError(
@@ -106,7 +107,7 @@ class BFFWorkloadProvider(WorkloadProvider):
             instantiations = 20
             repetitions = 1
 
-            if self.benchmark == BFFWorkload.TPCH:
+            if self.benchmark in (BFFWorkload.TPCH, BFFWorkload.TPCH_ST):
                 scale_factors: list[float] = [1, 2, 20]
             else:
                 raise ValueError(f"Unknown benchmark: {self.benchmark}")
@@ -123,7 +124,7 @@ class BFFWorkloadProvider(WorkloadProvider):
             instantiations = 3
             repetitions = 1
 
-            if self.benchmark == BFFWorkload.TPCH:
+            if self.benchmark in (BFFWorkload.TPCH, BFFWorkload.TPCH_ST):
                 scale_factors = [1]
             else:
                 raise ValueError(f"Unknown benchmark: {self.benchmark}")
@@ -167,7 +168,7 @@ class BFFWorkloadProvider(WorkloadProvider):
                         gen_attempts
                     ):  # try up to 100 times to generate a unique query (in case of random generation leading to duplicates)
                         _, sql, placeholders = self._get_query_gen_fn()(
-                            query_name=f"Q{query_id}", rnd=rnd
+                            query_name=self._query_key(query_id), rnd=rnd
                         )
 
                         if sql in sql_set:
@@ -223,13 +224,27 @@ class BFFWorkloadProvider(WorkloadProvider):
 
         return query_batch_list
 
+    def _query_key(self, query_id: str) -> str:
+        """Build the full query name used as a key in sql_dict and by the gen function."""
+        if self.benchmark == BFFWorkload.TPCH:
+            return f"Q{query_id}"
+        elif self.benchmark == BFFWorkload.TPCH_ST:
+            return f"STQ{query_id}"
+        else:
+            raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
     def _get_query_gen_fn(self):
         # prepare query gen
         if self.benchmark == BFFWorkload.TPCH:
             from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
 
             gen_query_fn = gen_query
+        elif self.benchmark == BFFWorkload.TPCH_ST:
+            from workloads.dataset.gen_tpch_single_table.tpch_query_generator_single_query import (
+                gen_single_table_query,
+            )
 
+            gen_query_fn = gen_single_table_query
         else:
             raise ValueError(f"Unknown benchmark: {self.benchmark}")
 
@@ -246,7 +261,15 @@ class BFFWorkloadProvider(WorkloadProvider):
                 return gen_query(**kwargs)[2]
 
             gen_fn = gen_placeholder_tpch
+        elif self.benchmark == BFFWorkload.TPCH_ST:
+            from workloads.dataset.gen_tpch_single_table.tpch_query_generator_single_query import (
+                gen_single_table_query,
+            )
 
+            def gen_placeholder_tpch_st(**kwargs):
+                return gen_single_table_query(**kwargs)[2]
+
+            gen_fn = gen_placeholder_tpch_st
         else:
             raise ValueError(f"Unknown benchmark: {self.benchmark}")
 
@@ -265,6 +288,13 @@ class BFFWorkloadProvider(WorkloadProvider):
                 "region",
                 "supplier",
             ],
+            BFFWorkload.TPCH_ST: [
+                "customer",
+                "lineitem",
+                "orders",
+                "part",
+                "supplier",
+            ],
         }
         if benchmark not in tables_lists:
             raise ValueError(f"Unknown benchmark {benchmark}")
@@ -272,14 +302,14 @@ class BFFWorkloadProvider(WorkloadProvider):
 
     @staticmethod
     def _get_dataset_name(benchmark: BFFWorkload) -> str:
-        if benchmark == BFFWorkload.TPCH:
+        if benchmark in (BFFWorkload.TPCH, BFFWorkload.TPCH_ST):
             return "tpch"
         else:
             raise ValueError(f"Unknown benchmark {benchmark} ({type(benchmark)})")
 
     @staticmethod
     def _get_dataset_schema(benchmark: BFFWorkload) -> str:
-        if benchmark == BFFWorkload.TPCH:
+        if benchmark in (BFFWorkload.TPCH, BFFWorkload.TPCH_ST):
             from workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
 
             return tpc_h_schema
@@ -289,6 +319,12 @@ class BFFWorkloadProvider(WorkloadProvider):
     def _get_sql_dict(self, benchmark: BFFWorkload):
         if benchmark == BFFWorkload.TPCH:
             return tpc_h
+        elif benchmark == BFFWorkload.TPCH_ST:
+            from workloads.dataset.gen_tpch_single_table.tpch_query_generator_single_query import (
+                single_table_queries,
+            )
+
+            return single_table_queries
         else:
             raise ValueError(f"Unknown benchmark: {benchmark}")
 
@@ -296,7 +332,8 @@ class BFFWorkloadProvider(WorkloadProvider):
 def _get_all_query_ids(benchmark: BFFWorkload) -> list[str]:
     if benchmark == BFFWorkload.TPCH:
         query_ids = [str(i) for i in range(1, 23)]
-
+    elif benchmark == BFFWorkload.TPCH_ST:
+        query_ids = [str(i) for i in range(1, 9)]
     else:
         raise ValueError(f"Unknown benchmark: {benchmark}")
 
