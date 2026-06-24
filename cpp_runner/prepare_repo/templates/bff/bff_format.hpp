@@ -32,3 +32,17 @@ struct BffTable {
     BffDataset* dataset = nullptr;  // owning dataset (not owned)
     BffTableInfo info;              // per-table schema + row group metadata
 };
+
+// Query-time handle held by the host as `g_database` (the opaque `Database` of
+// query_api.hpp). For the BFF use-case the queryable state is the on-disk
+// dataset, so `Database` is simply the already-opened, footer-loaded read
+// handle. It is built once in the writer stage via build_bff_query_database()
+// and survives query-plugin hot-reloads, so every run_q<N>() sees the decoded
+// footer without re-opening the dataset or re-parsing the footer per query.
+//
+// This is framework plumbing: you normally extend BffDataset / BffFooter rather
+// than this struct.
+struct Database {
+    BffDataset* dataset = nullptr;      // open read handle (owned by the Database)
+    const BffFooter* footer = nullptr;  // cached footer (points into *dataset)
+};

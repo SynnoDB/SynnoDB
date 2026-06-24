@@ -20,7 +20,7 @@ This is a two-phase, loader -> writer -> query pipeline. The C++ interfaces you 
 2. **Read-from-fileformat phase** — implemented in `read_impl.cpp` and the per-query files.
    Implement the read API declared in `read_api.hpp` / `filter_pushdown.hpp`: open the dataset, load (and cache) the footer, prune row groups/pages/columns from footer stats, and return byte buffers for the selected ranges. The per-query execution interface is predefined in `${query_impl_path}`, which accepts a `QueryRequest` list and dispatches each request to a `run_q<N>(...)` implementation in its own `query<N>.cpp`. Implement each query by reading from your file format through the read API — using projection pushdown, predicate pushdown, page/block pruning, late materialization, encoded-predicate evaluation, and sequential SSD-friendly reads wherever possible.
 
-Sample query implementations are provided in e.g., `query1.cpp/hpp`. The `Database*` argument is always null for this use-case; the queryable state is the on-disk `.bff` dataset, located via the read API.
+Sample query implementations are provided in e.g., `query1.cpp/hpp`. The `Database*` argument is the query-time handle (`Database` in `bff_format.hpp`): the framework opens the `.bff` dataset and decodes the footer once in the writer stage and passes it in as `db->dataset` + `db->footer`, reused across all queries. Per-query code prunes/reads using `db->footer` and `db->dataset`; it must not re-open the dataset or re-parse the footer itself.
 
 The output of each query should be written to `result<RUN_NR>.csv`, where `<RUN_NR>` is the 1-based position in the arg list, using:
 

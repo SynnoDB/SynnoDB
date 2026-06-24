@@ -6,8 +6,21 @@
 #include <cstdint>
 #include <string>
 
+// query_api.hpp's opaque query handle. For the BFF use-case it is defined in
+// bff_format.hpp as the open, footer-loaded read handle (see build below).
+struct Database;
+
 BffDataset* open_bff_dataset(std::string bff_dir, const BffOpenOptions& options);
 void close_bff_dataset(BffDataset* dataset);
+
+// Build / tear down the query-time `Database` handle: open the dataset and load
+// (decode) its footer once, so the result can be cached in g_database and reused
+// across query hot-reloads. Built in the host's writer stage; each run_q<N>()
+// receives the result as its `db` argument. These compose open_bff_dataset() +
+// load_bff_footer(), so they pick up the agent's footer implementation as-is and
+// do not normally need to be modified.
+Database* build_bff_query_database(std::string bff_dir, const BffOpenOptions& options);
+void destroy_bff_query_database(Database* db);
 
 // Footer metadata is the main pruning surface. Implementations should cache it
 // when BffOpenOptions::cache_footer is true.
@@ -47,6 +60,9 @@ void release_bff_buffer(BffBuffer* buffer);
 struct BffReadApi {
     BffDataset* (*open_dataset)(std::string, const BffOpenOptions&);
     void (*close_dataset)(BffDataset*);
+
+    Database* (*build_query_database)(std::string, const BffOpenOptions&);
+    void (*destroy_query_database)(Database*);
 
     BffFooter* (*load_footer)(BffDataset*, bool);
     const BffFooter* (*cached_footer)(BffDataset*);
