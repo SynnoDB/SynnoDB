@@ -45,6 +45,22 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         self, storage_plan: str | None = None, **usecase_args
     ) -> dict[str, str]:
         """Build template file contents without writing to disk."""
+        project_dir = Path(__file__).parent
+        src_dir = project_dir / "templates"
+        bff_api_dir = project_dir.parent / "api" / "bff"
+
+        file_sources = [
+            ("parquet_reader.hpp", src_dir / "parquet_reader.hpp"),
+            ("parquet_reader.cpp", src_dir / "parquet_reader.cpp"),
+            ("db_loader.hpp", src_dir / "db_loader.hpp"),
+            ("db_loader.cpp", src_dir / "db_loader.cpp"),
+            ("read_api.hpp", bff_api_dir / "read_api.hpp"),
+            ("write_api.hpp", bff_api_dir / "write_api.hpp"),
+            ("filter_pushdown.hpp", bff_api_dir / "filter_pushdown.hpp"),
+            ("system_binding.hpp", bff_api_dir / "system_binding.hpp"),
+            ("ingest_types.hpp", bff_api_dir / "ingest_types.hpp"),
+        ]
+
         assert isinstance(self.workload_provider, BFFWorkloadProvider), (
             f"Expected workload_provider to be an instance of BFFWorkloadProvider, got {type(self.workload_provider)}"
         )
@@ -124,7 +140,7 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         result["queries.md"] = self._assemble_queries_md()
 
         sql_template_list = [
-            f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
+            f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[self.workload_provider._query_key(q)]}\n```\n\n---\n"
             for q in self.workload_provider.query_ids
         ]
         qf_string = "\n".join(sql_template_list)

@@ -38,7 +38,6 @@ from tools.run import RunTool
 from tools.run_tool_mode import RunToolMode
 from utils.cli_config import Usecase
 from workloads.workload_provider import Workload
-from workloads.workload_provider_bff import BFFWorkload
 
 logger = logging.getLogger(__name__)
 
