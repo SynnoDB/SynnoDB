@@ -176,6 +176,32 @@ Examples of paged structures:
 
 Compute the resident footprint explicitly. The resident footprint must fit comfortably inside the RAM/cache budget with room left for paged query execution.
 
+9. The precomputed results
+
+In addition to `(min, max)` metadata, store compact precomputed results at the page/block level when they are useful for the workload.
+
+The precomputed results may include:
+
+* `sum`
+* `avg`
+* `count`
+* `min`
+* `max`
+* `null_count`
+
+These results should only be stored when the workload contains queries that can benefit from them, such as aggregation queries, filtered aggregations, or queries that can be partially or fully answered from metadata without reading base column pages.
+
+For every precomputed result, state:
+
+* which column or expression it applies to,
+* whether it is stored per page, per block, per row group, or as a prefix aggregate,
+* the physical type and expected metadata size,
+* which queries benefit from it,
+* whether it allows the query to skip reading base column pages,
+* how it can be rebuilt from the persisted base columns.
+
+Precomputed results must be metadata-scale relative to the base data and must not duplicate row-level payload.
+
 # Hard constraints
 
 * Store all data losslessly. The file format must be able to reconstruct the original logical tables exactly.
