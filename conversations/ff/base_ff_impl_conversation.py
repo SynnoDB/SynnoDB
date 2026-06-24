@@ -1,8 +1,13 @@
 import functools
+import functools
 import logging
 from pathlib import Path
 from typing import Optional
 
+from conversations.base_impl_conversation import (
+    OptimizeBuildStage,
+    ValidateAndFixStage,
+)
 from conversations.base_impl_conversation import (
     OptimizeBuildStage,
     ValidateAndFixStage,
@@ -12,21 +17,26 @@ from conversations.checkpointed_conversation import (
     extract_speedup_of_last_snapshot,
 )
 from conversations.conversation import (
+    BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_OFF,
+    VALIDATE_ON,
+    VALIDATE_OUTPUT_STDOUT_OFF,
     VALIDATE_ON,
     VALIDATE_OUTPUT_STDOUT_OFF,
 )
 from conversations.ff.prompts_gen import (
     base_ff_impl_query_prompt,
     base_ff_impl_storage,
-    base_ff_naive_feedback_prompt,
     base_ff_planner_prompt,
 )
 from conversations.filenames import get_filenames
 from conversations.prompts_gen import (
+    base_check_correctness_all_prompt,
     base_exec_validate_for_query_prompt,
     base_fix_slow_queries_prompt,
+    base_optimize_build_prompt,
+    base_run_all_and_fix_prompt,
 )
 from conversations.stage_config import (
     DynamicStageConfig,
@@ -34,12 +44,17 @@ from conversations.stage_config import (
     StaticStageConfig,
 )
 from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
-from tools.run import RunTool
 from tools.run_tool_mode import RunToolMode
 from utils.cli_config import Usecase
 from workloads.workload_provider import Workload
+from workloads.workload_provider_bff import BFFWorkload
 
 logger = logging.getLogger(__name__)
+
+# The BFF use-case is always disk-backed; the reused OLAP optimize/validate
+# stages are driven with persistent_storage=False so they render the generic
+# (non-ColumnHandle) prompt variants.
+_FF_PERSISTENT_STORAGE = False
 
 # The BFF use-case is always disk-backed; the reused OLAP optimize/validate
 # stages are driven with persistent_storage=False so they render the generic
@@ -165,9 +180,7 @@ class BaseFFImplConversation(CheckpointedConversation):
                 )
                 return f"Your task was to create an implementation plan. However, no implementation plan called `{base_impl_todo_filename}` exists in your workspace. Please create a plan and write it to `{base_impl_todo_filename}` before proceeding to the implementation stage."
 
-        def _base_impl_query_prompt(
-            _exec_settings, _rt, *, idx: int, qid: str, sql: str
-        ):
+        def _base_impl_query_prompt(_exec_settings, _rt, *, idx: int, qid: str, sql: str):
             return base_ff_impl_query_prompt(
                 is_first_query=(idx == 0),
                 query_id=qid,
@@ -201,7 +214,9 @@ class BaseFFImplConversation(CheckpointedConversation):
         # =========
 
         stage_list: list[StageConfig | str] = [
+        stage_list: list[StageConfig | str] = [
             VALIDATE_OFF,
+            # 1. Plan both phases (write-to-format + read/query).
             # 1. Plan both phases (write-to-format + read/query).
             StaticStageConfig(
                 descriptor="base impl planner",
@@ -298,27 +313,53 @@ class BaseFFImplConversation(CheckpointedConversation):
 
         stage_list.append(SUPERVISION_STAGE_VISIBILITY_MARKER)
 
-        # 5. static feedback stage + dynamic optimization loop
+        # 5. Whole-workload correctness, then a final writer optimisation pass.
         stage_list.extend(
             [
                 StaticStageConfig(
-                    descriptor="naive feedback",
-                    get_prompt=lambda _exec_settings, _rt: base_ff_naive_feedback_prompt(
-                        builder_path=builder_path,
-                        query_impl_path=query_impl_path,
-                        current_total_runtime_s=_rt,
+                    descriptor="base check correctness all",
+                    get_prompt=lambda _exec_settings, _rt: (
+                        base_check_correctness_all_prompt(
+                            run_tool_mode=RunToolMode.EXHAUSTIVE
+                        )
                     ),
                     measure_performance_after_stage=False,
-                    measure_perf_qid=None,
-                    auto_revert_on_regression=True,
-                    feedback_on_incorrect=True,
+                    auto_revert_on_regression=False,
+                    post_stage_validate=functools.partial(
+                        self._validate_no_crazy_slow_queries,
+                        query_ids=self.all_query_ids,
+                        query_impl_path=query_impl_path,
+                        builder_path=builder_path,
+                    ),
                 ),
-                OptimizationLoop(
-                    run_tool=self.run_tool,
-                    builder_path=builder_path,
-                    query_impl_path=query_impl_path,
-                    num_loops=5,
+                StaticStageConfig(
+                    descriptor="run all queries and fix any errors",
+                    get_prompt=lambda _exec_settings, _rt: base_run_all_and_fix_prompt(
+                        run_tool_mode=RunToolMode.EXHAUSTIVE,
+                        query_impl_path=query_impl_path,
+                    ),
+                    measure_performance_after_stage=False,
+                    auto_revert_on_regression=False,
+                    post_stage_validate=functools.partial(
+                        self._validate_no_crazy_slow_queries,
+                        query_ids=self.all_query_ids,
+                        query_impl_path=query_impl_path,
+                        builder_path=builder_path,
+                    ),
                 ),
+                BENCHMARK_MARKER,
+                VALIDATE_OUTPUT_STDOUT_OFF,
+                StaticStageConfig(
+                    descriptor="optimize build",
+                    get_prompt=lambda _exec_settings, _rt: base_optimize_build_prompt(
+                        builder_path_cpp=builder_cpp_path,
+                        builder_path_hpp=builder_hpp_path,
+                        persistent_storage=_FF_PERSISTENT_STORAGE,
+                    ),
+                    measure_performance_after_stage=False,
+                    auto_revert_on_regression=False,
+                ),
+                BENCHMARK_MARKER,
             ]
         )
 
@@ -331,44 +372,3 @@ class BaseFFImplConversation(CheckpointedConversation):
         elif self.benchmark == BFFWorkload.TPCH_ST:
             return f"STQ{query_id}"
         raise ValueError(f"Unknown benchmark: {self.benchmark}")
-
-
-class OptimizationLoop(DynamicStageConfig):
-    def __init__(
-        self,
-        run_tool: RunTool,
-        builder_path: str,
-        query_impl_path: str,
-        num_loops: int = 5,
-    ):
-        super().__init__(descriptor="optimize build", max_turns=None)
-        self.run_tool = run_tool
-        self.builder_path = builder_path
-        self.query_impl_path = query_impl_path
-        self.num_loops = num_loops
-
-    def next_prompt(self) -> Optional[str]:
-
-        for _ in range(self.num_loops):
-            run_result = self.run_tool.run_worker(
-                mode=RunToolMode.BENCHMARK,
-                optimize=True,
-                query_ids=None,
-                trace_mode=False,
-                external_call=True,
-            )
-            assert run_result.metrics is not None, "Run result metrics are None"
-
-            # total runtime across all queries (ms)
-            total_rt = run_result.metrics["run/total_rt"]
-
-            # here the naive feedback is reused
-            prompt = base_ff_naive_feedback_prompt(
-                builder_path=self.builder_path,
-                query_impl_path=self.query_impl_path,
-                current_total_runtime_s=total_rt / 1000,
-            )
-
-            return prompt
-
-        return None

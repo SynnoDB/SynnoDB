@@ -45,22 +45,6 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         self, storage_plan: str | None = None, **usecase_args
     ) -> dict[str, str]:
         """Build template file contents without writing to disk."""
-        project_dir = Path(__file__).parent
-        src_dir = project_dir / "templates"
-        bff_api_dir = project_dir.parent / "api" / "bff"
-
-        file_sources = [
-            ("parquet_reader.hpp", src_dir / "parquet_reader.hpp"),
-            ("parquet_reader.cpp", src_dir / "parquet_reader.cpp"),
-            ("db_loader.hpp", src_dir / "db_loader.hpp"),
-            ("db_loader.cpp", src_dir / "db_loader.cpp"),
-            ("read_api.hpp", bff_api_dir / "read_api.hpp"),
-            ("write_api.hpp", bff_api_dir / "write_api.hpp"),
-            ("filter_pushdown.hpp", bff_api_dir / "filter_pushdown.hpp"),
-            ("system_binding.hpp", bff_api_dir / "system_binding.hpp"),
-            ("ingest_types.hpp", bff_api_dir / "ingest_types.hpp"),
-        ]
-
         assert isinstance(self.workload_provider, BFFWorkloadProvider), (
             f"Expected workload_provider to be an instance of BFFWorkloadProvider, got {type(self.workload_provider)}"
         )
@@ -139,6 +123,29 @@ class BFFPrepareWorkspace(PrepareWorkspace):
 
         result["queries.md"] = self._assemble_queries_md()
 
+        result["queries.md"] = self._assemble_queries_md()
+
+        return result
+
+    def _assemble_query_files(self, bff_template_dir: Path) -> dict[str, str]:
+        """Build per-query queryN.cpp / queryN.hpp from the BFF templates."""
+        assert isinstance(self.workload_provider, BFFWorkloadProvider)
+
+        hpp_template = Template((bff_template_dir / "queryX.hpp").read_text())
+        cpp_template = Template((bff_template_dir / "queryX.cpp").read_text())
+
+        result: dict[str, str] = {}
+        for qid in self.workload_provider.query_ids:
+            assert not qid.startswith("Q"), f"Query id should not start with 'Q': {qid}"
+            sql = self.workload_provider.sql_dict[
+                self.workload_provider._query_key(qid)
+            ]
+            result[f"query{qid}.hpp"] = hpp_template.substitute(qid=qid)
+            result[f"query{qid}.cpp"] = cpp_template.substitute(qid=qid, query_sql=sql)
+        return result
+
+    def _assemble_queries_md(self) -> str:
+        assert isinstance(self.workload_provider, BFFWorkloadProvider)
         sql_template_list = [
             f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[self.workload_provider._query_key(q)]}\n```\n\n---\n"
             for q in self.workload_provider.query_ids
