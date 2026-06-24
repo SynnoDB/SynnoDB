@@ -20,7 +20,6 @@ from conversations.stage_config import (
 )
 from tools.run_tool_mode import RunToolMode
 from workloads.workload_provider import Workload
-from workloads.workload_provider_bff import BFFWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -116,11 +115,10 @@ class BaseFFImplConversation(CheckpointedConversation):
         # Paths & Co
         # ==========
 
-        if self.benchmark == BFFWorkload.TPCH:
-            example_query = "Q12"
-            example_query_params = "12"
-        else:
-            raise ValueError(f"Unknown benchmark {self.benchmark}")
+        # pick a representative query from the middle of the available set
+        _mid = len(self.all_query_ids) // 2
+        example_query = list(self.sql_dict.keys())[_mid]
+        example_query_params = self.all_query_ids[_mid]
 
         # paths
         filenames_dict = get_filenames("bff")
