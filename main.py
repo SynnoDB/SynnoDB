@@ -196,6 +196,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
         )
     elif usecase == Usecase.BFF:
+        assert bespoke_ssd_storage_dir is not None
         workload_provider = BFFWorkloadProvider(
             benchmark=BFFWorkload(args.benchmark),
             base_parquet_dir=parquet_dir,
@@ -689,8 +690,9 @@ def run_conv_wrapper(
     if args.log_to_wandb:
         # add weave (wandb) tracing in addition to openai tracing
         configure_weave_cache_dirs()
-        import wandb
         import weave
+
+        import wandb
 
         entity = os.getenv("WANDB_ENTITY", "learneddb")
         project = os.getenv("WANDB_PROJECT", "bespoke-olap-internal")

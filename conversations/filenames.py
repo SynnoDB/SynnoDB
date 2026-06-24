@@ -17,10 +17,19 @@ def get_plan_filename(usecase: Usecase = Usecase.OLAP) -> str:
 
 def get_filenames(usecase: Usecase = Usecase.OLAP) -> dict[str, str]:
     queries_path = "queries.md"
-    if True:
+
+    if usecase == Usecase.BFF:
+        # BFF use-case: the agent implements the bespoke file-format writer in
+        # write_impl.cpp, the reader in read_impl.cpp, and declares the concrete
+        # on-disk format handles in bff_format.hpp.
+        builder_path = "write_impl.cpp"
+        builder_cpp_path = "write_impl.cpp"
+        builder_hpp_path = "bff_format.hpp"
+    else:
         builder_path = "db_loader.hpp/db_loader.cpp"
         builder_cpp_path = "db_loader.cpp"
         builder_hpp_path = "db_loader.hpp"
+
     query_impl_path = "query_impl.cpp"
     args_path = "args_parser.hpp"
     base_impl_todo_filename = "base_impl_todo.txt"
