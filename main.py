@@ -6,7 +6,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -184,6 +184,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
         )
     elif usecase == Usecase.BFF:
+        assert bespoke_ssd_storage_dir is not None
         workload_provider = BFFWorkloadProvider(
             benchmark=BFFWorkload(args.benchmark),
             base_parquet_dir=parquet_dir,
@@ -355,14 +356,14 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         effective_needs_parallelism = spec.needs_parallelism
     if effective_needs_parallelism:
         parallelism = True
-        num_threads, core_ids = get_cores_for_current_machine(
+        _, core_ids = get_cores_for_current_machine(
             leave_core_0_out=True,
             allow_hyperthreading=True,
             ncores_to_use=args.max_num_threads,  # measure perf improvement with 20 cores
         )
     else:
         parallelism = False
-        num_threads, core_ids = 1, None
+        _, core_ids = 1, None
 
     # cap result CSVs at this size before snapshotting (used by validator and
     # exposed in the LLM cache key via config_kwargs below for cache stability)
@@ -471,7 +472,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # prepare dict to be included in hash. The CSV size cap is kept here as
     # part of the LLM cache key purely for cache stability; truncation itself
     # is now performed by the run tool, not by the LLM helper.
-    config_kwargs: Dict[str, Any] = {
+    config_kwargs: dict[str, Any] = {
         "max_snapshot_csv_size_mb": max_snapshot_csv_size_mb,
     }
     if args.start_snapshot is not None:
@@ -676,8 +677,9 @@ def run_conv_wrapper(
     if args.log_to_wandb:
         # add weave (wandb) tracing in addition to openai tracing
         configure_weave_cache_dirs()
-        import wandb
         import weave
+
+        import wandb
 
         entity = os.getenv("WANDB_ENTITY", "learneddb")
         project = os.getenv("WANDB_PROJECT", "bespoke-olap-internal")

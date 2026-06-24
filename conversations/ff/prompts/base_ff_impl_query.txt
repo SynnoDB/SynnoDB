@@ -1,0 +1,13 @@
+${prefix} query ${query_id}.
+The SQL query template to implement is:
+${sql}
+
+Add the query execution logic to `query${query_id}.cpp`. Read the data from your bespoke file format through the read API: open the dataset (located via `STORAGE_DIR`), load the footer, prune the row groups/pages that cannot match, read and decode only the needed column buffers, then apply the filter, aggregation, grouping, and ordering and emit the result rows. Align with the on-disk layout and encodings implemented in `${builder_path}` and the reader in `read_impl.cpp`.
+
+Use projection and predicate pushdown: only read the columns and row groups/pages this query needs. The `Database*` argument is null — the queryable state is the on-disk dataset.
+
+Limit file inspection to: `${builder_path}`, `read_impl.cpp`, the BFF API headers, `${query_impl_path}`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans.
+
+Focus on correctness first! The implementation can be optimized later.
+
+${sample_args_str}
