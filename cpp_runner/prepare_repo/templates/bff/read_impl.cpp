@@ -29,6 +29,27 @@ void close_bff_dataset(BffDataset* dataset) {
     delete dataset;
 }
 
+// Framework plumbing (you do not need to edit this): build/tear down the
+// query-time Database handle. The host calls build_bff_query_database() once in
+// the writer stage so the dataset is opened and its footer decoded a single
+// time; the result is cached in g_database and threaded into every run_q<N>().
+// This composes the open + load_footer you implement above, so it automatically
+// reflects your footer format.
+Database* build_bff_query_database(std::string bff_dir, const BffOpenOptions& options) {
+    auto* db = new Database();
+    db->dataset = open_bff_dataset(std::move(bff_dir), options);
+    db->footer = load_bff_footer(db->dataset, /*refresh_cache=*/false);
+    return db;
+}
+
+void destroy_bff_query_database(Database* db) {
+    if (!db) {
+        return;
+    }
+    close_bff_dataset(db->dataset);
+    delete db;
+}
+
 BffFooter* load_bff_footer(BffDataset* dataset, bool /*refresh_cache*/) {
     if (!dataset) {
         return nullptr;

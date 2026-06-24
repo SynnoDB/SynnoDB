@@ -152,26 +152,43 @@ void usecase_run_child(int read_fd, int done_fd) {
                     std::chrono::duration<float, std::milli>(t1 - t0).count();
                 // Python extracts ingest time via the "Ingest ms:" prefix.
                 std::cerr << "Ingest ms: " << ms << "\n";
+
+                // Open the just-written dataset and decode its footer ONCE, here
+                // in the (OnChange) writer stage, and publish it as g_database.
+                // Because g_database lives in the host it survives query-plugin
+                // hot-reloads, so each run_q<N>() receives an already-opened,
+                // footer-loaded handle as `db` instead of re-opening the dataset
+                // and re-parsing the footer on every query. This is the BFF
+                // analogue of the OLAP builder stage's in-memory Database. Footer
+                // open time is intentionally excluded from "Ingest ms" (a write
+                // metric); it is a one-time query-setup cost, like the OLAP build.
+                BffOpenOptions open_options;
+                g_database = api.read.build_query_database(
+                    bff_state.bff_dir, open_options);
                 return 0;
             },
             [](Plugin& plugin) {
-                // Close the write-side dataset handle with the plugin that
-                // allocated it, before it is unmapped on reload. The .bff files
-                // are already flushed to disk; the query stage re-opens them from
-                // STORAGE_DIR with its own (libquery) reader.
+                // Tear down read-side handles with the plugin that allocated them,
+                // before it is unmapped on reload. The .bff files are already
+                // flushed to disk. g_database is destroyed here (not in the query
+                // stage) so it persists across query-only hotpatches and is only
+                // rebuilt when the writer/format itself changes.
                 auto api = plugin.get<IngestApi>();
+                if (g_database) {
+                    api.read.destroy_query_database(g_database);
+                    g_database = nullptr;
+                }
                 if (bff_state.dataset) {
                     api.read.close_dataset(bff_state.dataset);
                     bff_state.dataset = nullptr;
                 }
             }),
         // ── Query stage ──────────────────────────────────────────────────────
-        // The shared query stage reads back from the BFF file format: the
-        // generated query plugin opens the dataset at STORAGE_DIR, loads the
-        // footer, prunes row groups/pages, and reads the byte buffers it needs
-        // via the BFF read API. g_database stays null for this use-case — the BFF
-        // dataset is the queryable state and is addressed by path, not by an
-        // in-memory Database handle.
+        // The shared query stage reads back from the BFF file format: each
+        // run_q<N>() receives g_database (the open .bff dataset + decoded footer
+        // built in the writer stage), prunes row groups/pages from the footer,
+        // and reads the byte buffers it needs via the BFF read API. g_database is
+        // built once in the writer stage and survives query-only hotpatches.
         make_query_stage()
     );
     pipeline.run(read_fd, done_fd, false);
