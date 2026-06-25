@@ -245,7 +245,7 @@ class CachedLitellmModel(LitellmModel):
         if self.stop_on_cache_miss:
             # logger.debug(hash_payload)
             raise Exception(
-                "Stop on cache miss. Did not found in cache: " + str(cache_path)
+                f"Stop on cache miss. Did not found in cache: {cache_path}\nPayload hash: {req_hash}\nPayload: {hash_payload}"
             )
 
         # add cache control injection points for Anthropic models to enable prompt caching
