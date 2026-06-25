@@ -192,7 +192,15 @@ def make_custom_openai_shell_tool(
 class CustomApplyPatchArgs(BaseModel):
     type: str = Field(..., description="create_file, update_file, or delete_file")
     path: str = Field(..., description="Path relative to workspace root")
-    diff: str | None = Field(None, description="Unified diff for create/update")
+    diff: str | None = Field(
+        None,
+        description=(
+            "The V4A hunk only — no markdown fences, no '*** Begin Patch' wrapper. "
+            "update_file: ' ' context / '-' remove / '+' add lines, context copied "
+            "byte-for-byte from the file. create_file: full content as '+' lines. "
+            "delete_file: empty."
+        ),
+    )
 
 
 _APPLY_PATCH_SCHEMA_SIMPLE = {
@@ -209,7 +217,11 @@ _APPLY_PATCH_SCHEMA_SIMPLE = {
         },
         "diff": {
             "type": "string",
-            "description": "Unified diff for create/update operations. Empty string for delete_file.",
+            "description": (
+                "V4A hunk for create/update (empty for delete_file). Lines: ' ' "
+                "context, '-' remove, '+' add; context copied byte-for-byte from "
+                "the file. No markdown fences or '*** Begin Patch' wrapper."
+            ),
         },
     },
     "required": ["type", "path"],
@@ -234,10 +246,19 @@ def make_custom_openai_apply_patch_tool(
     return FunctionTool(
         name="apply_patch",
         description=(
-            "Applies a unified diff to create/update/delete a file. A created file is always empty. "
-            "To EDIT an existing file, prefer the `replace_in_file` tool - it is far more reliable "
-            "than an update_file diff. Read-only files that cannot be modified: "
-            "parquet_reader.cpp, parquet_reader.hpp, query_impl.cpp, query_impl.hpp, args_parser.hpp."
+            "Create, update, or delete a file with a V4A diff. For a small, localized "
+            "change to an existing file, the `replace_in_file` tool is usually more "
+            "reliable than an update_file diff.\n"
+            "update_file diff format: each line is prefixed — ' ' (unchanged context), "
+            "'-' (remove), '+' (add); an optional '@@ <a nearby line>' anchors the hunk. "
+            "Copy context and '-' lines BYTE-FOR-BYTE from the CURRENT file — do not "
+            "retype from memory; indentation and punctuation must match exactly. Send "
+            "ONLY the hunk: no markdown code fences, no '*** Begin Patch'/'*** Update "
+            "File:' wrapper, no '--- '/'+++ ' headers. create_file: provide the full "
+            "content as '+' lines (a created file starts empty). delete_file: empty diff. "
+            "On failure the tool returns the current file content so you can re-anchor "
+            "and retry. Read-only files that cannot be modified: parquet_reader.cpp, "
+            "parquet_reader.hpp, query_impl.cpp, query_impl.hpp, args_parser.hpp."
         ),
         params_json_schema=schema,
         on_invoke_tool=on_invoke,

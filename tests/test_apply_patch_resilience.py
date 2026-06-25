@@ -1,0 +1,188 @@
+"""Resilience tests for apply_patch / update_file diff normalization.
+
+Weak models routinely wrap a V4A hunk in a markdown code fence or an apply_patch
+envelope (``*** Begin Patch`` / ``*** Update File:`` ...), which makes an otherwise
+valid diff fail to apply. normalize_diff_payload strips those wrappers before the
+hunk is applied. The stripping is conservative and fail-closed: it never touches a
+real hunk line (those are ' '/'-'/'+' prefixed), so a diff that legitimately edits
+backtick lines is left exactly as-is.
+
+This complements test_update_file_diff_repair.py (unicode-lookalike context repair);
+here we cover fence/envelope stripping and the full stack composed end-to-end.
+"""
+
+from pathlib import Path
+
+from agents.editor import ApplyPatchOperation
+
+from tools.workspace_editor import (
+    WorkspaceEditor,
+    _strip_code_fences,
+    _strip_patch_envelope,
+    normalize_diff_payload,
+)
+
+
+# ───────────────────────── editor harness (file-local) ─────────────────────────
+
+
+class _FakeRunStatsCollector:
+    def __init__(self) -> None:
+        self.activity_summary: list[str] = []
+        self.stats: list[dict] = []
+        self.model = "test-model"
+        self.last_turn = 0
+
+    def add_to_activity_summary(self, entry: str) -> None:
+        self.activity_summary.append(entry)
+
+    def log_apply_patch_stats(self, op_type, **kwargs) -> None:
+        self.stats.append({"op_type": op_type, **kwargs})
+
+
+class _FakeSnapshotter:
+    def __init__(self, current_hash: str = "start") -> None:
+        self.current_hash = current_hash
+
+    def restore(self, snapshot_hash: str) -> None:
+        self.current_hash = snapshot_hash
+
+    def snapshot(self, name: str):
+        self.current_hash = f"snapshot-{name}"
+        return None, self.current_hash
+
+
+def _make_editor(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(exist_ok=True)
+    editor = WorkspaceEditor(
+        root=workspace,
+        run_stats_collector=_FakeRunStatsCollector(),  # type: ignore[arg-type]
+        readonly_files=set(),
+        untracked_cpp_runner_content="",
+        snapshotter=_FakeSnapshotter(),  # type: ignore[arg-type]
+        cache_dir=cache_dir,
+    )
+    return editor, workspace
+
+
+# ───────────────────────────── _strip_code_fences ──────────────────────────────
+
+
+def test_strip_fence_diff_flavor():
+    assert _strip_code_fences("```diff\n a\n-b\n+c\n```") == " a\n-b\n+c"
+
+
+def test_strip_fence_plain_and_language_tagged():
+    assert _strip_code_fences("```\n a\n```") == " a"
+    assert _strip_code_fences("```patch\n a\n+x\n```") == " a\n+x"
+
+
+def test_strip_fence_tolerates_blank_lines_around_it():
+    assert _strip_code_fences("\n```diff\n a\n-b\n+c\n```\n") == " a\n-b\n+c"
+
+
+def test_no_fence_is_identity():
+    d = " a\n-b\n+c"
+    assert _strip_code_fences(d) is d  # untouched, same object (no reflow)
+
+
+def test_unclosed_fence_left_untouched():
+    d = "```diff\n a\n-b"  # opener but no closing fence
+    assert _strip_code_fences(d) is d
+
+
+def test_prefixed_backtick_content_not_stripped():
+    # editing a markdown file: '+' lines ADD a ``` fence as real content
+    d = " text\n+```\n+code\n+```"
+    assert _strip_code_fences(d) is d  # first line " text" is not a fence opener
+
+
+def test_space_prefixed_context_fence_is_not_a_wrapper():
+    # a context line that happens to be a fence (space-prefixed) must NOT be
+    # mistaken for a wrapping fence — this is the key safety case.
+    d = " ```\n-old\n+new"
+    assert _strip_code_fences(d) is d
+
+
+# ──────────────────────────── _strip_patch_envelope ────────────────────────────
+
+
+def test_strip_envelope_markers():
+    d = "*** Begin Patch\n*** Update File: f.py\n a\n-b\n+c\n*** End Patch"
+    assert _strip_patch_envelope(d) == " a\n-b\n+c"
+
+
+def test_strip_envelope_handles_add_and_delete_file_headers():
+    d = "*** Add File: new.py\n+content"
+    assert _strip_patch_envelope(d) == "+content"
+
+
+def test_no_envelope_is_identity():
+    d = " a\n-b\n+c"
+    assert _strip_patch_envelope(d) is d
+
+
+def test_envelope_does_not_touch_content_lines_containing_stars():
+    # only lines that START with the marker are dropped
+    d = " has *** in the middle\n+added *** stars"
+    assert _strip_patch_envelope(d) is d
+
+
+# ──────────────────────────── normalize_diff_payload ───────────────────────────
+
+
+def test_normalize_strips_fence_then_envelope():
+    d = "```\n*** Begin Patch\n a\n-b\n+c\n*** End Patch\n```"
+    assert normalize_diff_payload(d) == " a\n-b\n+c"
+
+
+def test_normalize_is_identity_on_a_clean_hunk():
+    d = " a\n-b\n+c"
+    assert normalize_diff_payload(d) is d
+
+
+# ───────────────────── end-to-end through _update_file_impl ────────────────────
+
+
+def test_update_file_impl_strips_fence_and_applies(tmp_path):
+    editor, workspace = _make_editor(tmp_path)
+    (workspace / "g.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    op = ApplyPatchOperation(
+        type="update_file", path="g.txt", diff="```diff\n one\n-two\n+TWO\n three\n```"
+    )
+    result, _ = editor._update_file_impl(op)
+
+    assert result.status == "completed"
+    content = (workspace / "g.txt").read_text(encoding="utf-8")
+    assert "TWO" in content
+    assert "two" not in content
+
+
+def test_update_file_impl_handles_fence_envelope_and_unicode_together(tmp_path):
+    # the kitchen sink: a fenced, enveloped diff whose context line was retyped
+    # with an ASCII hyphen instead of the file's em dash — every layer must compose
+    editor, workspace = _make_editor(tmp_path)
+    (workspace / "f.txt").write_text("alpha\nbeta — gamma\ndelta\n", encoding="utf-8")
+
+    diff = (
+        "```diff\n"
+        "*** Begin Patch\n"
+        "*** Update File: f.txt\n"
+        " beta - gamma\n"  # em dash mistyped as hyphen
+        "-delta\n"
+        "+epsilon\n"
+        "*** End Patch\n"
+        "```"
+    )
+    op = ApplyPatchOperation(type="update_file", path="f.txt", diff=diff)
+    result, _ = editor._update_file_impl(op)
+
+    assert result.status == "completed"
+    content = (workspace / "f.txt").read_text(encoding="utf-8")
+    assert "epsilon" in content
+    assert "delta" not in content
+    assert "beta — gamma" in content  # the file's real em-dash bytes are preserved
