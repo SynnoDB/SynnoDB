@@ -2,6 +2,12 @@ import logging
 from typing import Tuple
 
 MODELS = {
+    "openai/unsloth/MiniMax-M3": {
+        "input": 0.0,
+        "cached_input": 0.0,
+        "output": 0.0,
+        "context_window": 376_832,  # from /models endpoint: n_ctx_train
+    },
     "openai/unsloth/MiniMax-M2.5": {
         "input": 0.0,
         "cached_input": 0.0,
@@ -20,17 +26,17 @@ MODELS = {
         "output": 0.0,
         "context_window": 202_752,  # from /models endpoint: n_ctx_train
     },
-    "openai/unsloth/GLM-5.1": { # currently the Q4 version due do KV size.
-    "input": 0.0,
-    "cached_input": 0.0,
-    "output": 0.0,
-    "context_window": 202_752,  # from /models endpoint: n_ctx_train
+    "openai/unsloth/GLM-5.1": {  # currently the Q4 version due do KV size.
+        "input": 0.0,
+        "cached_input": 0.0,
+        "output": 0.0,
+        "context_window": 202_752,  # from /models endpoint: n_ctx_train
     },
     "openai/unsloth/Kimi-K2.6": {
-    "input": 0.0,
-    "cached_input": 0.0,
-    "output": 0.0,
-    "context_window": 202_752,  # from /models endpoint: n_ctx_train
+        "input": 0.0,
+        "cached_input": 0.0,
+        "output": 0.0,
+        "context_window": 202_752,  # from /models endpoint: n_ctx_train
     },
     "openai/unsloth/gemma-4-31B-it": {
         "input": 0.0,
@@ -165,7 +171,6 @@ MODELS = {
         "output": 15.00 / 1_000_000,
         "context_window": 200_000,
     },
-
 }
 
 logger = logging.getLogger(__name__)
@@ -198,7 +203,9 @@ def request_cost_usd(
 def context_window_usage(model, used_tokens: int) -> Tuple[str, float]:
     model_info = MODELS.get(str(model))
     if model_info is None:
-        logger.warning(f"Unknown model {model} for context window tracking, assuming 128K")
+        logger.warning(
+            f"Unknown model {model} for context window tracking, assuming 128K"
+        )
         window_size = 131_072
     else:
         window_size = model_info["context_window"]

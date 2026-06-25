@@ -1,8 +1,11 @@
+import os
+import pickle
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from utils.utils import (
     create_dir_and_set_permissions,
@@ -13,13 +16,26 @@ from utils.utils import (
 )
 
 
+def _resolve_wandb_entity_project(
+    entity: str | None, project: str | None
+) -> tuple[str, str]:
+    if entity is None or project is None:
+        load_dotenv()
+        if entity is None:
+            entity = os.environ["WANDB_ENTITY"]
+        if project is None:
+            project = os.environ["WANDB_PROJECT"]
+    return entity, project
+
+
 def get_wandb_run(
     run_id: str,
-    entity: str = "learneddb",
-    project: str = "bespoke-olap-internal",
+    entity: str | None = None,
+    project: str | None = None,
 ):
     import wandb
 
+    entity, project = _resolve_wandb_entity_project(entity, project)
     api = wandb.Api()
     return api.run(f"{entity}/{project}/{run_id}")
 
@@ -56,8 +72,8 @@ def get_wandb_latest_query_runtimes(run, scale_factor: int) -> pd.DataFrame:
 
 def get_wandb_stats(
     run_id: str,
-    entity: str = "learneddb",
-    project: str = "bespoke-olap-internal",
+    entity: str | None = None,
+    project: str | None = None,
     samples: int = 10000,
     skip_cache: bool = False,
     wandb_run_cache_path: Optional[Path] = None,
@@ -77,6 +93,7 @@ def get_wandb_stats(
         Tuple of (summary_dict, history_dataframe)
     """
 
+    entity, project = _resolve_wandb_entity_project(entity, project)
     hash_payload = {"entity": entity, "project": project, "run_id": run_id}
     hash = sha256(stable_json(hash_payload))
     if wandb_run_cache_path is None:
@@ -140,10 +157,17 @@ def get_wandb_stats(
                 summary.pop(key, None)  # remove non-serializable entry
 
             for key, value in list(summary.items()):
-                # check if artifact reference
-                if hasattr(value, "path"):
-                    # overwrite with path str
-                    summary[key] = str(value.path)
+                # check if artifact reference (SummarySubDict raises KeyError in hasattr)
+                try:
+                    path = value.path
+                    summary[key] = str(path)
+                except (AttributeError, KeyError):
+                    pass
+                # drop values that can't be pickled (e.g. wandb objects with thread locks)
+                try:
+                    pickle.dumps(value)
+                except Exception:
+                    summary.pop(key, None)
 
             dump_pickle(
                 cache_path_summary, summary, do_not_cache=False, assert_not_exists=False

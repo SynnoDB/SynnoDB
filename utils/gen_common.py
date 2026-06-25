@@ -17,7 +17,9 @@ def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:
     start_q = qnums[0]
     end_q = qnums[1]
 
-    if benchmark in (OLAPWorkload.TPCH,):
+    if benchmark in [
+        OLAPWorkload.TPCH,
+    ]:
         start_q = int(start_q)
         end_q = int(end_q)
 
