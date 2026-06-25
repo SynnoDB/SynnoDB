@@ -12,7 +12,6 @@ from conversations.checkpointed_conversation import (
     extract_speedup_of_last_snapshot,
 )
 from conversations.conversation import (
-    BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_OFF,
     VALIDATE_ON,
@@ -25,11 +24,8 @@ from conversations.ff.prompts_gen import (
 )
 from conversations.filenames import get_filenames
 from conversations.prompts_gen import (
-    base_check_correctness_all_prompt,
     base_exec_validate_for_query_prompt,
     base_fix_slow_queries_prompt,
-    base_optimize_build_prompt,
-    base_run_all_and_fix_prompt,
 )
 from conversations.stage_config import (
     StageConfig,
@@ -299,56 +295,6 @@ class BaseFFImplConversation(CheckpointedConversation):
             )
 
         stage_list.append(SUPERVISION_STAGE_VISIBILITY_MARKER)
-
-        # 5. Whole-workload correctness, then a final writer optimisation pass.
-        stage_list.extend(
-            [
-                StaticStageConfig(
-                    descriptor="base check correctness all",
-                    get_prompt=lambda _exec_settings, _rt: (
-                        base_check_correctness_all_prompt(
-                            run_tool_mode=RunToolMode.EXHAUSTIVE
-                        )
-                    ),
-                    measure_performance_after_stage=False,
-                    auto_revert_on_regression=False,
-                    post_stage_validate=functools.partial(
-                        self._validate_no_crazy_slow_queries,
-                        query_ids=self.all_query_ids,
-                        query_impl_path=query_impl_path,
-                        builder_path=builder_path,
-                    ),
-                ),
-                StaticStageConfig(
-                    descriptor="run all queries and fix any errors",
-                    get_prompt=lambda _exec_settings, _rt: base_run_all_and_fix_prompt(
-                        run_tool_mode=RunToolMode.EXHAUSTIVE,
-                        query_impl_path=query_impl_path,
-                    ),
-                    measure_performance_after_stage=False,
-                    auto_revert_on_regression=False,
-                    post_stage_validate=functools.partial(
-                        self._validate_no_crazy_slow_queries,
-                        query_ids=self.all_query_ids,
-                        query_impl_path=query_impl_path,
-                        builder_path=builder_path,
-                    ),
-                ),
-                BENCHMARK_MARKER,
-                VALIDATE_OUTPUT_STDOUT_OFF,
-                StaticStageConfig(
-                    descriptor="optimize build",
-                    get_prompt=lambda _exec_settings, _rt: base_optimize_build_prompt(
-                        builder_path_cpp=builder_cpp_path,
-                        builder_path_hpp=builder_hpp_path,
-                        persistent_storage=_FF_PERSISTENT_STORAGE,
-                    ),
-                    measure_performance_after_stage=False,
-                    auto_revert_on_regression=False,
-                ),
-                BENCHMARK_MARKER,
-            ]
-        )
 
         return stage_list
 
