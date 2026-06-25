@@ -5,6 +5,7 @@ artifacts/
 lsyncd.conf.lua
 duckdb
 *.parquet
+*.csf
 *.csv
 *.pdf
 wandb/
@@ -18,6 +19,9 @@ data/
 .plans/
 # Private webpage — tracked in its own separate PRIVATE repo, kept out of the public SynnoDB repo
 webpage/
+code_v*/
+observability/analysis_model_behaviour/analysis
+observability/analysis_model_behaviour/llm_cache
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

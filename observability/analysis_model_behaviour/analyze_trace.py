@@ -7,11 +7,15 @@ from observability.plots.utils.per_stage_data_prep import load_wandb_data
 
 
 def get_run_info(
-    wandb_run: str, start_turn: int = 0, end_turn: int = -1
+    wandb_run: str,
+    start_turn: int = 0,
+    end_turn: int = -1,
+    entity: str | None = None,
+    project: str | None = None,
 ) -> tuple[str, str]:
     # 1: get wandb data for the run
     history_dict, config_dict, summary_dict, target_sf = load_wandb_data(
-        runs=[(wandb_run, "run")], skip_cache=False
+        runs=[(wandb_run, "run")], skip_cache=False, entity=entity, project=project
     )
     hist_df = history_dict["run"]
 
@@ -238,6 +242,46 @@ Output requirements:
             "  4. Where do the prompts or the framework feedback fail the agent? What concrete prompt edits or framework changes would have "
             "the highest impact on MT-SSD speedup?\n\n"
             "Cite prompt indices and observed actions. Do not speculate beyond the trace.\n\n"
+            "Activity summary:\n\n"
+            f"{activity_str}"
+        )
+    elif mode == "find_framework_issues":
+        system_prompt = """You are an expert agent-trajectory reviewer. Your goal is to identify bugs and limitations in the *framework* (tools, environment, scaffolding) that blocked or misled the agent — as opposed to mistakes the agent itself made.
+
+Context:
+- Agent task: implement a storage layout and queries.
+- Available tools: shell, apply_patch, compile, run, validate.
+- The agent acts in good faith; it may fail because a tool returns wrong results, silently truncates output, raises spurious errors, or simply lacks a capability that is needed.
+
+What to detect — framework-induced failures:
+1) Tool correctness bugs
+    - Tool reports failure/error but the agent's code or command was correct
+    - Tool returns wrong output (incorrect values, truncated results, stale state)
+    - Compile/run tool gives misleading error messages that send the agent on a wrong path
+2) Missing capabilities / tool gaps
+    - Agent explicitly states "I cannot do X" where X is a reasonable framework feature
+    - Agent is forced into awkward workarounds because no direct tool exists
+    - Agent requests information (e.g. tracing detail, memory stats) that the framework does not expose
+3) Scaffolding / environment issues
+    - Environment state inconsistencies (stale files, wrong working directory, missing dependencies)
+    - apply_patch failures due to format quirks, not logic errors
+    - Shell command results that conflict with the actual filesystem state
+4) Supervisor / feedback loop issues
+    - Supervisor feedback is incorrect or contradicts the actual results
+    - Agent is rejected for a correct solution
+    - Feedback is ambiguous or misleading in a way that causes backtracking
+
+Output requirements:
+- For each framework issue found: describe what happened, cite the prompt index and the specific action/output that reveals the issue, and classify it (tool bug / missing capability / environment / supervisor).
+- Distinguish clearly: is this the framework's fault, or could the agent have worked around it?
+- End with a prioritized list of framework fixes needed, ordered by impact on agent success rate.
+- If no framework issues are found, say so explicitly.
+"""
+
+        prompt = (
+            "Analyze the activity summary below and identify all cases where the *framework* (tools, environment, scaffolding) caused the agent to fail, get stuck, or take unnecessary detours — as opposed to the agent making its own mistakes.\n\n"
+            "Look for: tool errors on correct code, wrong/truncated tool output, missing capabilities the agent explicitly needed, environment inconsistencies, misleading compile/run feedback, incorrect supervisor rejections.\n\n"
+            "For each issue: cite the prompt index and action, state what the framework did wrong, and whether the agent could have worked around it.\n\n"
             "Activity summary:\n\n"
             f"{activity_str}"
         )
