@@ -2,32 +2,40 @@
 
     from synnodb import SynnoDB
     db = SynnoDB.in_memory(workload="tpch")
-    sp = db.createStoragePlan(queries="1")
-    bi = db.createBaseImpl(storage_plan_run_id=sp)
+    plan = db.createStoragePlan(queries="1")   # -> StoragePlan; plan.text is the doc
+    impl = db.createBaseImpl(storage_plan=plan) # -> BaseImplementation; impl.files
 
-Each call runs one stage to completion (blocking) and returns a ``StageResult``
-whose ``run_id`` the next stage takes as its upstream argument.
+Each call runs one stage to completion (blocking) and returns the stage's domain
+artifact (StoragePlan, BaseImplementation, ...) — carrying the produced content
+plus the wandb run id used to chain stages.
 """
 from __future__ import annotations
 
 import dataclasses
 import importlib
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from synnodb import settings
 
 # These enums resolve without SYNNO_DATA_DIR (the module-level assert was made
 # lazy), so importing synnodb stays config-free. The heavy stage modules
 # (synnodb.main, synnodb.run_*) are imported lazily inside run().
+from synnodb.results import (
+    BaseImplementation,
+    CorrectnessReport,
+    MultiThreadedImplementation,
+    OptimizedImplementation,
+    StageArtifact,
+    StoragePlan,
+)
 from synnodb.utils.cli_config import DEFAULT_MODEL, Usecase
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import Workload
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
-__all__ = [
-    "SynnoDB", "SynnoConfig", "StageResult", "Stage", "StageParam", "register_stage",
-]
+__all__ = ["SynnoDB", "SynnoConfig", "Stage", "StageParam", "register_stage"]
 
 
 # ----------------------------- coercion helpers -----------------------------
@@ -44,8 +52,15 @@ def _as_usecase(v: Usecase | str) -> Usecase:
 
 
 def _as_arg(v: Any) -> str:
-    """A StageResult collapses to its run id; everything else stringifies."""
-    return v.run_id if isinstance(v, StageResult) else str(v)
+    """A stage artifact collapses to its run id; everything else stringifies."""
+    if isinstance(v, StageArtifact):
+        if v.run_id is None:
+            raise ValueError(
+                f"cannot chain from a {type(v).__name__} with no run_id — run the "
+                "producing stage with log_to_wandb=True."
+            )
+        return v.run_id
+    return str(v)
 
 
 # --------------------------------- config -----------------------------------
@@ -96,10 +111,54 @@ class SynnoConfig:
         return argv + list(self.extra_flags)
 
 
+# ---------------------- result builders (workspace -> artifact) -------------
+# Each reads the stage's produced artifact out of the run's workspace and wraps
+# it with provenance (run_id, workspace, config). Signature is uniform so the
+# generic run() can dispatch on the Stage.
+
+ResultBuilder = Callable[["str | None", Path, "SynnoConfig", "dict[str, Any]"], StageArtifact]
+
+
+def _engine_files(workspace: Path) -> dict[str, str]:
+    files: dict[str, str] = {}
+    for p in sorted(workspace.glob("*.cpp")) + sorted(workspace.glob("*.hpp")):
+        try:
+            files[p.name] = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    return files
+
+
+def _build_artifact(run_id, workspace, config, inputs) -> StageArtifact:
+    return StageArtifact(run_id, workspace, config)
+
+
+def _build_storage_plan(run_id, workspace, config, inputs) -> StoragePlan:
+    path = workspace / "storage_plan.txt"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    return StoragePlan(run_id, workspace, config, path, text)
+
+
+def _build_base_impl(run_id, workspace, config, inputs) -> BaseImplementation:
+    return BaseImplementation(run_id, workspace, config, _engine_files(workspace))
+
+
+def _build_optimized(run_id, workspace, config, inputs) -> OptimizedImplementation:
+    return OptimizedImplementation(run_id, workspace, config, _engine_files(workspace))
+
+
+def _build_multithreaded(run_id, workspace, config, inputs) -> MultiThreadedImplementation:
+    return MultiThreadedImplementation(run_id, workspace, config, _engine_files(workspace))
+
+
+def _build_correctness(run_id, workspace, config, inputs) -> CorrectnessReport:
+    return CorrectnessReport(run_id, workspace, config, float(inputs["target_sf"]))
+
+
 # --------------------------------- stages -----------------------------------
 @dataclass(frozen=True)
 class StageParam:
-    kw: str                  # python kwarg, e.g. "storage_plan_run_id"
+    kw: str                  # python kwarg, e.g. "storage_plan"
     flag: str                # CLI flag, e.g. "--storage_plan_run_id"
     required: bool = True
 
@@ -109,6 +168,7 @@ class Stage:
     name: str                            # "createStoragePlan"
     module: str                          # "synnodb.run_gen_storage_plan"
     usecases: frozenset[Usecase]
+    result: ResultBuilder = _build_artifact   # builds the typed domain object
     params: tuple[StageParam, ...] = ()
     flags: tuple[str, ...] = ()          # always-appended, e.g. ("--bespoke_storage",)
 
@@ -125,37 +185,38 @@ def register_stage(stage: Stage) -> None:
 def _register_olap_stages() -> None:
     olap = frozenset({Usecase.OLAP})
     bespoke = ("--bespoke_storage",)
-    register_stage(Stage("createStoragePlan", "synnodb.run_gen_storage_plan", olap))
-    register_stage(Stage("createBaseImpl", "synnodb.run_gen_base_impl", olap,
-                         params=(StageParam("storage_plan_run_id", "--storage_plan_run_id"),),
-                         flags=bespoke))
-    register_stage(Stage("runOptimLoop", "synnodb.run_optim_loop", olap,
-                         params=(StageParam("base_impl_run_id", "--base_impl_run_id"),),
-                         flags=bespoke))
-    register_stage(Stage("addMultiThreading", "synnodb.run_add_multi_threading", olap,
-                         params=(StageParam("optim_run_id", "--optim_run_id"),),
-                         flags=bespoke))
-    register_stage(Stage("checkSfCorrectness", "synnodb.run_check_sf_correctness", olap,
-                         params=(StageParam("source_run_id", "--source_run_id"),
-                                 StageParam("target_sf", "--target_sf")),
-                         flags=bespoke))
+    register_stage(Stage(
+        "createStoragePlan", "synnodb.run_gen_storage_plan", olap,
+        result=_build_storage_plan,
+    ))
+    register_stage(Stage(
+        "createBaseImpl", "synnodb.run_gen_base_impl", olap,
+        result=_build_base_impl,
+        params=(StageParam("storage_plan", "--storage_plan_run_id"),),
+        flags=bespoke,
+    ))
+    register_stage(Stage(
+        "runOptimLoop", "synnodb.run_optim_loop", olap,
+        result=_build_optimized,
+        params=(StageParam("base_impl", "--base_impl_run_id"),),
+        flags=bespoke,
+    ))
+    register_stage(Stage(
+        "addMultiThreading", "synnodb.run_add_multi_threading", olap,
+        result=_build_multithreaded,
+        params=(StageParam("optimized", "--optim_run_id"),),
+        flags=bespoke,
+    ))
+    register_stage(Stage(
+        "checkSfCorrectness", "synnodb.run_check_sf_correctness", olap,
+        result=_build_correctness,
+        params=(StageParam("source", "--source_run_id"),
+                StageParam("target_sf", "--target_sf")),
+        flags=bespoke,
+    ))
 
 
 _register_olap_stages()
-
-
-# --------------------------------- result -----------------------------------
-@dataclass(frozen=True)
-class StageResult:
-    run_id: str | None
-    stage: str
-    config: SynnoConfig
-
-    def __str__(self) -> str:
-        return self.run_id or "<no-wandb-run-id>"
-
-    def __bool__(self) -> bool:
-        return self.run_id is not None
 
 
 # --------------------------------- facade -----------------------------------
@@ -207,7 +268,7 @@ class SynnoDB:
         return SynnoDB(dataclasses.replace(self.config, **overrides))
 
     # ---- generic engine -------------------------------------------------
-    def run(self, stage: str | Stage, /, **inputs: Any) -> StageResult:
+    def run(self, stage: str | Stage, /, **inputs: Any) -> StageArtifact:
         st = stage if isinstance(stage, Stage) else _REGISTRY[stage]
         cfg = self.config
         if cfg.usecase not in st.usecases:
@@ -223,21 +284,23 @@ class SynnoDB:
                 raise TypeError(f"stage {st.name!r} requires {p.kw!r}")
         module = importlib.import_module(st.module)         # heavy import, lazy
         run_id = module.main(module.build_parser().parse_args(argv))
-        return StageResult(run_id=run_id, stage=st.name, config=cfg)
+        workspace = settings.get_workspace_dir(cfg.workspace)
+        return st.result(run_id, workspace, cfg, inputs)
 
     # ---- ergonomic named methods (OLAP) --------------------------------
-    def createStoragePlan(self, **inputs: Any) -> StageResult:
-        return self.run("createStoragePlan", **inputs)
+    def createStoragePlan(self, **inputs: Any) -> StoragePlan:
+        return self.run("createStoragePlan", **inputs)  # type: ignore[return-value]
 
-    def createBaseImpl(self, storage_plan_run_id: Any, **inputs: Any) -> StageResult:
-        return self.run("createBaseImpl", storage_plan_run_id=storage_plan_run_id, **inputs)
+    def createBaseImpl(self, storage_plan: Any, **inputs: Any) -> BaseImplementation:
+        return self.run("createBaseImpl", storage_plan=storage_plan, **inputs)  # type: ignore[return-value]
 
-    def runOptimLoop(self, base_impl_run_id: Any, **inputs: Any) -> StageResult:
-        return self.run("runOptimLoop", base_impl_run_id=base_impl_run_id, **inputs)
+    def runOptimLoop(self, base_impl: Any, **inputs: Any) -> OptimizedImplementation:
+        return self.run("runOptimLoop", base_impl=base_impl, **inputs)  # type: ignore[return-value]
 
-    def addMultiThreading(self, optim_run_id: Any, **inputs: Any) -> StageResult:
-        return self.run("addMultiThreading", optim_run_id=optim_run_id, **inputs)
+    def addMultiThreading(self, optimized: Any, **inputs: Any) -> MultiThreadedImplementation:
+        return self.run("addMultiThreading", optimized=optimized, **inputs)  # type: ignore[return-value]
 
-    def checkSfCorrectness(self, source_run_id: Any, target_sf: float, **inputs: Any) -> StageResult:
-        return self.run("checkSfCorrectness",
-                        source_run_id=source_run_id, target_sf=target_sf, **inputs)
+    def checkSfCorrectness(self, source: Any, target_sf: float, **inputs: Any) -> CorrectnessReport:
+        return self.run(  # type: ignore[return-value]
+            "checkSfCorrectness", source=source, target_sf=target_sf, **inputs
+        )

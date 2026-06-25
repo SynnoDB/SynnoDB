@@ -11,11 +11,20 @@ the environment or `.env`.
 from synnodb import SynnoDB
 
 db = SynnoDB.in_memory(workload="tpch", model="anthropic/claude-sonnet-4-6")
-sp = db.createStoragePlan(queries="1")            # -> StageResult (wandb run id)
-bi = db.createBaseImpl(storage_plan_run_id=sp)    # chain by passing the result
-op = db.runOptimLoop(base_impl_run_id=bi)
+
+plan = db.createStoragePlan(queries="1")     # -> StoragePlan
+print(plan.text)                             # the storage_plan.txt document
+print(plan.path, plan.run_id)                # on disk + wandb provenance
+
+impl = db.createBaseImpl(storage_plan=plan)  # pass the plan object; chains on its run_id
+print(impl.files["db_loader.cpp"])           # -> BaseImplementation (generated C++)
+
+opt = db.runOptimLoop(base_impl=impl)        # -> OptimizedImplementation
 ```
 
+Each stage returns a domain object (`StoragePlan`, `BaseImplementation`,
+`OptimizedImplementation`, `MultiThreadedImplementation`, `CorrectnessReport`)
+that carries the produced artifact and chains into the next stage.
 `SynnoDB(...)` takes enums or strings (`db_storage="ssd"`), alternative
 constructors (`in_memory`/`on_ssd`/`for_tpch`/`for_ceb`/`from_env`), and
 `with_(...)` for per-call overrides.
