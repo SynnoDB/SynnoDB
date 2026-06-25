@@ -8,7 +8,9 @@
 function getRuntimeColumns(row) {
   const columns = new Map(); // qid -> {duckCol, implCol}
   for (const key of Object.keys(row)) {
-    const match = key.match(/^validation\/query_(.+?)\/(duckdb_runtime_ms|impl_runtime_ms)$/);
+    // The implementation runtime column was renamed impl_ -> bespoke_; accept
+    // both so old and current runs render speedups.
+    const match = key.match(/^validation\/query_(.+?)\/(duckdb_runtime_ms|impl_runtime_ms|bespoke_runtime_ms)$/);
     if (!match) continue;
     const qid = normalizeQueryId(match[1]);
     if (!columns.has(qid)) columns.set(qid, {});
@@ -117,7 +119,7 @@ function getQueryRuntimes(steps, data) {
     const d = data[s] || {};
     if (!isBenchmarkRuntimeRow(d, targetSf)) continue;
     for (const k of Object.keys(d)) {
-      const m = k.match(/^validation\/query_(.+?)\/(duckdb|impl)_runtime_ms$/);
+      const m = k.match(/^validation\/query_(.+?)\/(duckdb|impl|bespoke)_runtime_ms$/);
       if (!m) continue;
       const qid = normalizeQueryId(m[1]);
       if (!map.has(qid)) map.set(qid, {duck: null, impl: null});
