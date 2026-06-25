@@ -22,7 +22,9 @@ def get_filenames(usecase: Usecase = Usecase.OLAP) -> dict[str, str]:
         builder_cpp_path = "db_loader.cpp"
         builder_hpp_path = "db_loader.hpp"
     else:
-        raise ValueError(f"Unsupported usecase: {usecase}")
+        raise ValueError(
+            f"Unsupported usecase: {usecase}, {type(usecase)}",
+        )
 
     query_impl_path = "query_impl.cpp"
     args_path = "args_parser.hpp"
