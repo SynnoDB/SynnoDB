@@ -33,9 +33,10 @@ from conversations.stage_config import (
     StaticStageConfig,
 )
 from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
+from observability.logging.debug_logger import DebugLogger
 from tools.run import RunTool
 from tools.run_tool_mode import RunToolMode
-from utils.utils import DBStorage
+from utils.utils import DBStorage, is_persistent_storage, storage_label
 from workloads.workload_provider import Workload
 from workloads.workload_provider_olap import OLAPWorkload
 
@@ -63,7 +64,8 @@ class BaseImplConversation(CheckpointedConversation):
         self.workspace_path = workspace_path
         self.use_master_prompt = use_master_prompt
         self.sql_dict = sql_dict
-        self.persistent_storage = db_storage in [DBStorage.LABSTORE, DBStorage.SSD]
+        self.db_storage = db_storage
+        self.persistent_storage = is_persistent_storage(db_storage)
         self.parquet_dir = parquet_dir
 
     def _validate_no_crazy_slow_queries(
@@ -115,19 +117,28 @@ class BaseImplConversation(CheckpointedConversation):
         # reset used prompts to empty and start from the beginning of the conversation
         self.used = []
 
-        # fetch stages
-        stage_list = self.assemble_stages()
+        self.run_stats_collector.debug_logger = DebugLogger(
+            category="base_impl",
+            storage=storage_label(self.db_storage),
+            model=self.run_stats_collector.model,
+            base_dir=self.workspace_path / "debug_logs",
+        )
+        try:
+            # fetch stages
+            stage_list = self.assemble_stages()
 
-        # register planned steps
-        if self.supervision_agent is not None:
-            self.supervision_agent.register_workload_info(stage_list)
+            # register planned steps
+            if self.supervision_agent is not None:
+                self.supervision_agent.register_workload_info(stage_list)
 
-        if self.use_master_prompt:
-            prompt_prefix = "# MASTER PROMPT:\n You are an autonomous agent - solve your task without asking questions! Do everything that is necessary to solve your task (including invoking Shell, Apply-Patch, Compile and Run Tools). You will not get external feedback. Solve your task.\n\nYour task:\n"
-        else:
-            prompt_prefix = None
+            if self.use_master_prompt:
+                prompt_prefix = "# MASTER PROMPT:\n You are an autonomous agent - solve your task without asking questions! Do everything that is necessary to solve your task (including invoking Shell, Apply-Patch, Compile and Run Tools). You will not get external feedback. Solve your task.\n\nYour task:\n"
+            else:
+                prompt_prefix = None
 
-        await self._run_stages(stage_list, prompt_pretext=prompt_prefix)
+            await self._run_stages(stage_list, prompt_pretext=prompt_prefix)
+        finally:
+            self.run_stats_collector.debug_logger = None
 
     def assemble_stages(self) -> list[StageConfig | str]:
 
