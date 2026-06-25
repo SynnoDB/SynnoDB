@@ -218,7 +218,7 @@ BffFooter* load_bff_footer(BffDataset* dataset, bool refresh_cache) {
     dataset->footer.info.tables.clear();
 
     static const char* TABLE_NAMES[] = {
-        "lineitem", "orders", "customer", "part", "supplier"
+        "lineitem", "orders", "customer", "part", "supplier", "nation", "region", "partsupp"
     };
     for (const char* tname : TABLE_NAMES) {
         std::string path = dataset->root_path + "/" + std::string(tname) + ".csf";
