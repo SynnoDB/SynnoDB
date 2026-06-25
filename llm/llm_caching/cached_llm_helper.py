@@ -1,6 +1,5 @@
 import json
 import logging
-import re
 from dataclasses import is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -28,15 +27,6 @@ logger = logging.getLogger(__name__)
 
 
 first_invocation = True
-
-_STABLE_REQ_ID_RE = re.compile(
-    r"(?<![A-Za-z0-9])req_[A-Za-z0-9_]+_[0-9a-f]{12}(?![A-Za-z0-9])"
-)
-NORMALIZED_REQ_ID = "<REQ_ID>"
-
-
-def normalize_llm_cache_payload(payload: str) -> str:
-    return _STABLE_REQ_ID_RE.sub(NORMALIZED_REQ_ID, payload)
 
 
 class LLMModelHelper:
@@ -182,7 +172,7 @@ class LLMModelHelper:
         if self.tools_loaded_deferred:
             payload["tools_loaded_deferred"] = True
 
-        stable_payload = normalize_llm_cache_payload(stable_json(payload))
+        stable_payload = stable_json(payload)
         req_hash = sha256(stable_payload)
 
         return req_hash, stable_payload
