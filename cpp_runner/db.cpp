@@ -172,7 +172,13 @@ static DoneAndTrace read_done_and_trace(int done_fd, int trace_fd) {
             }
         }
 
-        if (have_done && (result.token.term_signal != 0 || trace_fd < 0 || have_trace)) {
+        // Return as soon as the done token arrives if either: the child was
+        // signalled, a stage caught-and-reported an exception (sentinel exit
+        // code, no trace coming), there is no trace pipe, or the trace payload
+        // is fully drained.
+        if (have_done && (result.token.term_signal != 0 ||
+                          result.token.exit_code == kStageThrewExitCode ||
+                          trace_fd < 0 || have_trace)) {
             return result;
         }
     }
@@ -235,6 +241,9 @@ static void run_parent(PipelineControl& control, int trace_r) {
                 sig_msg = std::string("query child killed by signal ") +
                           std::to_string(token.term_signal) +
                           " (" + (name ? name : "unknown") + ")";
+            } else if (token.exit_code == kStageThrewExitCode) {
+                sig_msg = "a pipeline stage threw a C++ exception "
+                          "(see stderr for the exception message)";
             }
             out << ",\"query_results\":[],\"stage_error\":\""
                 << json_escape(sig_msg) << "\"";
