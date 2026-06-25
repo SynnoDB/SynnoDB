@@ -178,7 +178,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         bespoke_ssd_storage_dir = get_bff_bespoke_ssd_storage_dir(workspace_path)
         create_dir_and_set_permissions(bespoke_ssd_storage_dir)
         logger.info(f"Using BFF bespoke SSD storage dir: {bespoke_ssd_storage_dir}")
-    else:
+    elif usecase == Usecase.OLAP:
         disk_db_dir, bespoke_ssd_storage_dir = get_disk_db_dir(
             db_storage, workspace_path
         )
