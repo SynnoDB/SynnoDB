@@ -2,24 +2,49 @@
 SynnoDB Repository (internal)
 
 
-## CMDs at the moment:
+`SYNNO_DATA_DIR` must point at the data root (parquet, caches, logs); set it in
+the environment or `.env`.
+
+## Python API
+
+```python
+from synnodb import SynnoDB
+
+db = SynnoDB.in_memory(workload="tpch", model="anthropic/claude-sonnet-4-6")
+sp = db.createStoragePlan(queries="1")            # -> StageResult (wandb run id)
+bi = db.createBaseImpl(storage_plan_run_id=sp)    # chain by passing the result
+op = db.runOptimLoop(base_impl_run_id=bi)
+```
+
+`SynnoDB(...)` takes enums or strings (`db_storage="ssd"`), alternative
+constructors (`in_memory`/`on_ssd`/`for_tpch`/`for_ceb`/`from_env`), and
+`with_(...)` for per-call overrides.
+
+## CLI
+
+Each stage is a console script (installed with the package) or `python -m`:
 
 ```
 # gen storage plan
-python run_gen_storage_plan.py --model anthropic/claude-sonnet-4-6 --queries 1-22 --benchmark tpch --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
+synnodb-storage-plan --model anthropic/claude-sonnet-4-6 --queries 1-22 --benchmark tpch --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
 
 # run gen base
-python run_gen_base_impl.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --storage_plan_run_id 8xn0t04p --queries 1-22 --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
+synnodb-base-impl --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --storage_plan_run_id 8xn0t04p --queries 1-22 --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
 
 # run optim
-python run_optim_loop.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --base_impl_run_id q45vm9fz --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
+synnodb-optim --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --base_impl_run_id q45vm9fz --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
 
 # test correctness at larger SF
-python run_check_sf_correctness.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --source_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd --target_sf 50
+synnodb-check-sf --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --source_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd --target_sf 50
 
 # add multi-threading
-python run_add_multi_threading.py --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --optim_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
+synnodb-multi-threading --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --optim_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
 ```
+
+(equivalently `python -m synnodb.run_gen_storage_plan …`, etc.) The run output dir
+defaults to a local `./output`; override with `--workspace` or `SYNNO_WORKSPACE`.
+
+Install: `uv sync` (add extras as needed: `uv sync --extra dev --extra viz`).
 
 ## Prerequisites
 
