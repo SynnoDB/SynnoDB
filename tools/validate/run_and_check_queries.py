@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Measurement:
-    run_nr: int
     query_id: str
+    req_id: str
     exec_time: float
 
 
@@ -121,19 +121,6 @@ def check_output_correctness(
             umbra_reference_results,
         )
     ):
-        if rt.run_nr != i + 1:
-            return ValidationOutput(
-                result_message=f"Error: run-nr counting is wrong. Unexpected run nr {rt.run_nr} in line {i}, expected {i + 1}.",
-                correct=False,
-                metrics=assemble_error(
-                    exec_settings=exec_settings,
-                    query_ids_executed=query_ids_executed,
-                    exception=True,
-                    query_id=inst.query_id,
-                ),
-                trace_output=trace_output,
-            )
-
         if rt.query_id != inst.query_id:
             return ValidationOutput(
                 result_message=f'Error: query id stdout "{rt.query_id}" does not match expected query-id {inst.query_id} for line {i}.',
@@ -179,8 +166,9 @@ def check_output_correctness(
 
         bespoke_rt_lists[inst.query_id].append(rt.exec_time)
 
-        # check that result was produced
-        filename = f"result{i + 1}.csv"
+        # check that result was produced. The runner names result files by the
+        # request id (see query_impl writer template: "result_" + req_id + ".csv").
+        filename = f"result_{rt.req_id}.csv"
         res_path = out_path / filename
         if not res_path.exists():
             return ValidationOutput(

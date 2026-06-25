@@ -467,8 +467,8 @@ class QueryValidator:
 
         measurements = [
             Measurement(
-                run_nr=i + 1,
                 query_id=inst.query_id,
+                req_id=qr.req_id,
                 exec_time=float(qr.elapsed_ms),
             )
             for i, (inst, qr) in enumerate(zip(query_batch.query_list, query_results))
