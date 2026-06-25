@@ -19,6 +19,7 @@ from llm.sdk.agents_sdk.openai_token_usage import (
     openai_get_tokens_context_and_dollar_info,
 )
 from observability.logging.cloc_utils import calculate_loc
+from observability.logging.debug_logger import DebugLogger
 from observability.logging.run_stats_drain import DataDrain
 from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker
@@ -60,8 +61,17 @@ class RunStatsCollector(RunHooks):
         self.current_prompt_descriptor: Optional[str] = (
             None  # set externally by conversation loop
         )
+        # The task prompt for the CURRENT stage. Unlike current_prompt (which is
+        # reset after every turn in on_llm_end), this persists for the whole stage
+        # so a compaction that fires mid-loop can re-anchor the agent on its task.
+        self.current_stage_prompt: Optional[str] = (
+            None  # set externally by the conversation loop, per stage
+        )
         self.current_agent_config: Optional[dict] = (
             None  # set externally by conversation loop
+        )
+        self.debug_logger: Optional[DebugLogger] = (
+            None  # set externally by the conversation loop (per stage group)
         )
 
         if len(self.drains) == 0:
@@ -89,6 +99,9 @@ class RunStatsCollector(RunHooks):
         # summary of activities -utilized by supervision agent to keep track of what has been done in the turn and decide what to do next based on that
         self.activity_summary = []
         self.last_llm_hash: str | None = None
+        # Most recent context-window occupancy as a fraction in [0, 1], refreshed
+        # every LLM turn in on_llm_end. Read by the proactive-compaction trigger.
+        self.last_context_window_usage: float = 0.0
         self._llm_answered_from_cache_by_response_id: dict[str, bool] = {}
 
         # store metrics locally + also emit to external system in _emit_metrics (override in subclass)
@@ -210,6 +223,16 @@ class RunStatsCollector(RunHooks):
         """Called when an agent starts processing"""
         logger.debug(f"Agent {agent.name} started (turn {self.last_turn})")
 
+    def _reset_per_turn_prompt_state(self) -> None:
+        """Clear the per-turn prompt context after an LLM turn completes.
+
+        current_stage_prompt is intentionally excluded: it is per-stage, not
+        per-turn, so a compaction firing mid-loop can re-anchor on the active task.
+        """
+        self.current_prompt = None
+        self.current_prompt_descriptor = None
+        self.current_agent_config = None
+
     async def on_llm_end(self, ctx, agent, output: ModelResponse):
         """Called after each LLM call completes - log metrics here for accurate per-turn tracking"""
 
@@ -221,6 +244,9 @@ class RunStatsCollector(RunHooks):
         token_stats = openai_get_tokens_context_and_dollar_info(
             usage, self.model, last_entry_only=True, log=False
         )
+        # Remember the current context-window occupancy so the proactive-compaction
+        # trigger (should_trigger_compaction) can read it between turns.
+        self.last_context_window_usage = token_stats["context_window_usage"]
 
         assert token_stats["num_llm_request"] == 1, (
             "Expected single LLM request for last entry"
@@ -282,16 +308,19 @@ class RunStatsCollector(RunHooks):
         if output_text.strip() != "":
             logger.info(f"LLM output: {output_text}")
 
+        if self.debug_logger:
+            self.debug_logger.log_llm_turn(self.last_turn, output_text)
+
         if agent.name == SUPERVISOR_AGENT_NAME:
             # add additional metrics for supervisor
             metrics["supervisor"] = True
 
             metrics["supervisor/approved"] = output_text == SUPERVISION_SUCCESS_KW
 
-        # reset current prompt and config
-        self.current_prompt = None
-        self.current_prompt_descriptor = None
-        self.current_agent_config = None
+        # Reset per-turn prompt state. current_stage_prompt is deliberately NOT
+        # cleared here: it must survive across turns so a mid-loop compaction can
+        # re-anchor the agent on the active stage task.
+        self._reset_per_turn_prompt_state()
 
         self.total_stats["input_tokens"] += token_stats["input_tokens"]
         self.total_stats["cached_tokens"] += token_stats["cached_tokens"]
@@ -352,6 +381,9 @@ class RunStatsCollector(RunHooks):
         self.current_turn_tools[tool_name] = (
             self.current_turn_tools.get(tool_name, 0) + 1
         )
+
+        if self.debug_logger:
+            self.debug_logger.log_tool_result(self.last_turn, tool_name, result)
 
         if tool_name in ("apply_patch", "replace_in_file"):
             operation_type_dict = dict()

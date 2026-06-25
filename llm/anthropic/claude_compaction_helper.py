@@ -8,6 +8,44 @@ from agents import TResponseInputItem
 logger = logging.getLogger(__name__)
 
 
+def build_compacted_items(
+    summary_text: str, resume_prompt: str | None = None
+) -> List[Dict[str, Any]]:
+    """The post-compaction session items: the summary, and (when a stage prompt is
+    supplied) a re-anchor that re-states the task.
+
+    Compaction replaces the raw history with the summary, dropping the original
+    stage prompt - so the agent can forget WHICH stage it is in and drift to a
+    different task (e.g. start writing query kernels during the storage-verify
+    stage). Re-appending the stage prompt keeps the task fixed. The caller decides
+    whether to pass a prompt; it is only ever a real stage task (never a control
+    marker), so no marker filtering is needed here."""
+    items: List[Dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": (
+                "Here is a summary of our prior conversation:\n\n"
+                f"{summary_text}\n\n"
+                "Let's continue."
+            ),
+        }
+    ]
+    reanchor_task_prompt = (resume_prompt or "").strip()
+    if reanchor_task_prompt:
+        items.append(
+            {
+                "role": "user",
+                "content": (
+                    "IMPORTANT - the summary above is CONTEXT ONLY; it does not change "
+                    "what you are doing. Your current task/stage is UNCHANGED by the "
+                    "compaction. Do NOT start a different task or jump ahead to a later "
+                    "stage. Resume exactly the task below:\n\n" + reanchor_task_prompt
+                ),
+            }
+        )
+    return items
+
+
 class ClaudeCompactionHelper:
     def __init__(
         self,
@@ -33,7 +71,9 @@ class ClaudeCompactionHelper:
             self.claude_client = None
 
     async def compact_with_claude(
-        self, session_items: List[TResponseInputItem]
+        self,
+        session_items: List[TResponseInputItem],
+        resume_prompt: str | None = None,
     ) -> List[Dict[str, Any]]:
         # extract claude model name
         model = self.claude_compaction_model
@@ -99,16 +139,7 @@ class ClaudeCompactionHelper:
             )
             summary_text = response.choices[0].message.content.strip()
 
-        output_items = [
-            {
-                "role": "user",
-                "content": (
-                    "Here is a summary of our prior conversation:\n\n"
-                    f"{summary_text}\n\n"
-                    "Let's continue."
-                ),
-            }
-        ]
+        output_items = build_compacted_items(summary_text, resume_prompt)
         print(f"Claude compaction summary:\n{summary_text}")
         return output_items
 

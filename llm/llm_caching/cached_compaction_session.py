@@ -77,9 +77,25 @@ class CachedOpenAIResponsesCompactionSession(OpenAIResponsesCompactionSession):
         )
 
     async def run_compaction(
-        self, args: OpenAIResponsesCompactionArgs | None = None
+        self,
+        args: OpenAIResponsesCompactionArgs | None = None,
+        *,
+        reanchor: bool = True,
     ) -> None:
-        """Run compaction using responses.compact API."""
+        """Run compaction using responses.compact API.
+
+        `reanchor` controls whether the active stage prompt is reinserted into the
+        post-compaction output so the agent does not drift after its history is
+        summarized away. It defaults to True because the SDK's proactive/near-limit
+        compaction calls this method directly (with no caller to re-issue the task).
+        Our own wrapper passes reanchor=False on the <<COMPACTION>> marker and the
+        reactive context-overflow retry, where the caller re-issues the prompt
+        itself.
+
+        Reinsertion happens only on the local/claude path; OpenAI server-side
+        compaction ignores it. The reinserted text is read from ambient state
+        (run_stats_collector.current_stage_prompt), since the SDK-triggered path
+        cannot pass it as an argument."""
 
         # Updated to AgentsSDK v05/05/2026 (f84ef7f649d1bb3ba7ca86e41509081e7e779bc6)
         # https://openai.github.io/openai-agents-python
@@ -148,16 +164,45 @@ class CachedOpenAIResponsesCompactionSession(OpenAIResponsesCompactionSession):
 
             # <<< ADDED
             output_items = None  # type: ignore
-            # try to get output_items from cache
-            cache_path, stable_payload = self._get_cache_path()
-            if cache_path.exists():
+            served_from_cache = False
+
+            # Decide whether to reinsert the active stage prompt into the compacted
+            # output. Only the proactive/SDK path (reanchor=True) does this, and only
+            # on the local/claude path; the prompt is read from ambient state because
+            # the SDK-triggered call cannot pass it. Caller-initiated compactions
+            # (reanchor=False) re-issue the task themselves, so they reinsert nothing.
+            stage_prompt_for_reanchor = (
+                self.run_stats_collector.current_stage_prompt
+                if self.run_stats_collector is not None
+                else None
+            )
+            prompt_to_reinsert_after_compaction = (
+                stage_prompt_for_reanchor
+                if (
+                    reanchor
+                    and self.use_claude_compaction
+                    and stage_prompt_for_reanchor
+                )
+                else None
+            )
+
+            # try to get output_items from cache. The key is content-addressed
+            # (transcript + mode + reinserted prompt): litellm/local models report
+            # response_id=None, so a {response_id, model}-only key collapses every
+            # compaction onto ONE stale entry. See _get_cache_path.
+            cache_path, stable_payload = self._get_cache_path(
+                session_items=session_items,
+                resolved_mode=resolved_mode,
+                reanchor_prompt=prompt_to_reinsert_after_compaction,
+            )
+            if not self.do_not_cache and cache_path.exists():
                 logger.debug(
                     f"Retrieving compaction from cache for response_id: {self._response_id} (model: {self.compaction_model_name})"
                 )
                 cached = utils.load_pickle(cache_path, CompactCacheType)
                 if cached is not None:
                     output_items = cached.output_items
-                    assert cached.response_id == self._response_id
+                    served_from_cache = True
 
                     if self.runtime_tracker is not None:
                         self.runtime_tracker.add_skipped_time(cached.runtime_seconds)
@@ -172,7 +217,8 @@ class CachedOpenAIResponsesCompactionSession(OpenAIResponsesCompactionSession):
                     )
                     output_items = (
                         await self.claude_compaction_helper.compact_with_claude(
-                            session_items
+                            session_items,
+                            resume_prompt=prompt_to_reinsert_after_compaction,
                         )
                     )
                 else:
@@ -203,21 +249,18 @@ class CachedOpenAIResponsesCompactionSession(OpenAIResponsesCompactionSession):
                     )
             # <<< ADDED
 
-            # <<< MOVED DOWN
-            await self.underlying_session.clear_session()
-            # >>> MOVED DOWN-END
-
             output_items = _strip_orphaned_assistant_ids(output_items)
 
-            if output_items:
-                await self.underlying_session.add_items(output_items)
-
-            # ADDED EXCEPTION:
-            else:
+            # Validate BEFORE clearing: a degenerate (empty) compaction must not
+            # wipe the live session and leave the caller running on empty history.
+            if not output_items:
                 raise Exception(
-                    f"Compaction returned no output items for response_id {self._response_id} - cannot proceed with empty session"
+                    f"Compaction returned no output items for response_id "
+                    f"{self._response_id} - refusing to clear the session."
                 )
-            # <<< EXCEPTION
+
+            await self.underlying_session.clear_session()
+            await self.underlying_session.add_items(output_items)
 
             self._compaction_candidate_items = select_compaction_candidate_items(
                 output_items
@@ -243,17 +286,67 @@ class CachedOpenAIResponsesCompactionSession(OpenAIResponsesCompactionSession):
                     },
                     log_and_increment=True,
                 )
+                # Make the compaction visible in the per-stage debug.log: without
+                # this a compaction leaves an unexplained gap between turns and
+                # you cannot tell what (if anything) was re-anchored.
+                debug_logger = self.run_stats_collector.debug_logger
+                if debug_logger is not None:
+                    # reanchor=True is the proactive/SDK-initiated path; reanchor=
+                    # False is a caller-initiated compaction (marker / reactive).
+                    compaction_kind = "PROACTIVE" if reanchor else "CALLER"
+                    cache_source = "cache HIT" if served_from_cache else "fresh"
+                    stage_descriptor = (
+                        self.run_stats_collector.current_prompt_descriptor or "<none>"
+                    )
+                    produced_text = "\n\n".join(
+                        str(it.get("content", it)) if isinstance(it, dict) else str(it)
+                        for it in output_items
+                    )
+                    debug_logger.log_event(
+                        f"{compaction_kind} COMPACTION (stage={stage_descriptor}, "
+                        f"mode={resolved_mode}, {cache_source}, "
+                        f"output_items={len(output_items)})",
+                        f"--- Compaction produced ({len(output_items)} item(s)) ---\n"
+                        f"{produced_text}\n\n"
+                        "--- Reinserted task prompt ---\n"
+                        + (
+                            prompt_to_reinsert_after_compaction
+                            or "<none - reinsert only on proactive near-limit compaction>"
+                        ),
+                    )
             # <<< ADDED-END
 
-    def _get_cache_path(self) -> Tuple[Path, str]:
+    def _get_cache_path(
+        self,
+        session_items: Any,
+        resolved_mode: str | None,
+        reanchor_prompt: str | None = None,
+    ) -> Tuple[Path, str]:
+        # Content-address the compaction. response_id alone is NOT enough: for
+        # litellm/local models it is always None, so the key would be constant
+        # per model and every compaction (within a run and across runs) would
+        # reuse one stale entry. Hash the transcript being compacted, the mode,
+        # and the reinserted prompt (which is embedded into the output) so each
+        # distinct compaction point maps to its own entry - while replay of the
+        # same conversation still reproduces identical keys (deterministic).
+        try:
+            session_digest = utils.sha256(utils.stable_json(session_items))
+        except (TypeError, ValueError):
+            # Non-JSON-serialisable items: fall back to a repr-based digest. repr
+            # can vary across processes (object addresses), so this degrades to
+            # "always recompute", never a wrong hit.
+            session_digest = utils.sha256(repr(session_items))
         payload = {
             "response_id": self._response_id,
             "model": str(self.compaction_model_name),
+            "mode": resolved_mode,
+            "session_digest": session_digest,
+            "reanchor_prompt": reanchor_prompt,
         }
         stable_payload = utils.stable_json(payload)
 
-        hash = utils.sha256(stable_payload)
-        return self._cache_path_for(hash), stable_payload
+        cache_key_hash = utils.sha256(stable_payload)
+        return self._cache_path_for(cache_key_hash), stable_payload
 
     def _cache_path_for(self, hash: str) -> Path:
         return self.cache_dir / f"{hash}.pkl"

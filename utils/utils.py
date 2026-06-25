@@ -27,6 +27,16 @@ class DBStorage(str, enum.Enum):
     IN_MEMORY = "in_memory"
 
 
+def is_persistent_storage(db_storage: DBStorage) -> bool:
+    """Whether the storage backend persists to disk (vs. purely in-memory)."""
+    return db_storage in (DBStorage.LABSTORE, DBStorage.SSD)
+
+
+def storage_label(db_storage: DBStorage) -> str:
+    """Canonical 'ssd' / 'in_memory' label, e.g. for debug-log paths."""
+    return "ssd" if is_persistent_storage(db_storage) else "in_memory"
+
+
 def get_disk_db_dir(
     db_storage: DBStorage, workspace_path: Path
 ) -> tuple[Path | None, Path | None]:

@@ -5,7 +5,8 @@ from conversations.checkpointed_conversation import CheckpointedConversation
 from conversations.filenames import get_filenames
 from conversations.prompts_gen import gen_storage_plan_prompt
 from conversations.stage_config import StaticStageConfig
-from utils.utils import DBStorage
+from observability.logging.debug_logger import DebugLogger
+from utils.utils import DBStorage, storage_label
 from workloads.workload_provider import Workload
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,16 @@ class GenStoragePlanConversation(CheckpointedConversation):
 
     async def run(self):
         self.used = []
-        await self._run_stages(self.assemble_stages())
+        self.run_stats_collector.debug_logger = DebugLogger(
+            category="storage_plan",
+            storage=storage_label(self.db_storage),
+            model=self.run_stats_collector.model,
+            base_dir=self.workspace_path / "debug_logs",
+        )
+        try:
+            await self._run_stages(self.assemble_stages())
+        finally:
+            self.run_stats_collector.debug_logger = None
 
     def assemble_stages(self):
         filenames = get_filenames("olap")
