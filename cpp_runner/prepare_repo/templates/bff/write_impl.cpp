@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <utility>
 
-// FILE_VERSION: 1
+// FILE_VERSION: 2
 //
 // Skeleton implementation of the BFF write API (the file-format encoder). The
 // agent should replace these stubs with a real writer that serialises the Arrow
