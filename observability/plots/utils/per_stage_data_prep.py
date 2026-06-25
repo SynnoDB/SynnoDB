@@ -33,9 +33,12 @@ _SNAPSHOT_HASH_COL = "code/snapshot_hash"
 
 
 def _target_sf_for_benchmark(benchmark_name):
-    if benchmark_name == "tpch":
+    if benchmark_name.lower() == "tpch":
         return 20
-    if benchmark_name == "ceb":
+    elif benchmark_name.lower() == "tpch_st":
+        # TPCH single table
+        return 20
+    elif benchmark_name.lower() == "ceb":
         return 2
     raise ValueError(f"Unknown benchmark: {benchmark_name}")
 
@@ -44,6 +47,8 @@ def load_wandb_data(
     runs: list[tuple[str | list[str], str]],
     skip_cache: bool = False,
     target_sf: int | float | None = None,
+    entity: str | None = None,
+    project: str | None = None,
 ):
     summary_dict = {}
     history_dict = {}
@@ -53,6 +58,8 @@ def load_wandb_data(
         if isinstance(id, str):
             summary, history, config = get_wandb_stats(
                 id,
+                entity=entity,
+                project=project,
                 skip_cache=skip_cache,
                 wandb_run_cache_path=Path("/mnt/labstore/bespoke_olap/wandb_cache"),
             )
@@ -64,6 +71,8 @@ def load_wandb_data(
             for run_id in id:
                 summary, hist, config = get_wandb_stats(
                     run_id,
+                    entity=entity,
+                    project=project,
                     skip_cache=False,  # set to True to skip cache and fetch from W&B API
                     wandb_run_cache_path=Path("/mnt/labstore/bespoke_olap/wandb_cache"),
                 )
