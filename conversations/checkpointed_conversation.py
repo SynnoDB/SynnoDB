@@ -213,6 +213,19 @@ class CheckpointedConversation(AbstractConversation):
         # assemble and execute the stage prompt
         prompt = self._assemble_stage_prompt(stage_config, rt_before_s, tracing_data)
 
+        if self.run_stats_collector.debug_logger:
+            # measure_perf_qid (set on the stage config) overrides query_id later;
+            # use it for the header so the stage is attributed to the right query.
+            effective_query_id = (
+                query_id if query_id is not None else stage_config.measure_perf_qid
+            )
+            self.run_stats_collector.debug_logger.log_stage_start(
+                current_stage_nr,
+                stage_config.descriptor,
+                rt_before_s=rt_before_s,
+                query_id=effective_query_id,
+            )
+
         await self._exec(
             pretext_str + prompt,
             stage_config.descriptor,
@@ -304,6 +317,18 @@ class CheckpointedConversation(AbstractConversation):
 
         if stage_config.post_stage_validate is not None:
             await self._run_post_stage_validate(stage_config, current_stage_nr)
+
+        # On the validation-raise path above we deliberately log no stage end:
+        # the partial log (header + prompts/turns/tools up to the failure) is the
+        # useful artifact for debugging that abort.
+        if self.run_stats_collector.debug_logger:
+            if result is not None:
+                self.run_stats_collector.debug_logger.log_stage_end(
+                    rt_after_s=result.rt_after_s,
+                    speedup_after=result.speedup_vs_duckdb,
+                )
+            else:
+                self.run_stats_collector.debug_logger.log_stage_end()
 
         return result
 

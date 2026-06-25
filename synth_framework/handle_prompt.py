@@ -64,6 +64,9 @@ async def handle_prompt(
     # check for compaction marker in the prompt string - in this case run compaction and return
     if text == COMPACTION_MARKER:
         logger.info(f"Triggering compaction at prompt index {idx}")
+        # Caller-initiated compaction: a fresh stage prompt follows this marker, so
+        # we do not reinsert the (now-finished) prior task. run_compaction uses
+        # reanchor=False for this path.
         await agent_sdk_wrapper.run_compaction()
         return None
     # perform benchmarking
@@ -111,6 +114,13 @@ async def handle_prompt(
     run_stats_collector.prompt_idx = idx
     run_stats_collector.current_prompt = text
     run_stats_collector.current_prompt_descriptor = short_desc
+    # Persist the stage task so a compaction triggered mid-loop (proactively, near
+    # the context limit) can re-anchor the agent on it. Unlike current_prompt, this
+    # is not reset per turn.
+    run_stats_collector.current_stage_prompt = text
+
+    if run_stats_collector.debug_logger:
+        run_stats_collector.debug_logger.log_prompt(idx, short_desc, text)
     run_stats_collector.current_agent_config = _extract_agent_config(agent_sdk_wrapper)
 
     # Run with hooks for automatic metric tracking
@@ -178,6 +188,10 @@ async def handle_prompt(
             logger.warning(
                 f"Context size exceeded: {e}. Running compaction and retrying."
             )
+            # Reactive overflow (caller-initiated): compact, then re-send the same
+            # prompt below. The re-send IS the reinsertion, so run_compaction uses
+            # reanchor=False and does NOT also reinsert inside the compaction -
+            # otherwise the task would land twice.
             await agent_sdk_wrapper.run_compaction()
             final_output = await agent_sdk_wrapper.run_agent(
                 text,

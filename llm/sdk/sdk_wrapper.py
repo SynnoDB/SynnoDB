@@ -93,6 +93,13 @@ class SDKWrapper:
 
     @abstractmethod
     async def run_compaction(self):
+        """Compact the session: summarize history and replace it with the summary.
+
+        This is the caller-initiated entry point (the <<COMPACTION>> marker and the
+        reactive context-overflow retry). The caller re-issues the task prompt
+        itself, so these compactions do NOT reinsert it. Proactive, near-limit
+        compactions are triggered by the SDK directly on the session and DO reinsert
+        the active stage prompt (see CachedOpenAIResponsesCompactionSession)."""
         pass
 
     @abstractmethod
