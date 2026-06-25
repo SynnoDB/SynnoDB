@@ -28,10 +28,12 @@ from conversations.prompts_gen import (
     base_fix_slow_queries_prompt,
 )
 from conversations.stage_config import (
+    DynamicStageConfig,
     StageConfig,
     StaticStageConfig,
 )
 from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
+from tools.run import RunTool
 from tools.run_tool_mode import RunToolMode
 from utils.cli_config import Usecase
 from workloads.workload_provider import Workload
@@ -296,6 +298,22 @@ class BaseFFImplConversation(CheckpointedConversation):
 
         stage_list.append(SUPERVISION_STAGE_VISIBILITY_MARKER)
 
+        stage_list.extend(
+            [
+                StaticStageConfig(
+                    descriptor="naive feedback",
+                    get_prompt=lambda _exec_settings, _rt: (
+                        f"Speedup your implemntation. Currently your implementation takes {_rt:.2f} seconds to run. Make it faster."
+                    ),
+                    measure_performance_after_stage=True,
+                    measure_perf_qid=None,
+                    auto_revert_on_regression=True,
+                    feedback_on_incorrect=True,
+                ),
+                OptimizationLoop(run_tool=self.run_tool, num_loops=5),
+            ]
+        )
+
         return stage_list
 
     def _query_key(self, query_id: str) -> str:
@@ -305,3 +323,35 @@ class BaseFFImplConversation(CheckpointedConversation):
         elif self.benchmark == BFFWorkload.TPCH_ST:
             return f"STQ{query_id}"
         raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+
+class OptimizationLoop(DynamicStageConfig):
+    def __init__(
+        self,
+        run_tool: RunTool,
+        num_loops: int = 5,
+    ):
+        super().__init__(descriptor="optimize build", max_turns=None)
+        self.run_tool = run_tool
+        self.num_loops = num_loops
+
+    def next_prompt(self) -> Optional[str]:
+
+        for _ in range(self.num_loops):
+            run_result = self.run_tool.run_worker(
+                mode=RunToolMode.BENCHMARK,
+                optimize=True,
+                query_ids=None,
+                trace_mode=False,
+                external_call=True,
+            )
+            assert run_result.metrics is not None, "Run result metrics are None"
+
+            # total runtime across all queries (ms)
+            total_rt = run_result.metrics["run/total_rt"]
+
+            prompt = f"Speedup your implemntation. Currently your implementation takes {total_rt / 1000:.2f} seconds to run. Make it faster."
+
+            return prompt
+
+        return None
