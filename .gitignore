@@ -5,6 +5,8 @@ artifacts/
 lsyncd.conf.lua
 duckdb
 *.parquet
+*.csf
+*.bff
 *.csv
 *.pdf
 wandb/
