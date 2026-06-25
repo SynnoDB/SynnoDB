@@ -113,6 +113,7 @@ def main(args):
         query_execution_cache=query_exec_cache,
         all_query_ids=workload_provider.query_ids,
         git_snapshotter=snapshotter,
+        use_umbra=False,
     )
 
     bespoke_engine = RunTool(
