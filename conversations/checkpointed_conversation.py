@@ -214,10 +214,10 @@ class CheckpointedConversation(AbstractConversation):
         prompt = self._assemble_stage_prompt(stage_config, rt_before_s, tracing_data)
 
         if self.run_stats_collector.debug_logger:
-            # measure_perf_qid (set on the stage config) overrides query_id later;
-            # use it for the header so the stage is attributed to the right query.
             effective_query_id = (
-                query_id if query_id is not None else stage_config.measure_perf_qid
+                stage_config.measure_perf_qid
+                if stage_config.measure_perf_qid is not None
+                else query_id
             )
             self.run_stats_collector.debug_logger.log_stage_start(
                 current_stage_nr,
