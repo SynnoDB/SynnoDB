@@ -1,6 +1,7 @@
 import logging
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -362,7 +363,9 @@ class WorkspaceEditor:
                 "diff": operation.diff[:1000] if operation.diff else None,
             },
         ):
-            diff = operation.diff or ""
+            # Strip model-output wrappers (markdown fences, *** Begin Patch
+            # envelope) so an otherwise-valid hunk still applies.
+            diff = normalize_diff_payload(operation.diff or "")
 
             # calc stats
             added, deleted = count_diff_operations(diff)
@@ -388,6 +391,10 @@ class WorkspaceEditor:
             print_colored_diff(diff)
 
             try:
+                # Repair near-miss context/deletion lines (unicode lookalikes the
+                # model retyped) before applying; apply_diff's matcher only does
+                # exact/rstrip/strip and would otherwise reject them.
+                diff = repair_diff_context(original, diff)
                 patched = apply_diff(original, diff)
                 target.write_text(patched, encoding="utf-8")
             except Exception as e:
@@ -399,9 +406,30 @@ class WorkspaceEditor:
                     file_touched=Path(operation.path).name,
                     failed=str(e),
                 )
+                log_tool_call_error(
+                    error_type="ApplyPatchFailed",
+                    error=e,
+                    model=self._run_stats_collector.model,
+                    turn=self._run_stats_collector.last_turn,
+                    extra={
+                        "file": str(target),
+                        "diff (first 60 lines)": "\n".join(diff.splitlines()[:60]),
+                    },
+                )
+                # Include the current file content so the model can rebuild the
+                # diff immediately without an extra round-trip. The workspace may
+                # have been silently reverted since the model last read this file,
+                # making its cached view stale.
                 return (
                     ApplyPatchResult(
-                        status="failed", output=f"Error applying patch: {e}"
+                        status="failed",
+                        output=(
+                            f"Error applying patch to {relative}: {e}. "
+                            "The workspace may have been reverted since you last read this file — your cached version is likely stale. "
+                            "Rebuild the diff using the CURRENT file content shown below. "
+                            "Context lines must EXACTLY match. Do not wrap the diff in markdown code fences.\n\n"
+                            f"{_current_content_block(relative, original)}"
+                        ),
                     ),
                     None,
                 )
@@ -689,6 +717,133 @@ def _current_content_block(relative: str, original: str) -> str:
             + f"\n... (truncated, {len(lines)} lines total — cat the file for the full content)"
         )
     return f"=== CURRENT CONTENT OF {relative} ===\n{current}\n=== END ==="
+
+
+# Unicode lookalikes the model tends to transcribe as ASCII (or vice versa) when
+# retyping context lines. Canonicalizing both sides lets us recover the file's
+# true bytes for a context line the model quoted almost-correctly.
+_CANON_REPLACEMENTS = {
+    "—": "-",  # em dash
+    "–": "-",  # en dash
+    "‒": "-",  # figure dash
+    "‑": "-",  # non-breaking hyphen
+    "−": "-",  # minus sign
+    "‘": "'",
+    "’": "'",
+    "“": '"',
+    "”": '"',
+    "…": "...",
+    "→": "->",
+    "⇒": "=>",
+    "≈": "~",
+    "×": "x",
+    "≤": "<=",
+    "≥": ">=",
+}
+
+
+def _canonicalize_line(line: str) -> str:
+    line = unicodedata.normalize("NFKC", line)
+    for src, dst in _CANON_REPLACEMENTS.items():
+        line = line.replace(src, dst)
+    line = re.sub(r"\s", " ", line)  # any unicode whitespace -> ASCII space
+    line = re.sub(r"(?<=\d)[, ](?=\d{3})", "", line)  # digit group separators
+    return re.sub(r" +", " ", line).strip()
+
+
+def repair_diff_context(original: str, diff: str) -> str:
+    """Replace mistyped context/deletion lines in a V4A diff with the file's true bytes.
+
+    The model retypes context lines from memory; on long unicode-heavy lines it
+    drifts (em dash vs hyphen, NBSP vs space, ...), which apply_diff's matcher
+    (exact / rstrip / strip only) cannot absorb. For each ' '/'-' diff line that
+    has no exact match in the file, substitute the file line whose canonical form
+    matches - but only when that match is unambiguous. '+' lines keep the model's
+    bytes. Returns the diff unchanged when no repair was needed.
+    """
+    file_lines = original.splitlines()
+    exact = set(file_lines)
+    canon_to_bodies: dict[str, set[str]] = {}
+    for fl in file_lines:
+        canon_to_bodies.setdefault(_canonicalize_line(fl), set()).add(fl)
+
+    repaired: list[str] = []
+    changed = False
+    for line in diff.splitlines():
+        if line.startswith((" ", "-")) and not line.startswith("---"):
+            body = line[1:]
+            if body and body not in exact:
+                candidates = canon_to_bodies.get(_canonicalize_line(body))
+                if candidates is not None and len(candidates) == 1:
+                    true_body = next(iter(candidates))
+                    if true_body != body:
+                        line = line[0] + true_body
+                        changed = True
+        repaired.append(line)
+
+    if not changed:
+        return diff
+    logger.debug(
+        "repair_diff_context: substituted file bytes for mistyped context lines"
+    )
+    return "\n".join(repaired)
+
+
+# Markdown code fences and apply_patch envelope markers that models often wrap a
+# diff in. Stripping them lets an otherwise-valid hunk apply. Both are safe to
+# remove: a real V4A hunk line is always ' '/'-'/'+' prefixed, so it can never look
+# like a bare ``` fence or a '***' envelope marker.
+_FENCE_OPEN = re.compile(r"^```[^\n]*$")
+_FENCE_CLOSE = re.compile(r"^```\s*$")
+_PATCH_ENVELOPE_PREFIXES = (
+    "*** Begin Patch",
+    "*** End Patch",
+    "*** Update File:",
+    "*** Add File:",
+    "*** Delete File:",
+)
+
+
+def _strip_code_fences(diff: str) -> str:
+    """Remove a single markdown code fence wrapping the whole diff.
+
+    Conservative: strips only when the first non-blank line opens a fence at column
+    0 (``` / ```diff / ```patch) AND the last non-blank line is a bare closing
+    fence. Context lines (space-prefixed) and '+'/'-' content lines never match, so
+    a diff that legitimately edits backtick lines is left untouched.
+    """
+    lines = diff.splitlines()
+    start = 0
+    while start < len(lines) and lines[start].strip() == "":
+        start += 1
+    if start >= len(lines) or not _FENCE_OPEN.match(lines[start]):
+        return diff
+    end = len(lines) - 1
+    while end > start and lines[end].strip() == "":
+        end -= 1
+    if end <= start or not _FENCE_CLOSE.match(lines[end]):
+        return diff  # no clean closing fence — leave the diff exactly as-is
+    return "\n".join(lines[start + 1 : end])
+
+
+def _strip_patch_envelope(diff: str) -> str:
+    """Drop apply_patch envelope markers (``*** Begin Patch``, ``*** Update File:``,
+    ...) a model sometimes includes in the hunk body. Safe: hunk content lines are
+    ' '/'-'/'+' prefixed and never start with ``***``.
+    """
+    lines = diff.splitlines()
+    kept = [ln for ln in lines if not ln.startswith(_PATCH_ENVELOPE_PREFIXES)]
+    if len(kept) == len(lines):
+        return diff  # nothing stripped — preserve exact bytes
+    return "\n".join(kept)
+
+
+def normalize_diff_payload(diff: str) -> str:
+    """Strip model-output wrappers that are not part of the V4A hunk body: a
+    surrounding markdown code fence and apply_patch envelope markers. Applied to
+    every update diff before context repair / apply, covering both the built-in and
+    custom apply_patch tools."""
+    return _strip_patch_envelope(_strip_code_fences(diff))
 
 
 def count_diff_operations(diff: str) -> tuple[int, int]:
