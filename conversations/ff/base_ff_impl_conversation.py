@@ -37,6 +37,7 @@ from conversations.stage_config import (
 )
 from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
 from tools.run_tool_mode import RunToolMode
+from utils.cli_config import Usecase
 from workloads.workload_provider import Workload
 from workloads.workload_provider_bff import BFFWorkload
 
@@ -145,7 +146,7 @@ class BaseFFImplConversation(CheckpointedConversation):
         example_query_params = self.all_query_ids[_mid]
 
         # paths
-        filenames_dict = get_filenames("bff")
+        filenames_dict = get_filenames(usecase=Usecase.BFF)
         queries_path = filenames_dict["queries_path"]
         builder_path = filenames_dict["builder_path"]
         builder_cpp_path = filenames_dict["builder_cpp_path"]
@@ -166,7 +167,9 @@ class BaseFFImplConversation(CheckpointedConversation):
                 )
                 return f"Your task was to create an implementation plan. However, no implementation plan called `{base_impl_todo_filename}` exists in your workspace. Please create a plan and write it to `{base_impl_todo_filename}` before proceeding to the implementation stage."
 
-        def _base_impl_query_prompt(_exec_settings, _rt, *, idx: int, qid: str, sql: str):
+        def _base_impl_query_prompt(
+            _exec_settings, _rt, *, idx: int, qid: str, sql: str
+        ):
             return base_ff_impl_query_prompt(
                 is_first_query=(idx == 0),
                 query_id=qid,

@@ -24,10 +24,12 @@ def get_filenames(usecase: Usecase = Usecase.OLAP) -> dict[str, str]:
         builder_path = "write_impl.cpp"
         builder_cpp_path = "write_impl.cpp"
         builder_hpp_path = "bff_format.hpp"
-    else:
+    elif usecase == Usecase.OLAP:
         builder_path = "db_loader.hpp/db_loader.cpp"
         builder_cpp_path = "db_loader.cpp"
         builder_hpp_path = "db_loader.hpp"
+    else:
+        raise ValueError(f"Unsupported usecase: {usecase}")
 
     query_impl_path = "query_impl.cpp"
     args_path = "args_parser.hpp"

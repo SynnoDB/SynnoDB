@@ -10,6 +10,7 @@ from cpp_runner.prepare_repo.prepare_workspace_olap import (
     _gen_table_reads,
     replace_cpp_marked_block,
 )
+from utils.cli_config import Usecase
 from workloads.workload_provider_bff import BFFWorkloadProvider
 
 
@@ -95,7 +96,12 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         )
 
         # Agent-editable read/write/binding implementations + shared format header.
-        for filename in ("read_impl.cpp", "write_impl.cpp", "binding_impl.cpp", "bff_format.hpp"):
+        for filename in (
+            "read_impl.cpp",
+            "write_impl.cpp",
+            "binding_impl.cpp",
+            "bff_format.hpp",
+        ):
             result[filename] = (bff_template_dir / filename).read_text()
 
         # api/bff reference headers (immutable; agent programs against these).
@@ -113,7 +119,7 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         result.update(self._assemble_query_files(bff_template_dir))
 
         if storage_plan is not None:
-            result[get_plan_filename("bff")] = storage_plan
+            result[get_plan_filename(Usecase.BFF)] = storage_plan
 
         result["queries.md"] = self._assemble_queries_md()
 
@@ -129,7 +135,9 @@ class BFFPrepareWorkspace(PrepareWorkspace):
         result: dict[str, str] = {}
         for qid in self.workload_provider.query_ids:
             assert not qid.startswith("Q"), f"Query id should not start with 'Q': {qid}"
-            sql = self.workload_provider.sql_dict[self.workload_provider._query_key(qid)]
+            sql = self.workload_provider.sql_dict[
+                self.workload_provider._query_key(qid)
+            ]
             result[f"query{qid}.hpp"] = hpp_template.substitute(qid=qid)
             result[f"query{qid}.cpp"] = cpp_template.substitute(qid=qid, query_sql=sql)
         return result
