@@ -9,6 +9,7 @@ The ``scripted`` conversation has no run script, so its spec is defined here.
 """
 
 from conversations.conversation_spec import ConversationSpec, FrameworkContext
+from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_base
 from cpp_runner.prepare_repo.prepare_olap import prepare_base
 from run_add_multi_threading import SPEC as _MT_SPEC
 from run_check_sf_correctness import SPEC as _CHECK_SF_SPEC

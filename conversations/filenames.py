@@ -16,10 +16,13 @@ def get_plan_filename(usecase: Usecase = Usecase.OLAP) -> str:
 
 def get_filenames(usecase: Usecase = Usecase.OLAP) -> dict[str, str]:
     queries_path = "queries.md"
-    if True:
+    if usecase == Usecase.OLAP:
         builder_path = "db_loader.hpp/db_loader.cpp"
         builder_cpp_path = "db_loader.cpp"
         builder_hpp_path = "db_loader.hpp"
+    else:
+        raise ValueError(f"Unsupported usecase: {usecase}")
+
     query_impl_path = "query_impl.cpp"
     args_path = "args_parser.hpp"
     base_impl_todo_filename = "base_impl_todo.txt"
