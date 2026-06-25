@@ -14,11 +14,7 @@ selected with `--usecase`:
 | `--usecase` | Engine (`bespoke`) | Reference systems | Benchmarks |
 |---|---|---|---|
 | `olap` (default) | in-DB OLAP engine | `duckdb`, `umbra`, `clickhouse` | `tpch`, `ceb` |
-| `bff` | bespoke **file format** engine (reads `.bff`) | `duckdb` (on parquet) | `tpch`, `tpch_st` |
 
-For `--usecase bff` only `bespoke` and `duckdb` are valid systems (umbra/clickhouse
-cannot read the bespoke file format). BFF is always disk-backed; supply
-`--memory_budget_mb` to bound the generated engine's RAM.
 
 ## Common Commands
 

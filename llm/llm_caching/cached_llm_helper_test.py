@@ -1,14 +1,10 @@
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from agents import ModelSettings
-
 from llm.llm_caching.cached_llm_helper import (
     LLMModelHelper,
-    normalize_llm_cache_payload,
     remove_absolute_applypatch_paths,
 )
 
@@ -41,13 +37,6 @@ def make_call(path: str) -> ResponseFunctionToolCall:
 
 def make_response(*calls) -> SimpleNamespace:
     return SimpleNamespace(output=list(calls))
-
-
-class DummyCacheType:
-    def __init__(self, hash_payload: str):
-        self.response = None
-        self.hash_payload = hash_payload
-        self.llm_time = 0.0
 
 
 class TestCachedLLMHelper(unittest.TestCase):
@@ -86,58 +75,6 @@ class TestCachedLLMHelper(unittest.TestCase):
 
         # outside workspace — left for executor to reject
         self.assertEqual(rewritten.output[0].arguments, original_args)
-
-    def test_normalizes_generated_request_ids(self):
-        payload_a = (
-            'Example args:\\n1 req_1_012345abcdef "67"\\n'
-            "Output: result_req_1_012345abcdef.csv"
-        )
-        payload_b = (
-            'Example args:\\n1 req_2_fedcba543210 "67"\\n'
-            "Output: result_req_2_fedcba543210.csv"
-        )
-
-        self.assertEqual(
-            normalize_llm_cache_payload(payload_a),
-            normalize_llm_cache_payload(payload_b),
-        )
-
-    def test_hash_payload_ignores_generated_request_id_shape(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            helper = LLMModelHelper(
-                model="test-model",
-                cache_type=DummyCacheType,
-                do_not_cache=False,
-                config_kwargs={},
-                is_litellm=False,
-                working_dir=Path(tmp),
-            )
-            hash_a, payload_a = helper.hash_payload(
-                system_instructions=None,
-                input='Example args:\n1 req_1_012345abcdef "67"\n',
-                model_settings=ModelSettings(),
-                tools=[],
-                output_schema=None,
-                handoffs=[],
-                previous_response_id=None,
-                conversation_id=None,
-                prompt=None,
-            )
-            hash_b, payload_b = helper.hash_payload(
-                system_instructions=None,
-                input='Example args:\n1 req_2_fedcba543210 "67"\n',
-                model_settings=ModelSettings(),
-                tools=[],
-                output_schema=None,
-                handoffs=[],
-                previous_response_id=None,
-                conversation_id=None,
-                prompt=None,
-            )
-
-            self.assertEqual(hash_a, hash_b)
-            self.assertEqual(payload_a, payload_b)
-            self.assertIn("<REQ_ID>", payload_a)
 
 
 if __name__ == "__main__":
