@@ -4,7 +4,6 @@ from utils.cli_config import Usecase
 
 PLAN_FILENAME_BY_USECASE = {
     Usecase.OLAP: "storage_plan.txt",
-    Usecase.BFF: "file_format_plan.txt",
 }
 
 
