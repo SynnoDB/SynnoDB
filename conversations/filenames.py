@@ -17,7 +17,6 @@ def get_plan_filename(usecase: Usecase = Usecase.OLAP) -> str:
 
 def get_filenames(usecase: Usecase = Usecase.OLAP) -> dict[str, str]:
     queries_path = "queries.md"
-
     if usecase == Usecase.BFF:
         # BFF use-case: the agent implements the bespoke file-format writer in
         # write_impl.cpp, the reader in read_impl.cpp, and declares the concrete

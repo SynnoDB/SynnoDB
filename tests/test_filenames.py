@@ -2,11 +2,6 @@ from conversations.filenames import get_filenames, get_plan_filename
 from utils.cli_config import Usecase
 
 
-class UsecaseLike:
-    def __init__(self, value: str):
-        self.value = value
-
-
 def test_plan_filename_is_usecase_specific():
     assert get_plan_filename(Usecase.OLAP) == "storage_plan.txt"
     assert get_plan_filename(Usecase.BFF) == "file_format_plan.txt"
