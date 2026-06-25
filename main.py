@@ -18,7 +18,6 @@ from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
 from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
-from cpp_runner.prepare_repo.prepare_workspace_bff import BFFPrepareWorkspace
 from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
@@ -52,9 +51,7 @@ from utils.utils import (
     get_disk_db_dir,
 )
 from workloads.query_execution_cache import QueryExecutionCache
-from workloads.system_factory_bff import BFFSystemFactory
 from workloads.system_factory_olap import OLAPSystemFactory
-from workloads.workload_provider_bff import BFFWorkload, BFFWorkloadProvider
 from workloads.workload_provider_olap import (
     OLAPWorkload,
     OLAPWorkloadProvider,
@@ -77,13 +74,8 @@ duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
 create_dir_and_set_permissions(duckdb_drain_dir)
 
 
-def get_bff_bespoke_ssd_storage_dir(workspace_path: Path) -> Path:
-    return workspace_path.absolute() / "tmp"
-
 
 def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStorage:
-    if usecase == Usecase.BFF:
-        return DBStorage.SSD
     return db_storage
 
 

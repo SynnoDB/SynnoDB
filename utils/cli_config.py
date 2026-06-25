@@ -11,7 +11,6 @@ from workloads.workload_provider_olap import OLAPWorkload
 
 class Usecase(enum.Enum):
     OLAP = "olap"
-    BFF = "bff"  # bespoke file format
 
 # DEFAULT_MODEL = "gpt-5.3-codex"
 DEFAULT_MODEL = "gpt-5.4"
