@@ -120,8 +120,11 @@ class BFFPrepareWorkspace(PrepareWorkspace):
 
         if storage_plan is not None:
             result[get_plan_filename(Usecase.BFF)] = storage_plan
+<<<<<<< HEAD
 
         result["queries.md"] = self._assemble_queries_md()
+=======
+>>>>>>> 2bc1fe5 (bugfixes)
 
         result["queries.md"] = self._assemble_queries_md()
 

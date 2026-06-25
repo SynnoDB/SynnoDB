@@ -180,7 +180,9 @@ class BaseFFImplConversation(CheckpointedConversation):
                 )
                 return f"Your task was to create an implementation plan. However, no implementation plan called `{base_impl_todo_filename}` exists in your workspace. Please create a plan and write it to `{base_impl_todo_filename}` before proceeding to the implementation stage."
 
-        def _base_impl_query_prompt(_exec_settings, _rt, *, idx: int, qid: str, sql: str):
+        def _base_impl_query_prompt(
+            _exec_settings, _rt, *, idx: int, qid: str, sql: str
+        ):
             return base_ff_impl_query_prompt(
                 is_first_query=(idx == 0),
                 query_id=qid,
