@@ -51,8 +51,9 @@ class BFFSystemFactory(SystemFactory):
                     pin_worker=val_pin_worker,
                     pin_core=val_pin_core,
                     num_threads=general_system_config.num_threads,
-                    db_storage=DBStorage.IN_MEMORY,  # does not matter for us, we read from parquet
+                    db_storage=DBStorage.IN_MEMORY,
                     disk_db_dir=exec_settings.disk_db_dir,
+                    run_duckdb_on_parquet=True,
                 )
             return self.duckdb_cons[exec_settings.scale_factor]
         else:
