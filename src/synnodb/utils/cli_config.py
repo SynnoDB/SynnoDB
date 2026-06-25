@@ -74,6 +74,9 @@ class RunConfig:
         None  # target scale factor for the check-sf correctness conversation
     )
     usecase: Usecase = Usecase.OLAP
+    workspace_dir: str | None = (
+        None  # output/workspace dir; None -> settings.get_workspace_dir() (local ./output)
+    )
 
 
 def add_common_args(
@@ -117,6 +120,15 @@ def add_common_args(
     include_memory_budget_mb: bool = False,
     include_include_mem_budget_for_in_mem_in_hashes: bool = False,
 ) -> None:
+    # Always available: where the run's git-tracked output lives. Local disk by
+    # default (the snapshotter does heavy git ops); avoid putting it on NFS.
+    parser.add_argument(
+        "--workspace",
+        dest="workspace_dir",
+        default=None,
+        help="Output/workspace directory (default: local ./output).",
+    )
+
     if include_model:
         parser.add_argument(
             "--model",

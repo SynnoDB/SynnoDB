@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
-import os
 from dataclasses import dataclass
 from typing import Any
 
-from dotenv import load_dotenv
+from synnodb import settings
 
 # These enums resolve without SYNNO_DATA_DIR (the module-level assert was made
 # lazy), so importing synnodb stays config-free. The heavy stage modules
@@ -66,6 +65,7 @@ class SynnoConfig:
     disable_repo_sync: bool = False
     notify: bool = False
     do_not_cache: bool = False
+    workspace: str | None = None       # run output dir; None -> local ./output
     extra_flags: tuple[str, ...] = ()  # escape hatch for any unmodelled CLI flag
 
     def __post_init__(self) -> None:
@@ -80,6 +80,8 @@ class SynnoConfig:
             "--db_storage", self.db_storage.value,
             "--queries", self.queries,
         ]
+        if self.workspace:
+            argv += ["--workspace", self.workspace]
         for name, on in (
             ("auto_u", self.auto_confirm),
             ("auto_finish", self.auto_finish),
@@ -170,10 +172,8 @@ class SynnoDB:
         **overrides: Any,
     ):
         # The stage modules (imported lazily in run()) still need SYNNO_DATA_DIR;
-        # resolve it now so the first stage call doesn't fail at import.
-        load_dotenv(env_file)
-        if data_dir is not None:
-            os.environ["SYNNO_DATA_DIR"] = data_dir
+        # configure it now so the first stage call doesn't fail at import.
+        settings.configure(data_dir=data_dir, env_file=env_file)
         base = config or SynnoConfig()
         self.config = dataclasses.replace(base, **overrides) if overrides else base
 

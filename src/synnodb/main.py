@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
 from synnodb.conversations.filenames import get_filenames, get_plan_filename
@@ -59,19 +58,9 @@ from synnodb.workloads.workload_provider_olap import (
 
 logger = logging.getLogger(__name__)
 
-# load environment variables
-load_dotenv()
-
-synnodb_data_dir_tmp = os.getenv("SYNNO_DATA_DIR", default=None)
-assert synnodb_data_dir_tmp is not None, (
-    "SYNNO_DATA_DIR environment variable is not set"
-)
-synnodb_data_dir = Path(synnodb_data_dir_tmp)
-
-log_dir = synnodb_data_dir / "logs" / "logfiles"
-create_dir_and_set_permissions(log_dir)
-duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
-create_dir_and_set_permissions(duckdb_drain_dir)
+# Configuration (SYNNO_DATA_DIR, paths) is resolved lazily via settings so that
+# importing this module has no side effects (no assert, no directory creation).
+from synnodb import settings
 
 
 def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStorage:
@@ -86,12 +75,12 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # Assemble Paths
     #####
     # workspace
-    workspace_path = Path("./output")
-    workspace_path.mkdir(exist_ok=True)
+    workspace_path = settings.get_workspace_dir(getattr(args, "workspace_dir", None))
+    workspace_path.mkdir(parents=True, exist_ok=True)
 
     # cache paths
 
-    cache_dir = synnodb_data_dir / "cache"
+    cache_dir = settings.get_data_dir() / "cache"
     create_dir_and_set_permissions(cache_dir)
 
     prepare_workspace_cache_dir = cache_dir / "prepare_workspace"
@@ -120,7 +109,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     )
 
     # conversations dir
-    conversations_dir = synnodb_data_dir / "conversations"
+    conversations_dir = settings.get_data_dir() / "conversations"
 
     usecase = args.usecase
 
@@ -131,7 +120,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         raise Exception(f"Unsupported usecase: {usecase}")
 
     parquet_dir = (
-        synnodb_data_dir
+        settings.get_data_dir()
         / "workloads"
         / args.benchmark.value
         / f"{dataset_name}_parquet"
@@ -301,7 +290,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             wandb_run_id=getattr(args, "wandb_run_id", None),
             system_name=socket.gethostname(),
         ),
-        DuckDBDrain(db_path=duckdb_drain_dir / f"{args.run_name}.duckdb"),
+        DuckDBDrain(db_path=settings.duckdb_drain_dir() / f"{args.run_name}.duckdb"),
     ]
     if args.log_to_wandb:
         data_drains.append(WandbDrain())
@@ -698,7 +687,7 @@ def run_conv_wrapper(
         args.wandb_run_id = None
 
     log_filename = f"{run_name}.log"
-    setup_logging(logging.DEBUG, log_dir / log_filename)
+    setup_logging(logging.DEBUG, settings.log_dir() / log_filename)
 
     if args.notify:
         logger.info(
