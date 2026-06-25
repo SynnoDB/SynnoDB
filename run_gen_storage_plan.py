@@ -5,7 +5,7 @@ from pathlib import Path
 # add parent to path
 sys.path.append(Path(__file__).parent.as_posix())
 from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_storage_plan
+from cpp_runner.prepare_repo.prepare_olap import prepare_storage_plan
 from main import run_conv_wrapper
 from run_gen_base_impl import base_args, base_args_extract
 from utils.cli_config import RunConfig, add_common_args

@@ -86,7 +86,7 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             result[filename] = file_content
 
         if storage_plan is not None:
-            result[get_plan_filename("olap")] = storage_plan
+            result[get_plan_filename()] = storage_plan
 
         sql_template_list = [
             f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"

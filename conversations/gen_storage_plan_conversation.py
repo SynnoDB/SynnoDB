@@ -41,7 +41,7 @@ class GenStoragePlanConversation(CheckpointedConversation):
             self.run_stats_collector.debug_logger = None
 
     def assemble_stages(self):
-        filenames = get_filenames("olap")
+        filenames = get_filenames()
         queries_filename = filenames["queries_path"]
         storage_plan_filename = filenames["plan_filename"]
 
