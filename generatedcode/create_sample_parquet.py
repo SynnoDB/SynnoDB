@@ -26,6 +26,19 @@ def write(name, columns):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
 
+    write("region", {
+        "r_regionkey": pa.array([0, 1, 2], pa.int32()),
+        "r_name": ["AFRICA", "AMERICA", "ASIA"],
+        "r_comment": ["sample region 0", "sample region 1", "sample region 2"],
+    })
+
+    write("nation", {
+        "n_nationkey": pa.array([1, 2, 3], pa.int32()),
+        "n_name": ["ALGERIA", "BRAZIL", "CHINA"],
+        "n_regionkey": pa.array([0, 1, 2], pa.int32()),
+        "n_comment": ["sample nation 1", "sample nation 2", "sample nation 3"],
+    })
+
     write("customer", {
         "c_custkey": pa.array([1, 2, 3], pa.int64()),
         "c_name": ["Customer#000000001", "Customer#000000002", "Customer#000000003"],
@@ -78,6 +91,14 @@ def main():
         "p_container": ["SM BOX", "MED BAG", "LG CASE"],
         "p_retailprice": money(["901.00", "902.00", "903.00"]),
         "p_comment": ["sample part 1", "sample part 2", "sample part 3"],
+    })
+
+    write("partsupp", {
+        "ps_partkey": pa.array([1, 1, 2, 3], pa.int64()),
+        "ps_suppkey": pa.array([1, 2, 1, 3], pa.int64()),
+        "ps_availqty": pa.array([100, 200, 300, 400], pa.int32()),
+        "ps_supplycost": money(["11.00", "12.50", "21.00", "31.25"]),
+        "ps_comment": ["sample partsupp 1", "sample partsupp 2", "sample partsupp 3", "sample partsupp 4"],
     })
 
     write("supplier", {

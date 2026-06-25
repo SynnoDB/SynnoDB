@@ -645,6 +645,21 @@ static TableSpec make_customer_spec(const arrow::Table* table) {
     return ts;
 }
 
+static TableSpec make_nation_spec(const arrow::Table* table) {
+    TableSpec ts;
+    ts.table_name      = "nation";
+    ts.sort_col_idx    = -1;
+    ts.sort_ascending  = true;
+    ts.sort_col2_idx   = -1;
+    ts.sort2_ascending = true;
+
+    ts.cols.push_back({"n_nationkey", find_col(table,"n_nationkey"), CsfEncoding::RAW,        4, 0xFF, false, 1, false,"",false,false,false,0});
+    ts.cols.push_back({"n_name",      find_col(table,"n_name"),      CsfEncoding::STRING_RAW, 0, 0xFF, false, 1, false,"",false,false,false,0});
+    ts.cols.push_back({"n_regionkey", find_col(table,"n_regionkey"), CsfEncoding::RAW,        4, 0xFF, false, 1, false,"",false,false,false,0});
+    ts.cols.push_back({"n_comment",   find_col(table,"n_comment"),   CsfEncoding::STRING_RAW, 0, 0xFF, false, 1, false,"",false,false,false,0});
+    return ts;
+}
+
 static TableSpec make_part_spec(const arrow::Table* table) {
     TableSpec ts;
     ts.table_name      = "part";
@@ -662,6 +677,36 @@ static TableSpec make_part_spec(const arrow::Table* table) {
     ts.cols.push_back({"p_container",   find_col(table,"p_container"),   CsfEncoding::DICT_BITPACK, 0, 3,    false, 1,   false,"",false,false,false,0});
     ts.cols.push_back({"p_retailprice", find_col(table,"p_retailprice"), CsfEncoding::FOR_BITPACK,  8, 0xFF, false, 100, false,"",false,false,false,0});
     ts.cols.push_back({"p_comment",     find_col(table,"p_comment"),     CsfEncoding::STRING_RAW,   0, 0xFF, false, 1,   false,"",false,false,false,0});
+    return ts;
+}
+
+static TableSpec make_partsupp_spec(const arrow::Table* table) {
+    TableSpec ts;
+    ts.table_name      = "partsupp";
+    ts.sort_col_idx    = find_col(table, "ps_partkey");
+    ts.sort_ascending  = true;
+    ts.sort_col2_idx   = find_col(table, "ps_suppkey");
+    ts.sort2_ascending = true;
+
+    ts.cols.push_back({"ps_partkey",    find_col(table,"ps_partkey"),    CsfEncoding::FOR_BITPACK, 8, 0xFF, false, 1,   false,"",false,false,false,0});
+    ts.cols.push_back({"ps_suppkey",    find_col(table,"ps_suppkey"),    CsfEncoding::FOR_BITPACK, 8, 0xFF, false, 1,   false,"",false,false,false,0});
+    ts.cols.push_back({"ps_availqty",   find_col(table,"ps_availqty"),   CsfEncoding::FOR_BITPACK, 8, 0xFF, false, 1,   false,"",false,false,false,0});
+    ts.cols.push_back({"ps_supplycost", find_col(table,"ps_supplycost"), CsfEncoding::FOR_BITPACK, 8, 0xFF, false, 100, false,"",false,false,false,0});
+    ts.cols.push_back({"ps_comment",    find_col(table,"ps_comment"),    CsfEncoding::STRING_RAW,   0, 0xFF, false, 1,   false,"",false,false,false,0});
+    return ts;
+}
+
+static TableSpec make_region_spec(const arrow::Table* table) {
+    TableSpec ts;
+    ts.table_name      = "region";
+    ts.sort_col_idx    = -1;
+    ts.sort_ascending  = true;
+    ts.sort_col2_idx   = -1;
+    ts.sort2_ascending = true;
+
+    ts.cols.push_back({"r_regionkey", find_col(table,"r_regionkey"), CsfEncoding::RAW,        4, 0xFF, false, 1, false,"",false,false,false,0});
+    ts.cols.push_back({"r_name",      find_col(table,"r_name"),      CsfEncoding::STRING_RAW, 0, 0xFF, false, 1, false,"",false,false,false,0});
+    ts.cols.push_back({"r_comment",   find_col(table,"r_comment"),   CsfEncoding::STRING_RAW, 0, 0xFF, false, 1, false,"",false,false,false,0});
     return ts;
 }
 
@@ -1183,6 +1228,10 @@ BffDataset* write_bff_from_parquet_tables(
         write_table("customer", t, spec, &ord);
     }
     {
+        auto t = tables->nation.get();
+        write_table("nation", t, make_nation_spec(t), nullptr);
+    }
+    {
         auto t = tables->part.get();
         auto spec = make_part_spec(t);
         std::vector<int64_t> ord(t->num_rows());
@@ -1190,6 +1239,14 @@ BffDataset* write_bff_from_parquet_tables(
         sort_part(ord, t);
         spec.sort_col_idx = -1;
         write_table("part", t, spec, &ord);
+    }
+    {
+        auto t = tables->partsupp.get();
+        write_table("partsupp", t, make_partsupp_spec(t), nullptr);
+    }
+    {
+        auto t = tables->region.get();
+        write_table("region", t, make_region_spec(t), nullptr);
     }
     {
         auto t = tables->supplier.get();

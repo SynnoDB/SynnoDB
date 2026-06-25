@@ -12,8 +12,11 @@ struct ParquetTables {
 
     ArrowTable customer;
     ArrowTable lineitem;
+    ArrowTable nation;
     ArrowTable orders;
     ArrowTable part;
+    ArrowTable partsupp;
+    ArrowTable region;
     ArrowTable supplier;
 };
 
