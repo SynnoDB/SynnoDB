@@ -2,7 +2,6 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from cpp_runner.compiler.compiler_factory_bff import BFFCompilerFactory
 from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from observability.logging.run_stats_collector import RunStatsCollector
 from synth_framework.git_snapshotter import GitSnapshotter
@@ -33,9 +32,7 @@ class CompileTool:
         ] = None,  # restrict to 10000 chars ~ 2.5 Thousand tokens
     ) -> None:
         self.cwd = cwd
-        if usecase == Usecase.BFF:
-            factory = BFFCompilerFactory()
-        else:
+        if usecase == Usecase.OLAP:
             factory = OLAPCompilerFactory(db_storage=db_storage)
         self.compiler = factory.make_compiler(
             cwd,
