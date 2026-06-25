@@ -119,5 +119,9 @@ class DebugLogger:
     # ── Internal ────────────────────────────────────────────────────────────
 
     def _append(self, text: str) -> None:
-        with open(self._path, "a") as f:
-            f.write(text)
+        try:
+            with open(self._path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(text)
+        except Exception:
+            # Best-effort debug logging: never fail the run due to debug I/O.
+            pass
