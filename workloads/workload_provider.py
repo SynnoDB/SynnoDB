@@ -1,8 +1,6 @@
 import enum
-import random
 from abc import abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 
 from tools.run_tool_mode import RunToolMode
 from utils import utils
@@ -145,10 +143,24 @@ def format_args_string(
     return args_list
 
 
-def format_args_element(qid_str: str, placeholders: dict) -> str:
-    # generate random req-id
-    # req_id = date_time + random int, to ensure uniqueness across different runs and queries
-    req_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
+def _stable_req_id(
+    qid_str: str, placeholders: dict, request_disambiguator: str | int | None = None
+) -> str:
+    payload = utils.stable_json(
+        {
+            "query_id": qid_str,
+            "placeholders": placeholders,
+            "request_disambiguator": request_disambiguator,
+        }
+    )
+    safe_qid = "".join(c if c.isalnum() else "_" for c in qid_str).strip("_")
+    return f"req_{safe_qid or 'query'}_{utils.sha256(payload)[:12]}"
+
+
+def format_args_element(
+    qid_str: str, placeholders: dict, request_disambiguator: str | int | None = None
+) -> str:
+    req_id = _stable_req_id(qid_str, placeholders, request_disambiguator)
 
     # Don't add double quotes to IN lists (they start with '(')
     formatted_values = []
