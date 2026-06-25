@@ -1,9 +1,17 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from llm.llm_caching.cached_llm_helper import remove_absolute_applypatch_paths
+from agents import ModelSettings
+
+from llm.llm_caching.cached_llm_helper import (
+    LLMModelHelper,
+    normalize_llm_cache_payload,
+    remove_absolute_applypatch_paths,
+)
+from utils.utils import dump_pickle
 
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
 
@@ -34,6 +42,13 @@ def make_call(path: str) -> ResponseFunctionToolCall:
 
 def make_response(*calls) -> SimpleNamespace:
     return SimpleNamespace(output=list(calls))
+
+
+class DummyCacheType:
+    def __init__(self, hash_payload: str):
+        self.response = None
+        self.hash_payload = hash_payload
+        self.llm_time = 0.0
 
 
 class TestCachedLLMHelper(unittest.TestCase):
@@ -72,6 +87,89 @@ class TestCachedLLMHelper(unittest.TestCase):
 
         # outside workspace — left for executor to reject
         self.assertEqual(rewritten.output[0].arguments, original_args)
+
+    def test_normalizes_generated_request_ids(self):
+        legacy_payload = (
+            'Example args:\\n1 20260625_143239_29807 "67"\\n'
+            "Output: result_20260625_143239_29807.csv"
+        )
+        stable_payload = (
+            'Example args:\\n1 req_1_012345abcdef "67"\\n'
+            "Output: result_req_1_012345abcdef.csv"
+        )
+
+        self.assertEqual(
+            normalize_llm_cache_payload(legacy_payload),
+            normalize_llm_cache_payload(stable_payload),
+        )
+
+    def test_resolve_cache_path_finds_legacy_equivalent_payload(self):
+        legacy_payload = 'Example args:\\n1 20260625_143239_29807 "67"\\n'
+        stable_payload = 'Example args:\\n1 req_1_012345abcdef "67"\\n'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            legacy_path = cache_dir / "legacy.pkl"
+            canonical_path = cache_dir / "canonical.pkl"
+            dump_pickle(
+                legacy_path,
+                DummyCacheType(hash_payload=legacy_payload),
+                do_not_cache=False,
+            )
+
+            helper = LLMModelHelper(
+                model="test-model",
+                cache_type=DummyCacheType,
+                do_not_cache=False,
+                config_kwargs={},
+                is_litellm=False,
+                working_dir=cache_dir,
+            )
+            resolved = helper.resolve_cache_path(
+                cache_dir=cache_dir,
+                cache_path=canonical_path,
+                hash_payload=normalize_llm_cache_payload(stable_payload),
+            )
+
+            self.assertEqual(resolved, canonical_path)
+            self.assertTrue(canonical_path.exists())
+
+    def test_hash_payload_ignores_generated_request_id_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = LLMModelHelper(
+                model="test-model",
+                cache_type=DummyCacheType,
+                do_not_cache=False,
+                config_kwargs={},
+                is_litellm=False,
+                working_dir=Path(tmp),
+            )
+            legacy_hash, legacy_payload = helper.hash_payload(
+                system_instructions=None,
+                input='Example args:\n1 20260625_143239_29807 "67"\n',
+                model_settings=ModelSettings(),
+                tools=[],
+                output_schema=None,
+                handoffs=[],
+                previous_response_id=None,
+                conversation_id=None,
+                prompt=None,
+            )
+            stable_hash, stable_payload = helper.hash_payload(
+                system_instructions=None,
+                input='Example args:\n1 req_1_012345abcdef "67"\n',
+                model_settings=ModelSettings(),
+                tools=[],
+                output_schema=None,
+                handoffs=[],
+                previous_response_id=None,
+                conversation_id=None,
+                prompt=None,
+            )
+
+            self.assertEqual(legacy_hash, stable_hash)
+            self.assertEqual(legacy_payload, stable_payload)
+            self.assertIn("<REQ_ID>", stable_payload)
 
 
 if __name__ == "__main__":

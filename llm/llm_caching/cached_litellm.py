@@ -214,9 +214,13 @@ class CachedLitellmModel(LitellmModel):
 
         cache_path = self._cache_path_for(req_hash)
 
-        if cache_path.exists():
+        cache_hit_path = self.llm_model_helper.resolve_cache_path(
+            self.cache_dir, cache_path, hash_payload
+        )
+
+        if cache_hit_path is not None:
             resp, saved_cost, self.llm_was_cached = (
-                self.llm_model_helper.load_llm_entry_from_cache(cache_path)
+                self.llm_model_helper.load_llm_entry_from_cache(cache_hit_path)
             )
             if resp is not None:
                 self.total_saved += saved_cost
@@ -245,7 +249,7 @@ class CachedLitellmModel(LitellmModel):
         if self.stop_on_cache_miss:
             # logger.debug(hash_payload)
             raise Exception(
-                "Stop on cache miss. Did not found in cache: " + str(cache_path)
+                f"Stop on cache miss. Did not found in cache: {cache_path}\nPayload hash: {req_hash}\nPayload: {hash_payload}"
             )
 
         # add cache control injection points for Anthropic models to enable prompt caching
