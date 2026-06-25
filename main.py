@@ -681,9 +681,8 @@ def run_conv_wrapper(
     if args.log_to_wandb:
         # add weave (wandb) tracing in addition to openai tracing
         configure_weave_cache_dirs()
-        import weave
-
         import wandb
+        import weave
 
         entity = os.getenv("WANDB_ENTITY", "learneddb")
         project = os.getenv("WANDB_PROJECT", "bespoke-olap-internal")
