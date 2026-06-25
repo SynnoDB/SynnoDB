@@ -5,6 +5,7 @@ from conversations.checkpointed_conversation import CheckpointedConversation
 from conversations.ff.prompts_gen import gen_ff_plan_prompt
 from conversations.filenames import get_filenames
 from conversations.stage_config import StaticStageConfig
+from utils.cli_config import Usecase
 from workloads.workload_provider import Workload
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class GenFFPlanConversation(CheckpointedConversation):
         await self._run_stages(self.assemble_stages())
 
     def assemble_stages(self):
-        filenames = get_filenames("bff")
+        filenames = get_filenames(Usecase.BFF)
         queries_filename = filenames["queries_path"]
         file_format_plan_filename = filenames["plan_filename"]
 
