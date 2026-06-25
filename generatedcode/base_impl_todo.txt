@@ -1,0 +1,1144 @@
+================================================================================
+  BASE IMPLEMENTATION TODO PLAN
+  Workload-Specialized Columnar Segment File (CSF) Format
+  TPC-H 8-Query Workload  |  Tables: lineitem, orders, customer, part, supplier
+================================================================================
+
+This file drives the step-by-step implementation of the BFF write and read
+phases.  Each numbered step can be checked off as DONE.  Steps are ordered so
+that each one can compile and run before the next is started.  Conceptual notes
+are embedded inline for context.
+
+--------------------------------------------------------------------------------
+CONCEPTUAL OVERVIEW (read before starting)
+--------------------------------------------------------------------------------
+
+FILE FORMAT NAME: CSF (Columnar Segment File).
+One .csf file per table, stored under the bff_dir dataset directory.
+
+Key design pillars:
+  * Fully columnar (DSM): all values for a column are stored together within
+    each 131072-row segment, enabling column projection to skip unneeded bytes.
+  * Row-group ("segment") = 131072 rows.  At SF=1: lineitem has ~46 segs,
+    orders ~12, customer ~2, part ~2, supplier 1 (tiny).
+  * Per-column bit-packed / dictionary / delta / FOR encodings minimize
+    bytes/value far below Parquet's generic encoding.
+  * LZ4 compression applied per column block after encoding.
+  * File footer at EOF (streaming writes).  Footer loaded once, pinned in RAM.
+    Footer holds: schema, global dicts, segment offset table, zone maps,
+    Bloom filters, auxiliary lookup tables.  Total resident RAM < 1 MB at SF=100.
+  * Tables are sorted (clustered) by a workload-optimal key:
+      lineitem  -> l_shipdate ASC  (Q1 upper-bound prune + Q6 lower-bound prune)
+      orders    -> o_orderdate ASC  (Q2 96% prune on 3-month window)
+      customer  -> (c_mktsegment ASC, c_acctbal DESC)  (Q3 80% + Q8 50% prune)
+      part      -> (p_brand ASC, p_container ASC)  (Q4 99% prune)
+      supplier  -> unsorted  (Q5 LIKE predicate has no clustering benefit)
+  * Predicates evaluated on encoded values wherever possible (dict code compare,
+    uint8 IN-list, zone-map skip, Bloom filter skip).
+  * Late materialization: predicate columns read and filtered first;
+    projection columns gathered only for rows that pass.
+
+Arrow type dispatch note:
+  Parquet logical types (Decimal, Date, Int64, String) may map to different
+  Arrow C++ type IDs at runtime:
+    - Decimal(15,2) -> arrow::Decimal128Array (scale=2)  OR arrow::Int64Array
+    - Date          -> arrow::Date32Array (days since 1970-01-01)
+    - Int64/Int32   -> arrow::Int64Array / arrow::Int32Array
+    - String/Binary -> arrow::StringArray (LargeStringArray possible)
+  The writer must dispatch on arrow::Type::type_id at runtime and convert
+  each value to the chosen persisted physical type.  Do NOT assume the Arrow
+  type matches the SQL logical type.
+
+Epoch note:
+  The file-format plan uses "days since 1992-01-01" for date columns.
+  Arrow Date32 gives "days since 1970-01-01" (Unix epoch).
+  Conversion: csf_date = arrow_date32 - days_1970_to_1992  (= 8035).
+  Store the epoch offset in the schema section of the footer so the reader
+  can reconstruct absolute dates if needed.
+
+--------------------------------------------------------------------------------
+PHASE 0 — PRELIMINARY SETUP
+--------------------------------------------------------------------------------
+
+[ ] 0.1  Review and understand all BFF API headers:
+         read_api.hpp, write_api.hpp, ingest_types.hpp, filter_pushdown.hpp.
+         Note which structs must be populated (BffFooterInfo, BffTableInfo,
+         BffRowGroupInfo, BffPageInfo, BffColumnInfo, BffColumnStats,
+         BffScanPlan, BffBuffer).
+         Note the opaque handles: BffDataset, BffTable, BffFooter are forward-
+         declared in ingest_types.hpp and defined in bff_format.hpp.
+
+[ ] 0.2  Review parquet_reader.hpp: confirm ParquetTables has fields:
+         customer, lineitem, orders, part, supplier  (all shared_ptr<arrow::Table>).
+         Verify Arrow Table API: table->column(i), chunked_array->chunk(j),
+         array->type_id(), StringArray::GetView(), Int64Array::Value(i), etc.
+
+[ ] 0.3  Inspect Arrow runtime type IDs for each table/column combination
+         by adding a temporary diagnostic dump in write_impl.cpp that prints
+         type_id names before encoding.  This confirms the Decimal128 vs Int64
+         dispatch and Date32 layout.  Remove after confirming.
+
+[ ] 0.4  Verify the 5 .parquet files exist and can be read.  Confirm SF of the
+         dataset (row counts: lineitem ~6M, orders ~1.5M, customer ~150K,
+         part ~200K, supplier ~10K at SF=1).
+
+--------------------------------------------------------------------------------
+PHASE 1 — bff_format.hpp  (DATA STRUCTURES)
+--------------------------------------------------------------------------------
+
+NOTE: This is the most important file.  All on-disk structures, in-memory
+handles, and format constants live here.  The read and write implementations
+both include it.  Define everything needed before touching write_impl.cpp.
+
+[ ] 1.1  Define CSF format constants in bff_format.hpp:
+
+         constexpr uint64_t CSF_MAGIC   = 0x435346763030303155ULL;  // "CSFv0001"
+         constexpr uint32_t CSF_VERSION  = 1;
+         constexpr uint32_t SEGMENT_SIZE = 131072;  // rows per segment
+         constexpr uint32_t PAGE_BYTES   = 65536;   // target page/block size
+         constexpr int32_t  DATE_EPOCH_OFFSET = 8035;  // days from 1970 to 1992-01-01
+
+[ ] 1.2  Define the on-disk FileHeader struct (64 bytes, packed, at offset 0):
+
+         struct CsfFileHeader {
+             uint8_t  magic[8];       // "CSFv0001"
+             uint32_t schema_crc32;
+             uint32_t num_columns;
+             uint64_t num_segments;
+             uint32_t segment_size;   // always SEGMENT_SIZE
+             int16_t  clustering_col; // column index, -1 if unsorted
+             uint8_t  clustering_dir; // 0=asc, 1=desc
+             uint8_t  flags;          // bit0=has_nulls
+             uint64_t footer_offset;
+             uint32_t footer_length;
+             uint8_t  reserved[18];
+         } __attribute__((packed));   // must be exactly 64 bytes
+
+[ ] 1.3  Define column block encoding enum and block header struct:
+
+         enum class CsfEncoding : uint8_t {
+             RAW         = 0,  // plain little-endian values
+             FOR_BITPACK = 1,  // frame-of-reference + bit-packed deltas
+             DELTA_BP    = 2,  // first_value + bit-packed deltas (sorted cols)
+             DICT_BITPACK= 3,  // global dictionary code, bit-packed
+             RLE         = 4,  // (value[4], count[4]) pairs
+             STRING_RAW  = 5,  // uint32 offset array + LZ4 payload
+         };
+
+         struct CsfBlockHeader {         // 16 bytes, uncompressed, prepended to each col block
+             uint16_t magic;             // 0xC5F0
+             uint8_t  encoding;          // CsfEncoding
+             uint8_t  bit_width;         // bits/value for bit-packed, 0 otherwise
+             uint32_t compressed_bytes;  // size of LZ4 payload following headers
+             uint32_t raw_bytes;         // size after LZ4 decompression
+             uint32_t num_values;        // logical row count in this block
+         } __attribute__((packed));
+
+[ ] 1.4  Define encoding-specific sub-headers (written immediately after CsfBlockHeader):
+
+         struct CsfForHeader   { uint32_t base; } __attribute__((packed));       // FOR base value (or int32_t for signed)
+         struct CsfDeltaHeader { uint32_t first; uint32_t base_delta; } __attribute__((packed));
+         struct CsfDictHeader  { uint16_t dict_id; } __attribute__((packed));
+         // RAW and RLE have no sub-header.
+         // STRING_RAW sub-header:
+         struct CsfStringHeader {
+             uint32_t offset_compressed_bytes;   // size of LZ4-compressed offset block
+             uint32_t payload_compressed_bytes;  // size of LZ4-compressed payload block
+         } __attribute__((packed));
+
+[ ] 1.5  Define in-memory column metadata struct (used during write and by footer):
+
+         struct CsfColumnMeta {
+             std::string name;
+             uint8_t     encoding;      // CsfEncoding
+             uint8_t     phys_width;    // bytes per decoded value (0 for bit-packed/string)
+             uint8_t     bit_width;     // bits per value (for bit-packed encodings)
+             uint8_t     dict_id;       // index into global dict table (0xFF if none)
+             bool        nullable;
+             bool        synthetic_prefix; // true for c_name/s_name uint32-suffix trick
+             bool        is_split_phone;   // true for c_phone_cc / c_phone_rest
+             int32_t     scale;         // for decimals stored as integers (e.g., 100)
+             int32_t     date_epoch_offset; // non-zero for date columns
+         };
+
+[ ] 1.6  Define zone map structures for each table (per-segment metadata in footer):
+
+         struct LineitemZoneMap {
+             uint16_t shipdate_min, shipdate_max;   // CSF epoch days
+             uint8_t  returnflag_bitset;             // bit i = flag code i present
+             uint8_t  linestatus_bitset;             // bit 0='F', bit 1='O'
+             uint8_t  shipmode_bitset;               // 7 bits, one per mode code
+             uint8_t  discount_min, discount_max;    // raw uint8 codes [0,10]
+             uint8_t  quantity_min, quantity_max;    // raw uint8 [1,50]
+             uint8_t  pad[3];                        // align to 16 bytes
+         };
+
+         struct OrdersZoneMap {
+             uint16_t orderdate_min, orderdate_max;  // CSF epoch days
+             uint8_t  orderpriority_bitset;           // 5 bits
+             uint8_t  pad[3];
+         };
+
+         struct CustomerZoneMap {
+             uint8_t  mktsegment_bitset;   // 5 bits
+             uint8_t  pad1;
+             int32_t  acctbal_min, acctbal_max; // scaled x100
+             uint32_t phone_cc_bitset;     // 25 bits (codes 10-34)
+         };
+
+         struct PartZoneMap {
+             uint32_t brand_bitset;        // 25 bits
+             uint64_t container_bitset;    // 40 bits
+             // p_type: 150-bit bitset stored as uint8_t[19] (rounds to 19 bytes for 152 bits)
+             uint8_t  type_bitset[19];
+             uint8_t  pad[5];
+             // p_name Bloom filter: 512 bits = 64 bytes
+             uint8_t  name_bloom[64];
+             uint32_t retailprice_min, retailprice_max;  // scaled x100
+         };
+
+         struct SupplierZoneMap {
+             int32_t  acctbal_min, acctbal_max;  // scaled x100
+             // trigram Bloom filter for s_comment: 2048 bits = 256 bytes
+             uint8_t  comment_bloom[256];
+         };
+
+[ ] 1.7  Define in-memory global dictionary struct:
+
+         struct CsfDict {
+             uint8_t  dict_id;          // slot index referenced by column meta
+             std::string col_name;
+             std::vector<std::string> entries;  // entry[code] = string value
+         };
+
+[ ] 1.8  Define the in-memory per-table footer state (extend BffTable to hold this):
+
+         struct CsfTableFooter {
+             std::string table_name;
+             uint64_t    num_rows;
+             uint32_t    num_segments;
+             std::vector<CsfColumnMeta> columns;
+             std::vector<CsfDict>       dicts;           // global dictionaries
+             std::vector<uint64_t>      seg_file_offsets;  // byte offset of each segment
+             // Per-segment per-column block offsets (relative to segment start).
+             // Indexed as col_block_offsets[seg_id * num_cols + col_id].
+             std::vector<uint64_t>      col_block_offsets;
+             // Per-table zone maps (one of these will be populated per table):
+             std::vector<LineitemZoneMap>  lineitem_zmaps;
+             std::vector<OrdersZoneMap>    orders_zmaps;
+             std::vector<CustomerZoneMap>  customer_zmaps;
+             std::vector<PartZoneMap>      part_zmaps;
+             std::vector<SupplierZoneMap>  supplier_zmaps;
+             // p_type suffix lookup for part table (150 entries x 10 chars)
+             std::vector<std::string>      ptype_suffix_cache;
+         };
+
+[ ] 1.9  Extend BffDataset, BffTable, BffFooter in bff_format.hpp to hold
+         the real per-table CSF footer state:
+
+         struct BffFooter {
+             BffFooterInfo info;          // existing API-required struct
+             // Extended CSF state:
+             std::unordered_map<std::string, CsfTableFooter> tables;  // name -> footer
+         };
+
+         struct BffDataset {
+             std::string root_path;
+             BffOpenOptions options;
+             bool has_footer = false;
+             BffFooter footer;
+         };
+
+         struct BffTable {
+             BffDataset* dataset = nullptr;
+             BffTableInfo info;
+             // Extended CSF state:
+             std::string table_name;
+             std::string file_path;   // full path to .csf file
+             int fd = -1;             // open file descriptor (or -1)
+             CsfTableFooter* csf_footer = nullptr;  // pointer into dataset->footer.tables
+         };
+
+--------------------------------------------------------------------------------
+PHASE 2 — WRITER UTILITIES  (write_impl.cpp + new helper files)
+--------------------------------------------------------------------------------
+
+NOTE: All encoding helpers can live in a new csf_encode.hpp / csf_encode.cpp.
+The external sort logic can live in csf_sort.hpp / csf_sort.cpp.
+Keep write_impl.cpp as the top-level orchestrator.
+
+[ ] 2.1  Implement Arrow value extraction helpers (csf_encode.hpp):
+
+         For each Arrow column, implement a generic "extract row value" function
+         that handles runtime type dispatch:
+           extract_int64(array, row_idx)     -> int64_t
+           extract_decimal_as_int64(array, row_idx, scale) -> int64_t (scaled)
+           extract_date32_csf(array, row_idx) -> uint16_t (CSF epoch days)
+           extract_string_view(array, row_idx) -> std::string_view
+
+         The decimal extractor must check arrow type_id:
+           if type_id == DECIMAL128: cast to Decimal128Array, read 128-bit, /scale
+           if type_id == INT64:      cast to Int64Array, value already scaled
+           if type_id == DOUBLE:     cast to DoubleArray, round to int (value*100)
+         This avoids hard-coding assumptions about Arrow's internal representation.
+
+[ ] 2.2  Implement bit-packing encoder (csf_encode.hpp / .cpp):
+
+         // Pack N values of `bits` bits each into out_bytes (LSB-first within byte).
+         void bitpack(const uint64_t* values, uint32_t N, uint8_t bits,
+                      std::vector<uint8_t>& out);
+
+         // Unpack N values of `bits` bits each from packed bytes.
+         void bitunpack(const uint8_t* packed, uint32_t N, uint8_t bits,
+                        uint64_t* out);
+
+         Use a simple byte-level loop first; add AVX2 SIMD acceleration later
+         if bit-packing becomes a bottleneck (it rarely is vs I/O).
+         Ensure output is padded to a whole byte boundary.
+
+[ ] 2.3  Implement LZ4 compress/decompress wrappers (csf_encode.hpp):
+
+         // Returns compressed bytes; caller owns returned buffer.
+         std::vector<uint8_t> lz4_compress(const uint8_t* src, size_t src_size);
+         // Decompresses into pre-allocated dst buffer of known uncompressed size.
+         void lz4_decompress(const uint8_t* src, size_t src_size,
+                             uint8_t* dst, size_t dst_size);
+
+         Link against lz4 (liblz4-dev).  Use LZ4_compress_default / LZ4_decompress_safe.
+
+[ ] 2.4  Implement column block writer (csf_encode.cpp):
+
+         // Encodes a column segment into bytes and appends to `out`.
+         // Returns the CsfBlockHeader (for metadata recording).
+         CsfBlockHeader write_column_block(
+             const std::vector<uint64_t>& values,  // raw decoded values
+             uint32_t num_values,
+             CsfEncoding encoding,
+             uint8_t bit_width,   // for bitpack encodings
+             uint64_t for_base,   // for FOR encoding (0 if unused)
+             uint16_t dict_id,    // for DICT encoding (0 if unused)
+             std::vector<uint8_t>& out);
+
+         Internally:
+           1. Apply encoding (FOR-subtract base, delta-diff, dict-map to codes).
+           2. Bit-pack the result if applicable.
+           3. LZ4-compress the bit-packed bytes.
+           4. Serialize CsfBlockHeader + encoding sub-header + compressed payload.
+
+[ ] 2.5  Implement string column block writer:
+
+         CsfBlockHeader write_string_block(
+             const std::vector<std::string_view>& strs,
+             std::vector<uint8_t>& out);
+
+         Builds offset array (uint32[N+1]) + payload (concatenated strings),
+         LZ4-compresses each separately, writes CsfStringHeader + both.
+
+[ ] 2.6  Implement per-table column-encoding specification lookup:
+
+         struct ColEncSpec {
+             std::string col_name;
+             CsfEncoding encoding;
+             uint8_t bit_width;     // expected bits/value (can be recomputed per segment)
+             int32_t scale;         // for decimal columns (100 = scale x100)
+             int32_t date_epoch_offset;
+             bool synthetic_prefix; // c_name / s_name uint32 suffix
+             bool split_phone;      // c_phone / s_phone decomposition
+             bool skip_project;     // true if never projected by any query
+         };
+
+         // Returns the ColEncSpec vector for a given table name.
+         std::vector<ColEncSpec> get_table_enc_spec(const std::string& table_name);
+
+         Hard-code the column specs per table as derived from the plan
+         (see file_format_plan.txt sections 1a, 2a, 3a, 4a, 5a).
+
+[ ] 2.7  Implement global dictionary builder (csf_encode.cpp):
+
+         // First-pass scan of all Arrow string values for a column.
+         // Returns sorted unique entries and assigns codes.
+         CsfDict build_global_dict(const arrow::Table* table, int col_idx,
+                                   uint8_t dict_id, const std::string& col_name);
+
+         For low-cardinality columns (shipmode, returnflag, linestatus,
+         mktsegment, brand, container, orderpriority, orderstatus, mfgr, type):
+         collect all distinct values via hash set, sort them, assign code = index.
+         For high-cardinality columns (o_clerk ~1000 distinct): same process.
+         For c_name / s_name: no dict needed (synthetic suffix encoding).
+
+[ ] 2.8  Implement phone decomposition helper:
+
+         // Parse "CC-NNN-NNN-NNNN" -> (cc: uint8, rest: uint64 packed)
+         std::pair<uint8_t, uint64_t> parse_phone(std::string_view phone);
+
+         // Reconstruct "CC-NNN-NNN-NNNN" from cc and rest.
+         std::string format_phone(uint8_t cc, uint64_t rest);
+
+         The cc value is the 2-digit prefix (e.g., "13" -> 13).
+         The rest encodes the remaining digits as an integer.
+
+[ ] 2.9  Implement synthetic name suffix encoder:
+
+         // Parse "Customer#000000001" or "Supplier#000000001" -> 1
+         uint32_t parse_name_suffix(std::string_view name);
+
+         // Reconstruct from prefix + suffix.
+         std::string format_name(const std::string& prefix, uint32_t suffix);
+
+         Prefix for customer: "Customer#" (9 chars).
+         Prefix for supplier: "Supplier#" (9 chars).
+         Store prefix once in CsfColumnMeta.synthetic_prefix_str.
+
+[ ] 2.10 Implement external sort for each table's clustering key:
+
+         The input is an Arrow Table (already in RAM for the tables at SF=1;
+         at higher SF the write API still receives a fully-loaded table).
+         Since ParquetTables are loaded into Arrow Tables before being passed
+         to the writer, in-memory sorting is acceptable (no external merge sort
+         needed for SF=1; add streaming sort later for SF >> 1 if RAM is tight).
+
+         Implement:
+         std::vector<int64_t> sort_indices_by(
+             const arrow::Table* table,
+             const std::vector<SortKey>& keys);
+         // SortKey = {col_name, ascending}.  Returns sorted row-index permutation.
+
+         Use std::sort with a comparator that extracts the key column values.
+         For lineitem: sort by l_shipdate (date32, ascending).
+         For orders: sort by o_orderdate (date32, ascending).
+         For customer: sort by (c_mktsegment ASC, c_acctbal DESC).
+         For part: sort by (p_brand ASC, p_container ASC).
+         For supplier: identity (no sort).
+
+[ ] 2.11 Implement zone map builders (one per table):
+
+         // Called per-segment during the write pass.
+         // Updates a zone map record from the values in the current segment.
+         void update_lineitem_zmap(LineitemZoneMap& zm,
+                                   const SegmentColumnValues& seg_vals);
+         void update_orders_zmap(...);
+         void update_customer_zmap(...);
+         void update_part_zmap(...);
+         void update_supplier_zmap(...);
+
+         Each function walks the segment values and sets min/max and bitsets.
+         For Bloom filters (PartZoneMap::name_bloom, SupplierZoneMap::comment_bloom):
+           - p_name token Bloom: tokenize each name string by space, insert each
+             word token using 3 hash functions into a 512-bit bitset (64 bytes).
+           - s_comment trigram Bloom: generate all 3-char trigrams of each comment
+             string, insert into 2048-bit bitset (256 bytes) with 3 hash functions.
+         Simple hash: FNV-1a or Murmur3 with seed variation for k hash functions.
+
+[ ] 2.12 Implement footer serializer (csf_encode.cpp):
+
+         // Serializes the full CsfTableFooter to bytes (written at EOF).
+         std::vector<uint8_t> serialize_footer(const CsfTableFooter& ft);
+
+         Layout:
+           FooterHeader (16 bytes): section_count, section TOC (section_type[2],
+                                    offset[4], length[4] per section).
+           Section 0 SCHEMA:       column_count, per-col name+encoding+phys info.
+           Section 1 GLOBAL_DICTS: dict_count, per-dict (col_id, entry_count,
+                                   LZ4-compressed entry bytes).
+           Section 2 SEG_OFFSETS:  num_segments, per-seg file_offset + col offsets.
+           Section 3 ZONE_MAPS:    num_segments, per-seg zone map record (fixed size
+                                   per table type).
+           Section 4 BLOOM:        per-seg Bloom bytes (only for part/supplier).
+           Section 5 AUX:          p_type suffix table, phone prefix constant, etc.
+           Footer CRC32 (4 bytes at the very end).
+
+[ ] 2.13 Implement footer deserializer (read_impl.cpp or csf_decode.cpp):
+
+         // Reads and decodes a CsfTableFooter from raw footer bytes.
+         CsfTableFooter deserialize_footer(const uint8_t* bytes, size_t size,
+                                           const std::string& table_name);
+
+         Must reconstruct all fields: columns, dicts, seg_file_offsets,
+         col_block_offsets, zone maps (correct type per table), Bloom filters,
+         aux structures.  Validate CRC32.
+
+--------------------------------------------------------------------------------
+PHASE 3 — WRITE IMPLEMENTATION  (write_impl.cpp)
+--------------------------------------------------------------------------------
+
+NOTE: The write entry point is write_bff_from_parquet_tables().
+It receives a fully-loaded ParquetTables*  and a bff_dir string.
+Write one .csf file per table under bff_dir.
+
+[ ] 3.1  Implement the top-level write orchestrator in write_impl.cpp:
+
+         BffDataset* write_bff_from_parquet_tables(
+             const ParquetTables* tables, std::string bff_dir,
+             const BffWriteOptions& options)
+         {
+             create_directory(bff_dir);
+             write_table("lineitem", tables->lineitem, bff_dir, options);
+             write_table("orders",   tables->orders,   bff_dir, options);
+             write_table("customer", tables->customer, bff_dir, options);
+             write_table("part",     tables->part,     bff_dir, options);
+             write_table("supplier", tables->supplier, bff_dir, options);
+             // Build and return the BffDataset (header + footer loaded into RAM).
+             return build_dataset_after_write(bff_dir);
+         }
+
+[ ] 3.2  Implement write_table() helper:
+
+         void write_table(const std::string& name,
+                          const arrow::Table* table,
+                          const std::string& bff_dir,
+                          const BffWriteOptions& options);
+
+         Steps inside write_table():
+           a. Get column encoding specs: get_table_enc_spec(name).
+           b. Build global dictionaries (first pass over Arrow table).
+              For each string column with a dict spec: call build_global_dict().
+           c. Get sorted row indices: sort_indices_by(table, sort_keys_for(name)).
+           d. Open output file: bff_dir + "/" + name + ".csf".
+           e. Write CsfFileHeader placeholder (will be backfilled after footer is known).
+           f. Initialize CsfTableFooter metadata structure.
+           g. Loop over segments 0..N-1 (each = SEGMENT_SIZE rows):
+                For each segment:
+                  i.   Collect sorted row indices for this segment
+                       [seg*SEGMENT_SIZE .. (seg+1)*SEGMENT_SIZE).
+                  ii.  Initialize zone map record for this segment.
+                  iii. Record segment start file offset.
+                  iv.  For each column (in schema order):
+                         - Record column block start offset (relative to seg start).
+                         - Extract column values via sorted indices.
+                         - Apply encoding-specific conversion
+                           (FOR, delta, dict code lookup, phone split, name suffix).
+                         - Determine bit_width from actual segment value range
+                           (e.g., compute max delta, compute log2, add 1 bit margin).
+                         - Call write_column_block() or write_string_block().
+                         - Append block bytes to output file.
+                         - Update zone map record with extracted values.
+                  v.   Finalize zone map record; append to CsfTableFooter.
+                  vi.  Append per-seg col_block_offsets to CsfTableFooter.
+           h. Serialize footer: call serialize_footer(CsfTableFooter).
+           i. Write footer bytes to file (current position = footer_offset).
+           j. Backfill footer_offset + footer_length in CsfFileHeader.
+           k. Seek to offset 0, write final CsfFileHeader.
+           l. Close file.
+
+[ ] 3.3  Handle the lineitem table encoding in write_table():
+
+         Column-by-column encoding for lineitem (dispatch on Arrow type_id):
+           l_orderkey   : int64 -> uint32, FOR+bitpack (base=seg_min, pack delta)
+           l_partkey    : int64 -> uint32, FOR+bitpack (base=1, pack at 18 bits)
+           l_suppkey    : int64 -> uint16, FOR+bitpack (base=1, pack at 14 bits)
+           l_linenumber : int64 -> uint8,  bitpack at 3 bits
+           l_quantity   : Decimal128 or int64 (scale=2) -> uint8 (value/100)
+           l_extendedprice: Decimal128 or int64 -> uint32, FOR+bitpack (scale=100)
+           l_discount   : Decimal128 or int64 -> uint8 (value/100, range 0-10)
+           l_tax        : Decimal128 or int64 -> uint8 (value/100, range 0-8)
+           l_returnflag : String -> uint2 dict code, bitpack at 2 bits
+           l_linestatus : String -> uint1 dict code, bitpack at 1 bit
+           l_shipdate   : Date32 -> uint16 (csf_epoch), DELTA_BP (sorted col)
+           l_commitdate : Date32 -> uint16, FOR+bitpack
+           l_receiptdate: Date32 -> uint16, FOR+bitpack
+           l_shipinstruct: String -> uint2 dict code, bitpack at 2 bits
+           l_shipmode   : String -> uint3 dict code, bitpack at 3 bits
+           l_comment    : String -> STRING_RAW (offset+payload+LZ4)
+
+         For DELTA_BP (l_shipdate): since table is pre-sorted by l_shipdate,
+         within each segment values are quasi-monotone.  Compute first_value and
+         bit-pack differences (may be small non-negative values).
+         Bit width = ceil(log2(max_delta + 1)).  If max_delta == 0, use bit_width=1.
+
+         For FOR+bitpack (l_extendedprice etc.): base = seg_min, pack (val-base).
+         Bit width = ceil(log2(seg_max - seg_min + 1)).
+
+[ ] 3.4  Handle the orders table encoding in write_table():
+
+           o_orderkey     : int64 -> uint32, FOR+bitpack
+           o_custkey      : int64 -> uint32, FOR+bitpack at 18 bits
+           o_orderstatus  : String -> uint2 dict code, bitpack at 2 bits
+           o_totalprice   : Decimal128 or int64 -> uint32, FOR+bitpack (scale=100)
+           o_orderdate    : Date32 -> uint16, DELTA_BP (sorted by o_orderdate)
+           o_orderpriority: String -> uint3 dict code, bitpack at 3 bits
+           o_clerk        : String -> uint16 dict code (raw uint16, not bit-packed,
+                            because dict has ~1000 entries = 10 bits; store as uint16
+                            for simplicity; bit-pack at 10 bits if space is critical)
+           o_shippriority : int32, RLE constant (all zeros in TPC-H)
+           o_comment      : String -> STRING_RAW
+
+[ ] 3.5  Handle the customer table encoding in write_table():
+
+           c_custkey    : int64 -> uint32, FOR+bitpack at 18 bits
+           c_name       : String -> uint32 synthetic suffix (parse_name_suffix)
+           c_address    : String -> STRING_RAW
+           c_nationkey  : int32 -> uint8, RAW
+           c_phone_cc   : String (split) -> uint8 RAW  (first sub-column)
+           c_phone_rest : String (split) -> uint64 RAW 6-byte packed (second sub-col)
+           c_acctbal    : Decimal128 or int64 -> int32, FOR+bitpack (scale=100, signed)
+           c_mktsegment : String -> uint3 dict code, bitpack at 3 bits
+           c_comment    : String -> STRING_RAW
+
+         Phone split: when iterating rows, call parse_phone(c_phone[row]) to get
+         cc and rest; append cc to cc_values[], rest to rest_values[]; encode each
+         as a separate column block (two column blocks written for one logical column).
+         Update CsfColumnMeta accordingly (two entries in columns vector).
+
+[ ] 3.6  Handle the part table encoding in write_table():
+
+           p_partkey    : int64 -> uint32, FOR+bitpack at 18 bits
+           p_name       : String -> STRING_RAW
+           p_mfgr       : String -> uint3 dict code, bitpack at 3 bits
+           p_brand      : String -> uint5 dict code, bitpack at 5 bits
+           p_type       : String -> uint8 dict code, RAW uint8
+           p_size       : int32 -> uint8, bitpack at 6 bits
+           p_container  : String -> uint6 dict code, bitpack at 6 bits
+           p_retailprice: Decimal128 or int64 -> uint32, FOR+bitpack (scale=100)
+           p_comment    : String -> STRING_RAW
+
+[ ] 3.7  Handle the supplier table encoding in write_table():
+
+           s_suppkey    : int64 -> uint32, FOR+bitpack at 14 bits
+           s_name       : String -> uint32 synthetic suffix (parse_name_suffix)
+           s_address    : String -> STRING_RAW
+           s_nationkey  : int32 -> uint8, RAW
+           s_phone_cc   : String (split) -> uint8 RAW
+           s_phone_rest : String (split) -> uint64 RAW (6 bytes)
+           s_acctbal    : Decimal128 or int64 -> int32, FOR+bitpack (scale=100, signed)
+           s_comment    : String -> STRING_RAW
+
+[ ] 3.8  Implement BffDataset population after writing all tables:
+
+         BffDataset* build_dataset_after_write(const std::string& bff_dir):
+           Open each .csf file, read the header, seek to footer, read + deserialize
+           the CsfTableFooter into BffDataset->footer.tables[name].
+           Populate BffDataset->footer.info (BffFooterInfo) from CsfTableFooter
+           so the API-required describe_bff_footer() returns valid data.
+           Set dataset->has_footer = true.
+           Return dataset.
+
+[ ] 3.9  Implement write_bff_from_parquet() (the directory-based variant):
+
+         Reads each .parquet file from parquet_dir using the Arrow Parquet reader,
+         creates a ParquetTables struct, then calls write_bff_from_parquet_tables().
+         This function is less critical (write_bff_from_parquet_tables is the
+         primary entry point), but should be functional.
+
+[ ] 3.10 Verify the write phase produces valid .csf files:
+         - Check file sizes are reasonable (much smaller than .parquet).
+         - Verify CRC32 in footer matches computed value.
+         - Print per-table segment counts and total byte counts to stderr.
+         - Verify the returned BffDataset has correct num_rows, num_segments.
+
+--------------------------------------------------------------------------------
+PHASE 4 — READ IMPLEMENTATION  (read_impl.cpp + csf_decode.cpp)
+--------------------------------------------------------------------------------
+
+NOTE: read_impl.cpp is the core read API.  The query implementations call
+functions from this file via the BFF API.  Most read functions operate on
+BffTable* which holds the CsfTableFooter and an open file descriptor.
+
+[ ] 4.1  Implement open_bff_dataset() in read_impl.cpp:
+
+         BffDataset* open_bff_dataset(std::string bff_dir, const BffOpenOptions& options):
+           Allocate a new BffDataset.
+           Set root_path and options.
+           If options.cache_footer: load_bff_footer(dataset, true).
+           Return dataset.
+
+[ ] 4.2  Implement load_bff_footer() in read_impl.cpp:
+
+         BffFooter* load_bff_footer(BffDataset* dataset, bool refresh_cache):
+           If !refresh_cache && dataset->has_footer: return &dataset->footer.
+           For each table name in {"lineitem","orders","customer","part","supplier"}:
+             path = dataset->root_path + "/" + table_name + ".csf"
+             Open file (O_RDONLY).
+             Read CsfFileHeader (64 bytes) from offset 0.
+             Verify magic bytes.
+             Seek to header.footer_offset.
+             Read header.footer_length bytes into a buffer.
+             Call deserialize_footer(buffer, size, table_name) -> CsfTableFooter.
+             If options.validate_footer_checksum: verify CRC32.
+             Store in dataset->footer.tables[table_name].
+             Populate dataset->footer.info.tables (BffTableInfo) from CsfTableFooter.
+           dataset->has_footer = true.
+           Return &dataset->footer.
+
+[ ] 4.3  Implement open_bff_table() in read_impl.cpp:
+
+         BffTable* open_bff_table(BffDataset* dataset, std::string table_name):
+           Allocate BffTable.
+           Set dataset pointer and table_name.
+           file_path = dataset->root_path + "/" + table_name + ".csf".
+           Open file (O_RDONLY) and store fd.
+           csf_footer = &dataset->footer.tables[table_name].
+           Populate info (BffTableInfo) from csf_footer.
+           Return table.
+
+[ ] 4.4  Implement close_bff_table() in read_impl.cpp:
+
+         void close_bff_table(BffTable* table):
+           If table->fd >= 0: close(table->fd).
+           delete table.
+
+[ ] 4.5  Implement describe_bff_table(), describe_bff_row_group(),
+         describe_bff_page() in read_impl.cpp:
+
+         These are thin wrappers around CsfTableFooter fields.
+           describe_bff_table: return table->info (already populated in open_bff_table).
+           describe_bff_row_group: return table->csf_footer->seg data as BffRowGroupInfo.
+           describe_bff_page: return the page info from col_block_offsets + zone maps.
+
+[ ] 4.6  Implement plan_bff_scan() (in read_impl.cpp and filter_pushdown.hpp contract):
+
+         BffScanPlan plan_bff_scan(BffTable* table, const BffScanRequest& request):
+           Initialize plan with all segment IDs.
+           For each segment S in [0, num_segments):
+             Evaluate zone maps from csf_footer (appropriate ZoneMap type) against
+             request.filter predicates:
+               - For each BffFilterNode of kind Predicate:
+                   Get column_id and op and BffLiteral values.
+                   Look up which zone map field corresponds to this column_id.
+                   Evaluate: can_prune = zone_map_eval(zm, column_id, op, literal).
+                   If can_prune: mark segment as SKIP (BffPruneDecision::Drop).
+             If segment not pruned: add to plan.row_group_ids.
+           Fill plan.estimated_rows, plan.pruned_row_groups, plan.estimated_bytes.
+           Return plan.
+
+         Zone map evaluation rules:
+           GreaterThan / GreaterEqual on date/int column: prune if zm.max < threshold.
+           LessThan / LessEqual on date/int column: prune if zm.min > threshold.
+           Equal on bitset column: prune if (bitset & (1 << code)) == 0.
+           InList on bitset column: prune if (bitset & mask_of_codes) == 0.
+           Bloom filter on string column: prune if trigram/token not in Bloom.
+
+[ ] 4.7  Implement read_bff_page() in read_impl.cpp:
+
+         BffBuffer* read_bff_page(BffTable* table, uint32_t rg_id, uint32_t col_id,
+                                   uint32_t page_id, const BffReadOptions& options):
+           col_block_offset = csf_footer->seg_file_offsets[rg_id]
+                            + csf_footer->col_block_offsets[rg_id * ncols + col_id];
+           Read CsfBlockHeader from that offset.
+           Allocate buffer of compressed_bytes size.
+           Read compressed payload.
+           If options.decompress:
+             Allocate raw_bytes buffer.
+             lz4_decompress(compressed, compressed_bytes, raw, raw_bytes).
+             Return buffer pointing to raw bytes.
+           Else:
+             Return buffer pointing to compressed bytes (encoded=true).
+           Set BffBuffer fields (data, size, file_offset, encoded, storage=Owned).
+           Return buffer.
+
+[ ] 4.8  Implement read_bff_row_group() in read_impl.cpp:
+
+         BffBuffer* read_bff_row_group(BffTable* table, uint32_t rg_id,
+                                        const BffColumnSelection& columns,
+                                        const BffReadOptions& options):
+           Determines byte range of the segment (from seg_file_offsets[rg_id]
+           to seg_file_offsets[rg_id+1] or end-of-data).
+           Reads entire segment into a single buffer.
+           Returns the buffer (query code can then extract individual column blocks
+           by using col_block_offsets within the buffer).
+           This is simpler than page-level reads for small segments.
+
+[ ] 4.9  Implement column block decoder (csf_decode.cpp or csf_encode.cpp):
+
+         // Decode a column block (already decompressed by LZ4) into typed values.
+         void decode_column_block(const uint8_t* raw_bytes, size_t raw_size,
+                                   const CsfBlockHeader& hdr,
+                                   const CsfColumnMeta& col_meta,
+                                   std::vector<uint64_t>& out_values);
+
+         // Decode a string column block into string views (pointing into raw_bytes).
+         void decode_string_block(const uint8_t* raw_bytes, size_t raw_size,
+                                   const CsfBlockHeader& hdr,
+                                   std::vector<std::string>& out_strings);
+
+         Handles all CsfEncoding variants:
+           RAW:         memcpy N values of phys_width bytes each.
+           FOR_BITPACK: read base, bitunpack N values, add base to each.
+           DELTA_BP:    read first_value, bitunpack N-1 deltas, prefix-sum.
+           DICT_BITPACK:bitunpack N codes; lookup string in global dict as needed.
+           RLE:         expand (value, count) pairs.
+           STRING_RAW:  read offset_compressed_size, decompress offsets,
+                        decompress payload, reconstruct strings via offsets.
+
+[ ] 4.10 Implement release_bff_buffer() in read_impl.cpp:
+
+         void release_bff_buffer(BffBuffer* buffer):
+           If buffer->storage == Owned: delete[] (uint8_t*)buffer->data.
+           delete buffer.
+
+--------------------------------------------------------------------------------
+PHASE 5 — QUERY IMPLEMENTATIONS
+--------------------------------------------------------------------------------
+
+NOTE: Each query opens only the tables it needs, uses plan_bff_scan() to get
+the survivor segment list, reads only the required column blocks, decodes them,
+applies row-level predicates, then assembles the output.
+
+The common query scaffolding pattern:
+  1. open_bff_table(db->dataset, "tablename").
+  2. Build BffScanRequest with predicate columns + BffFilterExpr.
+  3. Call plan_bff_scan(table, request) -> BffScanPlan.
+  4. For each row_group_id in plan.row_group_ids:
+       a. Read predicate columns (read_bff_page per column).
+       b. LZ4-decompress, decode each predicate column block.
+       c. Evaluate predicate -> build row-validity bitmap.
+       d. If all rows are invalid: continue to next segment.
+       e. Read projection columns (read_bff_page per column).
+       f. Decode projection columns.
+       g. Gather rows using validity bitmap.
+       h. Accumulate results (aggregation or output rows).
+  5. Sort / aggregate final results.
+  6. Format output rows as std::vector<std::vector<std::string>>.
+  7. close_bff_table(table).
+
+Helper utilities to implement before the queries (shared_query_utils.hpp or
+inline in each query file):
+  decode_date_csf(uint16_t csf_days) -> "YYYY-MM-DD" string
+  decode_decimal(int64_t scaled, int scale) -> "%.2f" string
+  dict_lookup(const CsfDict& dict, uint8_t code) -> string
+  format_name(const std::string& prefix, uint32_t suffix) -> string
+  format_phone(uint8_t cc, uint64_t rest) -> "CC-NNN-NNN-NNNN" string
+
+[ ] 5.1  Implement query1.cpp  (Q1: lineitem aggregate with shipdate filter):
+
+         Table: lineitem.
+         Predicate: l_shipdate <= date '1998-12-01' - DELTA days.
+           Convert DELTA to integer.  Compute cutoff date as CSF epoch days.
+           Build BffFilterExpr: LessEqual on l_shipdate column_id.
+         plan_bff_scan -> prunes segs where zone_min(shipdate) > cutoff.
+         For each surviving segment:
+           Read l_shipdate block -> decode -> build row validity mask (shipdate <= cutoff).
+           Read l_returnflag, l_linestatus, l_quantity, l_extendedprice,
+                l_discount, l_tax blocks -> decode.
+           For each valid row: accumulate into hash map keyed by (returnflag, linestatus):
+             sum_qty += quantity; sum_base_price += extendedprice;
+             disc_price += extendedprice * (1 - discount/100.0);
+             charge += extendedprice * (1 - discount/100.0) * (1 + tax/100.0);
+             count++;
+         Sort output by (returnflag ASC, linestatus ASC).
+         Emit columns: returnflag, linestatus, sum_qty, sum_base_price,
+                       sum_disc_price, sum_charge, avg_qty, avg_price,
+                       avg_disc, count_order.
+         Format decimals with proper precision.
+
+[ ] 5.2  Implement query2.cpp  (Q2: orders date window, group by priority):
+
+         Table: orders.
+         Predicate: o_orderdate >= DATE AND o_orderdate < DATE + 3 months.
+           Parse DATE string -> CSF epoch days for lo and hi bounds.
+           Build BffFilterExpr: And(GreaterEqual(orderdate, lo), LessThan(orderdate, hi)).
+         plan_bff_scan -> prunes segs outside [lo, hi] date range.
+         For each surviving segment:
+           Read o_orderdate block -> decode -> build validity mask (lo <= date < hi).
+           Read o_orderpriority block -> decode dict codes.
+           For each valid row: increment count[priority_code].
+         Sort output by o_orderpriority ASC (alphabetically -> sort by dict entry string).
+         Emit: o_orderpriority, order_count.
+
+[ ] 5.3  Implement query3.cpp  (Q3: customer mktsegment filter, project + sort):
+
+         Table: customer.
+         Predicate: c_mktsegment = SEGMENT.
+           Look up SEGMENT in c_mktsegment global dict -> target_code (uint8).
+           Build BffFilterExpr: Equal(mktsegment_col_id, target_code).
+         plan_bff_scan -> prunes segs where mktsegment_bitset bit not set for target_code.
+         For each surviving segment:
+           Read c_mktsegment block -> decode -> build validity mask (code == target_code).
+           Read c_custkey, c_name (uint32 suffix), c_acctbal,
+                c_phone_cc, c_phone_rest blocks -> decode.
+           For each valid row: collect (custkey, name_str, acctbal, phone_str).
+             Reconstruct c_name = "Customer#" + zero_pad_9(suffix).
+             Reconstruct c_phone from cc + rest.
+             Convert acctbal to decimal string.
+         Sort by c_acctbal DESC.
+         Emit: c_custkey, c_name, c_acctbal, c_phone.
+
+[ ] 5.4  Implement query4.cpp  (Q4: part brand+container filter, project + sort):
+
+         Table: part.
+         Predicates: p_brand = BRAND AND p_container = CONTAINER.
+           Look up BRAND in p_brand dict -> brand_code (uint8).
+           Look up CONTAINER in p_container dict -> container_code (uint8).
+           Build BffFilterExpr: And(Equal(brand_col, brand_code),
+                                    Equal(container_col, container_code)).
+         plan_bff_scan -> prunes segs where brand_bitset bit not set OR container bitset bit not set.
+         For each surviving segment (expected: 1-2 at SF=1):
+           Read p_brand block -> decode codes.
+           Read p_container block -> decode codes.
+           Build validity mask: brand_code == B AND container_code == C.
+           Read p_partkey, p_name (STRING_RAW), p_mfgr, p_retailprice blocks.
+           Decode. Reconstruct p_name from string block. Decode p_mfgr from dict.
+           For each valid row: collect (partkey, name, mfgr, retailprice_str).
+         Sort by p_retailprice DESC.
+         Emit: p_partkey, p_name, p_mfgr, p_retailprice.
+
+[ ] 5.5  Implement query5.cpp  (Q5: supplier comment LIKE, project + sort):
+
+         Table: supplier.
+         Predicate: s_comment LIKE '%WORD1%'.
+         plan_bff_scan with Bloom filter check on trigrams of WORD1:
+           Extract trigrams of WORD1 (all 3-char substrings).
+           For each segment: check SupplierZoneMap::comment_bloom.
+             If any trigram of WORD1 is absent from Bloom -> prune segment.
+         For each surviving segment:
+           Read s_comment block (STRING_RAW) -> LZ4 decompress -> decode strings.
+           Scan each string for WORD1 (std::string::find) -> build validity mask.
+           If any rows match:
+             Read s_suppkey, s_name, s_address, s_phone_cc, s_phone_rest,
+                  s_acctbal blocks -> decode.
+             For each valid row: collect (suppkey, name_str, address_str, phone_str, acctbal).
+               Reconstruct s_name from uint32 suffix.
+               Reconstruct s_phone from cc + rest.
+               Decode s_address from string block.
+         Sort by s_acctbal DESC.
+         Emit: s_suppkey, s_name, s_address, s_phone, s_acctbal.
+
+[ ] 5.6  Implement query6.cpp  (Q6: lineitem shipmode IN + shipdate range, agg):
+
+         Table: lineitem.
+         Predicates: l_shipmode IN (SHIPMODE1, SHIPMODE2) AND l_shipdate >= DATE.
+           Look up SHIPMODE1, SHIPMODE2 in l_shipmode dict -> codes s1, s2.
+           Compute cutoff as CSF epoch days.
+           Build BffFilterExpr: And(InList(shipmode_col, {s1,s2}),
+                                    GreaterEqual(shipdate_col, cutoff)).
+         plan_bff_scan:
+           Prune segs where zone_max(shipdate) < cutoff.
+           Also prune segs where (shipmode_bitset & mask(s1,s2)) == 0.
+         For each surviving segment:
+           Read l_shipdate block -> decode -> validity mask (date >= cutoff).
+           Read l_shipmode block -> decode -> refine mask (code IN {s1,s2}).
+           Read l_quantity block -> decode.
+           For each valid row: accumulate count[mode_code]++, sum_qty[mode_code] += qty.
+         Sort output by l_shipmode ASC (alphabetically by dict entry).
+         Emit: l_shipmode, total_shipments, total_qty.
+
+[ ] 5.7  Implement query7.cpp  (Q7: part name LIKE + type LIKE, project + sort):
+
+         Table: part.
+         Predicates: p_name LIKE '%COLOR%' AND p_type LIKE '%TYPE'.
+         Type suffix predicate:
+           Scan the p_type global dict (up to 150 entries) at query time:
+             matching_type_codes = {code : dict[code] ends with TYPE_suffix}.
+           Build a 150-bit matching bitset.
+           For each segment: check PartZoneMap::type_bitset & matching_bitset != 0.
+             If intersection empty: prune segment.
+         Name Bloom filter:
+           For each 3+ char token in COLOR word, check PartZoneMap::name_bloom.
+           If any token absent: prune segment (Bloom may not fire for common words).
+         For each surviving segment:
+           Read p_type block (uint8 codes) -> build validity mask (code in matching set).
+           Read p_name block (STRING_RAW) -> decode strings.
+             Refine validity mask: keep rows where p_name.find(COLOR) != npos.
+           Read p_partkey, p_size blocks.
+           For each valid row: collect (partkey, name_str, type_str, size_int).
+             type_str = dict[type_code].  size_int from uint8.
+         Sort by p_partkey ASC.
+         Emit: p_partkey, p_name, p_type, p_size.
+
+[ ] 5.8  Implement query8.cpp  (Q8: customer acctbal > 0 AND phone prefix IN list):
+
+         Table: customer.
+         Predicates: c_acctbal > 0.00 AND phone_cc IN (I1, I2, I3).
+           Parse I1, I2, I3 as 2-digit integers (e.g., "13" -> 13).
+           Build BffFilterExpr: And(GreaterThan(acctbal_col, 0),
+                                    InList(phone_cc_col, {i1,i2,i3})).
+         plan_bff_scan:
+           Prune segs where zone_max(acctbal) <= 0 (all rows have non-positive balance).
+           Also prune segs where (phone_cc_bitset & mask(i1,i2,i3)) == 0.
+         For each surviving segment:
+           Read c_acctbal block -> decode -> validity mask (acctbal > 0).
+           Read c_phone_cc block -> decode -> refine mask (cc IN {i1,i2,i3}).
+           Read c_custkey, c_name (uint32 suffix), (no c_phone_rest needed since
+             only top-level 3-col project, but must check if c_phone is projected
+             -- it is NOT in Q8 output, only cc is used as predicate).
+           For each valid row: collect (custkey, name_str, acctbal_str).
+             Reconstruct c_name from suffix.
+             Format acctbal as decimal.
+         Sort by c_acctbal DESC.
+         Emit: c_custkey, c_name, c_acctbal.
+
+         NOTE: Q8 projects c_custkey, c_name, c_acctbal only (not c_phone).
+         c_phone_cc is read ONLY as a predicate column; c_phone_rest is NOT read.
+
+--------------------------------------------------------------------------------
+PHASE 6 — INTEGRATION AND CORRECTNESS TESTING
+--------------------------------------------------------------------------------
+
+[ ] 6.1  Run the full pipeline in fast_check mode with all 8 queries.
+         Expected result: query results are non-empty and structurally correct
+         (correct column count, correct header row, no crashes).
+
+[ ] 6.2  Validate correctness of each query output:
+         - Q1: check returnflag/linestatus groups are A/F, N/F, N/O, R/F (or subset).
+               check sum_qty, avg_qty are reasonable for SF=1 row counts.
+         - Q2: check orderpriority values match TPC-H spec (5 priority strings).
+               count(*) should sum to orders in the 3-month window.
+         - Q3: check all output rows have the correct c_mktsegment.
+               Reconstruct c_name format and verify pattern.
+         - Q4: check output rows have correct p_brand and p_container.
+               Verify p_retailprice sorting is descending.
+         - Q5: check all output rows have WORD1 in s_comment.
+               Verify s_acctbal descending sort.
+         - Q6: check only SHIPMODE1 and SHIPMODE2 appear, date filter applied.
+         - Q7: check output names contain COLOR, output types end with TYPE.
+               Verify p_partkey ascending sort.
+         - Q8: check all output rows have c_acctbal > 0 and correct phone prefixes.
+               Verify descending sort.
+
+[ ] 6.3  Run in exhaustive mode to compare against reference results.
+         Fix any discrepancy in encoding/decoding or zone map pruning.
+
+[ ] 6.4  Verify decimal reconstruction precision:
+         - l_quantity: uint8 * 1.0 (should be integer .00 values).
+         - l_extendedprice: (val + base) / 100.0  (check 2 decimal places).
+         - l_discount, l_tax: code / 100.0.
+         - c_acctbal, s_acctbal, p_retailprice: (val + base) / 100.0.
+         Use printf("%.2f") or similar for output formatting.
+
+[ ] 6.5  Verify date arithmetic for Q1 and Q2:
+         - Q1: DELTA is a number of days.  Cutoff = CSF_epoch_days("1998-12-01") - DELTA.
+               CSF epoch for 1998-12-01 = days from 1992-01-01 to 1998-12-01.
+         - Q2: DATE is "YYYY-MM-DD".  Parse into CSF epoch days.
+               "+3 months" = add 3 months to date (handle varying month lengths).
+         Implement date helper: csf_date_from_string(const std::string& yyyymmdd).
+
+[ ] 6.6  Verify name reconstruction:
+         - c_name: "Customer#" + std::setw(9) + std::setfill('0') + suffix.
+         - s_name: "Supplier#" + std::setw(9) + std::setfill('0') + suffix.
+
+[ ] 6.7  Verify phone reconstruction format "CC-NNN-NNN-NNNN" matches original values.
+         Test with known customer phone strings from the Parquet data.
+
+--------------------------------------------------------------------------------
+PHASE 7 — PERFORMANCE OPTIMIZATION
+--------------------------------------------------------------------------------
+
+[ ] 7.1  Profile query execution time in benchmark mode.
+         Identify the dominant bottleneck per query (I/O, LZ4 decompression,
+         bit-unpack, string scan, sorting).
+
+[ ] 7.2  Optimize LZ4 decompression:
+         - Ensure only needed column blocks are decompressed (projection pushdown).
+         - Do not decompress blocks for segments pruned by zone maps.
+
+[ ] 7.3  Optimize bit-unpacking:
+         - For Q1: unpack l_shipdate, l_returnflag, l_linestatus, l_quantity,
+           l_extendedprice, l_discount, l_tax in separate tight loops.
+         - Consider AVX2 SIMD bitunpack (pdep/pext for <=8 bit values).
+         - Ensure tight inner loop with no virtual dispatch.
+
+[ ] 7.4  Optimize Q1 aggregation loop:
+         - The group-by key (returnflag x linestatus) has only 6 distinct combos.
+         - Use a fixed 6-element array indexed by (returnflag_code * 2 + linestatus_code).
+         - Avoids hash map overhead for the innermost loop.
+
+[ ] 7.5  Optimize Q6 aggregation loop:
+         - l_shipmode has 7 codes; target 2.  Use 7-element fixed array.
+         - Combine shipdate and shipmode predicate into a single pass.
+
+[ ] 7.6  Optimize Q3 and Q8 (customer) column reads:
+         - Since customer is clustered by mktsegment, the surviving segments for
+           Q3 are contiguous in the file.  Read them in one sequential range.
+         - For Q8, surviving segments are scattered (across all mktsegment groups)
+           but the file offsets are known from the footer; issue reads in order.
+
+[ ] 7.7  Optimize string scan for Q5 (s_comment LIKE):
+         - Use std::string::find() or memchr+memmem for substring search.
+         - Consider SIMD substring search (SSE4.2 pcmpistri) for hot inner loop.
+         - Pre-check trigram Bloom filter before entering string scan loop
+           (already done in plan_bff_scan, but also inline the check per segment).
+
+[ ] 7.8  Optimize Q7 type filter:
+         - Pre-build a bool lookup[256] = {code -> matches_suffix_predicate}.
+           Then type filter is a single array lookup per row.
+
+[ ] 7.9  Investigate pread() vs sequential fread() for column block reads:
+         - Column blocks within a segment are sequential -> use sequential reads.
+         - Pruned segments cause coarse seeks (MB-scale) -> pread() with correct
+           offset per segment.
+         - For I/O mode Buffered: use pread() with open() O_RDONLY.
+
+[ ] 7.10 Consider memory-mapped I/O for the footer and small tables (customer,
+         part, supplier) if they fit in available RAM (< 50 MB at SF=1).
+         For lineitem and orders at large SF, stick to pread() to avoid virtual
+         address pressure.
+
+[ ] 7.11 If ingest time is a concern:
+         - Profile sort time (the dominant ingest cost for lineitem at large SF).
+         - For lineitem at SF >> 1, implement chunk-by-chunk external merge sort:
+             Sort each Arrow RecordBatch by l_shipdate -> write sorted temp run.
+             k-way merge sorted runs into final CSF file.
+         - For SF=1 (6M rows), in-memory std::sort is fast enough (~0.5 s).
+
+--------------------------------------------------------------------------------
+PHASE 8 — FINAL VALIDATION
+--------------------------------------------------------------------------------
+
+[ ] 8.1  Run all 8 queries in exhaustive mode.  All results match reference.
+
+[ ] 8.2  Run in benchmark mode.  Record per-query latency.  Confirm:
+         - Q2 completes in < 50 ms (only 44 segments at SF=100).
+         - Q4 completes in < 100 ms (1-2 segments).
+         - Q1 is the dominant cost (near-full lineitem scan).
+
+[ ] 8.3  Verify the footer is loaded only once per database handle (not per query).
+         Confirm build_bff_query_database() is called once and db->footer is reused.
+
+[ ] 8.4  Run ingest mode.  Measure write throughput.  Verify output file sizes
+         are significantly smaller than the source Parquet files.
+
+[ ] 8.5  Verify correctness at a different SF (if available) by running the
+         pipeline against SF=10 or SF=100 data.
+
+[ ] 8.6  Clean up debug prints, assertions, and temporary diagnostic code.
+         Ensure no memory leaks (valgrind or ASAN on small SF=1 run).
+
+================================================================================
+SUMMARY OF FILES TO CREATE OR MODIFY
+================================================================================
+
+  MODIFY:  bff_format.hpp
+             Extend BffDataset, BffTable, BffFooter with CSF state.
+             Add all CsfFileHeader, CsfBlockHeader, CsfEncoding, CsfColumnMeta,
+             ZoneMap structs, CsfDict, CsfTableFooter.
+
+  MODIFY:  write_impl.cpp
+             Replace stub write_bff_from_parquet_tables() with real writer.
+             Add write_table() orchestrator.
+             Include column encoding dispatch per table.
+
+  CREATE:  csf_encode.hpp / csf_encode.cpp
+             Arrow value extraction helpers (with Arrow type_id dispatch).
+             Bit-packing encode/decode.
+             LZ4 compress/decompress wrappers.
+             Column block writer/reader.
+             String block writer/reader.
+             Global dictionary builder.
+             Footer serializer / deserializer.
+             Zone map builders.
+             Phone decomposition.
+             Synthetic name suffix encode/decode.
+             External sort helper.
+
+  MODIFY:  read_impl.cpp
+             Replace stub implementations with real reader:
+             open_bff_dataset, load_bff_footer (deserialize footer),
+             open_bff_table (open fd, set csf_footer pointer),
+             plan_bff_scan (zone map / Bloom pruning),
+             read_bff_page (pread + LZ4 decompress),
+             read_bff_row_group (whole-segment read).
+
+  CREATE:  csf_decode.cpp (optional, can merge into csf_encode.cpp)
+             Column block decoder.
+             String block decoder.
+
+  MODIFY:  query1.cpp  query2.cpp  query3.cpp  query4.cpp
+           query5.cpp  query6.cpp  query7.cpp  query8.cpp
+             Replace TODO stubs with real query implementations.
+
+  CREATE:  query_utils.hpp  (shared helpers)
+             csf_date_from_string(), decode_decimal(), format_name(),
+             format_phone(), dict_lookup().
+
+================================================================================
+END OF TODO PLAN
+================================================================================
