@@ -2,6 +2,8 @@ import logging
 from pathlib import Path
 
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
+    prepare_mt,
+    prepare_optim,
     prepare_repo_and_load_snapshot,
 )
 from synth_framework.git_snapshotter import GitSnapshotter
@@ -40,7 +42,7 @@ class BespokeRunner:
         prepare_repo_and_load_snapshot(
             snapshotter=self._snapshotter,
             snapshot=snapshot,
-            prepare="mt" if is_mt else "optim",
+            prepare_fn=prepare_mt if is_mt else prepare_optim,
             benchmark=benchmark,
             query_list=query_list,
             cache_path=cache_path,

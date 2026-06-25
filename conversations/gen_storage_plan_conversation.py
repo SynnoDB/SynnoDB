@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 from conversations.checkpointed_conversation import CheckpointedConversation
+from conversations.filenames import get_filenames
 from conversations.prompts_gen import gen_storage_plan_prompt
 from conversations.stage_config import StaticStageConfig
 from utils.utils import DBStorage
@@ -30,8 +31,9 @@ class GenStoragePlanConversation(CheckpointedConversation):
         await self._run_stages(self.assemble_stages())
 
     def assemble_stages(self):
-        queries_filename = "queries.md"
-        storage_plan_filename = "storage_plan.txt"
+        filenames = get_filenames("olap")
+        queries_filename = filenames["queries_path"]
+        storage_plan_filename = filenames["plan_filename"]
 
         def _validate_storage_plan_exists() -> str | None:
             plan_path = self.workspace_path / storage_plan_filename

@@ -1,15 +1,45 @@
 import argparse
 
-from main import ConvMode, run_conv_wrapper
+from conversations.conversation_spec import ConversationSpec, FrameworkContext
+from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_replay_source_run
+from main import run_conv_wrapper
 from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
 from run_gen_base_impl import base_args, base_args_extract, validate_snapshot
 from utils.cli_config import RunConfig, add_common_args
+from utils.conv_name_utils import ConvMode
 from utils.gen_common import parse_query_ids
 from utils.utils import DBStorage
 
 ### RUN CMD
 # python run_check_sf_correctness.py --source_run_id <wandb-id> --target_sf 100 \
 #   --queries 1-22 --benchmark tpch --bespoke_storage --auto_u --auto_finish
+
+
+def _factory(ctx: FrameworkContext):
+    from conversations.check_sf_correctness_conv import CheckSFCorrectnessConv
+
+    assert ctx.args.target_sf is not None, (
+        "target_sf must be provided for check-sf correctness conversation"
+    )
+    return CheckSFCorrectnessConv(
+        query_ids=ctx.query_list,
+        target_sf=ctx.args.target_sf,
+        bespoke_storage=ctx.args.bespoke_storage,
+        db_storage=ctx.db_storage,
+        **ctx.auto_conversation_args,
+        **ctx.conv_args,
+    )
+
+
+# Dynamic prepare: the source run's conv_mode is passed via RunConfig.prepare_mode
+# below and reaches prepare_replay_source_run as source_run_prepare_mode (which it
+# uses to replay the source run's prepare steps); main.py resolves parallelism from it too.
+SPEC = ConversationSpec(
+    prepare=prepare_replay_source_run,
+    needs_parallelism=False,
+    be_relaxed_supervision=False,
+    factory=_factory,
+)
 
 
 def main(args):
@@ -66,7 +96,7 @@ def main(args):
         else None,
     )
 
-    run_conv_wrapper(args=None, run_config=config)
+    run_conv_wrapper(args=None, run_config=config, spec=SPEC)
 
 
 def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:

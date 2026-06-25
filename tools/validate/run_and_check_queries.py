@@ -79,6 +79,7 @@ def check_output_correctness(
     trace_mode: bool,
     query_execution_cache: QueryExecutionCache,
     trace_data: str = "",
+    use_umbra: bool = True,
 ) -> ValidationOutput:
     logger.info(f"Comparing results with DuckDB for {exec_settings}...")
 
@@ -101,9 +102,12 @@ def check_output_correctness(
     duckdb_reference_results = query_execution_cache.lookup_or_execute_query_batch(
         system=System.DUCKDB, batch=query_batch
     )
-    umbra_reference_results = query_execution_cache.lookup_or_execute_query_batch(
-        system=System.UMBRA, batch=query_batch
-    )
+    if use_umbra:
+        umbra_reference_results = query_execution_cache.lookup_or_execute_query_batch(
+            system=System.UMBRA, batch=query_batch
+        )
+    else:
+        umbra_reference_results = [None] * len(query_batch.query_list)
     assert len(duckdb_reference_results) == len(query_batch.query_list), (
         f"Expected number of reference results from DuckDB ({len(duckdb_reference_results)}) to match number of queries in batch ({len(query_batch.query_list)})."
     )
@@ -144,12 +148,13 @@ def check_output_correctness(
             )
 
         # extract reference system runtimes
-        umbra_time_ms = umbra_res.exec_time_ms
+        umbra_time_ms = umbra_res.exec_time_ms if umbra_res is not None else None
         duckdb_time_ms = duckdb_res.exec_time_ms
 
         bespoke_rt_lists[inst.query_id].append(rt.exec_time)
         duckdb_rt_lists[inst.query_id].append(duckdb_time_ms)
-        umbra_rt_lists[inst.query_id].append(umbra_time_ms)
+        if umbra_time_ms is not None:
+            umbra_rt_lists[inst.query_id].append(umbra_time_ms)
 
         # write df to csv and read back in - ensure consistent formatting
         assert duckdb_res.result is not None, (
@@ -162,11 +167,15 @@ def check_output_correctness(
         (out_path / "ref_result.csv").unlink()
 
         # log times
-        faster = rt.exec_time < umbra_time_ms
-
-        logger.info(
-            f"Q{inst.query_id} ({exec_settings}): {rt.exec_time}ms (Bespoke), {umbra_time_ms:.2f}ms (Umbra) {'-- faster' if faster else ''}"
-        )
+        if umbra_time_ms is not None:
+            faster = rt.exec_time < umbra_time_ms
+            logger.info(
+                f"Q{inst.query_id} ({exec_settings}): {rt.exec_time}ms (Bespoke), {umbra_time_ms:.2f}ms (Umbra) {'-- faster' if faster else ''}"
+            )
+        else:
+            logger.info(
+                f"Q{inst.query_id} ({exec_settings}): {rt.exec_time}ms (Bespoke), {duckdb_time_ms:.2f}ms (DuckDB)"
+            )
 
         bespoke_rt_lists[inst.query_id].append(rt.exec_time)
 
@@ -416,8 +425,9 @@ def check_output_correctness(
         )
     ) / len(avg_duckdb_rts)
 
+    umbra_rt_str = f"{total_umbra_rt:.2f}ms (Umbra)" if total_umbra_rt is not None else "N/A (Umbra)"
     logger.info(
-        f"Aggregated Runtimes: {total_bespoke_rt:.2f}ms (Bespoke) vs {total_umbra_rt:.2f}ms (Umbra) vs {total_duckdb_rt:.2f}ms (DuckDB)"
+        f"Aggregated Runtimes: {total_bespoke_rt:.2f}ms (Bespoke) vs {umbra_rt_str} vs {total_duckdb_rt:.2f}ms (DuckDB)"
     )
     logger.info(f"Avg. Speedup: {average_speedup:.2f}x")
     logger.info(f"Total Speedup: {total_speedup:.2f}x")
@@ -453,7 +463,7 @@ def check_output_correctness(
                 "bespoke_runtime_ms": [
                     avg_bespoke_rts[str(q)] for q in query_ids_executed
                 ],
-                "umbra_runtime_ms": [avg_umbra_rts[str(q)] for q in query_ids_executed],
+                "umbra_runtime_ms": [avg_umbra_rts.get(str(q)) for q in query_ids_executed],
             }
         )
         t = wandb.Table(dataframe=measurements_df)

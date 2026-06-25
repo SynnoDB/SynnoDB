@@ -1,9 +1,13 @@
 import argparse
 
-from main import ConvMode, run_conv_wrapper
+from conversations.conversation_spec import ConversationSpec, FrameworkContext
+from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_mt
+from main import run_conv_wrapper
 from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
 from run_gen_base_impl import base_args, base_args_extract, validate_snapshot
+from run_optim_loop import build_optim_conv_args
 from utils.cli_config import RunConfig, add_common_args
+from utils.conv_name_utils import ConvMode
 from utils.gen_common import parse_query_ids
 from utils.utils import DBStorage
 
@@ -13,6 +17,41 @@ from utils.utils import DBStorage
 
 # OPTIM LOOP 2:
 # - Multi-Threading
+
+
+def _factory(ctx: FrameworkContext):
+    optim_conv_args = build_optim_conv_args(ctx)
+
+    if ctx.db_storage == DBStorage.IN_MEMORY:
+        from conversations.in_mem_2_mt_conv import InMem2MTConversation
+
+        return InMem2MTConversation(
+            benchmark=ctx.args.benchmark,
+            optim_conv_args=optim_conv_args,
+            **ctx.auto_conversation_args,
+            **ctx.conv_args,
+        )
+    elif ctx.db_storage == DBStorage.SSD:
+        from conversations.ssd_2_mt_conv import SSD2MTOptConv
+
+        return SSD2MTOptConv(
+            benchmark=ctx.args.benchmark,
+            optim_conv_args=optim_conv_args,
+            **ctx.auto_conversation_args,
+            **ctx.conv_args,
+        )
+    else:
+        raise Exception(
+            f"Unsupported db_storage for make_mt conversation: {ctx.db_storage}"
+        )
+
+
+SPEC = ConversationSpec(
+    prepare=prepare_mt,
+    needs_parallelism=True,
+    be_relaxed_supervision=True,
+    factory=_factory,
+)
 
 
 def main(args):
@@ -77,7 +116,7 @@ def main(args):
     )
 
     # run conversation
-    run_conv_wrapper(args=None, run_config=config)
+    run_conv_wrapper(args=None, run_config=config, spec=SPEC)
 
 
 def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:

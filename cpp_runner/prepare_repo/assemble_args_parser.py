@@ -7,15 +7,28 @@ _CPP_TYPE = {str: "std::string", int: "int", float: "float"}
 
 
 def assemble_args_parser_file(
-    query_ids: list[str], gen_placeholders_fn: Callable
+    query_ids: list[str],
+    gen_placeholders_fn: Callable,
+    query_name_fn: Callable[[str], str] | None = None,
 ) -> str:
+    """Assemble args_parser.hpp.
+
+    The generated ``Q%sArgs`` struct names always use the bare query id (to match
+    the ``run_q<id>`` / ``parse_q<id>`` symbols emitted by the query-impl
+    dispatch). ``query_name_fn`` only controls the key used to look up the
+    placeholder spec for a query, which differs per benchmark (e.g. ``Q1`` for
+    TPC-H, ``STQ1`` for TPC-H single-table).
+    """
+    if query_name_fn is None:
+        query_name_fn = lambda q_id: f"Q{q_id}"  # noqa: E731
+
     assert _ARGS_PARSER_TEMPLATE.is_file(), (
         f"Args parser template not found: {_ARGS_PARSER_TEMPLATE}"
     )
     args_parser_content = _ARGS_PARSER_TEMPLATE.read_text()
 
     query_blocks = "\n".join(
-        _gen_query_block(q_id, gen_placeholders_fn(query_name=f"Q{q_id}"))
+        _gen_query_block(q_id, gen_placeholders_fn(query_name=query_name_fn(q_id)))
         for q_id in query_ids
     )
     out_str = string.Template(args_parser_content).substitute(

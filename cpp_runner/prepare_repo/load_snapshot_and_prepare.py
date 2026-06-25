@@ -1,6 +1,7 @@
 import logging
+from dataclasses import dataclass
+from typing import Callable
 
-from conversations.filenames import get_filenames
 from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from synth_framework.git_snapshotter import GitSnapshotter
 from tools.run import delete_result_csv_files
@@ -9,31 +10,57 @@ from utils.confirm_dialog import await_user_confirmation
 logger = logging.getLogger(__name__)
 
 
-_VALID_PREPARE_MODES = {None, "storage_plan", "base", "optim", "mt"}
+@dataclass
+class PrepareContext:
+    """Inputs handed to a prepare function (``ConversationSpec.prepare``).
+
+    A prepare function brings the workspace into the state a given conversation
+    expects by invoking the relevant ``prepare_workspace_provider`` steps.
+    Everything those steps need - in particular ``write_non_tracked_only``,
+    which is only known once the start snapshot (if any) has been restored - is
+    collected here by :func:`prepare_repo_and_load_snapshot`.
+    """
+
+    prepare_workspace_provider: PrepareWorkspace
+    usecase_prepare_args: dict[str, str]
+    # When True, tracked files come from the restored snapshot and only the
+    # non-tracked (read-only / generated) files should be (re)written.
+    write_non_tracked_only: bool
+    do_not_cache: bool = True
+    only_from_cache: bool = False
+    add_sample_trace: bool = False
+    # Only set for the dynamic CHECK_SF prepare, which replays the prepare steps
+    # of the source run identified by this mode string (see
+    # :func:`prepare_replay_source_run`).
+    source_run_prepare_mode: str | None = None
+
+
+PrepareFn = Callable[[PrepareContext], str]
 
 
 def prepare_repo_and_load_snapshot(
     snapshotter: GitSnapshotter,
     snapshot: str | None,
-    prepare: str,
+    prepare_fn: PrepareFn,
     prepare_workspace_provider: PrepareWorkspace,
     usecase_prepare_args: dict[str, str],
     do_not_cache: bool = True,
     conv_name: str | None = None,
     only_from_cache: bool = False,
     add_sample_trace: bool = False,
+    source_run_prepare_mode: str | None = None,
 ) -> str:
     """Bring the workspace into a known state and run the requested prepare steps.
 
     If `snapshot` is given, it is restored and prepare runs in "non-tracked-only" mode
     (tracked files come from the snapshot). If `snapshot` is None, an empty snapshot
     is created (named `conv_name`) and a full prepare is done from scratch.
+
+    The mode-specific prepare steps live in ``prepare_fn`` (a
+    :data:`PrepareFn`, e.g. :func:`prepare_base`), which the conversation spec
+    supplies; this function only handles the snapshot/workspace bookkeeping
+    shared by every mode and then hands a :class:`PrepareContext` to ``prepare_fn``.
     """
-    assert prepare in _VALID_PREPARE_MODES, f"Invalid prepare option: {prepare}"
-
-    filenames_dict = get_filenames()
-    query_impl_filename = filenames_dict["query_impl_path"]  # e.g. "query_impl.cpp"
-
     if snapshot is None:
         assert conv_name is not None, "conv_name is required when snapshot is None"
         snapshotter.create_empty_snapshot(conv_name)
@@ -59,96 +86,13 @@ def prepare_repo_and_load_snapshot(
 
     delete_result_csv_files(workspace_path=snapshotter.working_dir)
 
-    readonly_files_not_git_tracked, readonly_files_git_tracked = (
-        prepare_workspace_provider._get_readonly_files()
+    ctx = PrepareContext(
+        prepare_workspace_provider=prepare_workspace_provider,
+        usecase_prepare_args=usecase_prepare_args,
+        write_non_tracked_only=write_non_tracked_only,
+        do_not_cache=do_not_cache,
+        only_from_cache=only_from_cache,
+        add_sample_trace=add_sample_trace,
+        source_run_prepare_mode=source_run_prepare_mode,
     )
-    artifacts_in_context = ""
-
-    if prepare in ["storage_plan", "base", "optim", "mt"]:
-        # gen_placeholders_fn = get_placeholders_fn(
-        #     benchmark,
-        #     do_not_cache=do_not_cache,
-        #     cache_dir=cache_path / "placeholders_cache"
-        #     if cache_path is not None
-        #     else None,
-        # )
-        # artifacts_in_context += prepare_repo(
-        #     workspace_dir=snapshotter.working_dir,
-        #     benchmark=benchmark,
-        #     storage_plan=storage_plan,
-        #     query_list=query_list,
-        #     sql_dict=get_sql_dict(benchmark),
-        #     gen_placeholders_fn=gen_placeholders_fn,
-        #     git_snapshotter=snapshotter,
-        #     cache_dir=cache_path / "repo_prepare_cache"
-        #     if cache_path is not None
-        #     else None,
-        #     do_not_cache=do_not_cache,
-        #     write_non_tracked_only=write_non_tracked_only,
-        #     readonly_files_not_git_tracked=readonly_files_not_git_tracked,
-        #     add_thread_pool_to_query_impl=prepare == "mt",
-        #     only_query_txt=prepare == "storage_plan",
-        #     db_storage=db_storage,
-        #     only_from_cache=only_from_cache,
-        #     add_sample_trace=add_sample_trace,
-        # )
-
-        artifacts_in_context += prepare_workspace_provider.prepare(
-            add_thread_pool_to_query_impl=prepare == "mt",
-            only_query_md=prepare == "storage_plan",
-            add_sample_trace=add_sample_trace,
-            write_non_tracked_only=write_non_tracked_only,
-            only_from_cache=only_from_cache,
-            do_not_cache=do_not_cache,
-            usecase_args=usecase_prepare_args,
-        )
-
-    if prepare in ["optim", "mt"]:
-        logger.info(
-            "Preparing workspace for optimization by adding tracing/flushing to %s and adding trace.hpp.",
-            query_impl_filename,
-        )
-        # For "optim" we are upgrading a base-impl snapshot, so modify the tracked
-        # query_impl.cpp. For "mt" the snapshot already has trace applied; only the
-        # ro/untracked files need to be (re)written.
-        # artifacts_in_context += prepare_repo_for_optim(
-        #     workspace_dir=snapshotter.working_dir,
-        #     query_impl_filename=query_impl_filename,
-        #     git_snapshotter=snapshotter,
-        #     cache_dir=cache_path / "repo_prepare_optim_cache"
-        #     if cache_path is not None
-        #     else None,
-        #     do_not_cache=do_not_cache,
-        #     readonly_files_not_git_tracked=readonly_files_not_git_tracked,
-        #     write_non_tracked_only=prepare
-        #     != "optim",  # when loading from snapshot in make_mt mode, only write non git-tracked files as the tracked files are already included in the snapshot and might be at a different version than the current ones
-        #     only_from_cache=only_from_cache,
-        # )
-
-        artifacts_in_context += prepare_workspace_provider.prepare_optim(
-            write_non_tracked_only=prepare != "optim",  # see above
-            only_from_cache=only_from_cache,
-            do_not_cache=do_not_cache,
-        )
-
-    if prepare in ["mt"]:
-        logger.info(
-            "Preparing workspace for make_mt by adding thread pool helpers and flushing to %s and adding thread_pool.hpp.",
-            query_impl_filename,
-        )
-        # artifacts_in_context += prepare_repo_for_mt(
-        #     workspace_dir=snapshotter.working_dir,
-        #     git_snapshotter=snapshotter,
-        #     cache_dir=cache_path / "repo_prepare_mt_cache"
-        #     if cache_path is not None
-        #     else None,
-        #     do_not_cache=do_not_cache,
-        #     only_from_cache=only_from_cache,
-        # )
-
-        artifacts_in_context += prepare_workspace_provider.prepare_mt(
-            only_from_cache=only_from_cache,
-            do_not_cache=do_not_cache,
-        )
-
-    return artifacts_in_context
+    return prepare_fn(ctx)
