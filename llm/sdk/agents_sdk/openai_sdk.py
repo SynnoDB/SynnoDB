@@ -20,6 +20,10 @@ from llm.llm_caching.cached_compaction_session import (
 )
 from llm.llm_caching.cached_litellm import CachedLitellmModel
 from llm.llm_caching.cached_openai import CachedOpenAIResponsesModel
+from llm.sdk.agents_sdk.compaction_trigger import (
+    COMPACTION_TRIGGER_FRACTION,
+    context_usage_at_or_above,
+)
 from llm.sdk.agents_sdk.openai_make_compile_tool import make_openai_compile_tool
 from llm.sdk.agents_sdk.openai_make_run_tool import make_openai_run_tool
 from llm.sdk.agents_sdk.openai_sdk_tools import (
@@ -97,18 +101,23 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
             session_id=self.args.conv_name, create_tables=True
         )
 
-        def log_should_trigger_compaction(context: dict[str, Any]) -> bool:
-            # logger.info(
-            #     f"Ctx len candidate items: {len(context['compaction_candidate_items'])}",
-            # )
-            return False
+        run_stats_collector_for_trigger = self.run_stats_collector
+
+        def should_trigger_compaction_near_limit(context: dict[str, Any]) -> bool:
+            # Proactively compact once we are near the model's context window so we
+            # summarize BEFORE a hard overflow. The SDK consults this between turns
+            # and, when True, runs compaction before the next model call (which then
+            # reinserts the active stage prompt; see the session's run_compaction).
+            return context_usage_at_or_above(
+                run_stats_collector_for_trigger, COMPACTION_TRIGGER_FRACTION
+            )
 
         # assemble session
         self.session = CachedOpenAIResponsesCompactionSession(
             session_id=self.args.conv_name,
             client=openai_client,
             underlying_session=self.underlying_session,
-            should_trigger_compaction=log_should_trigger_compaction,
+            should_trigger_compaction=should_trigger_compaction_near_limit,
             cache_dir=self.cache_path / "compaction",
             do_not_cache=self.args.do_not_cache,
             model="gpt-5.2" if not self.args.tool_search_tool else "gpt-5.4",
@@ -311,7 +320,11 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
         return result.final_output
 
     async def run_compaction(self):
-        await self.session.run_compaction({"force": True, "compaction_mode": "input"})
+        # Caller-initiated compaction (marker or reactive overflow). reanchor=False:
+        # the caller re-issues the task prompt itself, so do not reinsert it here.
+        await self.session.run_compaction(
+            {"force": True, "compaction_mode": "input"}, reanchor=False
+        )
 
     async def get_conversation_turns(self) -> int:
         turns = await self.underlying_session.get_conversation_turns()

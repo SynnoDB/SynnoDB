@@ -1,6 +1,7 @@
 .env
 cache/
 output/
+artifacts/
 lsyncd.conf.lua
 duckdb
 *.parquet
