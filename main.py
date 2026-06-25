@@ -395,6 +395,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             do_not_cache=args.do_not_cache,
             only_from_cache=args.only_from_cache,
             max_snapshot_csv_size_mb=max_snapshot_csv_size_mb,
+            use_umbra=usecase != Usecase.BFF,
         )
 
     logger.info(f"Workspace root: {workspace_path}")
