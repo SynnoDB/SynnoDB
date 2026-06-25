@@ -2,10 +2,12 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from cpp_runner.compiler.compiler_factory_bff import BFFCompilerFactory
 from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from observability.logging.run_stats_collector import RunStatsCollector
 from synth_framework.git_snapshotter import GitSnapshotter
 from synth_framework.runtime_tracker import RuntimeTracker
+from utils.cli_config import Usecase
 from utils.utils import DBStorage
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,7 @@ class CompileTool:
         run_stats_collector: RunStatsCollector,
         db_storage: DBStorage,
         untracked_cpp_runner_content: str,
+        usecase: Usecase = Usecase.OLAP,
         compile_cache_dir: Optional[Path] = None,
         do_not_cache: bool = False,
         only_from_cache: bool = False,
@@ -30,7 +33,11 @@ class CompileTool:
         ] = None,  # restrict to 10000 chars ~ 2.5 Thousand tokens
     ) -> None:
         self.cwd = cwd
-        self.compiler = OLAPCompilerFactory(db_storage=db_storage).make_compiler(
+        if usecase == Usecase.BFF:
+            factory = BFFCompilerFactory()
+        else:
+            factory = OLAPCompilerFactory(db_storage=db_storage)
+        self.compiler = factory.make_compiler(
             cwd,
             compile_cache_dir=compile_cache_dir,
             git_snapshotter=git_snapshotter,

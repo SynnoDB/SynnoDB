@@ -455,6 +455,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         runtime_tracker=runtime_tracker,
         output_truncation=compile_output_truncate,
         db_storage=db_storage,
+        usecase=usecase,
         untracked_cpp_runner_content=framework_code_content,
     )
 
