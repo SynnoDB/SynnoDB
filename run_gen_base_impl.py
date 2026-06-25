@@ -1,16 +1,52 @@
 import argparse
 from typing import TypedDict
 
+from conversations.conversation_spec import ConversationSpec, FrameworkContext
+from cpp_runner.prepare_repo.prepare_olap import prepare_base
 from main import run_conv_wrapper
 from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
 from utils.cli_config import RunConfig, add_common_args
 from utils.confirm_dialog import await_user_confirmation
+from utils.conv_name_utils import ConvMode
 from utils.gen_common import parse_query_ids
 from utils.utils import DBStorage
 from workloads.workload_provider import Workload
 
 ### RUN CMD
 # python run_gen_base_impl.py --conv initial1-22v66 --benchmark tpch --bespoke_storage --auto_u --auto_finish
+
+
+def _factory(ctx: FrameworkContext):
+    from conversations.base_impl_conversation import BaseImplConversation
+    from utils.get_sample_q_args import get_sample_exec_settings, get_sample_query_args
+    from workloads.workload_provider_olap import OLAPExecSettings
+
+    sample_query_args_dict = get_sample_query_args(
+        workload_provider=ctx.workload_provider
+    )
+    exec_settings = get_sample_exec_settings(workload_provider=ctx.workload_provider)
+    assert isinstance(exec_settings, OLAPExecSettings)
+
+    return BaseImplConversation(
+        benchmark=ctx.args.benchmark,
+        read_storage_plan=ctx.args.bespoke_storage,
+        sample_query_args_dict=sample_query_args_dict,
+        workspace_path=ctx.workspace_path,
+        use_master_prompt=ctx.args.use_autonomy_master_prompt,
+        sql_dict=ctx.workload_provider.sql_dict,
+        db_storage=ctx.db_storage,
+        parquet_dir=exec_settings.parquet_dir,
+        **ctx.auto_conversation_args,
+        **ctx.conv_args,
+    )
+
+
+SPEC = ConversationSpec(
+    prepare=prepare_base,
+    needs_parallelism=False,
+    be_relaxed_supervision=False,
+    factory=_factory,
+)
 
 
 def validate_snapshot(
@@ -107,7 +143,7 @@ def main(args):
         **base_args_extract(
             args,
         ),
-        conv_mode="base",  # not scripted: instead autonomous conversation
+        conv_mode=ConvMode.BASE,  # not scripted: instead autonomous conversation
         query_list=",".join(map(str, query_ids)),
         keep_csv=False,  # keep .csv files around instead of git-ignoring them (maybe to backtrack correctness issues)
         bespoke_storage=bespoke_storage,
@@ -119,7 +155,7 @@ def main(args):
     )
 
     # run conversation
-    run_conv_wrapper(args=None, run_config=config)
+    run_conv_wrapper(args=None, run_config=config, spec=SPEC)
 
 
 def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
@@ -148,7 +184,7 @@ def base_args() -> dict:
         include_disable_repo_sync=True,
         include_replay_cache=True,
         include_benchmark=True,
-        include_disable_wandb=True,
+        include_log_to_wandb=True,
         include_disable_openai_tracing=True,
         include_auto_u=True,
         include_auto_finish=True,
@@ -170,7 +206,7 @@ class BaseArgs(TypedDict):
     disable_repo_sync: bool
     replay_cache: bool
     benchmark: Workload
-    disable_wandb: bool
+    log_to_wandb: bool
     disable_openai_tracing: bool
     auto_u: bool
     auto_finish: bool
@@ -193,7 +229,7 @@ def base_args_extract(args) -> BaseArgs:
         "disable_repo_sync": args.disable_repo_sync,
         "replay_cache": args.replay_cache,
         "benchmark": args.benchmark,
-        "disable_wandb": args.disable_wandb,
+        "log_to_wandb": args.log_to_wandb,
         "disable_openai_tracing": args.disable_openai_tracing,
         "auto_u": args.auto_u,
         "auto_finish": args.auto_finish,

@@ -123,6 +123,7 @@ class QueryValidator:
         max_snapshot_csv_size_mb: Optional[
             float
         ] = None,  # if set, result CSVs in workspace_path are truncated to this size right before the post-run snapshot so they don't bloat snapshots
+        use_umbra: bool = True,
     ):
         self.workspace_path = workspace_path
         self.runtime_tracker = runtime_tracker
@@ -134,6 +135,7 @@ class QueryValidator:
         self.do_not_cache = do_not_cache
         self.only_from_cache = only_from_cache
         self.max_snapshot_csv_size_mb = max_snapshot_csv_size_mb
+        self.use_umbra = use_umbra
 
     def exec_and_validate(
         self,
@@ -488,6 +490,7 @@ class QueryValidator:
             stderr=stderr if self.output_stdout_stderr else None,
             trace_mode=trace_mode,
             trace_data=trace_data,
+            use_umbra=self.use_umbra,
         )
 
 

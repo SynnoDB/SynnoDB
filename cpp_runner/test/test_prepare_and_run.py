@@ -14,6 +14,7 @@ from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
+from cpp_runner.prepare_repo.prepare_olap import prepare_base
 from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from observability.logging.logger import setup_logging
 from synth_framework.git_snapshotter import GitSnapshotter
@@ -91,7 +92,7 @@ def main(args):
         prepare_repo_and_load_snapshot(
             snapshotter=snapshotter,
             snapshot=None,
-            prepare="base",
+            prepare_fn=prepare_base,
             conv_name=f"test_conv_{rnd_str}",
             add_sample_trace=True,
             prepare_workspace_provider=prepare_workspace_provider,

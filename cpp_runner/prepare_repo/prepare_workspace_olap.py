@@ -2,6 +2,9 @@ import re
 from pathlib import Path
 from string import Template
 
+from conversations.filenames import get_plan_filename
+from cpp_runner.prepare_repo.assemble_args_parser import assemble_args_parser_file
+from cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
 from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from utils.utils import DBStorage
 from workloads.workload_provider_olap import OLAPWorkloadProvider
@@ -17,7 +20,7 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
         )
 
     def _assemble_usecase_files(
-        self, storage_plan: str | None = None
+        self, storage_plan: str | None = None, **usecase_args
     ) -> dict[str, str]:
         """Build template file contents without writing to disk."""
         project_dir = Path(__file__).parent
@@ -83,7 +86,7 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             result[filename] = file_content
 
         if storage_plan is not None:
-            result["storage_plan.txt"] = storage_plan
+            result[get_plan_filename("olap")] = storage_plan
 
         sql_template_list = [
             f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
@@ -93,7 +96,31 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
 
         result["queries.md"] = qf_string
 
-        return result
+        result.update(self._assemble_query_files())
+
+        # assemble
+        general_files = dict()
+        general_files["query_impl.cpp"] = assemble_query_impl_file(
+            add_thread_pool_to_query_impl=usecase_args.get(
+                "add_thread_pool_to_query_impl", False
+            ),
+            add_sample_trace_to_query_impl=usecase_args.get("add_sample_trace", False),
+            query_list=self.workload_provider.query_ids,
+            pin_to_core=3,
+            drop_os_caches_for_each_query=False,
+        )
+
+        general_files["args_parser.hpp"] = assemble_args_parser_file(
+            query_ids=self.workload_provider.query_ids,
+            gen_placeholders_fn=self.workload_provider.get_placeholders_fn(),
+        )
+
+        # assert no filename conflicts between file dicts
+        assert not set(result.keys()) & set(general_files.keys()), (
+            f"Filename conflict between usecase_files and general_files: {set(result.keys()) & set(general_files.keys())}"
+        )
+
+        return {**result, **general_files}
 
     def _assemble_query_files(self) -> dict[str, str]:
         """Build per-query file contents without writing to disk."""

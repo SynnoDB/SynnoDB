@@ -12,6 +12,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent.parent))
 from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
+    prepare_mt,
     prepare_repo_and_load_snapshot,
 )
 from observability.logging.logger import setup_logging
@@ -118,7 +119,7 @@ def main() -> None:
     prepare_repo_and_load_snapshot(
         snapshotter=snapshotter,
         snapshot=git_snapshot,
-        prepare="mt",  # TODO extract from config or args
+        prepare_fn=prepare_mt,  # TODO extract from config or args
         benchmark=args.benchmark,
         query_list=get_all_query_ids(args.benchmark),
         cache_path=ARTIFACTS_DIR / "cache",
