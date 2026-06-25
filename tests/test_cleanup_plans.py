@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from pipeline.conversations.utils.cleanup_plans import (
+from synnodb.conversations.utils.cleanup_plans import (
     cleanup_duckdb_plan,
     cleanup_umbra_plan,
 )
@@ -454,7 +454,7 @@ class TestCleanupPlans(unittest.TestCase):
         print(f"Cleaned plan size: {cleaned_size} characters")
 
     def test_cleanup_numeric_value(self):
-        from pipeline.conversations.utils.cleanup_plans import cleanup_numeric_value
+        from synnodb.conversations.utils.cleanup_plans import cleanup_numeric_value
 
         self.assertEqual(cleanup_numeric_value(0.000123456), "0.00012")
         self.assertEqual(cleanup_numeric_value(123456), "120000")

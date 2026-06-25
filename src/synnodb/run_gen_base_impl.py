@@ -253,6 +253,10 @@ def base_args_extract(args) -> BaseArgs:
     return args_dict
 
 
+def cli() -> None:
+    """Console-script entry point."""
+    main(build_parser().parse_args())
+
+
 if __name__ == "__main__":
-    args = build_parser().parse_args()
-    main(args)
+    cli()
