@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.sandbox import (
+from synnodb.tools.sandbox import (
     SandboxConfig,
     sandbox_exec_async,
     sandbox_popen,

@@ -6,7 +6,7 @@ truncation caps (including events), the self-timed stage duration, and the
 skip-empty-LLM-turn behavior.
 """
 
-from observability.logging.debug_logger import (
+from synnodb.observability.logging.debug_logger import (
     _EVENT_MAX_CHARS,
     _LLM_MAX_CHARS,
     _TOOL_MAX_CHARS,

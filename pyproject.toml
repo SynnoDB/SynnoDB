@@ -39,19 +39,13 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = [
-    "benchmark*",
-    "conversations*",
-    "dataset*",
-    "llm_cache*",
-    "plots*",
-    "tools*",
-    "utils*",
-    "misc*",
-]
-
-exclude = ["output*", "wandb*", "tests*", "__pycache__*"]
+where = ["src"]
 
 [tool.setuptools.package-data]
-misc = ["**/*.cpp", "**/*.hpp"]
+"synnodb.conversations" = ["prompts/**/*"]
+"synnodb.cpp_runner" = [
+    "prepare_repo/templates/**/*",
+    "cpp_helpers/**/*",
+    "api/**/*",
+    "hotpatch/**/*",
+]

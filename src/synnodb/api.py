@@ -1,0 +1,243 @@
+"""Importable, typed entry point to the SynnoDB agent pipeline.
+
+    from synnodb import SynnoDB
+    db = SynnoDB.in_memory(workload="tpch")
+    sp = db.createStoragePlan(queries="1")
+    bi = db.createBaseImpl(storage_plan_run_id=sp)
+
+Each call runs one stage to completion (blocking) and returns a ``StageResult``
+whose ``run_id`` the next stage takes as its upstream argument.
+"""
+from __future__ import annotations
+
+import dataclasses
+import importlib
+import os
+from dataclasses import dataclass
+from typing import Any
+
+from dotenv import load_dotenv
+
+# These enums resolve without SYNNO_DATA_DIR (the module-level assert was made
+# lazy), so importing synnodb stays config-free. The heavy stage modules
+# (synnodb.main, synnodb.run_*) are imported lazily inside run().
+from synnodb.utils.cli_config import DEFAULT_MODEL, Usecase
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider import Workload
+from synnodb.workloads.workload_provider_olap import OLAPWorkload
+
+__all__ = [
+    "SynnoDB", "SynnoConfig", "StageResult", "Stage", "StageParam", "register_stage",
+]
+
+
+# ----------------------------- coercion helpers -----------------------------
+def _as_workload(v: Workload | str) -> Workload:
+    return v if isinstance(v, Workload) else Workload.of(str(v))
+
+
+def _as_storage(v: DBStorage | str) -> DBStorage:
+    return v if isinstance(v, DBStorage) else DBStorage(str(v))
+
+
+def _as_usecase(v: Usecase | str) -> Usecase:
+    return v if isinstance(v, Usecase) else Usecase(str(v))
+
+
+def _as_arg(v: Any) -> str:
+    """A StageResult collapses to its run id; everything else stringifies."""
+    return v.run_id if isinstance(v, StageResult) else str(v)
+
+
+# --------------------------------- config -----------------------------------
+@dataclass(frozen=True)
+class SynnoConfig:
+    """Immutable, enum-typed run settings shared across stages."""
+
+    model: str = DEFAULT_MODEL
+    workload: Workload = OLAPWorkload.TPCH
+    db_storage: DBStorage = DBStorage.IN_MEMORY
+    usecase: Usecase = Usecase.OLAP
+    queries: str = "1"
+    log_to_wandb: bool = True          # required to chain stages
+    auto_confirm: bool = True          # --auto_u
+    auto_finish: bool = True
+    disable_openai_tracing: bool = True
+    disable_repo_sync: bool = False
+    notify: bool = False
+    do_not_cache: bool = False
+    extra_flags: tuple[str, ...] = ()  # escape hatch for any unmodelled CLI flag
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "workload", _as_workload(self.workload))
+        object.__setattr__(self, "db_storage", _as_storage(self.db_storage))
+        object.__setattr__(self, "usecase", _as_usecase(self.usecase))
+
+    def to_argv(self) -> list[str]:
+        argv = [
+            "--model", self.model,
+            "--benchmark", self.workload.value,
+            "--db_storage", self.db_storage.value,
+            "--queries", self.queries,
+        ]
+        for name, on in (
+            ("auto_u", self.auto_confirm),
+            ("auto_finish", self.auto_finish),
+            ("disable_openai_tracing", self.disable_openai_tracing),
+            ("log_to_wandb", self.log_to_wandb),
+            ("disable_repo_sync", self.disable_repo_sync),
+            ("notify", self.notify),
+            ("do_not_cache", self.do_not_cache),
+        ):
+            if on:
+                argv.append(f"--{name}")
+        return argv + list(self.extra_flags)
+
+
+# --------------------------------- stages -----------------------------------
+@dataclass(frozen=True)
+class StageParam:
+    kw: str                  # python kwarg, e.g. "storage_plan_run_id"
+    flag: str                # CLI flag, e.g. "--storage_plan_run_id"
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class Stage:
+    name: str                            # "createStoragePlan"
+    module: str                          # "synnodb.run_gen_storage_plan"
+    usecases: frozenset[Usecase]
+    params: tuple[StageParam, ...] = ()
+    flags: tuple[str, ...] = ()          # always-appended, e.g. ("--bespoke_storage",)
+
+
+_REGISTRY: dict[str, Stage] = {}
+
+
+def register_stage(stage: Stage) -> None:
+    if stage.name in _REGISTRY:
+        raise ValueError(f"stage {stage.name!r} already registered")
+    _REGISTRY[stage.name] = stage
+
+
+def _register_olap_stages() -> None:
+    olap = frozenset({Usecase.OLAP})
+    bespoke = ("--bespoke_storage",)
+    register_stage(Stage("createStoragePlan", "synnodb.run_gen_storage_plan", olap))
+    register_stage(Stage("createBaseImpl", "synnodb.run_gen_base_impl", olap,
+                         params=(StageParam("storage_plan_run_id", "--storage_plan_run_id"),),
+                         flags=bespoke))
+    register_stage(Stage("runOptimLoop", "synnodb.run_optim_loop", olap,
+                         params=(StageParam("base_impl_run_id", "--base_impl_run_id"),),
+                         flags=bespoke))
+    register_stage(Stage("addMultiThreading", "synnodb.run_add_multi_threading", olap,
+                         params=(StageParam("optim_run_id", "--optim_run_id"),),
+                         flags=bespoke))
+    register_stage(Stage("checkSfCorrectness", "synnodb.run_check_sf_correctness", olap,
+                         params=(StageParam("source_run_id", "--source_run_id"),
+                                 StageParam("target_sf", "--target_sf")),
+                         flags=bespoke))
+
+
+_register_olap_stages()
+
+
+# --------------------------------- result -----------------------------------
+@dataclass(frozen=True)
+class StageResult:
+    run_id: str | None
+    stage: str
+    config: SynnoConfig
+
+    def __str__(self) -> str:
+        return self.run_id or "<no-wandb-run-id>"
+
+    def __bool__(self) -> bool:
+        return self.run_id is not None
+
+
+# --------------------------------- facade -----------------------------------
+class SynnoDB:
+    """Programmatic pipeline driver. Each call runs one stage to completion."""
+
+    def __init__(
+        self,
+        config: SynnoConfig | None = None,
+        /,
+        *,
+        data_dir: str | None = None,
+        env_file: str | None = None,
+        **overrides: Any,
+    ):
+        # The stage modules (imported lazily in run()) still need SYNNO_DATA_DIR;
+        # resolve it now so the first stage call doesn't fail at import.
+        load_dotenv(env_file)
+        if data_dir is not None:
+            os.environ["SYNNO_DATA_DIR"] = data_dir
+        base = config or SynnoConfig()
+        self.config = dataclasses.replace(base, **overrides) if overrides else base
+
+    # ---- alternative constructors --------------------------------------
+    @classmethod
+    def from_config(cls, config: SynnoConfig, **kw: Any) -> "SynnoDB":
+        return cls(config, **kw)
+
+    @classmethod
+    def from_env(cls, env_file: str | None = None, **overrides: Any) -> "SynnoDB":
+        return cls(env_file=env_file, **overrides)
+
+    @classmethod
+    def in_memory(cls, **overrides: Any) -> "SynnoDB":
+        return cls(db_storage=DBStorage.IN_MEMORY, **overrides)
+
+    @classmethod
+    def on_ssd(cls, **overrides: Any) -> "SynnoDB":
+        return cls(db_storage=DBStorage.SSD, **overrides)
+
+    @classmethod
+    def for_tpch(cls, **overrides: Any) -> "SynnoDB":
+        return cls(workload=OLAPWorkload.TPCH, **overrides)
+
+    @classmethod
+    def for_ceb(cls, **overrides: Any) -> "SynnoDB":
+        return cls(workload=OLAPWorkload.CEB, **overrides)
+
+    def with_(self, **overrides: Any) -> "SynnoDB":
+        """A new driver with a derived config (immutable; e.g. per-call SF/storage)."""
+        return SynnoDB(dataclasses.replace(self.config, **overrides))
+
+    # ---- generic engine -------------------------------------------------
+    def run(self, stage: str | Stage, /, **inputs: Any) -> StageResult:
+        st = stage if isinstance(stage, Stage) else _REGISTRY[stage]
+        cfg = self.config
+        if cfg.usecase not in st.usecases:
+            allowed = sorted(u.value for u in st.usecases)
+            raise ValueError(
+                f"stage {st.name!r} serves usecases {allowed}, not {cfg.usecase.value!r}"
+            )
+        argv = cfg.to_argv() + list(st.flags)
+        for p in st.params:
+            if inputs.get(p.kw) is not None:
+                argv += [p.flag, _as_arg(inputs[p.kw])]
+            elif p.required:
+                raise TypeError(f"stage {st.name!r} requires {p.kw!r}")
+        module = importlib.import_module(st.module)         # heavy import, lazy
+        run_id = module.main(module.build_parser().parse_args(argv))
+        return StageResult(run_id=run_id, stage=st.name, config=cfg)
+
+    # ---- ergonomic named methods (OLAP) --------------------------------
+    def createStoragePlan(self, **inputs: Any) -> StageResult:
+        return self.run("createStoragePlan", **inputs)
+
+    def createBaseImpl(self, storage_plan_run_id: Any, **inputs: Any) -> StageResult:
+        return self.run("createBaseImpl", storage_plan_run_id=storage_plan_run_id, **inputs)
+
+    def runOptimLoop(self, base_impl_run_id: Any, **inputs: Any) -> StageResult:
+        return self.run("runOptimLoop", base_impl_run_id=base_impl_run_id, **inputs)
+
+    def addMultiThreading(self, optim_run_id: Any, **inputs: Any) -> StageResult:
+        return self.run("addMultiThreading", optim_run_id=optim_run_id, **inputs)
+
+    def checkSfCorrectness(self, source_run_id: Any, target_sf: float, **inputs: Any) -> StageResult:
+        return self.run("checkSfCorrectness",
+                        source_run_id=source_run_id, target_sf=target_sf, **inputs)

@@ -9,8 +9,8 @@ The killer is driven purely off `_rightmost_descendant` (depth) and a monotonic
 clock, so we stub the descendant lookup + the kill, and fake the clock.
 """
 
-import cpp_runner.utils.proc_utils as proc_utils
-from cpp_runner.utils.proc_utils import ProcTreeTimeoutKiller
+import synnodb.cpp_runner.utils.proc_utils as proc_utils
+from synnodb.cpp_runner.utils.proc_utils import ProcTreeTimeoutKiller
 
 
 class _Clock:
