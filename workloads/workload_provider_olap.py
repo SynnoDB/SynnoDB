@@ -72,6 +72,11 @@ class OLAPWorkloadProvider(WorkloadProvider):
         # via set_benchmark_sf to drive perf/large-scale checks off the workload
         # provider (exec-config) rather than passing fixed scale factors around.
         self.benchmark_sf: float = 20 if self.benchmark == OLAPWorkload.TPCH else 5
+        # Number of distinct parameter sets / repetitions emitted in BENCHMARK
+        # mode. Defaults match the historical BENCHMARK behaviour but can be
+        # overridden (e.g. by the benchmarker CLI's --instantiations/--repetitions).
+        self.benchmark_instantiations: int = 1
+        self.benchmark_repetitions: int = 3
 
         super().__init__(
             benchmark_name=self.benchmark.value,
@@ -83,6 +88,14 @@ class OLAPWorkloadProvider(WorkloadProvider):
     def set_benchmark_sf(self, sf: float) -> None:
         """Override the scale factor emitted for BENCHMARK-mode workloads."""
         self.benchmark_sf = sf
+
+    def set_benchmark_instantiations(self, instantiations: int) -> None:
+        """Override the number of distinct parameter sets emitted in BENCHMARK mode."""
+        self.benchmark_instantiations = instantiations
+
+    def set_benchmark_repetitions(self, repetitions: int) -> None:
+        """Override the number of repetitions per query emitted in BENCHMARK mode."""
+        self.benchmark_repetitions = repetitions
 
     def produce_workload(
         self,
@@ -122,9 +135,9 @@ class OLAPWorkloadProvider(WorkloadProvider):
                 scale_factors.append(self.benchmark_sf)
 
         elif run_mode == RunToolMode.BENCHMARK:
-            instantiations = 1
-            repetitions = 3
-            # benchmark SF is configurable via set_benchmark_sf (exec-config driven)
+            # instantiations / repetitions / SF are configurable (exec-config driven)
+            instantiations = self.benchmark_instantiations
+            repetitions = self.benchmark_repetitions
             scale_factors = [self.benchmark_sf]
         elif run_mode == RunToolMode.INGEST:
             instantiations = 3
@@ -201,7 +214,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
                         query_id=str(query_id),
                         sql=sql,
                         benchmark=self.benchmark,
-                        query_args=format_args_element(str(query_id), placeholders),
+                        query_args="",
                         placeholders=placeholders,
                         order_by_info=order_by_info,
                         num_reps=repetitions,
@@ -210,7 +223,17 @@ class OLAPWorkloadProvider(WorkloadProvider):
                     for rep in range(repetitions):
                         # distinct rep_index per repetition so each gets its own
                         # (deterministic) query-execution-cache entry / runtime
-                        query_list.append(replace(query_entry, rep_index=rep))
+                        query_list.append(
+                            replace(
+                                query_entry,
+                                query_args=format_args_element(
+                                    str(query_id),
+                                    placeholders,
+                                    request_disambiguator=rep,
+                                ),
+                                rep_index=rep,
+                            )
+                        )
 
             query_batch_list.append(
                 QueryBatch(

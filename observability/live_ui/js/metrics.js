@@ -8,7 +8,9 @@
 function getRuntimeColumns(row) {
   const columns = new Map(); // qid -> {duckCol, implCol}
   for (const key of Object.keys(row)) {
-    const match = key.match(/^validation\/query_(.+?)\/(duckdb_runtime_ms|impl_runtime_ms)$/);
+    // The implementation runtime column was renamed impl_ -> bespoke_; accept
+    // both so old and current runs render speedups.
+    const match = key.match(/^validation\/query_(.+?)\/(duckdb_runtime_ms|impl_runtime_ms|bespoke_runtime_ms)$/);
     if (!match) continue;
     const qid = normalizeQueryId(match[1]);
     if (!columns.has(qid)) columns.set(qid, {});
@@ -18,13 +20,21 @@ function getRuntimeColumns(row) {
   return columns;
 }
 
+// The scale factor comes from the exec-settings dataclass, which is logged via
+// prefix_dict("validation/") and therefore lands under validation/_scale_factor.
+// Older runs used validation/scale_factor — accept both.
+function getRowScaleFactor(row) {
+  const raw = row['validation/_scale_factor'] ?? row['validation/scale_factor'];
+  return Number(raw);
+}
+
 function isBenchmarkRuntimeRow(row, scaleFactor = null) {
   if ((row.type || '').toLowerCase() !== 'validate') return false;
   if (!isMetricTrue(row['validation/compile_with_optimize'])) return false;
   if (!isMetricFalse(row['validation/trace_mode'])) return false;
   if (!isMetricFalse(row['validation/skip_validate'])) return false;
   if (!isMetricTrue(row['validation/correct'])) return false;
-  const sf = Number(row['validation/scale_factor']);
+  const sf = getRowScaleFactor(row);
   if (!Number.isFinite(sf)) return false;
   if (scaleFactor != null && Math.abs(sf - scaleFactor) >= 1e-12) return false;
   return getRuntimeColumns(row).size > 0;
@@ -35,7 +45,7 @@ function getMaxScaleFactor(steps, data) {
   for (const step of steps) {
     const row = data[step] || {};
     if (!isBenchmarkRuntimeRow(row)) continue;
-    const sf = Number(row['validation/scale_factor']);
+    const sf = getRowScaleFactor(row);
     if (!Number.isFinite(sf)) continue;
     maxSf = maxSf == null ? sf : Math.max(maxSf, sf);
   }
@@ -47,7 +57,7 @@ function getAvailableScaleFactors(steps, data) {
   for (const step of steps) {
     const row = data[step] || {};
     if (!isBenchmarkRuntimeRow(row)) continue;
-    const sf = Number(row['validation/scale_factor']);
+    const sf = getRowScaleFactor(row);
     if (Number.isFinite(sf)) sfs.add(sf);
   }
   return [...sfs].sort((a, b) => a - b);
@@ -117,7 +127,7 @@ function getQueryRuntimes(steps, data) {
     const d = data[s] || {};
     if (!isBenchmarkRuntimeRow(d, targetSf)) continue;
     for (const k of Object.keys(d)) {
-      const m = k.match(/^validation\/query_(.+?)\/(duckdb|impl)_runtime_ms$/);
+      const m = k.match(/^validation\/query_(.+?)\/(duckdb|impl|bespoke)_runtime_ms$/);
       if (!m) continue;
       const qid = normalizeQueryId(m[1]);
       if (!map.has(qid)) map.set(qid, {duck: null, impl: null});

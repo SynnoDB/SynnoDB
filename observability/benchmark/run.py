@@ -1,35 +1,40 @@
 from __future__ import annotations
 
-import functools
 import logging
 import os
-import random
 import re
 import socket
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
-from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
-from observability.benchmark.systems.base import SystemRunner
+from observability.benchmark.systems import track
 from observability.benchmark.writer import BenchmarkWriter
 from observability.logging.logger import setup_logging
 from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from run_gen_base_impl import validate_snapshot
 from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run import RunTool
-from tools.validate.query_validator_class import format_args_string
-from utils.utils import DBStorage, create_dir_and_set_permissions, parse_db_storage
-from workloads.dataset.dataset_tables_dict import get_dataset_name
-from workloads.dataset.query_gen_factory import get_query_gen
+from tools.run_tool_mode import RunToolMode
+from utils.cli_config import Usecase
+from utils.utils import DBStorage, create_dir_and_set_permissions
+from workloads.workload_provider import Workload, WorkloadProvider
 
 if TYPE_CHECKING:
-    from synth_framework.git_snapshotter import GitSnapshotter
-    from tools.run import RunTool
+    from observability.benchmark.systems.track import TrackConfig
 
 logger = logging.getLogger(__name__)
 
-AVAILABLE_SYSTEMS = ("bespoke", "clickhouse", "duckdb", "umbra")
+
+def get_all_query_ids(benchmark) -> list[str]:
+    """Return all query IDs for a benchmark (OLAP semantics).
+
+    Kept as a module-level helper for backward compatibility: several
+    ``observability.ui_template_runner`` modules import it from here. Accepts a
+    benchmark string ("tpch", "ceb") or a :class:`Workload` enum value.
+    """
+    from workloads.workload_provider_olap import _get_all_query_ids
+
+    name = benchmark.value if isinstance(benchmark, Workload) else str(benchmark)
+    return _get_all_query_ids(name)
 
 
 def _filter_query_ids(all_ids: List[str], query_ids: str | None) -> List[str]:
@@ -61,8 +66,7 @@ def _filter_query_ids(all_ids: List[str], query_ids: str | None) -> List[str]:
     if not filtered:
         available = ", ".join(all_ids[:30])
         raise ValueError(
-            f"No matching query IDs found for: {query_ids}. "
-            f"Available in snapshot: {available}"
+            f"No matching query IDs found for: {query_ids}. Available: {available}"
         )
     return filtered
 
@@ -88,7 +92,6 @@ def _parse_scale_factors(raw: str) -> List[float]:
         part = part.strip()
         if not part:
             continue
-
         if "." in part:
             parts.append(float(part))
         else:
@@ -98,96 +101,155 @@ def _parse_scale_factors(raw: str) -> List[float]:
     return parts
 
 
-def _parse_systems(raw: str) -> list[str]:
-    """Parse comma-separated system names, lower-cased."""
-    return [s.strip().lower() for s in raw.split(",") if s.strip()]
-
-
-def _resolve_system(args) -> str:
-    if getattr(args, "system", None):
-        system_name = args.system.strip().lower()
-        if system_name not in AVAILABLE_SYSTEMS:
-            raise ValueError(
-                f"Unknown system '{system_name}'. Available: {', '.join(AVAILABLE_SYSTEMS)}"
-            )
-        return system_name
-
-    systems = _parse_systems(getattr(args, "systems", "") or "")
-    if len(systems) == 1:
-        system_name = systems[0]
-        if system_name not in AVAILABLE_SYSTEMS:
-            raise ValueError(
-                f"Unknown system '{system_name}'. Available: {', '.join(AVAILABLE_SYSTEMS)}"
-            )
-        return system_name
-    if len(systems) > 1:
+def _resolve_system(args, usecase: Usecase) -> str:
+    available = track.available_systems(usecase)
+    raw = getattr(args, "system", None) or getattr(args, "systems", None)
+    if not raw:
+        raise ValueError(f"Provide --system <name>. Available: {', '.join(available)}")
+    names = [s.strip().lower() for s in raw.split(",") if s.strip()]
+    if len(names) != 1:
         raise ValueError(
             "Run one system at a time. Use --system <name> and write each run "
             "to its own CSV, then combine CSVs with the plot command."
         )
-    raise ValueError("Provide --system <name>.")
+    system_name = names[0]
+    if system_name not in available:
+        raise ValueError(
+            f"System '{system_name}' is not available for usecase '{usecase.value}'. "
+            f"Available: {', '.join(available)}"
+        )
+    return system_name
+
+
+def _synno_data_dir() -> Path:
+    raw = os.getenv("SYNNO_DATA_DIR")
+    assert raw is not None, "SYNNO_DATA_DIR environment variable is not set"
+    return Path(raw)
+
+
+def _core_ids_for(num_threads: int) -> list[int] | None:
+    return list(range(num_threads)) if num_threads > 1 else None
+
+
+def _resolve_snapshots(
+    args,
+    snapshots: list[str],
+    wandb_run_ids: list[str],
+    workload: Workload,
+) -> tuple[list[str], list[bool]]:
+    """Return (snapshot_hashes, is_mt flags) for the bespoke system."""
+    if snapshots:
+        # Direct hashes: prepare mode (mt vs optim) is unknown -> default to
+        # single-thread prep. BFF ignores is_mt entirely.
+        return snapshots, [False] * len(snapshots)
+
+    run_snapshots: list[str] = []
+    is_mt: list[bool] = []
+    for wandb_id in wandb_run_ids:
+        statistics, config, _ = wandb_retrieve_metrics_for_run(
+            workload.value, wandb_id, fetch_latest_runtimes=False
+        )
+        snapshot_hash = statistics["code/snapshot_hash"]
+        assert snapshot_hash and snapshot_hash != "N/A", (
+            f"Could not resolve a snapshot hash from wandb run {wandb_id}: {snapshot_hash}"
+        )
+        run_snapshots.append(snapshot_hash)
+        is_mt.append(config.get("conv_mode") == "mt")
+    return run_snapshots, is_mt
 
 
 def _build_runner(
     system_name: str,
-    db_engine: RunTool | None,
+    track_cfg: "TrackConfig",
+    num_threads: int,
     snapshotter: GitSnapshotter | None,
-    parquet_path: Path,
-    benchmark: str,
-    scale_factors: list,
-    db_storage: DBStorage,
-    disk_db_dir: Path | None = None,
-    num_threads: int = 1,
-) -> SystemRunner:
+    workspace_dir: Path,
+    prepare_cache_dir: Path,
+    disk_db_dir: Path | None,
+    scale_factors: list[float],
+):
     if system_name == "bespoke":
         from observability.benchmark.systems.bespoke import BespokeRunner
 
-        assert db_engine is not None, "db_engine required for BespokeRunner"
         assert snapshotter is not None, "snapshotter required for BespokeRunner"
-        return BespokeRunner(db_engine=db_engine, snapshotter=snapshotter)
+        return BespokeRunner(
+            provider=track_cfg.provider,
+            bespoke_prep=track_cfg.bespoke,
+            snapshotter=snapshotter,
+            workspace_dir=workspace_dir,
+            parquet_base_dir=track_cfg.duckdb.parquet_base_dir,
+            dataset_name=track_cfg.dataset_name,
+            db_storage=track_cfg.bespoke_db_storage,
+            memory_budget_mb=track_cfg.bespoke_memory_budget_mb,
+            prepare_cache_dir=prepare_cache_dir,
+        )
 
     if system_name == "duckdb":
         from observability.benchmark.systems.duckdb import DuckDBRunner
 
+        ddb = track_cfg.duckdb
         return DuckDBRunner(
-            parquet_path=parquet_path,
-            benchmark=benchmark,
-            num_threads=num_threads,
-            db_storage=db_storage,
+            parquet_path=ddb.parquet_base_dir,
+            benchmark=track_cfg.workload,
+            dataset_tables=ddb.dataset_tables,
+            db_storage=ddb.db_storage,
+            run_on_parquet=ddb.run_on_parquet,
             disk_db_dir=disk_db_dir,
+            num_threads=num_threads,
         )
 
     if system_name == "umbra":
         from observability.benchmark.systems.umbra import UmbraRunner
 
         return UmbraRunner(
-            parquet_path=parquet_path,
-            benchmark=benchmark,
+            parquet_path=track_cfg.duckdb.parquet_base_dir,
+            benchmark=track_cfg.workload,
             scale_factors=scale_factors,
             container_num_cores=num_threads,
             allow_auto_restarts=True,
             setup=True,
-            db_storage=db_storage,
+            db_storage=track_cfg.duckdb.db_storage,
             disk_db_dir=disk_db_dir,
         )
 
     if system_name == "clickhouse":
         from observability.benchmark.systems.clickhouse import ClickHouseRunner
 
-        assert db_storage == DBStorage.IN_MEMORY, (
-            "ClickHouseRunner currently only supports in-memory DB source"
-        )
-
         return ClickHouseRunner(
-            parquet_path=parquet_path,
-            benchmark=benchmark,
+            parquet_path=track_cfg.duckdb.parquet_base_dir,
+            benchmark=track_cfg.workload,
             scale_factors=scale_factors,
             container_num_cores=num_threads,
         )
 
-    raise ValueError(
-        f"Unknown system '{system_name}'. Available: {', '.join(AVAILABLE_SYSTEMS)}"
+    raise ValueError(f"Unknown system '{system_name}'.")
+
+
+def _produce_query_batch(
+    provider: WorkloadProvider,
+    query_ids: list[str],
+    num_threads: int,
+    core_ids: list[int] | None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Deterministically generate the canonical query batch for one scale factor.
+
+    All systems consume the same batch (generation is seeded), so bespoke and the
+    reference systems run identical queries and stay comparable.
+    """
+    batches = provider.produce_workload(
+        run_mode=RunToolMode.BENCHMARK,
+        query_ids=query_ids,
+        num_threads=num_threads,
+        core_ids=core_ids,
     )
+    assert len(batches) == 1, (
+        f"BENCHMARK mode should emit exactly one batch, got {len(batches)}."
+    )
+    entries = batches[0].query_list
+    query_list = [e.query_id for e in entries]
+    sql_list = [e.sql for e in entries]
+    args_list = [e.query_args for e in entries]
+    return query_list, sql_list, args_list
 
 
 def _write_header(writer: BenchmarkWriter) -> None:
@@ -205,6 +267,17 @@ def _write_header(writer: BenchmarkWriter) -> None:
     )
 
 
+def _resolve_csv_path(args, synno: Path, system_name: str, benchmark: str) -> Path:
+    if args.csv is not None:
+        return Path(args.csv)
+    csv_dir = synno / "benchmark_logs"
+    create_dir_and_set_permissions(csv_dir)
+    filename = (
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{system_name}_{benchmark}.csv"
+    )
+    return csv_dir / filename
+
+
 def run_benchmark(args) -> None:
     old_umask = os.umask(0)
     try:
@@ -216,7 +289,9 @@ def run_benchmark(args) -> None:
             pass
 
         setup_logging(logging.DEBUG, logfile=None)
-        system_name = _resolve_system(args)
+
+        usecase: Usecase = args.usecase
+        system_name = _resolve_system(args, usecase)
         use_snapshots = system_name == "bespoke"
 
         snapshots: list[str] = []
@@ -226,183 +301,121 @@ def run_benchmark(args) -> None:
         if getattr(args, "wandb_ids", None):
             wandb_run_ids = [s.strip() for s in args.wandb_ids.split(",") if s.strip()]
 
-        assert not len(wandb_run_ids) > 0 or not len(snapshots), (
+        assert not (snapshots and wandb_run_ids), (
             "Provide either --snapshots or --wandb_ids, not both."
         )
-
-        if use_snapshots and (not snapshots and not wandb_run_ids):
+        if use_snapshots and not snapshots and not wandb_run_ids:
             raise ValueError(
                 "Provide --snapshots or --wandb_ids when benchmarking the bespoke system."
             )
 
-        # out_path = Path(__file__).parent / "output"
-        out_path = Path(__file__).parent.parent.parent / "output"
-        assert out_path.is_dir(), f"Expected output directory at {out_path}"
+        synno = _synno_data_dir()
+        workspace_path = Path(__file__).parent.parent.parent / "output"
+        assert workspace_path.is_dir(), (
+            f"Expected workspace/output directory at {workspace_path}"
+        )
+
+        # BFF is always disk-backed; OLAP honors the CLI db storage.
+        cli_db_storage: DBStorage = args.db_storage
+
+        workload = track.resolve_workload(usecase, args.benchmark)
+        dataset_name = track.dataset_name_for(usecase, workload)
+        parquet_base_dir = (
+            synno / "workloads" / workload.value / f"{dataset_name}_parquet"
+        )
+        bespoke_ssd_storage_dir = workspace_path.absolute() / "tmp"
+        prepare_cache_dir = synno / "cache" / "prepare_workspace"
+
+        track_cfg = track.build_track(
+            usecase=usecase,
+            benchmark=args.benchmark,
+            parquet_base_dir=parquet_base_dir,
+            bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
+            cli_db_storage=cli_db_storage,
+            memory_budget_mb=getattr(args, "memory_budget_mb", None),
+        )
+        provider = track_cfg.provider
+
+        # CLI controls how many parameter sets / repetitions BENCHMARK mode emits.
+        provider.set_benchmark_instantiations(args.instantiations)
+        provider.set_benchmark_repetitions(args.repetitions)
+
+        host = socket.gethostname()
+        scale_factors = _parse_scale_factors(args.scale_factors)
+        num_threads_list = _parse_num_threads(getattr(args, "num_threads", "1") or "1")
+        query_ids = _filter_query_ids(provider.query_ids, args.query_ids)
+        logger.info(f"Scale factors: {', '.join(map(str, scale_factors))}")
+        logger.info(f"Parquet base dir: {parquet_base_dir.as_posix()}")
+
         snapshotter: GitSnapshotter | None = None
         if use_snapshots:
             snapshotter = GitSnapshotter(
                 cache_repo=None
                 if args.disable_repo_sync
-                else "git://c01/bespoke_cache.git",
-                working_dir=out_path,
+                else os.environ.get(
+                    "GIT_SNAPSHOTTER_SERVER", "git://c01/bespoke_cache.git"
+                ),
+                working_dir=workspace_path,
                 extra_gitignore=[],
             )
             snapshotter.fetch_snapshots()
-
-        host = socket.gethostname()
-
-        scale_factors = _parse_scale_factors(args.scale_factors)
-        logger.info(f"Scale factors: {', '.join(map(str, scale_factors))}")
-        parquet_path = (
-            Path(args.artifacts_dir) / f"{get_dataset_name(args.benchmark)}_parquet"
-        )
-        logger.info(f"Parquet path: {parquet_path.as_posix()}")
-
-        query_ids = get_all_query_ids(args.benchmark)
-
-        # prepare query generator
-        gen_query_fn = get_query_gen(args.benchmark)
-
-        num_threads_list = _parse_num_threads(getattr(args, "num_threads", "1") or "1")
-
-        if system_name == "bespoke":
-            assert snapshotter is not None
-            parquet_dir = (
-                args.base_parquet_dir + f"/{get_dataset_name(args.benchmark)}_parquet/"
+            run_snapshots, is_mt_list = _resolve_snapshots(
+                args, snapshots, wandb_run_ids, workload
             )
-
-            assert isinstance(args.db_storage, DBStorage), (
-                f"Expected DBStorage for bespoke system, got type {type(args.db_storage)}"
-            )
-            compiler = OLAPCompilerFactory(db_storage=args.db_storage).make_compiler(
-                cwd=out_path,
-                untracked_cpp_runner_content="",
-            )
-            db_engine = RunTool(
-                cwd=out_path,
-                query_validator=None,
-                dataset_name=get_dataset_name(args.benchmark),
-                base_parquet_dir=parquet_dir,
-                run_stats_collector=None,
-                db_storage=args.db_storage,
-                compiler=compiler,
-            )
-        else:
-            db_engine = None
-
-        query_ids = _filter_query_ids(query_ids, args.query_ids)
-
-        if use_snapshots:
-            if len(snapshots) > 0:
-                run_snapshots = snapshots
-            else:
-                # retrieve snapshot names from wandb run IDs
-                run_snapshots = []
-                is_mt = []
-                db_storage = []
-                for wandb_id in wandb_run_ids:
-                    statistics, config, _ = wandb_retrieve_metrics_for_run(
-                        args.benchmark, wandb_id, fetch_latest_runtimes=False
-                    )
-                    validate_snapshot(
-                        config,
-                        args.benchmark,
-                        None,
-                        query_ids,
-                        model=None,
-                        db_storage=args.db_storage,
-                    )
-
-                    run_snapshots.append(statistics["code/snapshot_hash"])
-                    is_mt.append(config["conv_mode"] == "mt")
-                    db_storage.append(parse_db_storage(config["db_storage"].lower()))
         else:
             run_snapshots = [""]
-            is_mt = [None]
-            db_storage = [None]
+            is_mt_list = [False]
 
-        if args.csv is None:
-            # assemble output file
-            csv_dir = Path(args.artifacts_dir) / "benchmark_logs"
-            create_dir_and_set_permissions(csv_dir)
-
-            # filename format: date_time_system_benchmark.csv
-            filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{system_name}_{args.benchmark}.csv"
-
-            csv_path = csv_dir / filename
-        else:
-            csv_path = Path(args.csv)
-
-        assert not csv_path.exists(), (
-            f"Output CSV {csv_path} already exists. Please provide a different path or remove the existing file."
+        disk_db_dir = (
+            bespoke_ssd_storage_dir
+            if cli_db_storage in (DBStorage.SSD, DBStorage.LABSTORE)
+            else None
         )
 
+        csv_path = _resolve_csv_path(args, synno, system_name, args.benchmark)
+        assert not csv_path.exists(), (
+            f"Output CSV {csv_path} already exists. Provide a different --csv path."
+        )
         writer = BenchmarkWriter(csv_path)
 
-        build_runner_fn = functools.partial(
-            _build_runner,
-            system_name=system_name,
-            db_engine=db_engine,
-            snapshotter=snapshotter,
-            parquet_path=parquet_path,
-            benchmark=args.benchmark,
-            scale_factors=scale_factors,
-            db_storage=args.db_storage,
-            disk_db_dir=Path(args.disk_db_dir)
-            if getattr(args, "disk_db_dir", None)
-            else None,
-        )
-
         try:
-            logger.info(f"Appending benchmark CSV to {csv_path}")
+            logger.info(f"Writing benchmark CSV to {csv_path}")
             _write_header(writer)
 
-            if system_name == "bespoke":
-                runner = build_runner_fn()
-
             for num_threads in num_threads_list:
-                if system_name != "bespoke":
-                    # other runner require num_threads at initialization, so build them in the loop
-                    logger.warning(
-                        f"Re-initializing runner for num_threads={num_threads}"
-                    )
-                    runner = build_runner_fn(num_threads=num_threads)
-
-                logger.info(
-                    f"Benchmarking system: {runner.name} num_threads={num_threads}"
+                runner = _build_runner(
+                    system_name,
+                    track_cfg,
+                    num_threads,
+                    snapshotter,
+                    workspace_path,
+                    prepare_cache_dir,
+                    disk_db_dir,
+                    scale_factors,
                 )
-                logger.info(f"Benchmarking queries: {','.join(map(str, query_ids))}")
+                logger.info(
+                    f"Benchmarking {runner.name} (usecase={usecase.value}) "
+                    f"num_threads={num_threads} queries={','.join(map(str, query_ids))}"
+                )
+                core_ids = _core_ids_for(num_threads)
 
-                for snapshot, db, mt in zip(run_snapshots, db_storage, is_mt):
+                for snapshot, is_mt in zip(run_snapshots, is_mt_list):
                     if use_snapshots:
-                        cache_path = Path(args.artifacts_dir) / "cache"
-                        restore_snapshot = getattr(runner, "restore_snapshot")
-                        restore_snapshot(
-                            snapshot,
-                            benchmark=args.benchmark,
-                            query_list=query_ids,
-                            cache_path=cache_path,
-                            is_mt=mt,
-                            db_storage=db,
-                        )
+                        runner.restore_snapshot(snapshot, is_mt=is_mt)
 
                     for scale_factor in scale_factors:
                         logger.info(
                             f"Scale factor: {scale_factor} num_threads={num_threads}"
                         )
-                        query_list, sql_list, args_list = _make_query_batch(
-                            gen_query_fn=gen_query_fn,
-                            query_ids=query_ids,
-                            instantiations=args.instantiations,
-                            repetitions=args.repetitions,
+                        provider.set_benchmark_sf(scale_factor)
+                        query_list, sql_list, args_list = _produce_query_batch(
+                            provider, query_ids, num_threads, core_ids
                         )
 
                         if system_name == "bespoke":
                             add_args = {
                                 "parallelism": num_threads > 1,
-                                "core_ids": list(range(num_threads))
-                                if num_threads > 1
-                                else None,
+                                "core_ids": core_ids,
                             }
                         else:
                             add_args = {}
@@ -429,35 +442,6 @@ def run_benchmark(args) -> None:
             writer.close()
     finally:
         os.umask(old_umask)
-
-
-def _make_query_batch(
-    gen_query_fn,
-    query_ids: list[str],
-    instantiations: int,
-    repetitions: int,
-) -> tuple[list[str], list[str], list[str]]:
-    sql_list: list[str] = []
-    placeholder_list: list[dict] = []
-    query_list: list[str] = []
-
-    for inst_idx in range(instantiations):
-        rnd = random.Random(42 + inst_idx)
-        inst_queries: list[str] = []
-        inst_sql: list[str] = []
-        inst_placeholders: list[dict] = []
-        for query_id in query_ids:
-            _, query, placeholders = gen_query_fn(query_name=f"Q{query_id}", rnd=rnd)
-            inst_queries.append(str(query_id))
-            inst_sql.append(query)
-            inst_placeholders.append(placeholders)
-        for _ in range(repetitions):
-            query_list.extend(inst_queries)
-            sql_list.extend(inst_sql)
-            placeholder_list.extend(inst_placeholders)
-
-    args_list = format_args_string(query_list, placeholder_list)
-    return query_list, sql_list, args_list
 
 
 def _timing_rows(

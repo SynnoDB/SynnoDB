@@ -233,6 +233,13 @@ struct DoneToken {
     int term_signal = 0;
 };
 
+// Sentinel exit code written to the done pipe when a stage's plugin callback
+// throws a C++ exception that the stage runner caught (see stage_loop_impl).
+// It lets run_parent distinguish a caught-exception failure — which carries no
+// trace payload — from a normal exit_code-0 completion, without abusing the
+// term_signal field (no signal was actually raised). 70 == EX_SOFTWARE.
+inline constexpr int kStageThrewExitCode = 70;
+
 enum class RunPolicy {
     OnChange,
     Always,
@@ -617,12 +624,55 @@ static void stage_loop_impl(
                 }
             }
             if constexpr (!std::is_same_v<Teardown, std::nullptr_t>) {
-                teardown(plugin);
+                // A throwing teardown must not abort the process: log it and
+                // still proceed with the reload so a fixed plugin can load.
+                try {
+                    teardown(plugin);
+                } catch (const std::exception& e) {
+                    std::cerr << so_path << " teardown threw std::exception: "
+                              << e.what() << " (continuing reload)\n";
+                } catch (...) {
+                    std::cerr << so_path
+                              << " teardown threw unknown exception"
+                                 " (continuing reload)\n";
+                }
             }
             plugin.reload();
         }
         if (should_run) {
-            result = detail::compute_result(compute, plugin, input, batch);
+            // Run the plugin's compute callback under a guard. An uncaught C++
+            // exception here would otherwise unwind out of the stage process and
+            // trip std::terminate()/SIGABRT, taking the stage down hard and
+            // forcing a full restart. Instead we catch it, surface it, report a
+            // failure to run_parent, and keep this process alive so a later
+            // (post-hotpatch) RUN can retry. Note: this does NOT catch async
+            // signals (SIGSEGV, etc.); those still kill the child and are
+            // reported via term_signal when the parent reaps it.
+            std::string stage_error;
+            try {
+                result = detail::compute_result(compute, plugin, input, batch);
+            } catch (const std::exception& e) {
+                stage_error = std::string(so_path)
+                            + " stage threw std::exception: " + e.what();
+            } catch (...) {
+                stage_error = std::string(so_path)
+                            + " stage threw unknown exception";
+            }
+            if (!stage_error.empty()) {
+                std::cerr << stage_error << "\n";
+                if constexpr (!std::is_same_v<NextStart, std::nullptr_t>) {
+                    if (child_active) {
+                        detail::stop_child(child);
+                        child_active = false;
+                    }
+                }
+                // Report the failure on the done pipe so run_parent unblocks and
+                // emits a structured error. Skip starting/notifying downstream
+                // stages — the input they would consume was never produced.
+                detail::write_done(done_fd,
+                                   detail::StatusInfo{kStageThrewExitCode, 0});
+                return;
+            }
             has_run = true;
             if constexpr (!std::is_same_v<NextStart, std::nullptr_t>) {
                 child = next_start(result, read_fd);

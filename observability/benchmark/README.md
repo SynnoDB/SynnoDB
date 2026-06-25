@@ -3,8 +3,18 @@
 Benchmark execution is implemented in `benchmark/` and can be run directly as a module:
 
 ```bash
-python -m demo_and_analysis.benchmark run --system duckdb --scale_factors 1,5,20 --benchmark tpch --csv logs/duckdb.csv
+python -m observability.benchmark run --system duckdb --scale_factors 1,5,20 --benchmark tpch --csv logs/duckdb.csv
 ```
+
+## Use-cases (`--usecase`)
+
+The benchmarker drives two stacks through the same workload-provider plumbing,
+selected with `--usecase`:
+
+| `--usecase` | Engine (`bespoke`) | Reference systems | Benchmarks |
+|---|---|---|---|
+| `olap` (default) | in-DB OLAP engine | `duckdb`, `umbra`, `clickhouse` | `tpch`, `ceb` |
+
 
 ## Common Commands
 
