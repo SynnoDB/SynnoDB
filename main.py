@@ -74,7 +74,6 @@ duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
 create_dir_and_set_permissions(duckdb_drain_dir)
 
 
-
 def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStorage:
     return db_storage
 
@@ -128,8 +127,6 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # parquet dir and workload provider
     if usecase == Usecase.OLAP:
         dataset_name = OLAPWorkloadProvider._get_dataset_name(args.benchmark)
-    elif usecase == Usecase.BFF:
-        dataset_name = BFFWorkloadProvider._get_dataset_name(args.benchmark)
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
 
@@ -154,12 +151,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         DBStorage.SSD,
     ]  # labstore is not yet fully supported
 
-    if usecase == Usecase.BFF:
-        disk_db_dir = None
-        bespoke_ssd_storage_dir = get_bff_bespoke_ssd_storage_dir(workspace_path)
-        create_dir_and_set_permissions(bespoke_ssd_storage_dir)
-        logger.info(f"Using BFF bespoke SSD storage dir: {bespoke_ssd_storage_dir}")
-    else:
+    if usecase == Usecase.OLAP:
         disk_db_dir, bespoke_ssd_storage_dir = get_disk_db_dir(
             db_storage, workspace_path
         )
@@ -173,13 +165,6 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             benchmark=OLAPWorkload(args.benchmark),
             base_parquet_dir=parquet_dir,
             db_storage=db_storage,
-            bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
-        )
-    elif usecase == Usecase.BFF:
-        assert bespoke_ssd_storage_dir is not None
-        workload_provider = BFFWorkloadProvider(
-            benchmark=BFFWorkload(args.benchmark),
-            base_parquet_dir=parquet_dir,
             bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
         )
     else:
@@ -273,13 +258,6 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             git_snapshotter=snapshotter,
             prepare_cache_dir=prepare_workspace_cache_dir,
         )
-    elif usecase == Usecase.BFF:
-        prepare_ws = BFFPrepareWorkspace(
-            workload_provider=workload_provider,
-            workspace_dir=workspace_path,
-            git_snapshotter=snapshotter,
-            prepare_cache_dir=prepare_workspace_cache_dir,
-        )
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
 
@@ -363,8 +341,6 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
 
     if usecase == Usecase.OLAP:
         system_factory = OLAPSystemFactory()
-    elif usecase == Usecase.BFF:
-        system_factory = BFFSystemFactory()
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
 
@@ -387,7 +363,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             do_not_cache=args.do_not_cache,
             only_from_cache=args.only_from_cache,
             max_snapshot_csv_size_mb=max_snapshot_csv_size_mb,
-            use_umbra=usecase != Usecase.BFF,
+            use_umbra=usecase in [Usecase.OLAP],
         )
 
     logger.info(f"Workspace root: {workspace_path}")
@@ -546,8 +522,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
                 gen_incorrect_output_prompt,
                 query_impl_path=query_impl_path,
                 builder_path=builder_path,
-                persistent_storage=usecase == Usecase.BFF
-                or db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
+                persistent_storage=db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
             ),
         )
         ctx = FrameworkContext(
@@ -670,9 +645,8 @@ def run_conv_wrapper(
     if args.log_to_wandb:
         # add weave (wandb) tracing in addition to openai tracing
         configure_weave_cache_dirs()
-        import weave
-
         import wandb
+        import weave
 
         entity = os.getenv("WANDB_ENTITY", "learneddb")
         project = os.getenv("WANDB_PROJECT", "bespoke-olap-internal")

@@ -1,23 +1,20 @@
 from __future__ import annotations
 
+from utils.cli_config import Usecase
+
 PLAN_FILENAME_BY_USECASE = {
-    "olap": "storage_plan.txt",
+    Usecase.OLAP: "storage_plan.txt",
 }
 
 
-def _usecase_value(usecase: str | object) -> str:
-    return getattr(usecase, "value", usecase)
-
-
-def get_plan_filename(usecase: str | object = "olap") -> str:
-    usecase_value = _usecase_value(usecase)
+def get_plan_filename(usecase: Usecase = Usecase.OLAP) -> str:
     try:
-        return PLAN_FILENAME_BY_USECASE[usecase_value]
+        return PLAN_FILENAME_BY_USECASE[usecase]
     except KeyError as exc:
         raise ValueError(f"Unsupported usecase: {usecase}") from exc
 
 
-def get_filenames(usecase: str | object = "olap") -> dict[str, str]:
+def get_filenames(usecase: Usecase = Usecase.OLAP) -> dict[str, str]:
     queries_path = "queries.md"
     if True:
         builder_path = "db_loader.hpp/db_loader.cpp"
