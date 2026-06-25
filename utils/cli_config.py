@@ -13,7 +13,6 @@ class Usecase(enum.Enum):
     OLAP = "olap"
 
 
-
 # DEFAULT_MODEL = "gpt-5.3-codex"
 DEFAULT_MODEL = "gpt-5.4"
 

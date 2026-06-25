@@ -20,26 +20,6 @@ For `--usecase bff` only `bespoke` and `duckdb` are valid systems (umbra/clickho
 cannot read the bespoke file format). BFF is always disk-backed; supply
 `--memory_budget_mb` to bound the generated engine's RAM.
 
-### BFF examples
-
-```bash
-# DuckDB-on-parquet reference (no snapshot needed)
-python -m observability.benchmark run --usecase bff --system duckdb \
-  --benchmark tpch_st --scale_factors 1 --query_ids 1,2 --csv logs/bff_duck.csv
-
-# Bespoke file-format engine for a snapshot
-python -m observability.benchmark run --usecase bff --system bespoke --snapshots <hash> \
-  --benchmark tpch_st --scale_factors 1 --memory_budget_mb 51200 --csv logs/bff_bespoke.csv
-
-# Compare per query
-python -m observability.benchmark plot logs/bff_bespoke.csv logs/bff_duck.csv --x query_id
-```
-
-All systems run the *same* deterministically generated queries per scale factor
-(`--instantiations` / `--repetitions` control how many parameter sets and repeats
-are emitted), so bespoke and the reference stay comparable. Both `tpch` and
-`tpch_st` parquet data live under `$SYNNO_DATA_DIR/workloads/<benchmark>/tpch_parquet/sf<N>/`.
-
 ## Common Commands
 
 Run Bespoke for selected query IDs (identify the engine by snapshot hash):

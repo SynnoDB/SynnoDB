@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-import shutil
 from dataclasses import is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -30,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 first_invocation = True
 
-_LEGACY_TIMESTAMP_REQ_ID_RE = re.compile(r"(?<!\d)\d{8}_\d{6}_\d{1,6}(?!\d)")
 _STABLE_REQ_ID_RE = re.compile(
     r"(?<![A-Za-z0-9])req_[A-Za-z0-9_]+_[0-9a-f]{12}(?![A-Za-z0-9])"
 )
@@ -38,7 +36,6 @@ NORMALIZED_REQ_ID = "<REQ_ID>"
 
 
 def normalize_llm_cache_payload(payload: str) -> str:
-    payload = _LEGACY_TIMESTAMP_REQ_ID_RE.sub(NORMALIZED_REQ_ID, payload)
     return _STABLE_REQ_ID_RE.sub(NORMALIZED_REQ_ID, payload)
 
 
@@ -90,69 +87,6 @@ class LLMModelHelper:
             return resp, cost, True
 
         return None, 0, False
-
-    def resolve_cache_path(
-        self, cache_dir: Path, cache_path: Path, hash_payload: str
-    ) -> Path | None:
-        if cache_path.exists():
-            return cache_path
-        if NORMALIZED_REQ_ID not in hash_payload:
-            return None
-
-        legacy_path = self.find_equivalent_cache_entry(
-            cache_dir=cache_dir,
-            normalized_hash_payload=hash_payload,
-            canonical_cache_path=cache_path,
-        )
-        if legacy_path is None:
-            return None
-
-        if not self.do_not_cache:
-            try:
-                shutil.copy2(legacy_path, cache_path)
-                logger.info(
-                    "Aliased legacy LLM cache entry %s to stable cache key %s",
-                    legacy_path,
-                    cache_path,
-                )
-                return cache_path
-            except Exception as exc:
-                logger.warning(
-                    "Failed to alias legacy LLM cache entry %s to %s: %s",
-                    legacy_path,
-                    cache_path,
-                    exc,
-                )
-
-        return legacy_path
-
-    def find_equivalent_cache_entry(
-        self,
-        cache_dir: Path,
-        normalized_hash_payload: str,
-        canonical_cache_path: Path | None = None,
-    ) -> Path | None:
-        for candidate in cache_dir.glob("*.pkl"):
-            if canonical_cache_path is not None and candidate == canonical_cache_path:
-                continue
-            try:
-                cached = load_pickle(candidate, self.cache_type)
-            except Exception:
-                logger.debug("Skipping unreadable LLM cache entry %s", candidate)
-                continue
-
-            cached_hash_payload = getattr(cached, "hash_payload", None)
-            if cached_hash_payload is None:
-                continue
-
-            if (
-                normalize_llm_cache_payload(cached_hash_payload)
-                == normalized_hash_payload
-            ):
-                logger.info("Found legacy-equivalent LLM cache entry: %s", candidate)
-                return candidate
-
-        return None
 
     def process_llm_response(
         self,
