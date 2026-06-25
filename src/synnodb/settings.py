@@ -53,14 +53,21 @@ def get_data_dir() -> Path:
 def get_workspace_dir(override: str | None = None) -> Path:
     """The run's git-tracked output directory and local snapshot cache.
 
-    Kept on local disk (the snapshotter runs heavy git operations; the NFS data
-    dir would be slow), so the default is a cwd-relative ``output/`` resolved to
-    an absolute path — explicit and overridable via ``override`` or
-    ``SYNNO_WORKSPACE`` instead of silently depending on the cwd. Keep it stable
-    across runs to reuse the local snapshot cache.
+    Must be a **relative** path: the framework folds the workspace path into
+    cache keys and asserts relativity so caches stay portable across
+    machines/users. It is therefore resolved against the cwd — now explicit and
+    overridable via ``override`` or ``SYNNO_WORKSPACE`` (default ``output``)
+    instead of a hard-coded ``"./output"``. Keep it stable across runs from a
+    given directory to reuse the local snapshot cache.
     """
     value = override or os.getenv("SYNNO_WORKSPACE") or "output"
-    return Path(value).absolute()
+    path = Path(value)
+    if path.is_absolute():
+        raise ValueError(
+            f"workspace must be a relative path (got {value!r}); the framework "
+            "requires this for cross-machine cache portability."
+        )
+    return path
 
 
 def _mkdir(path: Path) -> Path:
