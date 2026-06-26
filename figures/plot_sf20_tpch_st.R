@@ -50,9 +50,8 @@ counts <- aggregate(bespoke_ms ~ query, raw, length)
 names(counts)[2] <- "repetitions"
 agg <- merge(agg, counts, by = "query")
 agg$speedup <- agg$duckdb_ms / agg$bespoke_ms
-agg <- agg[agg$query != 3, ]
 agg <- agg[order(agg$query), ]
-query_levels <- paste0("Q", c(1, 2, 4:8))
+query_levels <- paste0("Q", 1:8)
 agg$query_label <- factor(paste0("Q", agg$query), levels = query_levels)
 
 long <- rbind(
@@ -61,8 +60,19 @@ long <- rbind(
 )
 long$system <- factor(long$system, levels = c("Bespoke", "DuckDB"))
 long$label <- ifelse(long$system == "Bespoke", sprintf("%.2fx", long$speedup), "")
+long$label_y <- ifelse(
+  long$system == "Bespoke" & long$speedup < 1,
+  1.13,
+  long$speedup + 0.12
+)
+long$fill_key <- ifelse(
+  long$system == "DuckDB",
+  "DuckDB",
+  ifelse(long$speedup < 1, "Bespoke < 1x", "Bespoke")
+)
+long$fill_key <- factor(long$fill_key, levels = c("Bespoke", "Bespoke < 1x", "DuckDB"))
 
-expected_queries <- c(1, 2, 4:8)
+expected_queries <- 1:8
 missing_queries <- setdiff(expected_queries, agg$query)
 subtitle <- "SF20 median speedup; DuckDB baseline = 1x"
 if (length(missing_queries) > 0) {
@@ -73,22 +83,25 @@ if (length(missing_queries) > 0) {
   )
 }
 
-plot <- ggplot(long, aes(x = query_label, y = speedup, fill = system)) +
+plot <- ggplot(long, aes(x = query_label, y = speedup, fill = fill_key)) +
   geom_hline(yintercept = 1, color = "#444444", linewidth = 0.45, linetype = "dashed") +
   geom_col(position = position_dodge(width = 0.72), width = 0.62) +
   geom_text(
-    aes(label = label),
+    aes(y = label_y, label = label),
     position = position_dodge(width = 0.72),
-    vjust = -0.35,
     size = 3.3,
     color = "#222222"
   ) +
   scale_x_discrete(drop = FALSE) +
   scale_y_continuous(
-    limits = c(0, max(long$speedup, na.rm = TRUE) * 1.18),
+    limits = c(0, max(long$speedup, na.rm = TRUE) * 1.24),
     expand = expansion(mult = c(0, 0.02))
   ) +
-  scale_fill_manual(values = c("Bespoke" = "#2563eb", "DuckDB" = "#a3a3a3")) +
+  scale_fill_manual(
+    values = c("Bespoke" = "#2563eb", "Bespoke < 1x" = "#93c5fd", "DuckDB" = "#a3a3a3"),
+    breaks = c("Bespoke", "DuckDB"),
+    labels = c("Bespoke", "DuckDB")
+  ) +
   labs(
     title = "TPC-H SF20 Speedup",
     subtitle = subtitle,
@@ -98,9 +111,11 @@ plot <- ggplot(long, aes(x = query_label, y = speedup, fill = system)) +
   ) +
   theme_minimal(base_size = 14) +
   theme(
-    plot.title = element_text(face = "bold", size = 17),
-    plot.subtitle = element_text(color = "#555555"),
+    plot.title = element_text(face = "bold", size = 17, margin = margin(b = 2)),
+    plot.subtitle = element_text(color = "#555555", margin = margin(b = 2)),
     legend.position = "top",
+    legend.margin = margin(t = 0, r = 0, b = -4, l = 0),
+    legend.box.margin = margin(t = -2, r = 0, b = -6, l = 0),
     axis.line = element_line(color = "#222222", linewidth = 0.45),
     axis.ticks = element_line(color = "#222222", linewidth = 0.35),
     axis.ticks.length = unit(3, "pt"),
