@@ -2,6 +2,7 @@ from pathlib import Path
 from string import Template
 
 from conversations.prompts_gen import _load_txt
+from tools.run_tool_mode import RunToolMode
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -111,4 +112,26 @@ def base_ff_planner_prompt(
         args_path=args_path,
         parquet_path=parquet_path,
         base_impl_todo_file=base_impl_todo_file,
+    )
+
+
+def base_ff_naive_feedback_prompt(
+    builder_path: str,
+    query_impl_path: str,
+    current_total_runtime_s: float | None,
+) -> str:
+    prompt_path = _PROMPTS_DIR / "base_ff_feedback.txt"
+    template = Template(_load_txt(prompt_path))
+
+    runtime_s = (
+        f"{current_total_runtime_s:.2f}"
+        if current_total_runtime_s is not None
+        else "unknown"
+    )
+
+    return template.substitute(
+        current_total_runtime_s=runtime_s,
+        run_tool_mode=RunToolMode.BENCHMARK.name,
+        query_impl_path=query_impl_path,
+        builder_path=builder_path,
     )

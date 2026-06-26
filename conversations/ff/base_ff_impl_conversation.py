@@ -20,6 +20,7 @@ from conversations.conversation import (
 from conversations.ff.prompts_gen import (
     base_ff_impl_query_prompt,
     base_ff_impl_storage,
+    base_ff_naive_feedback_prompt,
     base_ff_planner_prompt,
 )
 from conversations.filenames import get_filenames
@@ -298,19 +299,27 @@ class BaseFFImplConversation(CheckpointedConversation):
 
         stage_list.append(SUPERVISION_STAGE_VISIBILITY_MARKER)
 
+        # 5. static feedback stage + dynamic optimization loop
         stage_list.extend(
             [
                 StaticStageConfig(
                     descriptor="naive feedback",
-                    get_prompt=lambda _exec_settings, _rt: (
-                        f"Speedup your implemntation. Currently your implementation takes {_rt:.2f} seconds to run. Make it faster."
+                    get_prompt=lambda _exec_settings, _rt: base_ff_naive_feedback_prompt(
+                        builder_path=builder_path,
+                        query_impl_path=query_impl_path,
+                        current_total_runtime_s=_rt,
                     ),
                     measure_performance_after_stage=True,
                     measure_perf_qid=None,
                     auto_revert_on_regression=True,
                     feedback_on_incorrect=True,
                 ),
-                OptimizationLoop(run_tool=self.run_tool, num_loops=5),
+                OptimizationLoop(
+                    run_tool=self.run_tool,
+                    builder_path=builder_path,
+                    query_impl_path=query_impl_path,
+                    num_loops=5,
+                ),
             ]
         )
 
@@ -329,10 +338,14 @@ class OptimizationLoop(DynamicStageConfig):
     def __init__(
         self,
         run_tool: RunTool,
+        builder_path: str,
+        query_impl_path: str,
         num_loops: int = 5,
     ):
         super().__init__(descriptor="optimize build", max_turns=None)
         self.run_tool = run_tool
+        self.builder_path = builder_path
+        self.query_impl_path = query_impl_path
         self.num_loops = num_loops
 
     def next_prompt(self) -> Optional[str]:
@@ -350,7 +363,12 @@ class OptimizationLoop(DynamicStageConfig):
             # total runtime across all queries (ms)
             total_rt = run_result.metrics["run/total_rt"]
 
-            prompt = f"Speedup your implemntation. Currently your implementation takes {total_rt / 1000:.2f} seconds to run. Make it faster."
+            # here the naive feedback is reused
+            prompt = base_ff_naive_feedback_prompt(
+                builder_path=self.builder_path,
+                query_impl_path=self.query_impl_path,
+                current_total_runtime_s=total_rt / 1000,
+            )
 
             return prompt
 
