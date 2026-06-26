@@ -230,6 +230,7 @@ class SynnoDB:
         *,
         data_dir: str | None = None,
         env_file: str | None = None,
+        cleanup_workspace: bool = False,
         **overrides: Any,
     ):
         # The stage modules (imported lazily in run()) still need SYNNO_DATA_DIR;
@@ -237,6 +238,58 @@ class SynnoDB:
         settings.configure(data_dir=data_dir, env_file=env_file)
         base = config or SynnoConfig()
         self.config = dataclasses.replace(base, **overrides) if overrides else base
+        # Ephemeral runs: delete the workspace directory when this process exits
+        # (normal finish, uncaught exception, or SIGINT/SIGTERM). Avoids the
+        # accumulation of per-run engine workspaces. SIGKILL cannot be intercepted.
+        self._cleanup_installed = False
+        if cleanup_workspace:
+            self._install_workspace_cleanup()
+
+    def _install_workspace_cleanup(self) -> None:
+        import atexit
+        import shutil
+        import signal
+
+        if self._cleanup_installed:
+            return
+        self._cleanup_installed = True
+        target = Path(settings.get_workspace_dir(self.config.workspace)).resolve()
+        state = {"done": False}
+
+        def _clean(*_: Any) -> None:
+            if state["done"]:
+                return
+            state["done"] = True
+            shutil.rmtree(target, ignore_errors=True)
+
+        atexit.register(_clean)  # normal exit + uncaught exception
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                previous = signal.getsignal(sig)
+
+                def _handler(signum: int, frame: Any, _prev: Any = previous) -> None:
+                    _clean()
+                    if callable(_prev) and _prev not in (signal.SIG_DFL, signal.SIG_IGN):
+                        _prev(signum, frame)
+                    else:
+                        raise SystemExit(128 + signum)
+
+                signal.signal(sig, _handler)
+            except (ValueError, OSError):
+                pass  # signals only settable from the main thread; atexit still covers exit
+
+    def cleanup(self) -> None:
+        """Delete this run's workspace now (idempotent)."""
+        import shutil
+
+        shutil.rmtree(Path(settings.get_workspace_dir(self.config.workspace)).resolve(), ignore_errors=True)
+
+    def __enter__(self) -> "SynnoDB":
+        return self
+
+    def __exit__(self, *_exc: Any) -> bool:
+        self.cleanup()
+        return False
 
     # ---- alternative constructors --------------------------------------
     @classmethod
