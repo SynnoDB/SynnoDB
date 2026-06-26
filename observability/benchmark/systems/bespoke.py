@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class BespokeRunner:
-    """Runs the generated engine (OLAP in-DB or BFF file-format) for a snapshot.
+    """Runs the generated engine for a snapshot.
 
     Snapshot restoration and compilation are track-specific (different prepare
     workspace, prepare function and compiler), supplied via ``BespokePrep``. The

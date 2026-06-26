@@ -140,14 +140,14 @@ def _resolve_snapshots(
     """Return (snapshot_hashes, is_mt flags) for the bespoke system."""
     if snapshots:
         # Direct hashes: prepare mode (mt vs optim) is unknown -> default to
-        # single-thread prep. BFF ignores is_mt entirely.
+        # single-thread prep.
         return snapshots, [False] * len(snapshots)
 
     run_snapshots: list[str] = []
     is_mt: list[bool] = []
     for wandb_id in wandb_run_ids:
         statistics, config, _ = wandb_retrieve_metrics_for_run(
-            workload.value, wandb_id, fetch_latest_runtimes=False
+            workload, wandb_id, fetch_latest_runtimes=False
         )
         snapshot_hash = statistics["code/snapshot_hash"]
         assert snapshot_hash and snapshot_hash != "N/A", (
@@ -315,7 +315,6 @@ def run_benchmark(args) -> None:
             f"Expected workspace/output directory at {workspace_path}"
         )
 
-        # BFF is always disk-backed; OLAP honors the CLI db storage.
         cli_db_storage: DBStorage = args.db_storage
 
         workload = track.resolve_workload(usecase, args.benchmark)
