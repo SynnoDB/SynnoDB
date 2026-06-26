@@ -12,14 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 class DuckDBRunner:
-    """DuckDB reference runner, track-agnostic.
-
-    The per-track specifics (which tables exist, whether to stream from parquet
-    views vs. materialize, and the db storage) are passed in by the caller (see
-    ``observability.benchmark.systems.track.DuckDBConfig``) so the same runner
-    serves both the OLAP and BFF use-cases.
-    """
-
     name = "DuckDB"
 
     def __init__(
