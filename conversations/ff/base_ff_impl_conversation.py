@@ -309,7 +309,7 @@ class BaseFFImplConversation(CheckpointedConversation):
                         query_impl_path=query_impl_path,
                         current_total_runtime_s=_rt,
                     ),
-                    measure_performance_after_stage=True,
+                    measure_performance_after_stage=False,
                     measure_perf_qid=None,
                     auto_revert_on_regression=True,
                     feedback_on_incorrect=True,

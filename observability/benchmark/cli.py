@@ -5,9 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from observability.logging.logger import setup_logging
-
-sys.path.append(str(Path(__file__).parent.parent.parent))
+sys.path.append(Path(__file__).parent.parent.parent.as_posix())
 
 # Load SYNNO_DATA_DIR and friends from .env so the module can run standalone
 # (mirrors main.py / run_ff_base.py).
@@ -15,6 +13,7 @@ load_dotenv()
 
 from observability.benchmark.plot import plot_logs
 from observability.benchmark.run import run_benchmark
+from observability.logging.logger import setup_logging
 from utils.cli_config import Usecase, add_common_args
 
 

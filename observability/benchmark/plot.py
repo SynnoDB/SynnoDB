@@ -144,8 +144,12 @@ def _workloads(data) -> list[str]:
 
 
 def _plot_by_scale(
-    data, output: Path, title: str | None, show_speedup: bool = False,
-    threads_to_show: list | None = None, show_value_labels: bool = True,
+    data,
+    output: Path,
+    title: str | None,
+    show_speedup: bool = False,
+    threads_to_show: list | None = None,
+    show_value_labels: bool = True,
 ) -> None:
     summary = (
         data.groupby(["benchmark", "system", "scale_factor"], as_index=False)
@@ -156,9 +160,14 @@ def _plot_by_scale(
     workloads = _workloads(summary)
 
     if show_speedup:
-        return _plot_by_scale_speedup(data, workloads, output, title,
-                                      threads_to_show=threads_to_show,
-                                      show_value_labels=show_value_labels)
+        return _plot_by_scale_speedup(
+            data,
+            workloads,
+            output,
+            title,
+            threads_to_show=threads_to_show,
+            show_value_labels=show_value_labels,
+        )
 
     scale_palette = {
         s: SYSTEM_COLORS.get(s.lower(), "#888888") for s in summary["system"].unique()
@@ -173,7 +182,9 @@ def _plot_by_scale(
     axes = axes[0]
     for ax, workload in zip(axes, workloads):
         subset = summary[summary["benchmark"] == workload]
-        _sys_markers = {s: _SYSTEM_MARKERS.get(s.lower(), "o") for s in subset["system"].unique()}
+        _sys_markers = {
+            s: _SYSTEM_MARKERS.get(s.lower(), "o") for s in subset["system"].unique()
+        }
         sns.lineplot(
             data=subset,
             x="scale_factor",
@@ -232,7 +243,10 @@ def _thread_linestyle(n: int) -> str:
 
 
 def _plot_by_scale_speedup(
-    data: pd.DataFrame, workloads: list[str], output: Path, title: str | None,
+    data: pd.DataFrame,
+    workloads: list[str],
+    output: Path,
+    title: str | None,
     threads_to_show: list | None = None,
     show_value_labels: bool = True,
 ):
@@ -246,19 +260,23 @@ def _plot_by_scale_speedup(
             data = data[data["num_threads"].isin(keep)]
         group_cols.append("num_threads")
 
-    summary = (
-        data.groupby(group_cols, as_index=False)
-        .agg(median_time_ms=("time_ms", "median"))
+    summary = data.groupby(group_cols, as_index=False).agg(
+        median_time_ms=("time_ms", "median")
     )
     summary["benchmark"] = summary["benchmark"].astype(str)
 
-    thread_counts = sorted(summary["num_threads"].dropna().unique()) if has_threads else [None]
+    thread_counts = (
+        sorted(summary["num_threads"].dropna().unique()) if has_threads else [None]
+    )
 
     workloads = sorted(workloads, key=_speedup_workload_sort_key)
+    # A single workload would otherwise be squeezed into a narrow panel; give it
+    # a wider canvas so the line/labels have room to breathe.
+    fig_width = 5.5 if len(workloads) == 1 else 2.8 * len(workloads)
     fig, axes = plt.subplots(
         1,
         len(workloads),
-        figsize=(max(3.5, 2.8 * len(workloads)), 3.6),
+        figsize=(fig_width, 3.6),
         squeeze=False,
         sharey=True,
     )
@@ -282,7 +300,9 @@ def _plot_by_scale_speedup(
             )
             pivot.columns = [c.lower() for c in pivot.columns]
 
-            linestyle = _thread_linestyle(int(n_threads)) if n_threads is not None else "-"
+            linestyle = (
+                _thread_linestyle(int(n_threads)) if n_threads is not None else "-"
+            )
 
             for baseline in _SPEEDUP_BASELINES:
                 if baseline not in pivot.columns or "bespoke" not in pivot.columns:
@@ -338,8 +358,12 @@ def _plot_by_scale_speedup(
         _label_size = plt.rcParams.get("axes.labelsize", 9)
         ax.set_xlabel("Scale factor", fontsize=_label_size, fontweight="bold")
         if idx == 0:
-            ax.set_ylabel("Speedup\n(Bespoke vs. System)", fontsize=_label_size, fontweight="bold")
-        ax.set_title(_workload_display_name(workload), fontsize=_label_size, fontweight="bold")
+            ax.set_ylabel(
+                "Speedup\n(Bespoke vs. System)", fontsize=_label_size, fontweight="bold"
+            )
+        ax.set_title(
+            _workload_display_name(workload), fontsize=_label_size, fontweight="bold"
+        )
         ax.set_xticks(x)
         ax.set_xticklabels([str(int(sf)) if sf == int(sf) else str(sf) for sf in sfs])
         ax.set_xlim(-0.5, len(sfs) - 0.5)
@@ -380,15 +404,33 @@ def _plot_by_scale_speedup(
     if has_title:
         fig.suptitle(title)
     if sys_handles and thread_handles:
-        leg1 = fig.legend(sys_handles, sys_labels, ncol=len(sys_handles),
-                          title="Bespoke vs. System", bbox_to_anchor=(0.3, legend_y), **_legend_kw)
+        leg1 = fig.legend(
+            sys_handles,
+            sys_labels,
+            ncol=len(sys_handles),
+            title="Bespoke vs. System",
+            bbox_to_anchor=(0.3, legend_y),
+            **_legend_kw,
+        )
         leg1.get_title().update(_title_kw)
-        leg2 = fig.legend(thread_handles, thread_labels, ncol=len(thread_handles),
-                          title="Num-Threads", bbox_to_anchor=(0.75, legend_y), **_legend_kw)
+        leg2 = fig.legend(
+            thread_handles,
+            thread_labels,
+            ncol=len(thread_handles),
+            title="Num-Threads",
+            bbox_to_anchor=(0.75, legend_y),
+            **_legend_kw,
+        )
         leg2.get_title().update(_title_kw)
     elif sys_handles:
-        leg1 = fig.legend(sys_handles, sys_labels, ncol=len(sys_handles),
-                          title="Bespoke vs. System", bbox_to_anchor=(0.5, legend_y), **_legend_kw)
+        leg1 = fig.legend(
+            sys_handles,
+            sys_labels,
+            ncol=len(sys_handles),
+            title="Bespoke vs. System",
+            bbox_to_anchor=(0.5, legend_y),
+            **_legend_kw,
+        )
         leg1.get_title().update(_title_kw)
     plt.savefig(output)
     return fig
@@ -418,8 +460,7 @@ def _plot_by_query(data, output: Path, title: str | None) -> None:
         3.5,
         min(
             12,
-            0.28
-            * summary.groupby("benchmark")["query_label"].nunique().max(),
+            0.28 * summary.groupby("benchmark")["query_label"].nunique().max(),
         ),
     )
     fig, axes = plt.subplots(
@@ -451,7 +492,9 @@ def _plot_by_query(data, output: Path, title: str | None) -> None:
     return fig
 
 
-def _print_summary(data: pd.DataFrame, x_mode: str, thread_plot_args: dict | None = None) -> None:
+def _print_summary(
+    data: pd.DataFrame, x_mode: str, thread_plot_args: dict | None = None
+) -> None:
     from tabulate import tabulate
 
     thread_plot_args = thread_plot_args or {}
@@ -464,38 +507,30 @@ def _print_summary(data: pd.DataFrame, x_mode: str, thread_plot_args: dict | Non
         max_threads = thread_plot_args.get("max_threads")
         if max_threads is not None:
             data = data[data["num_threads"] <= max_threads]
-        per_query = (
-            data.groupby(
-                ["benchmark", "system", "scale_factor", "num_threads", "query_id"],
-                as_index=False,
-            ).agg(median_time_ms=("time_ms", "median"))
-        )
-        summary = (
-            per_query.groupby(
-                ["benchmark", "system", "scale_factor", "num_threads"], as_index=False
-            ).agg(value=("median_time_ms", "sum"))
-        )
+        per_query = data.groupby(
+            ["benchmark", "system", "scale_factor", "num_threads", "query_id"],
+            as_index=False,
+        ).agg(median_time_ms=("time_ms", "median"))
+        summary = per_query.groupby(
+            ["benchmark", "system", "scale_factor", "num_threads"], as_index=False
+        ).agg(value=("median_time_ms", "sum"))
         summary["value"] = summary["value"] / 1000  # ms → s to match plot y-axis
         col_dim = "num_threads"
         value_label = "total time (s)"
 
     elif x_mode == "query_id":
         # Mirror _plot_by_query: median per (benchmark, system, scale_factor, query_id)
-        summary = (
-            data.groupby(
-                ["benchmark", "system", "scale_factor", "query_id"], as_index=False
-            ).agg(value=("time_ms", "median"))
-        )
+        summary = data.groupby(
+            ["benchmark", "system", "scale_factor", "query_id"], as_index=False
+        ).agg(value=("time_ms", "median"))
         col_dim = "query_id"
         value_label = "median time (ms)"
 
     else:
         # Mirror _plot_by_scale: median per (benchmark, system, scale_factor)
-        summary = (
-            data.groupby(
-                ["benchmark", "system", "scale_factor"], as_index=False
-            ).agg(value=("time_ms", "median"))
-        )
+        summary = data.groupby(
+            ["benchmark", "system", "scale_factor"], as_index=False
+        ).agg(value=("time_ms", "median"))
         col_dim = "scale_factor"
         value_label = "median time (ms)"
 
@@ -505,11 +540,18 @@ def _print_summary(data: pd.DataFrame, x_mode: str, thread_plot_args: dict | Non
         if col_dim == "scale_factor":
             row_label = wb["system"].str.title()
         else:
-            row_label = wb["system"].str.title() + " (SF " + wb["scale_factor"].astype(str) + ")"
+            row_label = (
+                wb["system"].str.title()
+                + " (SF "
+                + wb["scale_factor"].astype(str)
+                + ")"
+            )
 
         wb = wb.copy()
         wb["_row"] = row_label
-        pivot = wb.pivot_table(index="_row", columns=col_dim, values="value", aggfunc="first")
+        pivot = wb.pivot_table(
+            index="_row", columns=col_dim, values="value", aggfunc="first"
+        )
         pivot.index.name = None
         pivot.columns.name = col_dim
         pivot = pivot.map(lambda v: f"{v:.2f}" if pd.notna(v) else "-")
@@ -562,8 +604,12 @@ def plot_logs(args, show: bool = False, print_values: bool = False):
         threads_to_show = thread_plot_args.get("threads_to_show", None)
         show_value_labels = bool(thread_plot_args.get("show_value_labels", True))
         fig = _plot_by_scale(
-            data, output, title, show_speedup=show_speedup,
-            threads_to_show=threads_to_show, show_value_labels=show_value_labels,
+            data,
+            output,
+            title,
+            show_speedup=show_speedup,
+            threads_to_show=threads_to_show,
+            show_value_labels=show_value_labels,
         )
 
     if print_values:

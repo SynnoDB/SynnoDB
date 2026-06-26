@@ -147,7 +147,7 @@ def _resolve_snapshots(
     is_mt: list[bool] = []
     for wandb_id in wandb_run_ids:
         statistics, config, _ = wandb_retrieve_metrics_for_run(
-            workload.value, wandb_id, fetch_latest_runtimes=False
+            workload, wandb_id, fetch_latest_runtimes=False
         )
         snapshot_hash = statistics["code/snapshot_hash"]
         assert snapshot_hash and snapshot_hash != "N/A", (
