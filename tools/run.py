@@ -608,8 +608,7 @@ def call_hotpatch_proc(
             # all (e.g. the binary never started) — which indicates a harness bug.
             #
             # Detection is usecase-independent: every pipeline prints "<stage>
-            # start" markers (OLAP "builder start", BFF "bff writer start", both
-            # "loader start"), and a stage whose plugin code throws is reported by
+            # start" markers (OLAP "builder start"), and a stage whose plugin code throws is reported by
             # the framework stage runner as "<so> stage threw ...".
             combined = (out + "\n" + err).lower()
             pipeline_ran = (
