@@ -1,20 +1,15 @@
-"""ProcessEngine adapter: unit tests for the CSV->Arrow + casting + health logic.
+"""ProcessEngine adapter: unit tests for reading the engine's exact Arrow result + health.
 
 The full HotpatchProc execution path is integration-tested against a real generated
 engine separately (it requires a compiled engine + data).
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pyarrow as pa
 
-from synnodb.router.process_engine import ProcessEngine, _arrow_type_for
-
-
-def test_arrow_type_mapping():
-    assert _arrow_type_for("BIGINT") == pa.int64()
-    assert _arrow_type_for("DECIMAL(15,2)") == pa.float64()
-    assert _arrow_type_for("DOUBLE") == pa.float64()
-    assert _arrow_type_for("VARCHAR") == pa.string()
+from synnodb.router.process_engine import ProcessEngine
 
 
 def test_health_false_without_binary(tmp_path):
@@ -24,29 +19,21 @@ def test_health_false_without_binary(tmp_path):
     assert eng.health() is True
 
 
-def test_read_csv_to_arrow(tmp_path):
+def test_read_arrow_result_is_exact(tmp_path):
+    # The engine writes its result as Arrow built from exact int128 (column_egress); the runtime
+    # reads it back with the exact decimal128 - no CSV/double round-trip.
     results = tmp_path / "results"
     results.mkdir()
-    (results / "result_x.csv").write_text(
-        'l_returnflag,sum_qty,avg_price\n"A",37,1.5\n"N",99,2.25\n'
-    )
+    table = pa.table({
+        "sum_base_price": pa.array([Decimal("56586554400.73")], pa.decimal128(38, 2)),
+        "count_order": pa.array([1478493], pa.int64()),
+    })
+    path = results / "result_x.arrow"
+    with pa.OSFile(str(path), "wb") as sink:
+        with pa.ipc.new_file(sink, table.schema) as writer:
+            writer.write_table(table)
     eng = ProcessEngine("e", tmp_path, "/data/sf20")
-    table = eng._read_csv(results / "result_x.csv")
-    assert table.column("l_returnflag").to_pylist() == ["A", "N"]
-    assert table.column("sum_qty").to_pylist() == [37, 99]
-    assert table.column("avg_price").to_pylist() == [1.5, 2.25]
-
-
-def test_read_csv_with_schema_cast(tmp_path):
-    results = tmp_path / "results"
-    results.mkdir()
-    # sum_qty arrives as int from pandas; cast to the declared types.
-    (results / "result_y.csv").write_text("flag,sum_qty,avg_price\nA,37,1.5\n")
-    eng = ProcessEngine(
-        "e", tmp_path, "/data/sf20",
-        output_schema=[("flag", "VARCHAR"), ("sum_qty", "DECIMAL(15,2)"), ("avg_price", "DOUBLE")],
-    )
-    table = eng._read_csv(results / "result_y.csv")
-    assert table.schema.field("sum_qty").type == pa.float64()  # cast from int to decimal->float64
-    assert table.schema.field("flag").type == pa.string()
-    assert table.column("sum_qty").to_pylist() == [37.0]
+    got = eng._read_arrow(path)
+    assert got.schema.field("sum_base_price").type == pa.decimal128(38, 2)
+    assert got.column("sum_base_price").to_pylist() == [Decimal("56586554400.73")]
+    assert got.column("count_order").to_pylist() == [1478493]

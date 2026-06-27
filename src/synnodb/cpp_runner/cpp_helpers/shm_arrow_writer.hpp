@@ -4,10 +4,10 @@
 // IPC into a /dev/shm segment for the Python parent to read back zero-copy.
 //
 // This is the C++ engine-worker egress side of the Phase-3 shared-memory data
-// plane. The generated query (run_q<id> -> Q<id>Out struct-of-arrays) is converted
-// to an arrow::Table (see the generated <query>_out.hpp / output_struct codegen)
-// and handed here; the Python router reads it via
-// src/synnodb/router/shm_transport.py::read_table.
+// plane. The generated query (run_q<id>) builds its exact, typed arrow::Table with
+// cpp_helpers/column_egress.hpp (make_table over decimal/int/double/string/bool/date/
+// timestamp columns, NULLs and exact types via arrow::compute::Cast) and hands it here;
+// the Python router reads it via src/synnodb/router/shm_transport.py::read_table.
 //
 // STATUS: compiled & validated by tests/cpp/shm_io_test.cpp against the tested
 //   Python reader (round-trips both directions). Not yet wired into the engine's

@@ -60,16 +60,21 @@ def test_unvalidatable_query_is_skipped():
 # --------------------------------------------------------------------------- #
 # Manifest schema v2
 # --------------------------------------------------------------------------- #
-def test_manifest_v2_roundtrip_parquet_dir():
+def test_manifest_roundtrip_parquet_dir_and_shm():
+    from synnodb.router.manifest import SCHEMA_VERSION
+
     m = EngineManifest(
         engine_id="e1",
         queries=(QueryTemplate("1", "select 1", ()),),
         parquet_dir="/data/sf1",
         scale_factor=1.0,
+        shm_capable=True,
     )
     d = m.to_dict()
-    assert d["schema_version"] == 2 and d["parquet_dir"] == "/data/sf1"
-    assert EngineManifest.from_dict(d).parquet_dir == "/data/sf1"
+    assert d["schema_version"] == SCHEMA_VERSION
+    assert d["parquet_dir"] == "/data/sf1" and d["shm_capable"] is True
+    rt = EngineManifest.from_dict(d)
+    assert rt.parquet_dir == "/data/sf1" and rt.shm_capable is True
 
 
 def test_manifest_v1_still_loads():

@@ -48,21 +48,30 @@ def connect(
     policy: Optional[RouterPolicy] = None,
     registry: Optional[TemplateRegistry] = None,
     engines: Any = None,
+    mount: bool = False,
     **kwargs: Any,
 ) -> SynnoConnection:
     """Open a DuckDB connection wrapped by the SynnoDB router.
 
-    ``policy`` / ``registry`` / ``engines`` are SynnoDB extensions; everything else is passed
-    straight to ``duckdb.connect``. With no registered engines (the default) this behaves
-    exactly like ``duckdb.connect``.
+    ``database`` is passed straight to ``duckdb.connect`` with DuckDB's exact semantics
+    (``":memory:"`` is a fresh empty in-memory database; a file path opens that file). A
+    shm-capable engine hot-loads its tables as Arrow over shared memory regardless of whether
+    the connection is in-memory or on a file, so no special flag is needed: ``connect("my.db",
+    engines=...)`` routes matching queries to a ``synno-my`` engine that serves the file's data.
+
+    ``policy`` / ``registry`` / ``engines`` / ``mount`` are SynnoDB extensions; everything else
+    is passed straight to ``duckdb.connect``. With no registered engines (the default) this
+    behaves exactly like ``duckdb.connect``.
 
     ``engines`` is the directory of published bespoke engines to auto-discover and route to
     (default: ``SYNNO_ENGINES_DIR`` or ``$SYNNO_DATA_DIR/engines``; ``None`` everywhere
-    disables discovery). A plain ``duckdb.connect(...)`` call needs none of these.
+    disables discovery). ``mount`` lets discovery expose an engine's own bundled snapshot as
+    views when the connection has no such tables - querying the synthesized database with no
+    DuckDB of your own.
     """
     inner = _duckdb.connect(database=database, read_only=read_only, config=config or {}, **kwargs)
     router = QueryRouter(policy or RouterPolicy.from_env(), registry)
-    return SynnoConnection(inner, router, engines_dir=resolve_engines_dir(engines))
+    return SynnoConnection(inner, router, engines_dir=resolve_engines_dir(engines), mount=mount)
 
 
 _default_conn: Optional[SynnoConnection] = None

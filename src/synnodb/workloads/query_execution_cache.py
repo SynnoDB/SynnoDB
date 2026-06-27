@@ -2,7 +2,7 @@ import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import pandas as pd
+import pyarrow as pa
 
 from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
@@ -30,7 +30,7 @@ class QueryExecutionResult:
     general_system_config: (
         GeneralSystemConfig  # e.g. memory limit, num threads, core ids, ...
     )
-    result: pd.DataFrame | None
+    result: "pa.Table | None"  # exact Arrow (DECIMAL preserved); pandas would coerce it to float
     exec_time_ms: float
     plan: dict | None
 
@@ -167,6 +167,9 @@ class QueryExecutionCache:
             "query_entry": query_entry_json,
             "general_system_config": utils.stable_json(asdict(general_system_config)),
             "exec_settings": utils.stable_json(asdict(exec_settings)),
+            # Cached result format. Bumped when the stored result type changes (DataFrame -> exact
+            # Arrow) so stale float-coerced DataFrame caches are bypassed and re-executed.
+            "result_format": "arrow_v1",
         }
         hash_payload = utils.stable_json(entry_dict)
         hash = utils.sha256(hash_payload)
@@ -197,7 +200,9 @@ class QueryExecutionCache:
             for query_entry in missing_entries:
                 assert isinstance(system_instance, DuckDBConnectionManager)
                 try:
-                    duckdb_time, duckdb_df, duckdb_plan = system_instance.duckdb_sql(
+                    # Keep the reference as exact Arrow so the correctness check compares decimals
+                    # bit-for-bit (a pandas DataFrame would coerce DECIMAL to float64).
+                    duckdb_time, duckdb_table, duckdb_plan = system_instance.duckdb_sql_arrow(
                         query_entry.sql
                     )
                 except Exception as e:
@@ -212,7 +217,7 @@ class QueryExecutionCache:
                         query_entry=query_entry,
                         exec_settings=exec_settings,
                         general_system_config=general_system_config,
-                        result=duckdb_df,
+                        result=duckdb_table,
                         exec_time_ms=duckdb_time,
                         plan=duckdb_plan,
                     )

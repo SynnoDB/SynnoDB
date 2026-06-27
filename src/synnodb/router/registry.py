@@ -96,6 +96,16 @@ class TemplateRegistry:
                 return None
             return binding
 
+    def quarantined_binding(self, normalized_sql: str) -> Optional[EngineBinding]:
+        """A binding for *normalized_sql* that exists but is quarantined (else None). For
+        diagnostics: it lets ``why()`` explain that an engine is present but sidelined, rather
+        than misreporting "no template match"."""
+        with self._lock:
+            binding = self._by_norm.get(normalized_sql)
+            if binding is not None and binding.template_id in self._quarantined:
+                return binding
+            return None
+
     # ---- dirtiness (data immutability) ---------------------------------
     def mark_tables_dirty(self, tables: Iterable[str]) -> None:
         with self._lock:

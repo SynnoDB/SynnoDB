@@ -15,12 +15,55 @@ factory↔runtime contract — Phase 2c builds the same binding from a ``manifes
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, Optional, Sequence
+import re
+from typing import Any, Iterable, List, Optional, Sequence
 
+from ..errors import SynnoUnsupportedQuery
 from .normalize import normalize_sql, tables_in
 from .registry import ColumnSpec, EngineBinding, PlaceholderSpec
 
 log = logging.getLogger("synnodb.router.registration")
+
+
+# Output types the exact-egress path (cpp_helpers/column_egress.hpp) cannot reproduce. Everything
+# else - every integer width, decimal128/256, BOOLEAN, DOUBLE/REAL, VARCHAR, DATE, naive TIMESTAMP -
+# is emitted exactly (or the engine fails loudly), so the guard is a deny-list, not an allow-list,
+# in keeping with the "delegate to arrow::compute::Cast, do not enumerate" design. A query
+# producing one of these is refused at bind time and served by DuckDB instead of failing later.
+# Note the deny-list must keep pace with DuckDB's type *grammar* (array suffixes ``[]``/``[N]``,
+# ``... WITH TIME ZONE``), not just leading tokens; a future hardening could instead probe whether
+# DuckDB's Arrow type for the column is reachable from an egress builder family.
+_NESTED_OUTPUT_BASES = frozenset({"LIST", "ARRAY", "STRUCT", "MAP", "UNION", "ROW"})
+_UNSUPPORTED_OUTPUT_BASES = frozenset(
+    {"INTERVAL", "BLOB", "BYTEA", "VARBINARY", "BIT", "UUID", "TIME", "ENUM", "JSON"}
+)
+
+
+def _unsupported_output_reasons(output_schema: Sequence[ColumnSpec]) -> List[str]:
+    """Reasons each output column is outside the exact-egress vocabulary (empty = all routable)."""
+    reasons: List[str] = []
+    for c in output_schema:
+        t = str(c.type).upper().strip()
+        m = re.match(r"[A-Z0-9_]+", t)
+        base = m.group(0) if m else t  # leading type token: TIME vs TIMESTAMP, DECIMAL(38,2)->DECIMAL
+        # Nested/array types: DuckDB spells them ``INTEGER[]``, ``INTEGER[3]``, ``STRUCT(...)``, ...
+        if re.search(r"\[\s*\d*\s*\]", t) or base in _NESTED_OUTPUT_BASES:
+            reasons.append(
+                f"output column '{c.name}' has a nested/array type ({c.type}); exact egress emits "
+                "flat columns only"
+            )
+        # Time-zone-bearing timestamps: egress builds a tz-naive timestamp, so the zone is not
+        # reproduced - refuse rather than silently emit a tz-naive value DuckDB would qualify.
+        elif "TIME ZONE" in t or base in ("TIMESTAMPTZ", "TIMETZ"):
+            reasons.append(
+                f"output column '{c.name}' type {c.type} carries a time zone, which exact egress "
+                "does not reproduce"
+            )
+        elif base in _UNSUPPORTED_OUTPUT_BASES:
+            reasons.append(
+                f"output column '{c.name}' type {c.type} is outside the exact-egress vocabulary"
+            )
+    return reasons
 
 
 def _connection(conn: Any) -> Any:
@@ -111,6 +154,11 @@ def make_binding(
         raise ValueError(f"template_sql is not parseable: {template_sql!r}")
     bound_tables = frozenset(tables) if tables is not None else frozenset(tables_in(template_sql))
     output_schema = describe_output(conn, template_sql, placeholders)
+    # Fail fast: a query whose output types the engine cannot reproduce exactly is refused here
+    # (DuckDB serves it) instead of binding and failing later inside egress.
+    reasons = _unsupported_output_reasons(output_schema)
+    if reasons:
+        raise SynnoUnsupportedQuery(reasons, engine_id=engine_id, query_id=query_id)
     fingerprint = schema_fingerprint(conn, bound_tables)
     log.debug(
         "binding %s::%s tables=%s fingerprint=%s output=%s normalized=%r",

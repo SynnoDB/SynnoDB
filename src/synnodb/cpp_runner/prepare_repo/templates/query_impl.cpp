@@ -18,25 +18,10 @@
 #include <cstdlib>
 // <<get_thread_pool_placeholder>>
 #include "args_parser.hpp"
+#include "result_writer.hpp"  // synnodb::write_result - exact Arrow egress
 // <<include_query_headers>>
 
 
-void write_csv(const std::string& filename, const std::vector<std::vector<std::string>>& rows) {
-    std::filesystem::create_directories("results");
-    std::ofstream out("results/" + filename);
-    for (const auto& row : rows) {
-        for (std::size_t i = 0; i < row.size(); ++i) {
-            if (i) out << ',';
-            out << '"';
-            for (char c : row[i]) {
-                if (c == '"' || c == '\\') out << '\\';
-                out << c;
-            }
-            out << '"';
-        }
-        out << '\n';
-    }
-}
 // <<drop_buffer_and_os_caches_def_start>>
 void drop_buffer_and_os_caches(Database* db) {
     // clear the buffer pool

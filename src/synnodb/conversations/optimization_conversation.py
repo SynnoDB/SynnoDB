@@ -15,7 +15,7 @@ from synnodb.conversations.utils.cleanup_plans import (
     cleanup_duckdb_plan,
     cleanup_umbra_plan,
 )
-from synnodb.tools.run import delete_result_csv_files
+from synnodb.tools.run import delete_result_files
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.tools.validate.query_validator_class import QueryValidator
 from synnodb.utils.utils import DBStorage
@@ -237,15 +237,15 @@ class OptimizationConversation(CheckpointedConversation):
                     current_stage_nr=current_stage_nr,
                 )
 
-                # delete result.csv files
-                delete_result_csv_files(self.run_tool.cwd)
+                # delete prior result files
+                delete_result_files(self.run_tool.cwd)
 
                 await self._exec(
                     COMPACTION_MARKER, "compaction", current_stage_nr=current_stage_nr
                 )
 
             # perform full benchmarking across all queries at the end of the stage
-            delete_result_csv_files(self.run_tool.cwd)
+            delete_result_files(self.run_tool.cwd)
             stage_end_msg, stage_end_metrics, stage_end_tracing_output = (
                 self.run_tool.run(
                     mode=RunToolMode.BENCHMARK, query_ids=None, optimize=True

@@ -55,6 +55,16 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class RouterPolicy:
     """Immutable routing configuration (per connection)."""
@@ -72,6 +82,13 @@ class RouterPolicy:
     block_writes: bool = True
 
     cross_check_rate: float = 0.1              # fraction of routed queries also run on DuckDB
+    # Burn-in: always cross-check the first N executions of each template, regardless of
+    # cross_check_rate, so a freshly built (or freshly republished) engine cannot serve a single
+    # unverified result before it has proven itself. A systematically wrong engine is then caught
+    # and quarantined on its first queries instead of leaking wrong answers until a sampled check
+    # happens to hit one. Set to 0 to disable burn-in (pure sampling). When cross_check_rate is 0
+    # the operator has explicitly opted out of all verification, and burn-in is skipped too.
+    verify_first_n: int = 50
     select_only: bool = True                   # only SELECT-family statements may route
     require_schema_match: bool = True
     require_sf_match: bool = True
@@ -104,6 +121,7 @@ class RouterPolicy:
           ``SYNNODB_ROUTER``        off/on   -> mode / kill switch
           ``SYNNODB_VERBOSE``       on/off   -> verbose
           ``SYNNODB_CROSS_CHECK``   float    -> cross_check_rate
+          ``SYNNODB_VERIFY_FIRST_N`` int     -> verify_first_n (burn-in)
           ``SYNNODB_BLOCK_WRITES``  on/off   -> block_writes
         """
         base = cls()
@@ -124,6 +142,7 @@ class RouterPolicy:
             enabled=enabled,
             verbose=_env_bool("SYNNODB_VERBOSE", base.verbose),
             cross_check_rate=_env_float("SYNNODB_CROSS_CHECK", base.cross_check_rate),
+            verify_first_n=_env_int("SYNNODB_VERIFY_FIRST_N", base.verify_first_n),
             block_writes=_env_bool("SYNNODB_BLOCK_WRITES", base.block_writes),
         )
         return policy.with_(**overrides) if overrides else policy

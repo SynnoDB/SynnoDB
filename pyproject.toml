@@ -47,6 +47,7 @@ synnodb-base-impl = "synnodb.run_gen_base_impl:cli"
 synnodb-optim = "synnodb.run_optim_loop:cli"
 synnodb-check-sf = "synnodb.run_check_sf_correctness:cli"
 synnodb-multi-threading = "synnodb.run_add_multi_threading:cli"
+synnodb-optimize = "synnodb.optimize:cli"
 
 [build-system]
 requires = ["setuptools>=64"]

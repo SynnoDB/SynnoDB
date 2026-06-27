@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # for type-checkers/IDEs only; runtime resolves these lazily.
 
 # name -> submodule it lives in; imported on first access only.
 _LAZY_FACTORY = {
+    "optimize_database": "synnodb.optimize",
     "SynnoDB": "synnodb.api",
     "SynnoConfig": "synnodb.api",
     "Stage": "synnodb.api",
@@ -77,4 +78,4 @@ except Exception:  # pragma: no cover
 
 # `from synnodb import *` exposes only the *light* drop-in surface (so it works
 # without the factory extra). Factory names stay accessible via explicit import.
-__all__ = [*_compat.__all__, "RouterMode", "enable_debug_logging"]
+__all__ = [*_compat.__all__, "RouterMode", "enable_debug_logging", "optimize_database"]

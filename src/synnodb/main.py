@@ -795,6 +795,16 @@ def run_conv_wrapper(
             notify.send_notification(notify_msg, check_tmux=False)
 
         raise e
+    finally:
+        # Finish the wandb run so a subsequent stage executed in the SAME process (the documented
+        # in-process chain createStoragePlan -> createBaseImpl) starts its own fresh run instead of
+        # re-using this still-active one and failing on the locked "log_run_name" config key.
+        # args.wandb_run_id was captured above, so the returned id is unaffected.
+        if _wandb_run is not None:
+            try:
+                _wandb_run.finish()
+            except Exception:
+                logger.warning("could not finish wandb run cleanly", exc_info=True)
 
     # The wandb run id (None unless --log_to_wandb) is how downstream stages
     # chain off this run; return it so programmatic callers can pass it along.

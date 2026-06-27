@@ -35,6 +35,11 @@ class RouteTrace:
     duckdb_ms: Optional[float] = None
     cross_checked: bool = False
     results_match: Optional[bool] = None  # cross-check verdict, when run
+    # Who actually produced the bytes the caller will serve. "engine" when the bespoke result is
+    # used; "duckdb" when a divergence or a comparison failure made us serve the trusted DuckDB
+    # reference instead (even though decision.routed stays True, because we already have that
+    # reference in hand and the caller need not re-run it). Drives an honest timing footer.
+    served_by: Optional[str] = None
 
     # ---- mutation helpers (return self for fluent use) ------------------
     def fell_back(self, reason: str) -> "RouteTrace":
@@ -73,6 +78,7 @@ class RouteTrace:
             "duckdb_ms": self.duckdb_ms,
             "cross_checked": self.cross_checked,
             "results_match": self.results_match,
+            "served_by": self.served_by,
             "speedup": self.speedup,
             "sql": _short_sql(self.sql),
         }
@@ -80,8 +86,13 @@ class RouteTrace:
     def summary_line(self) -> str:
         if self.decision == "bespoke":
             head = f"routed {self.template or '?'}"
+            if self.served_by == "duckdb":
+                head = f"routed {self.template or '?'} → served DuckDB"
             if self.cross_checked:
-                match = "✓" if self.results_match else "✗ MISMATCH"
+                if self.results_match is None:
+                    match = "⚠ CHECK-ERROR"
+                else:
+                    match = "✓" if self.results_match else "✗ MISMATCH"
                 sp = f"{self.speedup:.1f}×" if self.speedup else "?"
                 return (
                     f"{head}: bespoke {self.bespoke_ms:.1f}ms vs duckdb "

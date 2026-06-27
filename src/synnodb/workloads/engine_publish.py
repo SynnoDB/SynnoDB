@@ -14,11 +14,13 @@ just falls back to DuckDB) rather than shipped wrong.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -153,42 +155,183 @@ def build_query_templates(
 _PUBLISH_IGNORE = shutil.ignore_patterns("obj", "results", "debug_logs", "__pycache__", ".git")
 
 
-def _atomic_publish(workspace: Path, manifest: EngineManifest, engines_dir: Path) -> Path:
-    """Copy the engine into ``engines_dir/<engine_id>`` via a staging directory renamed into
-    place, so a partially-written engine is never discovered. The published engine is a
-    self-contained copy (binary + build/*.so + sources + manifest), so it survives workspace
-    cleanup; compile intermediates and per-run scratch are left behind."""
-    engines_dir.mkdir(parents=True, exist_ok=True)
+def _populate(
+    workspace: Path,
+    staging: Path,
+    manifest: EngineManifest,
+    bundle_parquet_dir: "str | Path | None",
+) -> None:
+    """Fill *staging* with the self-contained engine: a copy of the workspace (binary + build/*.so
+    + sources, minus scratch), an optional bundled parquet snapshot under ``data/``, and the
+    manifest. The caller renames *staging* into its final place atomically."""
+    shutil.copytree(workspace, staging, ignore=_PUBLISH_IGNORE, dirs_exist_ok=True)
+    if bundle_parquet_dir is not None:
+        data_dir = staging / "data"
+        data_dir.mkdir(exist_ok=True)
+        for pf in sorted(Path(bundle_parquet_dir).glob("*.parquet")):
+            shutil.copy2(pf, data_dir / pf.name)
+    manifest.write(staging)
+
+
+@contextlib.contextmanager
+def _publish_lock(engines_dir: Path, name: str):
+    """Serialize publishers of the same *name*, so two concurrent republishes cannot interleave
+    their swaps (which previously raised ``OSError: Directory not empty`` and leaked dirs). A
+    coarse per-name file lock, held only for the brief materialize + symlink flip."""
+    import fcntl  # POSIX; the publish/runtime stack is Linux
+
+    locks = engines_dir / ".locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name) or "engine"
+    handle = open(locks / f"{safe}.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _version_prefix(name: str) -> str:
+    # The "@" separator keeps prefixes unambiguous: "synno-tpch@..." is not a version of
+    # "synno-tp", and "synno-tpch2@..." is not a version of "synno-tpch".
+    return f"{name}@"
+
+
+def _gc_versions(versions_dir: Path, name: str, keep: Path) -> None:
+    """Remove superseded versions of *name* (every ``<name>@*`` under ``.versions`` except the one
+    now linked). Scoped to this name and run under its lock, so it never races another name's
+    in-flight version."""
+    prefix = _version_prefix(name)
+    keep_resolved = keep.resolve()
+    for v in versions_dir.iterdir():
+        if v.name.startswith(prefix) and v.resolve() != keep_resolved:
+            shutil.rmtree(v, ignore_errors=True)
+
+
+def _publish_content_addressed(
+    workspace: Path, manifest: EngineManifest, engines_dir: Path,
+    bundle_parquet_dir: "str | Path | None",
+) -> Path:
+    """The unnamed path: ``engines_dir/<engine_id>``. The id is a content hash, so an identical
+    engine is already correct - dedup if present, otherwise stage and rename in atomically. A
+    concurrent publisher of the same content is harmless (whoever lands first wins)."""
     dest = engines_dir / manifest.engine_id
     if dest.exists():
-        return dest  # content-addressed id: an identical engine is already published
+        return dest
     staging = Path(tempfile.mkdtemp(prefix=f".tmp-{manifest.engine_id}-", dir=engines_dir))
     try:
-        shutil.copytree(workspace, staging, ignore=_PUBLISH_IGNORE, dirs_exist_ok=True)
-        manifest.write(staging)
-        os.replace(staging, dest)
+        _populate(workspace, staging, manifest, bundle_parquet_dir)
+        try:
+            os.replace(staging, dest)
+        except OSError:
+            if dest.exists():  # someone published the identical engine first; defer to it
+                shutil.rmtree(staging, ignore_errors=True)
+                return dest
+            raise
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return dest
 
 
+def _publish_named(
+    workspace: Path, manifest: EngineManifest, engines_dir: Path, name: str,
+    bundle_parquet_dir: "str | Path | None",
+) -> Path:
+    """Publish ``engines_dir/<name>`` (e.g. ``synno-tpch``) as an atomic symlink to an immutable
+    version directory under ``.versions``.
+
+    A directory cannot be replaced by ``rename(2)`` while non-empty, so the previous code did a
+    two-step ``os.replace(dest->trash); os.replace(staging->dest)`` that was neither crash-atomic
+    (a crash between the two deleted the only copy) nor concurrency-safe (two publishers raced to
+    ``OSError``). Instead each publish writes a fresh immutable version and atomically *flips a
+    symlink* at ``<name>`` to it: the flip is a single ``rename`` over a symlink, so a crash leaves
+    either the old or the new version fully linked, never a missing engine, and a per-name lock
+    serializes concurrent republishes.
+    """
+    versions = engines_dir / ".versions"
+    versions.mkdir(parents=True, exist_ok=True)
+    dest = engines_dir / name
+    with _publish_lock(engines_dir, name):
+        # 1. Materialize the new version: staging dir -> atomic rename into .versions/<name>@<id>.
+        staging = Path(tempfile.mkdtemp(prefix=f".tmp-{manifest.engine_id}-", dir=engines_dir))
+        try:
+            _populate(workspace, staging, manifest, bundle_parquet_dir)
+            version = versions / f"{_version_prefix(name)}{uuid.uuid4().hex}"
+            os.replace(staging, version)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        # 2. Flip <name> to the new version atomically (a relative symlink keeps the dir portable).
+        tmp_link = engines_dir / f".link-{uuid.uuid4().hex}"
+        os.symlink(os.path.join(versions.name, version.name), tmp_link)
+        try:
+            if dest.exists() and not dest.is_symlink():
+                # One-time migration of a legacy real directory: preserve the old copy under
+                # .versions (never delete the only copy), then flip. The brief absence is under
+                # the lock and discovery just retries on its next scan.
+                os.replace(dest, versions / f"{_version_prefix(name)}legacy-{uuid.uuid4().hex}")
+            os.replace(tmp_link, dest)  # atomic: dest is now absent or a symlink
+        except Exception:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_link)
+            raise
+        # 3. Drop superseded versions of this name (keep the one just linked).
+        _gc_versions(versions, name, version)
+    return dest
+
+
+def _atomic_publish(
+    workspace: Path,
+    manifest: EngineManifest,
+    engines_dir: Path,
+    *,
+    name: Optional[str] = None,
+    bundle_parquet_dir: "str | Path | None" = None,
+) -> Path:
+    """Publish the engine for auto-discovery. The published engine is a self-contained copy
+    (binary + build/*.so + sources + manifest), so it survives workspace cleanup.
+
+    Unnamed: content-addressed ``engines_dir/<engine_id>`` (dedups an identical engine). Named:
+    ``engines_dir/<name>`` (e.g. ``synno-tpch``), published as an atomic, crash-safe,
+    concurrency-safe symlink flip onto an immutable version directory. With *bundle_parquet_dir*,
+    its ``*.parquet`` are copied into ``<version>/data/`` and recorded as the relative
+    ``parquet_dir="data"`` so the package is portable.
+    """
+    engines_dir.mkdir(parents=True, exist_ok=True)
+    if name is None:
+        return _publish_content_addressed(workspace, manifest, engines_dir, bundle_parquet_dir)
+    return _publish_named(workspace, manifest, engines_dir, name, bundle_parquet_dir)
+
+
 def publish_engine(
     workspace: "str | Path",
     *,
     query_templates: Sequence[QueryTemplate],
-    parquet_dir: "str | Path",
+    parquet_dir: "str | Path | None" = None,
     scale_factor: Optional[float] = None,
     source_run_id: Optional[str] = None,
     storage_mode: str = "flat",
     expected_tables: Optional[Mapping[str, Sequence]] = None,
     engines_dir: "str | Path | None" = None,
+    name: Optional[str] = None,
+    shm_capable: bool = False,
+    bundle_parquet_dir: "str | Path | None" = None,
+    source_db: Optional[str] = None,
 ) -> Optional[Path]:
     """Write a manifest for the engine in *workspace* and publish it for auto-discovery.
 
     Returns the published directory, or ``None`` when there is nothing to publish (no
     validated templates) or no engines directory is configured. Best-effort by contract: the
     caller (a generation stage) wraps this so a publish failure never fails the run.
+
+    *name* publishes under a friendly directory (e.g. ``synno-tpch``). *shm_capable* marks the
+    engine as able to hot-load its tables from Arrow over shm. *bundle_parquet_dir* copies a
+    parquet snapshot into the package (recorded as the relative ``parquet_dir="data"``), making
+    a self-contained, standalone engine. *source_db* records the database the engine was built for.
     """
     workspace = Path(workspace)
     target = resolve_engines_dir(engines_dir)
@@ -198,6 +341,11 @@ def publish_engine(
     if not query_templates:
         log.info("publish: no routable templates for the engine in %s, skipping", workspace)
         return None
+    # A bundled snapshot is referenced by the portable relative path; otherwise record the
+    # caller's path (or None for a pure shm engine).
+    manifest_parquet_dir = "data" if bundle_parquet_dir is not None else (
+        str(parquet_dir) if parquet_dir is not None else None
+    )
     manifest = build_manifest_from_dir(
         workspace,
         query_templates,
@@ -205,13 +353,16 @@ def publish_engine(
         scale_factor=scale_factor,
         source_run_id=source_run_id,
         expected_tables={t: tuple(c) for t, c in (expected_tables or {}).items()},
-        parquet_dir=str(parquet_dir),
+        parquet_dir=manifest_parquet_dir,
+        shm_capable=shm_capable,
+        source_db=source_db,
         write=False,
     )
-    dest = _atomic_publish(workspace, manifest, target)
+    dest = _atomic_publish(workspace, manifest, target, name=name, bundle_parquet_dir=bundle_parquet_dir)
     log.info(
-        "published engine %s (%d queries) -> %s",
-        manifest.engine_id, len(manifest.queries), dest,
+        "published engine %s (%d queries, shm=%s, snapshot=%s) -> %s",
+        manifest.engine_id, len(manifest.queries), shm_capable,
+        bundle_parquet_dir is not None or parquet_dir is not None, dest,
     )
     return dest
 
@@ -251,18 +402,25 @@ def publish_from_provider(
     provider: object,
     query_ids: Iterable[str],
     *,
-    parquet_dir: "str | Path",
+    parquet_dir: "str | Path | None" = None,
     scale_factor: Optional[float] = None,
     source_run_id: Optional[str] = None,
     storage_mode: str = "flat",
     engines_dir: "str | Path | None" = None,
     num_samples: int = 3,
+    name: Optional[str] = None,
+    shm_capable: bool = False,
+    bundle_parquet_dir: "str | Path | None" = None,
+    expected_tables: Optional[Mapping[str, Sequence]] = None,
+    source_db: Optional[str] = None,
 ) -> Optional[Path]:
     """Publish the engine in *workspace*, taking query templates from *provider*'s workload.
 
     Pulls each query's ``[NAME]`` template from ``provider.sql_dict`` and a few sample
     assignments from the workload generator, then derives, validates, and publishes. Designed
-    to be called best-effort at the end of a generation run.
+    to be called best-effort at the end of a generation run. *name* / *shm_capable* /
+    *bundle_parquet_dir* / *expected_tables* / *source_db* are passed straight through to
+    :func:`publish_engine` (see there).
     """
     sql_dict = getattr(provider, "sql_dict", {})
     templates_by_qid: dict[str, str] = {}
@@ -285,4 +443,9 @@ def publish_from_provider(
         source_run_id=source_run_id,
         storage_mode=storage_mode,
         engines_dir=engines_dir,
+        name=name,
+        shm_capable=shm_capable,
+        bundle_parquet_dir=bundle_parquet_dir,
+        expected_tables=expected_tables,
+        source_db=source_db,
     )

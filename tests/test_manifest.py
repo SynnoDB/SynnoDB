@@ -105,9 +105,13 @@ def test_compatibility_flags_type_drift():
 
 
 def test_register_manifest_strict_rejects_incompatible():
+    from synnodb.errors import SynnoError
+
     con = _con()
     incompatible = _manifest({"t": (ColumnSpec("a", "BIGINT"),)})
-    with pytest.raises(ValueError, match="incompatible"):
+    # A typed SynnoError (not a bare ValueError) so discovery surfaces a non-transient
+    # schema mismatch at WARNING rather than retrying it silently.
+    with pytest.raises(SynnoError, match="incompatible"):
         register_manifest(con, incompatible, _engine())
 
 

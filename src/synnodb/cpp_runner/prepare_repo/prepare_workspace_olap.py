@@ -52,6 +52,17 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
         else:
             raise ValueError(f"Unsupported db source: {self.db_storage}")
 
+        # Copy the ingress/egress helpers into the workspace (they are also on the compiler include
+        # path). This lets the agent READ exactly what each helper does - and, since they are not in
+        # the read-only set, ADAPT one if a column needs handling it does not yet cover (e.g. a
+        # wider accumulator for a value that overflows int64). The quoted #include in
+        # db_loader.cpp / queryX.cpp resolves to this workspace copy first.
+        cpp_helpers_dir = project_dir.parent / "cpp_helpers"
+        file_sources += [
+            ("column_ingest.hpp", cpp_helpers_dir / "column_ingest.hpp"),
+            ("column_egress.hpp", cpp_helpers_dir / "column_egress.hpp"),
+        ]
+
         assert isinstance(self.workload_provider, OLAPWorkloadProvider), (
             f"Expected workload_provider to be an instance of OLAPWorkloadProvider, got {type(self.workload_provider)}"
         )
@@ -186,8 +197,22 @@ def _gen_table_reads(tables: list[str], persistent_storage: bool) -> str:
         return "\n".join(
             f'{indent}tables->{name}_path = path + "{name}.parquet";' for name in tables
         )
-    else:
-        return "\n".join(
-            f'{indent}tables->{name} = ReadParquetTable(path + "{name}.parquet");'
-            for name in tables
-        )
+    # In-memory plane: read each table from parquet, unless the shm hot-load is active
+    # (SYNNODB_SHM_INGEST set), in which case map it zero-copy from its /dev/shm Arrow
+    # segment. One binary serves both planes; the choice is made at run time by env.
+    shm_reads = "\n".join(
+        f'{indent}{indent}tables->{name} = '
+        f'synnodb::ReadArrowTableFromShm(synnodb::shm_ingest_path_for("{name}"));'
+        for name in tables
+    )
+    parquet_reads = "\n".join(
+        f'{indent}{indent}tables->{name} = ReadParquetTable(path + "{name}.parquet");'
+        for name in tables
+    )
+    return (
+        f"{indent}if (synnodb::shm_ingest_enabled()) {{\n"
+        f"{shm_reads}\n"
+        f"{indent}}} else {{\n"
+        f"{parquet_reads}\n"
+        f"{indent}}}"
+    )

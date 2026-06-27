@@ -1,4 +1,4 @@
-# SynnoDB — Router / Engine / DuckDB data-plane & communication design
+# SynnoDB - Router / Engine / DuckDB data-plane & communication design
 
 > **Living document.** Updated as the implementation lands. The
 > **Implementation status** table at the bottom is the source of truth for what is
@@ -11,7 +11,7 @@ SynnoDB is a drop-in replacement for the DuckDB Python client: a user does
 `import synnodb as duckdb` and their code keeps working. Under the hood, each
 **eager, read-only SQL string** is shown to a **router**. If the router recognizes
 the query as one of its registered **templates** and all safety guards pass, it is
-served by a bespoke **C++ engine**; otherwise — always — it is served by an
+served by a bespoke **C++ engine**; otherwise - always - it is served by an
 embedded **DuckDB**, which is also the canonical store ("source of truth").
 
 This document specifies **who the actors are, how they share data, and how they
@@ -50,16 +50,16 @@ performance live.
 
 Three actors:
 
-1. **Router + DuckDB — in the user's Python process.** The router (`synnodb.router`)
+1. **Router + DuckDB - in the user's Python process.** The router (`synnodb.router`)
    and the embedded DuckDB connection live in-process. DuckDB is both the **fallback
    executor** and the **source of truth** the engine ingests from. There is no
    network hop for the fallback path.
-2. **C++ engine worker — a separate child process.** One persistent **warm**
+2. **C++ engine worker - a separate child process.** One persistent **warm**
    subprocess per engine (reusing the existing `HotpatchProc`/`HotpatchPool`). It
    `dlopen`s the generated plugin, holds the ingested tables resident, and answers
    queries. **Separate process = crash isolation:** a segfault kills the child, not
    the user's interpreter; the router catches it and falls back to DuckDB.
-3. **The generated plugin — code inside the worker.** Per-engine C++ produced by the
+3. **The generated plugin - code inside the worker.** Per-engine C++ produced by the
    factory: `load()` (ingest), `build()` (storage), and `run_q<id>()` (execution).
    The router never calls it directly; it talks to the worker.
 
@@ -74,7 +74,7 @@ A hard rule, for both performance and safety:
 
 **Bulk data never crosses a pipe.** It is placed in shared-memory segments that
 both processes `mmap`; only small control messages traverse the pipe. (Until the
-shm plane lands — see status — a transitional file/`/dev/shm`-file path is used,
+shm plane lands - see status - a transitional file/`/dev/shm`-file path is used,
 but never a pipe for bulk data.)
 
 ## 4. Data sharing: where bytes live and who owns them
@@ -98,10 +98,12 @@ but never a pipe for bulk data.)
 
 ### 4.2 Egress (engine → Python), per query
 
-- **Typed output struct:** `run_q<id>()` populates a generated **struct-of-arrays**
-  `Q<id>Out` — one `std::vector<T>`/Arrow array per output column, typed to match the
-  template's canonical DuckDB schema. (This replaces the legacy
-  `vector<vector<string>>` + CSV.)
+- **Typed, exact egress:** `run_q<id>()` accumulates each output column into a typed
+  C++ vector and builds the result `arrow::Table` with `cpp_helpers/column_egress.hpp`
+  (`make_table` over `decimal/int/double/string/bool/date/timestamp` columns), which
+  emits the exact DuckDB/Arrow type - including NULLs and decimal256 - via
+  `arrow::compute::Cast`, the symmetric counterpart of `column_ingest.hpp`. (This
+  replaces the legacy `vector<vector<string>>` + CSV.)
 - **Placement:** the SoA columns are built in a shm **result arena** and framed as
   Arrow IPC; the worker sends `RESULT ready: segment,len` over the control pipe.
 - **Read (Python):** the router maps the result segment and wraps it as a
@@ -113,7 +115,7 @@ but never a pipe for bulk data.)
 
 When the router does not route (policy off, parse miss, template miss, a failing
 guard, an engine error, or a write), it calls DuckDB in-process and returns DuckDB's
-own result object/array. No shm, no worker — the normal DuckDB path, unchanged.
+own result object/array. No shm, no worker - the normal DuckDB path, unchanged.
 
 ## 5. Communication protocol (control plane)
 
@@ -173,17 +175,17 @@ user: con.execute("SELECT ... WHERE x = ?", [42]).fetchall()
 ## 8. DuckDB-compat surface (process-local)
 
 - `SynnoConnection` **proxies** a real `DuckDBPyConnection` (composition +
-  `__getattr__`). It is *not* a subclass — pybind11 forbids adopting an existing C
-  connection — so `isinstance(con, duckdb.DuckDBPyConnection)` is **False**; the
+  `__getattr__`). It is *not* a subclass - pybind11 forbids adopting an existing C
+  connection - so `isinstance(con, duckdb.DuckDBPyConnection)` is **False**; the
   `con.duckdb` property returns the real connection for libraries that require it.
 - DuckDB's connection **is** the cursor: `execute()` returns the connection and
   `fetch*()` reads the last result. `SynnoConnection` mirrors this: `execute()`
   returns `self` and holds the current result (bespoke `SynnoResult` or delegated to
   DuckDB).
 - **Only eager SQL text is intercepted** (`execute`, module `sql`/`execute`).
-  Everything else — the relational API (`con.sql(...)` lazy relations),
+  Everything else - the relational API (`con.sql(...)` lazy relations),
   `register`/`read_csv`/`read_parquet`, DataFrame/Arrow/Polars egress, `PRAGMA`/`SET`,
-  exceptions, `typing` — is delegated **verbatim** to DuckDB. That is where DuckDB's
+  exceptions, `typing` - is delegated **verbatim** to DuckDB. That is where DuckDB's
   long-tail compatibility comes from, for free.
 - **Namespace parity:** `synnodb` re-exports DuckDB's entire public namespace
   (exceptions, `typing`, `__version__`, …) and overrides only `connect/sql/execute`.
@@ -202,7 +204,7 @@ user: con.execute("SELECT ... WHERE x = ?", [42]).fetchall()
 - **Light runtime:** the drop-in imports only `duckdb`, `pyarrow`, `sqlglot`; the LLM
   factory is an optional `synnodb[factory]` extra and is never imported by the router.
 
-## 9a. Observability — chasing errors
+## 9a. Observability - chasing errors
 
 Turn on full tracing with one call:
 
@@ -219,7 +221,7 @@ Logger tree (all children of ``synnodb``; tune individually):
 | `synnodb.router.registration` | each binding: tables, **schema fingerprint**, captured **output schema**, **normalized SQL** (the match key) |
 | `synnodb.router.worker` | worker spawn (pid/argv), ingest (per-table rows/bytes/segment), run (query_id, worker-ms, round-trip-ms), worker death (exit code) |
 | `synnodb.router.shm` | shm segment writes (rows/bytes), orphan sweeps |
-| `synnodb.worker` (subprocess) | the engine worker's own stderr — load/run/errors **with traceback** (env `SYNNODB_WORKER_LOG`) |
+| `synnodb.worker` (subprocess) | the engine worker's own stderr - load/run/errors **with traceback** (env `SYNNODB_WORKER_LOG`) |
 
 Engine faults log a full traceback at DEBUG (`synnodb.router`), and a cross-check
 mismatch is always a WARNING with the offending SQL. A "why didn't my query route?"
@@ -246,9 +248,9 @@ it match a template?" by comparing the logged `normalized` keys.
 | Shared-memory zero-copy Arrow transport (write/read, lifecycle, orphan sweep) | `synnodb.router.shm_transport` | **done (Phase 3a)** ✓ |
 | Out-of-process engine worker (control protocol + shm ingest/egress) | `synnodb.router.worker`, `._worker_main`, `.worker_protocol` | **done (Phase 3b)** ✓ |
 | Content-addressed engine id + manifest builder + **factory-side writer** | `synnodb.router.manifest` | **done (Phase 0/2)** ✓ |
-| C++ `ReadArrowTableFromShm` / `WriteArrowTableToShm` (zero-copy ingest+egress) | `cpp_helpers/shm_arrow_{loader,writer}.hpp` | **done — compiled & round-tripped vs Python (libarrow 23.0.1)** ✓ |
-| Typed `Q<id>Out` output struct + SoA→Arrow codegen | `prepare_repo/assemble_output_struct.py` | **done — generated C++ compiled & egresses typed Arrow** ✓ |
-| Wire shm headers + `Q<id>Out` into the live engine build (compiler + templates) | `compiler_factory_olap.py`, `parquet_reader.cpp`, `query_impl.cpp`, `db_olap.cpp` | **integration step** — precise instructions in the header banners; needs the full engine build+data to validate |
+| C++ `ReadArrowTableFromShm` / `WriteArrowTableToShm` (zero-copy ingest+egress) | `cpp_helpers/shm_arrow_{loader,writer}.hpp` | **done - compiled & round-tripped vs Python (libarrow 23.0.1)** ✓ |
+| Typed, exact Arrow egress (decimal128/256, int widths, float, bool, date, timestamp, NULLs) via `Cast` | `cpp_helpers/column_egress.hpp` | **done - compiled & egresses exact typed Arrow vs DuckDB** ✓ |
+| Wire shm headers + egress into the live engine build (compiler + templates) | `compiler_factory_olap.py`, `parquet_reader.cpp`, `query_impl.cpp`, `db_olap.cpp` | **integration step** - precise instructions in the header banners; needs the full engine build+data to validate |
 | Factory *calls* `write_manifest_for_engine` at finalization + chain-on-artifact | factory stages (`run_gen_base_impl`, `api.py`) | one-line drop-in (documented in `manifest.py`); needs factory env |
 
 **Test coverage: 101 new tests green (222 repo total, zero regressions).** Python:
@@ -259,13 +261,14 @@ it match a template?" by comparing the logged `normalized` keys.
 `test_shm_transport.py` (zero-copy + lifecycle + orphan sweep), `test_worker_engine.py`
 (out-of-process ingest/run + crash isolation + routing). **Real C++:**
 `test_cpp_shm.py` (compiles `shm_arrow_{loader,writer}.hpp`, round-trips both
-directions vs the Python transport, 1 M-row table), `test_output_struct.py` (generates
-`Q<id>Out`, compiles it, verifies typed Arrow egress with types locked to DuckDB).
+directions vs the Python transport, 1 M-row table), `test_column_egress.py` (compiles
+`column_egress.hpp`, verifies exact typed Arrow egress - decimal128/256, narrowed ints,
+float32, bool, date, timestamp, real NULLs - round-tripped vs pyarrow and DuckDB).
 
 _Last updated: Phases 1, 2, 3 + Phase-0 components all implemented and **validated,
 including the C++ data plane and output-struct codegen** (a real compiler + libarrow
 23.0.1 are present in this environment). The only work left is the mechanical wiring
 of the validated C++ pieces into the live engine's build/templates and the
-one-line factory call to `write_manifest_for_engine` — both require the full engine
+one-line factory call to `write_manifest_for_engine` - both require the full engine
 build pipeline + benchmark data to exercise end to end, and the integration points
 are documented precisely in the header banners and `manifest.py`._

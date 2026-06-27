@@ -53,6 +53,21 @@ def _parse(stdout: str) -> dict:
     return {k: (int(v) if v.lstrip("-").isdigit() else float(v)) for k, v in re.findall(r"(\w+)=(-?[\d.]+)", stdout)}
 
 
+def test_nullable_validity_roundtrip(driver):
+    """Full nullable support: a NULL captured on ingest (via the Validity out-param) is re-emitted
+    as a real Arrow NULL on egress - not silently turned into 0 - while the default path (no
+    out-param) keeps the historical dense null->0 behaviour. This is the mechanism the generated
+    engine uses to honour SQL null semantics (COUNT/AVG/IS NULL/propagation)."""
+    proc = subprocess.run([str(driver), "nullable"], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    out = _parse(proc.stdout)
+    assert out["validity"] == 101         # [valid, NULL, valid] -> the NULL is recorded
+    assert out["dense1"] == 0             # default path still reads the NULL as 0 (back-compat)
+    assert out["egress_nulls"] == 1       # exactly one real Arrow NULL emitted
+    assert out["egress_isnull1"] == 1     # at the NULL row
+    assert out["egress_isnull0"] == 0     # and only there
+
+
 def test_diverse_types_beyond_tpch(driver, tmp_path):
     """BOOLEAN, DICTIONARY-string, TIMESTAMP, decimal — the long tail, via delegation."""
     pa = pytest.importorskip("pyarrow")

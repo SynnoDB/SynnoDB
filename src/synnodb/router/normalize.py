@@ -188,6 +188,60 @@ def has_order_by(sql: str) -> bool:
     return bool(isinstance(tree, exp.Select) and tree.args.get("order"))
 
 
+def order_by_key_indices(sql: str, output_names: Sequence[str]) -> Optional[List[int]]:
+    """Output-column indices of the top-level ``ORDER BY`` keys, for a tie-aware ordered
+    cross-check.
+
+    A query with ``ORDER BY`` constrains the order only by its key columns; rows that tie on the
+    keys may appear in any order, and a correct engine may legitimately break those ties
+    differently from DuckDB. Comparing such a result strictly position-by-position false-rejects
+    the engine and quarantines it. To compare correctly we need to know which OUTPUT columns are
+    the sort keys: then the keys must match positionally (the real ordering contract) while tied
+    rows are compared as a multiset.
+
+    Returns the list of output-column indices for the keys, or ``None`` when there is no top-level
+    ``ORDER BY`` or any key is not a plain reference to a single output column / a positional
+    ordinal (an arbitrary ``ORDER BY`` expression, or a key that is not projected). ``None`` tells
+    the caller to fall back to a strict positional comparison, which is conservative: it can only
+    over-reject, never accept a wrongly ordered result.
+    """
+    tree = _parse_cached(sql)
+    if tree is None:
+        return None
+    from sqlglot import expressions as exp
+
+    if isinstance(tree, exp.With):
+        tree = tree.this
+    if not isinstance(tree, exp.Select):
+        return None
+    order = tree.args.get("order")
+    if not order:
+        return None
+    lower = [n.lower() for n in output_names]
+    indices: List[int] = []
+    for ordered in order.expressions:
+        key = ordered.this
+        # ORDER BY <ordinal> (1-based positional reference into the SELECT list).
+        if isinstance(key, exp.Literal) and not key.is_string:
+            try:
+                pos = int(key.this) - 1
+            except (TypeError, ValueError):
+                return None
+            if 0 <= pos < len(output_names):
+                indices.append(pos)
+                continue
+            return None
+        # ORDER BY <column or output alias>. Resolve only an unambiguous, unqualified name that
+        # is exactly one output column; anything qualified, ambiguous, or not projected -> strict.
+        if isinstance(key, exp.Column) and not key.table:
+            nm = key.name.lower()
+            if lower.count(nm) == 1:
+                indices.append(lower.index(nm))
+                continue
+        return None
+    return indices or None
+
+
 def tables_in(sql: str) -> List[str]:
     """Lower-cased table names referenced by *sql* (best-effort; ``[]`` on parse fail).
 
@@ -204,9 +258,13 @@ def tables_in(sql: str) -> List[str]:
         return []
     if tree is None:
         return []
+    # A CTE is referenced as a Table node but is not a real table; exclude CTE names so a
+    # query like ``WITH revenue AS (...) SELECT ... FROM lineitem, revenue`` reports only the
+    # real tables (``lineitem``), not the CTE alias.
+    cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE) if cte.alias_or_name}
     names: List[str] = []
     for table in tree.find_all(exp.Table):
-        if table.name:
+        if table.name and table.name.lower() not in cte_names:
             names.append(table.name.lower())
     return names
 

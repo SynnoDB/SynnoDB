@@ -31,12 +31,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from ..errors import SynnoError
 from .registry import ColumnSpec, PlaceholderSpec
 
 # v2 adds the optional ``parquet_dir`` (the data the engine ingested), so the runtime can
-# bring up the engine with no extra inputs. v1 manifests (no parquet_dir) still load.
-SCHEMA_VERSION = 2
-_SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+# bring up the engine with no extra inputs. v3 adds ``shm_capable`` (the binary can ingest
+# its tables zero-copy from /dev/shm Arrow, the hot-load plane). v4 adds ``source_db`` (the
+# database an optimize_database engine was built for). Older manifests still load.
+SCHEMA_VERSION = 4
+_SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4)
 
 
 def content_engine_id(source_files: Mapping[str, str], *, prefix: str = "eng") -> str:
@@ -86,9 +89,17 @@ class EngineManifest:
     source_run_id: Optional[str] = None
     # Schema the engine was built against; used to verify a candidate DB is compatible.
     expected_tables: Mapping[str, Tuple[ColumnSpec, ...]] = field(default_factory=dict)
-    # Absolute path to the parquet the engine ingested. The runtime serves from this
-    # snapshot, so it is what a ProcessEngine is pointed at. None for a v1 manifest.
+    # Path to the parquet the engine ingested - the self-contained standalone plane. May be
+    # relative to the engine dir (a portable bundled snapshot) or absolute; the runtime
+    # resolves it and points a ProcessEngine at it. None when the engine bundles no snapshot.
     parquet_dir: Optional[str] = None
+    # Whether the binary can ingest its tables zero-copy from /dev/shm Arrow (the hot-load
+    # plane, served over a live connection's in-memory data). False for older parquet engines.
+    shm_capable: bool = False
+    # The database this engine was built for (absolute path), when published by optimize_database.
+    # Used to refuse silently clobbering the engine of a *different* database that happens to share
+    # a friendly name (e.g. two ``tpch.db`` files in different directories -> both ``synno-tpch``).
+    source_db: Optional[str] = None
 
     # ---- serialization --------------------------------------------------
     def to_dict(self) -> dict:
@@ -99,6 +110,8 @@ class EngineManifest:
             "scale_factor": self.scale_factor,
             "source_run_id": self.source_run_id,
             "parquet_dir": self.parquet_dir,
+            "shm_capable": self.shm_capable,
+            "source_db": self.source_db,
             "expected_tables": {
                 table: [[c.name, c.type] for c in cols]
                 for table, cols in self.expected_tables.items()
@@ -121,6 +134,8 @@ class EngineManifest:
             scale_factor=d.get("scale_factor"),
             source_run_id=d.get("source_run_id"),
             parquet_dir=d.get("parquet_dir"),
+            shm_capable=bool(d.get("shm_capable", False)),
+            source_db=d.get("source_db"),
             expected_tables={
                 table: tuple(ColumnSpec(n, t) for n, t in cols)
                 for table, cols in d.get("expected_tables", {}).items()
@@ -166,6 +181,8 @@ def build_manifest_from_dir(
     source_run_id: Optional[str] = None,
     expected_tables: Optional[Mapping[str, Sequence[ColumnSpec]]] = None,
     parquet_dir: Optional[str] = None,
+    shm_capable: bool = False,
+    source_db: Optional[str] = None,
     write: bool = True,
 ) -> EngineManifest:
     """Assemble (and optionally write) an :class:`EngineManifest` for a generated engine.
@@ -184,6 +201,8 @@ def build_manifest_from_dir(
         scale_factor=scale_factor,
         source_run_id=source_run_id,
         parquet_dir=str(parquet_dir) if parquet_dir is not None else None,
+        shm_capable=shm_capable,
+        source_db=source_db,
         expected_tables={t: tuple(cols) for t, cols in (expected_tables or {}).items()},
     )
     if write:
@@ -228,6 +247,7 @@ def write_manifest_for_engine(
     source_run_id: Optional[str] = None,
     expected_tables: Optional[Mapping[str, Sequence[ColumnSpec]]] = None,
     parquet_dir: Optional[str] = None,
+    shm_capable: bool = False,
     write: bool = True,
 ) -> EngineManifest:
     """The factory-side writer: build & write ``manifest.json`` for a generated engine.
@@ -258,6 +278,7 @@ def write_manifest_for_engine(
         source_run_id=source_run_id,
         expected_tables=expected_tables,
         parquet_dir=parquet_dir,
+        shm_capable=shm_capable,
         write=write,
     )
 
@@ -287,10 +308,19 @@ def check_compatibility(conn: Any, manifest: EngineManifest) -> List[str]:
         if not rows:
             problems.append(f"{table}: missing from the database")
             continue
-        live = tuple(ColumnSpec(name, str(dtype)) for name, dtype in rows)
-        if live != tuple(expected):
+        # Compare tolerantly: column names case-insensitively and types whitespace/case-normalized,
+        # so cosmetic spelling drift ("DECIMAL(10, 2)" vs "DECIMAL(10,2)") between the build and the
+        # live DB is not mistaken for a real schema change.
+        live = tuple((str(name).lower(), _norm_type(dtype)) for name, dtype in rows)
+        want = tuple((c.name.lower(), _norm_type(c.type)) for c in expected)
+        if live != want:
             problems.append(f"{table}: schema differs from engine build")
     return problems
+
+
+def _norm_type(t: Any) -> str:
+    """A DuckDB type spelling normalized for comparison: upper-cased with all whitespace removed."""
+    return "".join(str(t).upper().split())
 
 
 def register_manifest(conn: Any, manifest: EngineManifest, engine: Any, *, strict: bool = True) -> list:
@@ -305,7 +335,10 @@ def register_manifest(conn: Any, manifest: EngineManifest, engine: Any, *, stric
     if strict and manifest.expected_tables:
         problems = check_compatibility(conn, manifest)
         if problems:
-            raise ValueError("engine incompatible with database: " + "; ".join(problems))
+            # A typed error (not a bare ValueError) so discovery surfaces this at WARNING and stops
+            # retrying it: by the time we register, the tables are present, so a schema mismatch is
+            # a real, non-transient incompatibility the operator should see - not "data not loaded".
+            raise SynnoError("engine incompatible with database: " + "; ".join(problems))
 
     registry = conn.router.registry
     bindings = []

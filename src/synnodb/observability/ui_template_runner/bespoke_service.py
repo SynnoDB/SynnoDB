@@ -39,7 +39,7 @@ from synnodb.observability.ui_template_runner.service_notify import (
     notify_service_crash,
 )
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
-from synnodb.tools.run import RunTool, RunWorkerResult, delete_result_csv_files
+from synnodb.tools.run import RunTool, RunWorkerResult, delete_result_files
 
 setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
@@ -138,7 +138,7 @@ def init_service(args) -> None:
         stdin_args_data=warmup_args,
     )
     logger.info("Binary ready.")
-    delete_result_csv_files(workspace_path=workspace_dir)
+    delete_result_files(workspace_path=workspace_dir)
 
 
 class _BespokeHandler(http.server.BaseHTTPRequestHandler):
