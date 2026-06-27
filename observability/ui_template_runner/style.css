@@ -1,20 +1,47 @@
 *, *::before, *::after { box-sizing: border-box; }
 
+/*
+   Styling for the embedded query runner (loaded in an <iframe> by the
+   SynnoDB marketing site). Tokens mirror the site's shared theme + the
+   sibling "explorer" demo so the runner blends into the wrapper page.
+   Light is the default; the wrapper's dark mode is mirrored via
+   body[data-theme="dark"] (kept in sync in ui.html / ui.js).
+*/
 :root {
-  --bg: #f4ede0;
-  --bg-card: #fffaf3;
-  --bg-card-hover: #fffcf7;
-  --bg-code: #f3ecdf;
-  --border: #deceb4;
-  --border-hover: #cbb594;
-  --text: #31261d;
-  --text-dim: #6f5d49;
-  --text-muted: #9a856d;
-  --accent: #1b8d6e;
-  --accent-dim: #146f58;
-  --accent-glow: rgba(27, 141, 110, 0.14);
-  --amber: #ca8d36;
-  --blue: #4e82bf;
+  --bg: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f7f9fc;
+  --bg-code: #f4f7fb;
+  --control-bg: rgba(255, 255, 255, 0.82);
+  --border: rgba(15, 27, 45, 0.10);
+  --border-hover: rgba(15, 27, 45, 0.22);
+  --text: #0f1b2d;
+  --text-dim: #56657a;
+  --text-muted: #80909f;
+  --accent: #3b6ef5;
+  --accent-dim: #2952c8;
+  --accent-glow: rgba(59, 110, 245, 0.14);
+  --accent-subtle: rgba(59, 110, 245, 0.08);
+  --amber: #b9751d;
+  --blue: #3b6ef5;
+  --teal: #1fc4d4;
+  --purple: #6d3bf0;
+  --rose: #b4554d;
+  --brand-grad: linear-gradient(135deg, #1fc4d4 0%, #3b6ef5 52%, #6d3bf0 100%);
+  --body-bg:
+    radial-gradient(circle at 12% 8%, rgba(31, 196, 212, 0.06), transparent 26%),
+    radial-gradient(circle at 88% 14%, rgba(109, 59, 240, 0.06), transparent 24%),
+    #ffffff;
+  --card-shadow: 0 18px 50px rgba(15, 27, 45, 0.08);
+  --sql-bg: linear-gradient(180deg, #f7f9fc, #f1f5fb);
+  --sql-border: rgba(59, 110, 245, 0.14);
+  --sql-text: #0f1b2d;
+  --sql-scroll-thumb: rgba(15, 27, 45, 0.22);
+  --sql-scroll-thumb-hover: rgba(15, 27, 45, 0.34);
+  --sql-scroll-track: transparent;
+  --table-head-bg: #f1f5fb;
+  --table-row-even: #f7f9fc;
+  --table-hover-bg: rgba(59, 110, 245, 0.06);
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
   --radius: 10px;
@@ -22,19 +49,51 @@
   --transition: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+body[data-theme="dark"] {
+  --bg: #07111f;
+  --bg-card: rgba(12, 23, 41, 0.78);
+  --bg-card-hover: rgba(16, 30, 52, 0.92);
+  --bg-code: #0d1a2d;
+  --control-bg: rgba(7, 17, 31, 0.78);
+  --border: rgba(148, 163, 184, 0.2);
+  --border-hover: rgba(125, 211, 252, 0.28);
+  --text: #e5eefc;
+  --text-dim: #b7c7de;
+  --text-muted: #93a9c8;
+  --accent: #14b8a6;
+  --accent-dim: #0f766e;
+  --accent-glow: rgba(20, 184, 166, 0.18);
+  --accent-subtle: rgba(20, 184, 166, 0.09);
+  --amber: #f59e0b;
+  --blue: #60a5fa;
+  --teal: #22d3ee;
+  --purple: #a78bfa;
+  --rose: #fb7185;
+  --brand-grad: linear-gradient(135deg, #14b8a6 0%, #3b82f6 52%, #a78bfa 100%);
+  --body-bg:
+    linear-gradient(180deg, #091321 0%, #07111f 48%, #0a1627 100%);
+  --card-shadow: 0 24px 60px rgba(2, 8, 23, 0.4);
+  --sql-bg: linear-gradient(180deg, rgba(8, 19, 35, 0.98), rgba(10, 25, 44, 0.98));
+  --sql-border: rgba(96, 165, 250, 0.12);
+  --sql-text: #dfe9f8;
+  --sql-scroll-thumb: rgba(148, 163, 184, 0.28);
+  --sql-scroll-thumb-hover: rgba(148, 163, 184, 0.42);
+  --sql-scroll-track: transparent;
+  --table-head-bg: rgba(20, 33, 55, 0.95);
+  --table-row-even: rgba(20, 33, 55, 0.4);
+  --table-hover-bg: rgba(20, 184, 166, 0.1);
+}
+
 body {
   font-family: var(--font);
   max-width: 1200px;
   margin: 0 auto;
   padding: 0 1.5rem 3rem;
-  background: var(--bg);
-  background-image:
-    radial-gradient(circle at top left, rgba(78, 130, 191, 0.11), transparent 26%),
-    radial-gradient(circle at top right, rgba(202, 141, 54, 0.16), transparent 24%),
-    linear-gradient(180deg, #fbf8f2 0%, var(--bg) 42%, #efe4d3 100%);
+  background: var(--body-bg);
   background-attachment: fixed;
   color: var(--text);
   min-height: 100vh;
+  transition: background var(--transition), color var(--transition);
 }
 
 /* ── Site Footer ── */
@@ -60,9 +119,8 @@ body {
   display: flex;
   align-items: center;
   gap: 0.65rem;
-  padding: 0.9rem 0 0.85rem;
-  margin-bottom: 1.6rem;
-  border-bottom: 1px solid var(--border);
+  padding: 0.9rem 0 0.4rem;
+  margin-bottom: 0.6rem;
 }
 
 .header-meta {
@@ -86,7 +144,7 @@ body {
 
 .meta-chip-label {
   padding: 0.22rem 0.42rem;
-  background: rgba(27, 141, 110, 0.08);
+  background: var(--accent-subtle);
   color: var(--text-muted);
   font-weight: 600;
   text-transform: uppercase;
@@ -97,25 +155,12 @@ body {
 .meta-chip-value {
   padding: 0.22rem 0.48rem;
   color: var(--text-dim);
-  background: rgba(251, 248, 242, 0.6);
+  background: var(--bg-card-hover);
 }
 
-.site-logo {
-  font-weight: 700;
-  font-size: 0.95rem;
-  color: var(--accent);
-  letter-spacing: -0.01em;
-}
-
+.site-logo,
 .site-badge {
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  padding: 0.2rem 0.55rem;
-  background: rgba(27, 141, 110, 0.08);
-  border: 1px solid rgba(27, 141, 110, 0.2);
-  border-radius: 20px;
-  letter-spacing: 0.04em;
+  display: none;
 }
 
 /* ── Labels ── */
@@ -131,7 +176,7 @@ label {
 
 /* ── Inputs & Selects ── */
 input, select {
-  background: rgba(251, 248, 242, 0.88);
+  background: var(--bg-card-hover);
   color: var(--text);
   border: 1px solid var(--border);
   padding: 0.42rem 0.6rem;
@@ -159,7 +204,7 @@ select { cursor: pointer; }
 
 button {
   padding: 0.48rem 1.15rem;
-  background: linear-gradient(135deg, var(--accent), #2ea89d);
+  background: var(--brand-grad);
   color: #fff;
   border: none;
   border-radius: 999px;
@@ -180,7 +225,7 @@ button:active {
 }
 
 button:disabled {
-  background: rgba(148, 163, 184, 0.12);
+  background: rgba(148, 163, 184, 0.18);
   color: var(--text-muted);
   cursor: default;
   transform: none;
@@ -188,13 +233,13 @@ button:disabled {
 }
 
 button.secondary {
-  background: rgba(78, 130, 191, 0.08);
+  background: var(--accent-subtle);
   color: var(--text-dim);
   border: 1px solid var(--border);
 }
 
 button.secondary:hover {
-  background: rgba(78, 130, 191, 0.14);
+  background: var(--accent-glow);
   border-color: var(--border-hover);
   box-shadow: none;
 }
@@ -214,12 +259,12 @@ button.secondary:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1.25rem 1.4rem;
-  box-shadow: 0 18px 44px rgba(2, 8, 23, 0.32);
+  box-shadow: var(--card-shadow);
   transition: border-color var(--transition);
 }
 
 #form-area:focus-within {
-  border-color: rgba(148, 163, 184, 0.32);
+  border-color: var(--border-hover);
 }
 
 #form-cols {
@@ -247,16 +292,39 @@ button.secondary:hover {
   scrollbar-gutter: stable;
   font-size: 0.78rem;
   font-family: var(--font-mono);
-  color: var(--text-dim);
-  background: linear-gradient(180deg, rgba(248, 241, 229, 0.98), rgba(241, 232, 218, 0.98));
+  color: var(--sql-text);
+  background: var(--sql-bg);
   padding: 0.8rem;
-  border: 1px solid rgba(202, 141, 54, 0.14);
+  border: 1px solid var(--sql-border);
   border-radius: var(--radius-sm);
   margin: 0;
   flex: none;
   height: 210px;
   min-height: 240px;
   line-height: 1.55;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sql-scroll-thumb) var(--sql-scroll-track);
+}
+
+#sql-preview::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+#sql-preview::-webkit-scrollbar-track {
+  background: var(--sql-scroll-track);
+}
+
+#sql-preview::-webkit-scrollbar-thumb {
+  background: var(--sql-scroll-thumb);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+#sql-preview::-webkit-scrollbar-thumb:hover {
+  background: var(--sql-scroll-thumb-hover);
+  background-clip: padding-box;
 }
 
 #sql-scroll-hint {
@@ -314,6 +382,7 @@ button.secondary:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem 1.2rem;
+  box-shadow: var(--card-shadow);
   transition: border-color var(--transition);
 }
 
@@ -343,11 +412,11 @@ table {
 }
 
 th {
-  background: rgba(27, 141, 110, 0.1);
+  background: var(--table-head-bg);
   color: var(--accent);
   text-align: left;
   padding: 0.38rem 0.65rem;
-  border: 1px solid rgba(27, 141, 110, 0.15);
+  border: 1px solid var(--border);
   font-weight: 600;
   font-size: 0.72rem;
   text-transform: uppercase;
@@ -356,16 +425,16 @@ th {
 
 td {
   padding: 0.3rem 0.65rem;
-  border: 1px solid rgba(222, 206, 180, 0.5);
+  border: 1px solid var(--border);
   color: var(--text-dim);
 }
 
 tr:nth-child(even) td {
-  background: rgba(241, 232, 218, 0.45);
+  background: var(--table-row-even);
 }
 
 tr:hover td {
-  background: rgba(27, 141, 110, 0.05);
+  background: var(--table-hover-bg);
   color: var(--text);
 }
 
