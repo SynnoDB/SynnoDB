@@ -2,6 +2,24 @@ let queries = {};
 const _sectionCsvs = {};
 let _sectionCounter = 0;
 
+/* Live theme sync with the wrapper site. The initial theme is set in ui.html
+   (from ?theme= / this origin's localStorage). The wrapper page can additionally
+   keep us in sync when the user toggles its theme by posting
+   `window.frames[i].postMessage({ type: 'theme', theme: 'dark' }, '*')`. */
+(function () {
+  const KEY = 'bespoke-demo-theme';
+  function applyTheme(t) {
+    if (t !== 'dark' && t !== 'light') t = 'light';
+    document.body.setAttribute('data-theme', t);
+    try { localStorage.setItem(KEY, t); } catch (e) {}
+  }
+  window.applyTheme = applyTheme;
+  window.addEventListener('message', function (e) {
+    const d = e.data;
+    if (d && typeof d === 'object' && d.type === 'theme') applyTheme(d.theme);
+  });
+})();
+
 const PH_COLORS = ['#f59e0b','#f472b6','#60a5fa','#34d399','#c084fc','#fb923c','#22d3ee','#a3e635'];
 const SQL_PREVIEW_MIN_HEIGHT = 240;
 let _phColors = {};
@@ -241,7 +259,7 @@ function expandSection(sid, limit) {
     '<div style="max-height:400px;overflow-y:auto;overflow-x:auto">' + csvToTable(csv, limit) + '</div>' +
     (canExpandMore
       ? '<button class="secondary" style="margin-top:.5rem;font-size:.76rem;padding:.28rem .75rem" onclick="expandSection(\'' + sid + '\', Infinity)">Show all ' + totalDataRows + ' rows</button>'
-      : '<span style="font-size:.74rem;color:#9a856d;margin-top:.35rem;display:block">Showing ' + shown + ' of ' + totalDataRows + ' rows</span>');
+      : '<span style="font-size:.74rem;color:var(--text-muted);margin-top:.35rem;display:block">Showing ' + shown + ' of ' + totalDataRows + ' rows</span>');
 }
 
 function updatePageUrl() {
@@ -291,18 +309,18 @@ async function showQuery() {
   document.getElementById('status').textContent = '';
   document.getElementById('output').innerHTML =
     '<pre id="raw">' + escHtml(sql) + '</pre>' +
-    '<div style="margin-top:.8rem;background:#fffaf3;border:1px solid #deceb4;border-radius:8px;padding:.9rem">' +
-      '<div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:#9a856d;margin-bottom:.4rem">API endpoint</div>' +
-      '<div style="color:#1b8d6e;font-size:.83rem;word-break:break-all;font-family:var(--font-mono)">' + escHtml(absUrl) + '</div>' +
-      '<div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:#9a856d;margin-top:.7rem;margin-bottom:.4rem">curl</div>' +
-      '<div style="color:#1b8d6e;font-size:.83rem;word-break:break-all;font-family:var(--font-mono)">' + escHtml(curlCmd) + '</div>' +
+    '<div style="margin-top:.8rem;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:.9rem">' +
+      '<div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--text-muted);margin-bottom:.4rem">API endpoint</div>' +
+      '<div style="color:var(--accent);font-size:.83rem;word-break:break-all;font-family:var(--font-mono)">' + escHtml(absUrl) + '</div>' +
+      '<div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--text-muted);margin-top:.7rem;margin-bottom:.4rem">curl</div>' +
+      '<div style="color:var(--accent);font-size:.83rem;word-break:break-all;font-family:var(--font-mono)">' + escHtml(curlCmd) + '</div>' +
     '</div>';
 }
 
 function renderEngineSection(label, timeSuffix, csv) {
   const lines = csv.trim().split('\n').filter(Boolean);
   const totalDataRows = lines.length - 1;
-  const summaryStyle = 'cursor:pointer;color:#9a856d;font-size:.78rem;font-family:var(--font)';
+  const summaryStyle = 'cursor:pointer;color:var(--text-muted);font-size:.78rem;font-family:var(--font)';
   const sid = 's' + (++_sectionCounter);
   _sectionCsvs[sid] = csv;
   const previewRows = Math.min(totalDataRows, 3);
@@ -314,7 +332,7 @@ function renderEngineSection(label, timeSuffix, csv) {
       csvToTable(csv, 3) +
       (hasMore
         ? '<button class="secondary" style="margin-top:.5rem;font-size:.76rem;padding:.28rem .75rem" onclick="expandSection(\'' + sid + '\', 100)">Show 100 rows</button>' +
-          '<span style="font-size:.74rem;color:#9a856d;margin-left:.6rem">showing ' + previewRows + ' of ' + totalDataRows + '</span>'
+          '<span style="font-size:.74rem;color:var(--text-muted);margin-left:.6rem">showing ' + previewRows + ' of ' + totalDataRows + '</span>'
         : '') +
     '</div>' +
     '<br><details><summary style="' + summaryStyle + '">raw CSV</summary><div id="raw">' + escHtml(csv) + '</div></details>' +
@@ -333,14 +351,14 @@ function renderBarChart(timings) {
     const barH = Math.max(2, Math.round((val / maxVal) * chartH));
     const x = gap + i * (barW + gap);
     const y = chartH - barH;
-    const color = colors[name] || '#6f5d49';
+    const color = colors[name] || 'var(--text-muted)';
     svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${color}" rx="4" fill-opacity="0.85"/>`;
-    svg += `<text x="${x + barW / 2}" y="${y - 7}" text-anchor="middle" fill="#31261d" font-size="11" font-family="ui-monospace,monospace">${val.toFixed(3)}s</text>`;
-    svg += `<text x="${x + barW / 2}" y="${chartH + 20}" text-anchor="middle" fill="#6f5d49" font-size="11" font-family="system-ui,sans-serif">${escHtml(name)}</text>`;
+    svg += `<text x="${x + barW / 2}" y="${y - 7}" text-anchor="middle" style="fill:var(--text)" font-size="11" font-family="ui-monospace,monospace">${val.toFixed(3)}s</text>`;
+    svg += `<text x="${x + barW / 2}" y="${chartH + 20}" text-anchor="middle" style="fill:var(--text-dim)" font-size="11" font-family="system-ui,sans-serif">${escHtml(name)}</text>`;
   });
   svg += '</svg>';
-  return '<div style="margin-top:1.4rem;padding:1.1rem 1.3rem;background:#fffaf3;border:1px solid #deceb4;border-radius:10px">' +
-    '<div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:#9a856d;margin-bottom:1rem">Runtime comparison</div>' + svg + '</div>';
+  return '<div style="margin-top:1.4rem;padding:1.1rem 1.3rem;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;box-shadow:var(--card-shadow)">' +
+    '<div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--text-muted);margin-bottom:1rem">Runtime comparison</div>' + svg + '</div>';
 }
 
 async function runQuery() {
@@ -380,7 +398,7 @@ async function runQuery() {
       engines.map(e => {
         const done = doneSet.has(e);
         const active = !done && doneSet.size === engines.indexOf(e);
-        const color = done ? '#1b8d6e' : active ? '#31261d' : '#9a856d';
+        const color = done ? 'var(--accent)' : active ? 'var(--text)' : 'var(--text-muted)';
         const icon = done ? '✓' : active ? '◌' : '○';
         return `<span style="color:${color}">${icon} ${e}</span>`;
       }).join('') +
@@ -392,7 +410,7 @@ async function runQuery() {
     // Fetch assembled SQL (fast metadata call, no progress needed)
     const sqlData = await fetch(buildSqlUrl()).then(r => r.json());
     const assembledSql = sqlData.assembled ?? sqlData.template;
-    html = '<details><summary style="cursor:pointer;color:#9a856d;font-size:.78rem">assembled SQL</summary>' +
+    html = '<details><summary style="cursor:pointer;color:var(--text-muted);font-size:.78rem">assembled SQL</summary>' +
       '<pre id="raw">' + escHtml(assembledSql) + '</pre></details>';
     flush();
 
@@ -418,7 +436,7 @@ async function runQuery() {
       const umbraData = await umbraResp.json();
       if (!umbraResp.ok) {
         html += '<div class="engine-section"><div class="engine-label">Umbra</div>' +
-          '<div style="color:#f66">Error: ' + escHtml(umbraData.error ?? '') + '</div></div>';
+          '<div style="color:var(--rose)">Error: ' + escHtml(umbraData.error ?? '') + '</div></div>';
       } else {
         const t = umbraData.time_ms / 1000;
         timings['Umbra'] = t;
@@ -435,7 +453,7 @@ async function runQuery() {
       const duckdbData = await duckdbResp.json();
       if (!duckdbResp.ok) {
         html += '<div class="engine-section"><div class="engine-label">DuckDB</div>' +
-          '<div style="color:#f66">Error: ' + escHtml(duckdbData.error ?? '') + '</div></div>';
+          '<div style="color:var(--rose)">Error: ' + escHtml(duckdbData.error ?? '') + '</div></div>';
       } else {
         const t = duckdbData.time_ms / 1000;
         timings['DuckDB'] = t;
@@ -452,7 +470,7 @@ async function runQuery() {
       const chData = await chResp.json();
       if (!chResp.ok) {
         html += '<div class="engine-section"><div class="engine-label">ClickHouse</div>' +
-          '<div style="color:#f66">Error: ' + escHtml(chData.error ?? '') + '</div></div>';
+          '<div style="color:var(--rose)">Error: ' + escHtml(chData.error ?? '') + '</div></div>';
       } else {
         const t = chData.time_ms / 1000;
         timings['ClickHouse'] = t;
