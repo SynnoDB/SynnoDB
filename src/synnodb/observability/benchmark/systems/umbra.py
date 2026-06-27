@@ -69,9 +69,11 @@ class UmbraRunner:
         self._container_image = container_image
         self._scale_factors = scale_factors
 
-        # for now accept only olap workload
-        assert isinstance(benchmark, OLAPWorkload), (
-            "benchmark must be an instance of OLAPWorkload"
+        # accept a built-in OLAPWorkload or a registered (bring-your-own) WorkloadId
+        from synnodb.workloads.workload_provider import WorkloadId
+
+        assert isinstance(benchmark, (OLAPWorkload, WorkloadId)), (
+            f"benchmark must be an OLAPWorkload or registered WorkloadId, got {type(benchmark)}"
         )
         self.dataset_tables = OLAPWorkloadProvider._dataset_tables(benchmark)
         self.dataset_schema = OLAPWorkloadProvider._get_dataset_schema(benchmark)

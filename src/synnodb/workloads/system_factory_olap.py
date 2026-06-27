@@ -3,7 +3,12 @@ from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
 )
 from synnodb.observability.benchmark.systems.umbra import UmbraRunner
 from synnodb.workloads.system_factory import System, SystemFactory
-from synnodb.workloads.workload_provider import ExecSettings, GeneralSystemConfig, Workload
+from synnodb.workloads.workload_provider import (
+    ExecSettings,
+    GeneralSystemConfig,
+    Workload,
+    WorkloadId,
+)
 from synnodb.workloads.workload_provider_olap import (
     OLAPExecSettings,
     OLAPWorkload,
@@ -29,8 +34,10 @@ class OLAPSystemFactory(SystemFactory):
         assert isinstance(exec_settings, OLAPExecSettings), (
             "exec_settings must be an instance of OLAPExecSettings"
         )
-        assert isinstance(benchmark, OLAPWorkload), (
-            "benchmark must be an instance of OLAPWorkload"
+        # Accept a built-in OLAPWorkload enum member or a registered (bring-your-own)
+        # WorkloadId; both expose `.value`, which is all the downstream consumers use.
+        assert isinstance(benchmark, (OLAPWorkload, WorkloadId)), (
+            f"benchmark must be an OLAPWorkload or registered WorkloadId, got {type(benchmark)}"
         )
 
         if system_name == System.DUCKDB:

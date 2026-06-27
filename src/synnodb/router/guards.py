@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
-from .normalize import extract_literals, is_select
+from .normalize import extract_literals, has_param_markers, is_select
 from .registry import EngineBinding, TemplateRegistry
 
 GuardOutcome = Tuple[bool, str]
@@ -51,13 +51,24 @@ def select_only_guard(ctx: GuardContext) -> GuardOutcome:
 
 
 def placeholder_arity_guard(ctx: GuardContext) -> GuardOutcome:
-    """The number of bound values must match the template's placeholder count."""
+    """The number of bound values must match the template's placeholder count.
+
+    For a template with explicit ``?`` / ``$name`` markers the bind step matches the query
+    against the template, which already checks arity, so this guard passes; the literal
+    count of an inline query has no fixed relation to the placeholder count (the template
+    has constants too, and a placeholder may repeat). Only the explicit-parameter and
+    concrete-example-template cases are checked here.
+    """
     expected = len(ctx.binding.placeholders)
     if ctx.parameters is not None:
         params = ctx.parameters
         actual = len(params) if isinstance(params, (list, tuple)) else 1
-    else:
-        actual = len(extract_literals(ctx.sql))
+        if actual == expected:
+            return True, f"{actual} placeholders"
+        return False, f"placeholder arity {actual} != expected {expected}"
+    if ctx.binding.template_sql is not None and has_param_markers(ctx.binding.template_sql):
+        return True, "structural bind"
+    actual = len(extract_literals(ctx.sql))
     if actual == expected:
         return True, f"{actual} placeholders"
     return False, f"placeholder arity {actual} != expected {expected}"

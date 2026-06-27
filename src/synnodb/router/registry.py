@@ -52,6 +52,9 @@ class EngineBinding:
     scale_factor: Optional[float] = None
     storage_mode: str = "flat"               # "bespoke" | "flat"
     engine: Any = None                       # EngineWorker handle (Phase 2)
+    template_sql: Optional[str] = None       # original parameterized template, for
+    #                                          structural binding of an inline query's
+    #                                          values to the engine's placeholders
 
     @property
     def runnable(self) -> bool:

@@ -63,8 +63,9 @@ def validate_snapshot(
     snapshot_model = snapshot_config["model"]
     snapshot_db_storage = snapshot_config["db_storage"]
 
-    assert snapshot_benchmark.upper() == benchmark.name.upper(), (
-        f"Expected benchmark {benchmark.name.upper()} in storage plan run, got {snapshot_benchmark}"
+    # .value works for both the built-in enum members and a WorkloadId (bring-your-own)
+    assert snapshot_benchmark.upper() == benchmark.value.upper(), (
+        f"Expected benchmark {benchmark.value.upper()} in storage plan run, got {snapshot_benchmark}"
     )
     if queries_str is not None:
         assert snapshot_queries_str == queries_str, (

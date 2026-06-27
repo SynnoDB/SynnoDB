@@ -20,7 +20,15 @@ from typing import Any, Dict, Optional, Tuple
 from .adapt import results_equal, to_synno_result
 from .backend import DuckDBBackend
 from .guards import GuardContext, evaluate
-from .normalize import extract_literals, has_order_by, normalize_sql, statement_kind, tables_in
+from .normalize import (
+    extract_literals,
+    has_order_by,
+    has_param_markers,
+    normalize_sql,
+    statement_kind,
+    tables_in,
+    unify_and_bind,
+)
 from .observe import RouteTrace, emit, logger
 from .policy import RouterMode, RouterPolicy
 from .registry import EngineBinding, TemplateRegistry
@@ -74,15 +82,36 @@ class QueryRouter:
             return True
         return self._rng.random() < rate
 
-    def _bind_placeholders(self, binding: EngineBinding, sql: str, parameters: Any) -> Dict[str, Any]:
+    def _bind_placeholders(
+        self, binding: EngineBinding, sql: str, parameters: Any
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve the engine's named placeholders for this incoming query.
+
+        With explicit DuckDB-style parameters, map them positionally to the template's
+        placeholders (repeats must agree). Otherwise bind the query's inline literals by
+        matching it against the template, which keeps a constant in the template from
+        being read as a parameter and binds a repeated placeholder consistently. Returns
+        ``None`` when the query does not match the template, and the router falls back.
+        """
+        names = [spec.name for spec in binding.placeholders]
         if parameters is not None:
             values = list(parameters) if isinstance(parameters, (list, tuple)) else [parameters]
-        else:
-            values = extract_literals(sql)
-        return {
-            spec.name: (values[i] if i < len(values) else None)
-            for i, spec in enumerate(binding.placeholders)
-        }
+            if len(values) != len(names):
+                return None
+            bound: Dict[str, Any] = {}
+            for name, value in zip(names, values):
+                if name in bound and bound[name] != value:
+                    return None  # a repeated placeholder given two different values
+                bound[name] = value
+            return bound
+        # Templates with explicit ?/$name markers bind by matching against the template,
+        # which separates constants from parameters and handles repeated placeholders. A
+        # concrete-example template (literals stand in for parameters) or a legacy binding
+        # without template_sql uses positional literal extraction.
+        if binding.template_sql is not None and has_param_markers(binding.template_sql):
+            return unify_and_bind(binding.template_sql, sql, names)
+        values = extract_literals(sql)
+        return {name: (values[i] if i < len(values) else None) for i, name in enumerate(names)}
 
     def _record_failure(self, binding: EngineBinding) -> None:
         count = self._failures.get(binding.template_id, 0) + 1
@@ -130,8 +159,15 @@ class QueryRouter:
         if not ok:
             return self._fallback(trace, results[-1][2] if results else "guard failed", matched=True)
 
-        # 5. execute bespoke.
+        # 5. bind the engine's parameters by matching the query against the template. None
+        #    means it matched the structural key but is not actually this template (a
+        #    differing constant, a repeated placeholder with two values, a structural
+        #    difference), so fall back rather than run the engine with the wrong values.
         placeholders = self._bind_placeholders(binding, sql, parameters)
+        if placeholders is None:
+            return self._fallback(trace, "placeholder binding failed (constant/structure mismatch)", matched=True)
+
+        # 5b. execute bespoke.
         start = time.perf_counter()
         try:
             table = binding.engine.run(binding.query_id, placeholders)

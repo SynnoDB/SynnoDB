@@ -39,6 +39,7 @@ from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils.utils import DBStorage, is_persistent_storage, storage_label
 from synnodb.workloads.workload_provider import Workload
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
+from synnodb.workloads.workload_spec import get_workload_spec
 
 logger = logging.getLogger(__name__)
 
@@ -171,14 +172,12 @@ class BaseImplConversation(CheckpointedConversation):
         # Paths & Co
         # ==========
 
-        if self.benchmark == OLAPWorkload.TPCH:
-            example_query = "Q42"
-            example_query_params = "42"
-        elif self.benchmark == OLAPWorkload.CEB:
-            example_query = "Q42a"
-            example_query_params = "42a"
-        else:
-            raise ValueError(f"Unknown benchmark {self.benchmark}")
+        # Planner-prompt parameterization comes from the workload spec, not a per-
+        # benchmark branch (so a new workload supplies its own example + schema table).
+        spec = get_workload_spec(self.benchmark.value)
+        example_query = spec.example_query
+        example_query_params = spec.example_query_params
+        schema_example_table = spec.schema_example_table
 
         # paths
         filenames_dict = get_filenames()
@@ -223,6 +222,7 @@ class BaseImplConversation(CheckpointedConversation):
                     parquet_path=self.parquet_dir.as_posix(),
                     base_impl_todo_file=base_impl_todo_filename,
                     persistent_storage=self.persistent_storage,
+                    schema_example_table=schema_example_table,
                 ),
                 measure_performance_after_stage=False,
                 auto_revert_on_regression=False,
@@ -318,7 +318,8 @@ class BaseImplConversation(CheckpointedConversation):
                     descriptor="base check correctness all",
                     get_prompt=lambda _exec_settings, _rt: (
                         base_check_correctness_all_prompt(
-                            run_tool_mode=RunToolMode.EXHAUSTIVE
+                            run_tool_mode=RunToolMode.EXHAUSTIVE,
+                            query_ids=self.all_query_ids,
                         )
                     ),
                     measure_performance_after_stage=False,
@@ -335,6 +336,7 @@ class BaseImplConversation(CheckpointedConversation):
                     get_prompt=lambda _exec_settings, _rt: base_run_all_and_fix_prompt(
                         run_tool_mode=RunToolMode.EXHAUSTIVE,
                         query_impl_path=query_impl_path,
+                        query_ids=self.all_query_ids,
                     ),
                     measure_performance_after_stage=False,
                     auto_revert_on_regression=False,

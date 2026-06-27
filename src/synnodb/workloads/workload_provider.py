@@ -8,6 +8,12 @@ from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils import utils
 
 
+# Base number of parameter instantiations generated per query for the correctness
+# sweep (and pre-inferred for templated bring-your-own queries). Override per run via
+# OLAPWorkloadProvider(num_instantiations=...) / set_num_instantiations(...).
+DEFAULT_NUM_INSTANTIATIONS = 10
+
+
 class Workload(enum.Enum):
     def __str__(self) -> str:
         return str(self.value)
@@ -20,6 +26,19 @@ class Workload(enum.Enum):
             except ValueError:
                 continue
         raise ValueError(f"invalid Workload value: {value!r}")
+
+
+class WorkloadId(str):
+    """A workload identity for registered (e.g. bring-your-own) workloads that are not
+    members of a fixed `Workload` enum. It is a plain `str` (so it serializes cleanly
+    into cache keys) that also exposes `.value`, matching the enum interface the
+    framework reads — so a data-registered workload can drive the pipeline without
+    editing any enum.
+    """
+
+    @property
+    def value(self) -> str:
+        return str(self)
 
 
 @dataclass

@@ -40,7 +40,12 @@ __all__ = ["SynnoDB", "SynnoConfig", "Stage", "StageParam", "register_stage"]
 
 # ----------------------------- coercion helpers -----------------------------
 def _as_workload(v: Workload | str) -> Workload:
-    return v if isinstance(v, Workload) else Workload.of(str(v))
+    if isinstance(v, Workload):
+        return v
+    # built-in name -> enum; any registered (bring-your-own) name -> WorkloadId
+    from synnodb.workloads.workload_spec import resolve_workload
+
+    return resolve_workload(str(v))
 
 
 def _as_storage(v: DBStorage | str) -> DBStorage:

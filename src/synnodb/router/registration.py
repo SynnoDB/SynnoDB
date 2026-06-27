@@ -129,6 +129,7 @@ def make_binding(
         scale_factor=scale_factor,
         storage_mode=storage_mode,
         engine=engine,
+        template_sql=template_sql,
     )
 
 

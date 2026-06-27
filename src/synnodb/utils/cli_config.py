@@ -129,6 +129,15 @@ def add_common_args(
         help="Output/workspace directory (default: local ./output).",
     )
 
+    # Number of parameter instantiations per query for the correctness sweep. None ->
+    # the provider's default (DEFAULT_NUM_INSTANTIATIONS).
+    parser.add_argument(
+        "--num_instantiations",
+        type=int,
+        default=None,
+        help="Parameter instantiations per query in the correctness sweep.",
+    )
+
     if include_model:
         parser.add_argument(
             "--model",
@@ -137,12 +146,21 @@ def add_common_args(
         )
 
     if include_benchmark:
+
+        def _benchmark_type(value):
+            # built-in enum member, or any registered (bring-your-own) workload name
+            try:
+                return benchmark_class(value)
+            except ValueError:
+                from synnodb.workloads.workload_spec import resolve_workload
+
+                return resolve_workload(value)
+
         parser.add_argument(
             "--benchmark",
-            type=benchmark_class,
-            choices=list(benchmark_class),
+            type=_benchmark_type,
             default=benchmark_class.TPCH,
-            help="Benchmark to use for the agent.",
+            help="Benchmark/workload: a built-in (tpch/ceb) or any registered workload name.",
         )
     if include_replay:
         parser.add_argument(

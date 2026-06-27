@@ -47,6 +47,7 @@ from synnodb.utils.utils import (
     DBStorage,
     ask_yes_no,
     create_dir_and_set_permissions,
+    exclude_workspace_from_enclosing_repo,
     get_disk_db_dir,
 )
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
@@ -55,6 +56,7 @@ from synnodb.workloads.workload_provider_olap import (
     OLAPWorkload,
     OLAPWorkloadProvider,
 )
+from synnodb.workloads.workload_spec import get_workload_spec
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,9 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # workspace
     workspace_path = settings.get_workspace_dir(getattr(args, "workspace_dir", None))
     workspace_path.mkdir(parents=True, exist_ok=True)
+    # The workspace becomes a nested git repo (the snapshotter); make sure it is never
+    # accidentally committed/pushed into an enclosing repo (e.g. the SynnoDB checkout).
+    exclude_workspace_from_enclosing_repo(workspace_path)
 
     # cache paths
 
@@ -115,16 +120,21 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
 
     # parquet dir and workload provider
     if usecase == Usecase.OLAP:
-        dataset_name = OLAPWorkloadProvider._get_dataset_name(args.benchmark)
+        workload_spec = get_workload_spec(args.benchmark.value)
+        dataset_name = workload_spec.dataset_name
+        # Bring-your-own workloads carry their absolute parquet location; built-ins
+        # derive it from the data-dir + benchmark-name convention.
+        if workload_spec.base_parquet_dir is not None:
+            parquet_dir = Path(workload_spec.base_parquet_dir)
+        else:
+            parquet_dir = (
+                settings.get_data_dir()
+                / "workloads"
+                / args.benchmark.value
+                / f"{dataset_name}_parquet"
+            )
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
-
-    parquet_dir = (
-        settings.get_data_dir()
-        / "workloads"
-        / args.benchmark.value
-        / f"{dataset_name}_parquet"
-    )
 
     #####
     # Other preparations
@@ -149,12 +159,24 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     if disk_db_dir is not None:
         create_dir_and_set_permissions(disk_db_dir)
 
+    # Requested query subset (e.g. ["1"]). Threaded into the provider so scaffolding
+    # and run/validate are confined to exactly these queries; the provider validates
+    # them against the workload's full catalog and raises on unknown ids.
+    query_list = [q.strip() for q in args.query_list.split(",")]
+
+    # num_instantiations: CLI override (None -> provider default).
+    provider_kwargs = {}
+    if getattr(args, "num_instantiations", None) is not None:
+        provider_kwargs["num_instantiations"] = args.num_instantiations
+
     if usecase == Usecase.OLAP:
         workload_provider = OLAPWorkloadProvider(
-            benchmark=OLAPWorkload(args.benchmark),
+            benchmark=args.benchmark,  # already resolved (enum for builtins, WorkloadId for BYO)
             base_parquet_dir=parquet_dir,
             db_storage=db_storage,
             bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
+            query_ids=query_list,
+            **provider_kwargs,
         )
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
@@ -214,7 +236,6 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # Prepare workspace / snapshot
     ##############################
 
-    query_list = [q.strip() for q in args.query_list.split(",")]
     plan_filename = get_plan_filename(usecase)
 
     if args.storage_plan_snapshot is not None:

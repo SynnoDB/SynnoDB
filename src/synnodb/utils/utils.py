@@ -123,6 +123,35 @@ def create_parent_and_set_permissions(path: Path, mode: int = 0o777) -> None:
         pass  # best effort, ignore failures
 
 
+def exclude_workspace_from_enclosing_repo(workspace_path: Path) -> None:
+    """If a run workspace lives inside another git repo (e.g. the SynnoDB checkout),
+    register it in that repo's ``.git/info/exclude`` so the generated engine — itself a
+    nested git repo — is never accidentally ``git add``ed/pushed.
+
+    Uses the local, uncommitted exclude file (not the tracked ``.gitignore``), so it
+    works for any workspace name without polluting version control. Best-effort.
+    """
+    try:
+        ws = Path(workspace_path).resolve()
+        for parent in ws.parents:  # nearest enclosing repo (workspace's own .git excluded)
+            git_dir = parent / ".git"
+            if git_dir.is_dir():
+                rel = ws.relative_to(parent).as_posix()
+                entry = f"/{rel}/"
+                exclude_file = git_dir / "info" / "exclude"
+                exclude_file.parent.mkdir(parents=True, exist_ok=True)
+                existing = exclude_file.read_text() if exclude_file.exists() else ""
+                if entry not in existing.split():
+                    with exclude_file.open("a") as f:
+                        if existing and not existing.endswith("\n"):
+                            f.write("\n")
+                        f.write(f"# synno run workspace (auto-added)\n{entry}\n")
+                    logger.debug("Excluded run workspace %s in %s", entry, exclude_file)
+                return  # only the nearest enclosing repo matters
+    except Exception:
+        pass  # best effort — never block a run on this
+
+
 T = TypeVar("T")
 
 # Map old module paths (before refactoring) to their new locations.
