@@ -22,12 +22,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import llm.llm_caching.cached_compaction_session as ccs
-from llm.anthropic.claude_compaction_helper import build_compacted_items
-from llm.llm_caching.cached_compaction_session import (
+import synnodb.llm.llm_caching.cached_compaction_session as ccs
+from synnodb.llm.anthropic.claude_compaction_helper import build_compacted_items
+from synnodb.llm.llm_caching.cached_compaction_session import (
     CachedOpenAIResponsesCompactionSession,
 )
-from observability.logging.debug_logger import DebugLogger
+from synnodb.observability.logging.debug_logger import DebugLogger
 
 
 def _make_session(

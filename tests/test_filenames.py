@@ -1,5 +1,5 @@
-from conversations.filenames import get_plan_filename
-from utils.cli_config import Usecase
+from synnodb.conversations.filenames import get_plan_filename
+from synnodb.utils.cli_config import Usecase
 
 
 def test_plan_filename_is_usecase_specific():

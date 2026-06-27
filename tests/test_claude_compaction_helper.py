@@ -6,7 +6,7 @@ non-empty stage prompt is supplied. Callers only ever pass a real stage task
 (never a control marker), so there is no marker filtering in the builder.
 """
 
-from llm.anthropic.claude_compaction_helper import build_compacted_items
+from synnodb.llm.anthropic.claude_compaction_helper import build_compacted_items
 
 STAGE_PROMPT = "verify storage impl: build at SF=1 and audit the produced files."
 

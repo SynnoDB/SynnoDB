@@ -4,8 +4,8 @@ from pathlib import Path
 
 os.environ.setdefault("SYNNO_DATA_DIR", "/tmp")
 
-from tools.validate.query_validator_class import QueryValidator
-from workloads.workload_provider import (
+from synnodb.tools.validate.query_validator_class import QueryValidator
+from synnodb.workloads.workload_provider import (
     ExecSettings,
     GeneralSystemConfig,
     QueryBatch,
