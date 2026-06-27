@@ -1,6 +1,6 @@
 import unittest
 
-from utils.sql_utils import extract_order_by_columns
+from synnodb.utils.sql_utils import extract_order_by_columns
 
 
 class TestExtractOrderByColumns(unittest.TestCase):

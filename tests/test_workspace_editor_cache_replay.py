@@ -2,8 +2,8 @@ from pathlib import Path
 
 from agents.editor import ApplyPatchOperation
 
-from tools.workspace_editor import ApplyPatchCacheType, WorkspaceEditor
-from utils import utils
+from synnodb.tools.workspace_editor import ApplyPatchCacheType, WorkspaceEditor
+from synnodb.utils import utils
 
 
 class FakeRunStatsCollector:

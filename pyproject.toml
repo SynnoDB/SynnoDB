@@ -1,9 +1,25 @@
 [project]
 name = "synnodb"
-version = "0.1.0"
+version = "0.1.1"
 description = "Synthesizing Databases for your Workload"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Johannes Wehrstein", email = "johannes.wehrstein@synnodb.com" },
+]
+keywords = ["database", "llm", "agents", "code-generation", "olap", "benchmark"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "anthropic>=0.84.0",
     "clickhouse-connect>=0.14.0",
@@ -20,9 +36,9 @@ dependencies = [
     "openai-agents[litellm]>=0.15.0",
     "pandas>=2.3.3",
     "prompt-toolkit>=3.0.52",
+    "psycopg[binary]>=3.2",
     "psycopg2-binary>=2.9.11",
-    "pytest>=9.0.2",
-    "pytest-asyncio>=1.3.0",
+    "sqlglot>=26.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
     "seaborn>=0.13.2",
@@ -34,25 +50,31 @@ dependencies = [
     "dotenv>=0.9.9",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/JWehrstein/SynnoDB"
+Repository = "https://github.com/JWehrstein/SynnoDB"
+
+[project.scripts]
+pgrouter = "synnodb.misc.router.pgrouter.cli:run"
+pgrouter-analyze = "synnodb.misc.router.pgrouter.analyze:main"
+pgrouter-inspect = "synnodb.misc.router.pgrouter.inspect:main"
+
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = [
-    "conversations*",
-    "cpp_runner*",
-    "llm*",
-    "misc*",
-    "observability*",
-    "synth_framework*",
-    "tools*",
-    "utils*",
-    "workloads*",
+where = ["src"]
+include = ["synnodb*"]
+exclude = [
+    "synnodb.cpp_runner.test*",  # test code + scratch output
 ]
 
-exclude = ["output*", "wandb*", "tests*", "__pycache__*"]
-
 [tool.setuptools.package-data]
-misc = ["**/*.cpp", "**/*.hpp", "**/*.sh"]
+"*" = ["*.cpp", "*.hpp", "*.h", "*.txt", "*.sh", "*.html", "*.css", "*.js", "*.jpeg", "*.jpg", "*.json", "*.sql"]

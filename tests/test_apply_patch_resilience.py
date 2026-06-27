@@ -15,7 +15,7 @@ from pathlib import Path
 
 from agents.editor import ApplyPatchOperation
 
-from tools.workspace_editor import (
+from synnodb.tools.workspace_editor import (
     WorkspaceEditor,
     _strip_code_fences,
     _strip_patch_envelope,

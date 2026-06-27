@@ -14,7 +14,7 @@ reads _response_id, compaction_model_name and cache_dir.
 import json
 from pathlib import Path
 
-from llm.llm_caching.cached_compaction_session import (
+from synnodb.llm.llm_caching.cached_compaction_session import (
     CachedOpenAIResponsesCompactionSession,
 )
 
