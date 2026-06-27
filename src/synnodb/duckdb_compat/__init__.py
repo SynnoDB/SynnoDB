@@ -16,6 +16,8 @@ import duckdb as _duckdb
 
 from ..router import QueryRouter, RouterPolicy, TemplateRegistry
 from .connection import SynnoConnection
+from .discovery import resolve_engines_dir
+from .errors import WriteNotSupportedError
 from .result import SynnoResult
 
 # ---------------------------------------------------------------------------
@@ -45,17 +47,22 @@ def connect(
     *,
     policy: Optional[RouterPolicy] = None,
     registry: Optional[TemplateRegistry] = None,
+    engines: Any = None,
     **kwargs: Any,
 ) -> SynnoConnection:
     """Open a DuckDB connection wrapped by the SynnoDB router.
 
-    ``policy`` / ``registry`` are SynnoDB extensions; everything else is passed
-    straight to ``duckdb.connect``. With no registered engines (the default) this
-    behaves exactly like ``duckdb.connect``.
+    ``policy`` / ``registry`` / ``engines`` are SynnoDB extensions; everything else is passed
+    straight to ``duckdb.connect``. With no registered engines (the default) this behaves
+    exactly like ``duckdb.connect``.
+
+    ``engines`` is the directory of published bespoke engines to auto-discover and route to
+    (default: ``SYNNO_ENGINES_DIR`` or ``$SYNNO_DATA_DIR/engines``; ``None`` everywhere
+    disables discovery). A plain ``duckdb.connect(...)`` call needs none of these.
     """
     inner = _duckdb.connect(database=database, read_only=read_only, config=config or {}, **kwargs)
     router = QueryRouter(policy or RouterPolicy.from_env(), registry)
-    return SynnoConnection(inner, router)
+    return SynnoConnection(inner, router, engines_dir=resolve_engines_dir(engines))
 
 
 _default_conn: Optional[SynnoConnection] = None
@@ -90,5 +97,6 @@ __all__ = [
     "RouterPolicy",
     "TemplateRegistry",
     "QueryRouter",
+    "WriteNotSupportedError",
     "__duckdb_version__",
 ]

@@ -6,9 +6,10 @@ engine reason** (except in ``bespoke_only`` test mode) — every failure path re
 ``RouteDecision`` telling the caller to run DuckDB. Only a genuine DuckDB execution
 error (from the caller's fallback) propagates, exactly as DuckDB would.
 
-The pipeline: policy gate → read-only block → normalize → match → guards → execute
-bespoke → (sampled) cross-check against DuckDB. With the default ``mode=off`` the
-router short-circuits to DuckDB immediately, guaranteeing byte-identical behavior.
+The pipeline: policy gate → empty-registry short-circuit → normalize → match → guards →
+execute bespoke → (sampled) cross-check against DuckDB. With ``mode=off``, or with no
+engines registered, the router short-circuits to DuckDB immediately (and without parsing),
+guaranteeing byte-identical behavior at no per-query cost.
 """
 from __future__ import annotations
 
@@ -24,9 +25,8 @@ from .normalize import (
     extract_literals,
     has_order_by,
     has_param_markers,
+    is_read_only_query,
     normalize_sql,
-    statement_kind,
-    tables_in,
     unify_and_bind,
 )
 from .observe import RouteTrace, emit, logger
@@ -58,11 +58,41 @@ class QueryRouter:
         self.registry = registry if registry is not None else TemplateRegistry()
         self._failures: Dict[str, int] = {}
         self._rng = random.Random()
+        # Best-effort session counters (advisory; not locked). Surfaced via stats().
+        self.counters: Dict[str, int] = {
+            "routed": 0,
+            "fell_back": 0,
+            "cross_checked": 0,
+            "cross_check_mismatch": 0,
+            "blocked_writes": 0,
+        }
+        self._fallback_reasons: Dict[str, int] = {}
 
     # ---- internal helpers ----------------------------------------------
     def _finish(self, trace: RouteTrace, decision: RouteDecision) -> RouteDecision:
+        self._tally(trace)
         emit(trace, verbose=self.policy.verbose)
         return decision
+
+    def _tally(self, trace: RouteTrace) -> None:
+        c = self.counters
+        if trace.decision == "bespoke":
+            c["routed"] += 1
+            if trace.cross_checked:
+                c["cross_checked"] += 1
+                if trace.results_match is False:
+                    c["cross_check_mismatch"] += 1
+        elif trace.decision == "fallback":
+            c["fell_back"] += 1
+            self._fallback_reasons[trace.reason] = self._fallback_reasons.get(trace.reason, 0) + 1
+
+    def note_blocked_write(self) -> None:
+        """Record a write the connection refused (writes are blocked at the connection)."""
+        self.counters["blocked_writes"] += 1
+
+    def stats(self) -> Dict[str, Any]:
+        """A snapshot of the session routing counters plus the fallback-reason breakdown."""
+        return {**self.counters, "fallback_reasons": dict(self._fallback_reasons)}
 
     def _fallback(self, trace: RouteTrace, reason: str, *, matched: bool = False) -> RouteDecision:
         trace.fell_back(reason)
@@ -133,13 +163,23 @@ class QueryRouter:
             trace.fell_back(reason)
             return self._finish(trace, RouteDecision(False, None, trace))
 
-        # 1a. read-only block (v1): never accelerate mutations; DuckDB stays the truth.
-        if statement_kind(sql) == "write":
-            stale = tuple(tables_in(sql))
-            if stale:
-                self.registry.mark_tables_dirty(stale)
-            trace.write_passthrough("write/DDL not accelerated (read-only v1)")
-            return self._finish(trace, RouteDecision(False, None, trace, stale_tables=stale))
+        # 1a. Nothing registered -> nothing can route. Short-circuit before parsing so an
+        #     engine-less connection pays no per-query cost and stays byte-identical to DuckDB.
+        if len(self.registry) == 0:
+            trace.fell_back("no engines registered")
+            return self._finish(trace, RouteDecision(False, None, trace))
+
+        # Writes are refused at the connection (SynnoConnection.execute) while writes are
+        # disabled, so a write does not reach route() on the normal path. The previous
+        # write -> DuckDB passthrough (mark bound tables dirty, then run on DuckDB) is kept
+        # here, disabled, to re-enable when write support lands:
+        #
+        #   if statement_kind(sql) == "write":
+        #       stale = tuple(tables_in(sql))
+        #       if stale:
+        #           self.registry.mark_tables_dirty(stale)
+        #       trace.write_passthrough("write/DDL not accelerated")
+        #       return self._finish(trace, RouteDecision(False, None, trace, stale_tables=stale))
 
         # 2. normalize to a structural key.
         normalized = normalize_sql(sql)
@@ -204,3 +244,50 @@ class QueryRouter:
         self._record_success(binding)
         result = to_synno_result(serve_table, binding.output_schema)
         return self._finish(trace, RouteDecision(True, result, trace))
+
+    # ---- inspection -----------------------------------------------------
+    def why(self, sql: str, parameters: Any = None, conn: Any = None) -> Dict[str, Any]:
+        """Explain how *sql* would be handled, without executing anything.
+
+        Runs the same decision steps as ``route`` (mode gate, write check, normalize, match,
+        guards, placeholder bind) but never calls the engine or DuckDB. Returns a dict with
+        ``decision`` (``would-route`` / ``would-fall-back`` / ``blocked``), a ``reason``, the
+        matched ``template``, the ``guards`` evaluated, the bound ``placeholders``, and the
+        ``normalized`` key. The answer to "why is my query not accelerated?".
+        """
+        pol = self.policy
+        out: Dict[str, Any] = {
+            "decision": "would-fall-back", "reason": "", "template": None,
+            "guards": [], "placeholders": None, "normalized": None,
+        }
+        if not pol.routing_active:
+            out["reason"] = "router disabled" if not pol.enabled else f"mode={pol.mode}"
+            return out
+        if pol.block_writes and not is_read_only_query(sql):
+            out["decision"], out["reason"] = "blocked", "writes are not supported"
+            return out
+        if len(self.registry) == 0:
+            out["reason"] = "no engines registered"
+            return out
+        normalized = normalize_sql(sql)
+        out["normalized"] = normalized
+        if normalized is None:
+            out["reason"] = "unparseable SQL"
+            return out
+        binding = self.registry.match(normalized)
+        if binding is None:
+            out["reason"] = "no template match"
+            return out
+        out["template"] = binding.template_id
+        ctx = GuardContext(sql=sql, binding=binding, conn=conn, registry=self.registry, parameters=parameters)
+        ok, results = evaluate(ctx)
+        out["guards"] = [{"name": n, "ok": p, "detail": d} for n, p, d in results]
+        if not ok:
+            out["reason"] = results[-1][2] if results else "guard failed"
+            return out
+        placeholders = self._bind_placeholders(binding, sql, parameters)
+        if placeholders is None:
+            out["reason"] = "placeholder binding failed (constant/structure mismatch)"
+            return out
+        out["decision"], out["reason"], out["placeholders"] = "would-route", "matches template", placeholders
+        return out

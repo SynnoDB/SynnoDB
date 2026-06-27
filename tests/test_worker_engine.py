@@ -73,8 +73,8 @@ def _connection(worker, tmp_path, *, cross_check_rate=1.0):
         policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=cross_check_rate),
         registry=TemplateRegistry(),
     )
-    con.execute("CREATE TABLE t(a BIGINT)")
-    con.execute("INSERT INTO t SELECT * FROM range(1, 6)")
+    con.duckdb.execute("CREATE TABLE t(a BIGINT)")
+    con.duckdb.execute("INSERT INTO t SELECT * FROM range(1, 6)")
     register_engine(con, template_sql=USER_TEMPLATE, engine=worker, placeholders=[PlaceholderSpec("p0", "INTEGER")])
     return con
 

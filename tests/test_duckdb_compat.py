@@ -72,8 +72,11 @@ _QUERIES = [
 
 
 def _seed(con):
-    con.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
-    con.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z')")
+    # Load through the underlying connection: writes are blocked on the routed surface,
+    # and `con` may be a raw DuckDB connection or a SynnoConnection.
+    raw = getattr(con, "duckdb", con)
+    raw.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
+    raw.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z')")
 
 
 @pytest.mark.parametrize("q", _QUERIES)

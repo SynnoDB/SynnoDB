@@ -56,6 +56,62 @@ def statement_kind(sql: str) -> str:
     return "unknown"
 
 
+def is_read_only_query(sql: str) -> bool:
+    """True if *sql* is a read-only query, and therefore allowed when writes are blocked.
+
+    Read queries (SELECT/WITH/EXPLAIN/SHOW/DESCRIBE/SUMMARIZE/VALUES and read-only PRAGMA
+    introspection) pass through, and a SELECT may route. Anything that mutates data, changes
+    session/catalog state, or manages transactions/extensions is a write.
+
+    The cheap leading-keyword check is enough for a single statement, but two shapes can hide
+    a write behind a read-looking start: a CTE-led statement (``WITH ... DELETE``) and a
+    multi-statement string (``SELECT 1; DROP TABLE t``). Those are parsed and allowed only if
+    every statement is a SELECT-family query. An unrecognized single keyword is confirmed by a
+    SELECT parse, so a parenthesized or comment-led SELECT is still allowed.
+    """
+    kind = statement_kind(sql)
+    if kind == "write":
+        return False
+    if kind == "read":
+        if _leading_keyword(sql) == "with" or _has_multiple_statements(sql):
+            return _all_statements_are_select(sql)
+        return True
+    return is_select(sql)
+
+
+def _has_multiple_statements(sql: str) -> bool:
+    """Cheap, conservative test for more than one statement. A ``;`` inside a string literal
+    is a false positive, which only costs a parse downstream, never correctness."""
+    s = sql.strip()
+    if s.endswith(";"):
+        s = s[:-1]
+    return ";" in s
+
+
+def _all_statements_are_select(sql: str) -> bool:
+    """True only if *sql* parses into one or more statements that are all SELECT-family
+    queries. Used to clear a CTE-led or multi-statement string; anything that does not parse,
+    or contains a non-SELECT statement, is treated as not read-only (so it is blocked)."""
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except Exception:  # pragma: no cover - sqlglot is a core dep
+        return False
+    try:
+        statements = sqlglot.parse(sql, read=_DIALECT)
+    except Exception:
+        return False
+    if not statements:
+        return False
+    for stmt in statements:
+        if stmt is None:
+            continue
+        inner = stmt.this if isinstance(stmt, exp.With) else stmt
+        if not isinstance(inner, (exp.Select, exp.Union, exp.Subquery)):
+            return False
+    return True
+
+
 def is_select(sql: str) -> bool:
     """True only for plain SELECT / WITH...SELECT statements (the routable shape)."""
     try:

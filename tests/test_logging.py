@@ -28,7 +28,7 @@ def test_enable_debug_logging_is_idempotent():
 
 def test_router_logs_every_decision(caplog):
     con = synnodb.connect(policy=RouterPolicy(mode=RouterMode.SAMPLED), registry=TemplateRegistry())
-    con.execute("CREATE TABLE t(a INTEGER)")  # write -> passthrough (logged)
+    con.duckdb.execute("CREATE TABLE t(a INTEGER)")  # setup via the escape hatch
     with caplog.at_level(logging.DEBUG, logger="synnodb.router"):
         con.execute("SELECT * FROM t")  # no template -> fallback (logged)
     messages = [r.getMessage() for r in caplog.records]

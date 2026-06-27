@@ -124,8 +124,8 @@ def test_router_inline_binding_end_to_end():
         policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0),
         registry=TemplateRegistry(),
     )
-    con.execute("CREATE TABLE t(d DATE, x INTEGER)")
-    con.execute("INSERT INTO t VALUES (DATE '2020-03-01', 5), (DATE '2020-09-01', 50)")
+    con.duckdb.execute("CREATE TABLE t(d DATE, x INTEGER)")
+    con.duckdb.execute("INSERT INTO t VALUES (DATE '2020-03-01', 5), (DATE '2020-09-01', 50)")
 
     seen: dict = {}
 

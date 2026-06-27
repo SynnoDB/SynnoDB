@@ -33,7 +33,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .registry import ColumnSpec, PlaceholderSpec
 
-SCHEMA_VERSION = 1
+# v2 adds the optional ``parquet_dir`` (the data the engine ingested), so the runtime can
+# bring up the engine with no extra inputs. v1 manifests (no parquet_dir) still load.
+SCHEMA_VERSION = 2
+_SUPPORTED_SCHEMA_VERSIONS = (1, 2)
 
 
 def content_engine_id(source_files: Mapping[str, str], *, prefix: str = "eng") -> str:
@@ -83,6 +86,9 @@ class EngineManifest:
     source_run_id: Optional[str] = None
     # Schema the engine was built against; used to verify a candidate DB is compatible.
     expected_tables: Mapping[str, Tuple[ColumnSpec, ...]] = field(default_factory=dict)
+    # Absolute path to the parquet the engine ingested. The runtime serves from this
+    # snapshot, so it is what a ProcessEngine is pointed at. None for a v1 manifest.
+    parquet_dir: Optional[str] = None
 
     # ---- serialization --------------------------------------------------
     def to_dict(self) -> dict:
@@ -92,6 +98,7 @@ class EngineManifest:
             "storage_mode": self.storage_mode,
             "scale_factor": self.scale_factor,
             "source_run_id": self.source_run_id,
+            "parquet_dir": self.parquet_dir,
             "expected_tables": {
                 table: [[c.name, c.type] for c in cols]
                 for table, cols in self.expected_tables.items()
@@ -102,14 +109,18 @@ class EngineManifest:
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "EngineManifest":
         version = d.get("schema_version", 1)
-        if version != SCHEMA_VERSION:
-            raise ValueError(f"unsupported manifest schema_version {version!r} (need {SCHEMA_VERSION})")
+        if version not in _SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(
+                f"unsupported manifest schema_version {version!r} "
+                f"(supported: {_SUPPORTED_SCHEMA_VERSIONS})"
+            )
         return cls(
             engine_id=d["engine_id"],
             queries=tuple(QueryTemplate.from_dict(q) for q in d.get("queries", [])),
             storage_mode=d.get("storage_mode", "flat"),
             scale_factor=d.get("scale_factor"),
             source_run_id=d.get("source_run_id"),
+            parquet_dir=d.get("parquet_dir"),
             expected_tables={
                 table: tuple(ColumnSpec(n, t) for n, t in cols)
                 for table, cols in d.get("expected_tables", {}).items()
@@ -154,6 +165,7 @@ def build_manifest_from_dir(
     scale_factor: Optional[float] = None,
     source_run_id: Optional[str] = None,
     expected_tables: Optional[Mapping[str, Sequence[ColumnSpec]]] = None,
+    parquet_dir: Optional[str] = None,
     write: bool = True,
 ) -> EngineManifest:
     """Assemble (and optionally write) an :class:`EngineManifest` for a generated engine.
@@ -171,6 +183,7 @@ def build_manifest_from_dir(
         storage_mode=storage_mode,
         scale_factor=scale_factor,
         source_run_id=source_run_id,
+        parquet_dir=str(parquet_dir) if parquet_dir is not None else None,
         expected_tables={t: tuple(cols) for t, cols in (expected_tables or {}).items()},
     )
     if write:
@@ -214,6 +227,7 @@ def write_manifest_for_engine(
     scale_factor: Optional[float] = None,
     source_run_id: Optional[str] = None,
     expected_tables: Optional[Mapping[str, Sequence[ColumnSpec]]] = None,
+    parquet_dir: Optional[str] = None,
     write: bool = True,
 ) -> EngineManifest:
     """The factory-side writer: build & write ``manifest.json`` for a generated engine.
@@ -243,6 +257,7 @@ def write_manifest_for_engine(
         scale_factor=scale_factor,
         source_run_id=source_run_id,
         expected_tables=expected_tables,
+        parquet_dir=parquet_dir,
         write=write,
     )
 

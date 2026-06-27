@@ -571,6 +571,12 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # the remote.
     snapshotter.maybe_push_snapshots(force=True)
 
+    # Publish the finished engine so the drop-in router auto-discovers and routes to it.
+    _publish_generated_engine(
+        workspace_path, workload_provider, query_list, parquet_dir, workload_spec,
+        getattr(args, "wandb_run_id", None),
+    )
+
     logger.debug(
         f"Model cache total saved: ${agent_sdk_wrapper.get_total_saved_by_llm_cache():0.6f}"
     )
@@ -598,6 +604,57 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
                 "final/num_prompts": run_stats_collector.prompt_idx + 1,
             }
         )
+
+
+def _resolve_sf_dir(base_parquet_dir, scale_factor):
+    """The ``sf<N>`` data directory for a scale factor, tolerant of int/float formatting
+    (``sf1`` vs ``sf1.0``); falls back to the first ``sf*`` present. None if there is none."""
+    base = Path(base_parquet_dir)
+    candidates = []
+    try:
+        if float(scale_factor).is_integer():
+            candidates.append(f"sf{int(scale_factor)}")
+    except (TypeError, ValueError):
+        pass
+    candidates.append(f"sf{scale_factor}")
+    for name in candidates:
+        if (base / name).exists():
+            return base / name
+    found = sorted(base.glob("sf*"))
+    return found[0] if found else None
+
+
+def _publish_generated_engine(
+    workspace_path, workload_provider, query_list, base_parquet_dir, workload_spec, run_id
+):
+    """Publish the engine produced by this run for the drop-in router to auto-discover.
+
+    Best-effort: only base/optimized runs leave a ``db`` binary, an engines directory must be
+    configured, and the parquet the engine serves must exist. Any failure is logged and
+    swallowed so it never fails a generation run.
+    """
+    try:
+        if not (workspace_path / "db").exists():
+            return  # not an engine-producing run (e.g. storage plan)
+        from synnodb.duckdb_compat.discovery import resolve_engines_dir
+        from synnodb.workloads.engine_publish import publish_from_provider
+
+        if resolve_engines_dir(None) is None:
+            logger.info("publish: no engines dir (SYNNO_ENGINES_DIR / SYNNO_DATA_DIR); skipping")
+            return
+        sf = workload_spec.benchmark_sf
+        sf_dir = _resolve_sf_dir(base_parquet_dir, sf)
+        if sf_dir is None:
+            logger.info("publish: no parquet under %s; skipping engine publish", base_parquet_dir)
+            return
+        dest = publish_from_provider(
+            workspace_path, workload_provider, query_list,
+            parquet_dir=sf_dir, scale_factor=sf, source_run_id=run_id,
+        )
+        if dest is not None:
+            logger.info("published bespoke engine for auto-discovery -> %s", dest)
+    except Exception:
+        logger.warning("publish: could not publish the generated engine (continuing)", exc_info=True)
 
 
 def _setup() -> None:

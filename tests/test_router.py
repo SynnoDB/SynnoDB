@@ -32,10 +32,16 @@ from synnodb.router.normalize import (
 # --------------------------------------------------------------------------- #
 # Policy
 # --------------------------------------------------------------------------- #
-def test_policy_defaults_are_inert():
+def test_policy_defaults_are_inert_without_engines():
+    # Routing is live by default, but with no engines registered every query still falls
+    # back (short-circuited before parsing), so behavior is byte-identical to DuckDB.
     p = RouterPolicy()
-    assert p.mode is RouterMode.OFF
-    assert p.routing_active is False
+    assert p.mode is RouterMode.SAMPLED
+    assert p.routing_active is True
+    assert p.block_writes is True
+    dec = QueryRouter(p).route("SELECT a FROM t WHERE a = 1", None, conn=None)
+    assert dec.routed is False
+    assert dec.trace.reason == "no engines registered"
 
 
 def test_policy_from_env(monkeypatch):
@@ -152,23 +158,22 @@ def test_router_off_falls_back():
     assert dec.trace.reason == "mode=off"
 
 
-def test_router_no_template_match_falls_back():
+def test_router_empty_registry_short_circuits():
+    # With nothing registered, route falls back without even normalizing the SQL.
     r = QueryRouter(RouterPolicy(mode=RouterMode.SAMPLED))
     dec = r.route("SELECT a FROM t WHERE a = 1", None, conn=None)
     assert dec.routed is False
-    assert dec.trace.reason == "no template match"
+    assert dec.trace.reason == "no engines registered"
 
 
-def test_router_write_passthrough_marks_dirty():
+def test_router_no_template_match_falls_back():
+    # A registered (non-empty) registry, but the incoming query matches no template.
     reg = TemplateRegistry()
-    b = _binding(tables=("t",))
-    reg.register(b)
+    reg.register(_binding())
     r = QueryRouter(RouterPolicy(mode=RouterMode.SAMPLED), reg)
-    dec = r.route("INSERT INTO t VALUES (1, 'x')", None, conn=None)
+    dec = r.route("SELECT x FROM other_table", None, conn=None)
     assert dec.routed is False
-    assert dec.trace.decision == "write-passthrough"
-    assert "t" in dec.stale_tables
-    assert reg.is_dirty(b) is True
+    assert dec.trace.reason == "no template match"
 
 
 def test_router_matched_query_falls_back_without_engine():
@@ -185,7 +190,9 @@ def test_router_matched_query_falls_back_without_engine():
 
 
 def test_router_unparseable_falls_back():
-    r = QueryRouter(RouterPolicy(mode=RouterMode.SAMPLED))
+    reg = TemplateRegistry()
+    reg.register(_binding())  # non-empty, so route reaches the normalize step
+    r = QueryRouter(RouterPolicy(mode=RouterMode.SAMPLED), reg)
     dec = r.route("?!? not sql", None, conn=None)
     assert dec.routed is False
     assert dec.trace.reason == "unparseable SQL"

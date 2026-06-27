@@ -55,8 +55,8 @@ def _con():
         policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0),
         registry=TemplateRegistry(),
     )
-    con.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
-    con.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z'),(5,'z')")
+    con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
+    con.duckdb.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z'),(5,'z')")
     return con
 
 

@@ -59,10 +59,17 @@ def _env_float(name: str, default: float) -> float:
 class RouterPolicy:
     """Immutable routing configuration (per connection)."""
 
-    # Phase 1 defaults to OFF (no engines exist yet); Phase 2 flips the default to
-    # SAMPLED once engine workers can actually serve a matched template.
-    mode: RouterMode = RouterMode.OFF
+    # Default SAMPLED: routing is live, and with no engines registered every query still
+    # falls back, so behavior stays byte-identical to DuckDB until an engine appears. The
+    # router additionally skips all parsing when nothing is registered (see route()), so an
+    # engine-less connection pays no per-query cost. SYNNODB_ROUTER=off disables it entirely.
+    mode: RouterMode = RouterMode.SAMPLED
     enabled: bool = True                       # hard kill switch (env SYNNODB_ROUTER=off)
+
+    # Writes are not supported yet: a non-read statement on a SynnoConnection raises rather
+    # than running on DuckDB. Flip to False (or SYNNODB_BLOCK_WRITES=off) to pass writes
+    # through to DuckDB unaccelerated.
+    block_writes: bool = True
 
     cross_check_rate: float = 0.1              # fraction of routed queries also run on DuckDB
     select_only: bool = True                   # only SELECT-family statements may route
@@ -94,9 +101,10 @@ class RouterPolicy:
         """Build a policy from defaults, the environment, then explicit overrides.
 
         Recognized env vars:
-          ``SYNNODB_ROUTER``       off/on   -> mode / kill switch
-          ``SYNNODB_VERBOSE``      on/off   -> verbose
-          ``SYNNODB_CROSS_CHECK``  float    -> cross_check_rate
+          ``SYNNODB_ROUTER``        off/on   -> mode / kill switch
+          ``SYNNODB_VERBOSE``       on/off   -> verbose
+          ``SYNNODB_CROSS_CHECK``   float    -> cross_check_rate
+          ``SYNNODB_BLOCK_WRITES``  on/off   -> block_writes
         """
         base = cls()
         router_env = os.getenv("SYNNODB_ROUTER")
@@ -116,5 +124,6 @@ class RouterPolicy:
             enabled=enabled,
             verbose=_env_bool("SYNNODB_VERBOSE", base.verbose),
             cross_check_rate=_env_float("SYNNODB_CROSS_CHECK", base.cross_check_rate),
+            block_writes=_env_bool("SYNNODB_BLOCK_WRITES", base.block_writes),
         )
         return policy.with_(**overrides) if overrides else policy
