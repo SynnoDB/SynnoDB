@@ -7,6 +7,25 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<script>
+/* Mirror the wrapper site's light/dark theme. This page is loaded cross-origin
+   inside an <iframe> on the SynnoDB site, so it cannot read the parent's
+   localStorage/DOM directly. We pick the theme from (1) a ?theme= query param
+   (the wrapper forwards its own query string into the frame src), (2) this
+   origin's own localStorage (persists across query re-loads of the frame),
+   else default to light — matching the wrapper's default. ui.js additionally
+   listens for postMessage({type:'theme'}) so the wrapper can push live toggles. */
+(function () {
+  var KEY = 'bespoke-demo-theme';
+  function norm(t) { return (t === 'dark' || t === 'light') ? t : null; }
+  var t = null;
+  try { t = norm(new URLSearchParams(location.search).get('theme')); } catch (e) {}
+  if (!t) { try { t = norm(localStorage.getItem(KEY)); } catch (e) {} }
+  if (!t) t = 'light';
+  try { localStorage.setItem(KEY, t); } catch (e) {}
+  document.body.setAttribute('data-theme', t);
+})();
+</script>
 <header class="site-header">
   <span class="site-logo">BespokeOLAP</span>
   <span class="site-badge">Generated CPP Runner</span>
@@ -41,9 +60,6 @@
 <div id="progress"></div>
 <div id="chart"></div>
 <div id="output"></div>
-<footer class="site-footer">
-  <a href="/privacy">Privacy</a>
-</footer>
 <script src="/ui.js"></script>
 </body>
 </html>
