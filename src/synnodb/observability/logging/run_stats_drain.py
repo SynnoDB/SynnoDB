@@ -43,7 +43,7 @@ def get_timeline_plot(data: dict):
     import matplotlib.pyplot as plt
     import pandas as pd
 
-    from observability.plots.plot_timeline import PlotConfig, TimelineEngine
+    from synnodb.observability.plots.plot_timeline import PlotConfig, TimelineEngine
 
     if not data:
         fig, _ = plt.subplots()

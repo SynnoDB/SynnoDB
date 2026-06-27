@@ -3,14 +3,14 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from observability.plots.utils.wandb_utils import (
+from synnodb.observability.plots.utils.wandb_utils import (
     get_wandb_latest_query_runtimes,
     get_wandb_max_scale_factor,
     get_wandb_run,
     get_wandb_snapshot_hash,
     get_wandb_stats,
 )
-from workloads.workload_provider import Workload
+from synnodb.workloads.workload_provider import Workload
 
 logger = logging.getLogger(__name__)
 

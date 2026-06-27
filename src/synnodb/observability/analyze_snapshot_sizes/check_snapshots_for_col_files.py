@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, Path(__file__).parent.parent.parent.as_posix())
 
-from pipeline.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 
 SCRIPT_DIR = Path(__file__).parent
 # working_dir = SCRIPT_DIR.parent / "prepare_code_for_export" / "output"

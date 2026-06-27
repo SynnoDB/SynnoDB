@@ -8,18 +8,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
-from observability.benchmark.systems import track
-from observability.benchmark.writer import BenchmarkWriter
-from observability.logging.logger import setup_logging
-from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run_tool_mode import RunToolMode
-from utils.cli_config import Usecase
-from utils.utils import DBStorage, create_dir_and_set_permissions
-from workloads.workload_provider import Workload, WorkloadProvider
+from synnodb.observability.benchmark.systems import track
+from synnodb.observability.benchmark.writer import BenchmarkWriter
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils.cli_config import Usecase
+from synnodb.utils.utils import DBStorage, create_dir_and_set_permissions
+from synnodb.workloads.workload_provider import Workload, WorkloadProvider
 
 if TYPE_CHECKING:
-    from observability.benchmark.systems.track import TrackConfig
+    from synnodb.observability.benchmark.systems.track import TrackConfig
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def get_all_query_ids(benchmark) -> list[str]:
     ``observability.ui_template_runner`` modules import it from here. Accepts a
     benchmark string ("tpch", "ceb") or a :class:`Workload` enum value.
     """
-    from workloads.workload_provider_olap import _get_all_query_ids
+    from synnodb.workloads.workload_provider_olap import _get_all_query_ids
 
     name = benchmark.value if isinstance(benchmark, Workload) else str(benchmark)
     return _get_all_query_ids(name)
@@ -169,7 +169,7 @@ def _build_runner(
     scale_factors: list[float],
 ):
     if system_name == "bespoke":
-        from observability.benchmark.systems.bespoke import BespokeRunner
+        from synnodb.observability.benchmark.systems.bespoke import BespokeRunner
 
         assert snapshotter is not None, "snapshotter required for BespokeRunner"
         return BespokeRunner(
@@ -185,7 +185,7 @@ def _build_runner(
         )
 
     if system_name == "duckdb":
-        from observability.benchmark.systems.duckdb import DuckDBRunner
+        from synnodb.observability.benchmark.systems.duckdb import DuckDBRunner
 
         ddb = track_cfg.duckdb
         return DuckDBRunner(
@@ -199,7 +199,7 @@ def _build_runner(
         )
 
     if system_name == "umbra":
-        from observability.benchmark.systems.umbra import UmbraRunner
+        from synnodb.observability.benchmark.systems.umbra import UmbraRunner
 
         return UmbraRunner(
             parquet_path=track_cfg.duckdb.parquet_base_dir,
@@ -213,7 +213,7 @@ def _build_runner(
         )
 
     if system_name == "clickhouse":
-        from observability.benchmark.systems.clickhouse import ClickHouseRunner
+        from synnodb.observability.benchmark.systems.clickhouse import ClickHouseRunner
 
         return ClickHouseRunner(
             parquet_path=track_cfg.duckdb.parquet_base_dir,

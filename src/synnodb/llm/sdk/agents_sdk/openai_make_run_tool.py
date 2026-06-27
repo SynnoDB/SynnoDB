@@ -4,7 +4,7 @@ from agents.run_context import RunContextWrapper
 from agents.tool import FunctionTool
 from pydantic import BaseModel, Field
 
-from tools.run import RunTool
+from synnodb.tools.run import RunTool
 
 
 class RunArgs(BaseModel):

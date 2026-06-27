@@ -4,10 +4,10 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from cpp_runner.compiler.compiler import Compiler
-from synth_framework.git_snapshotter import GitSnapshotter
-from synth_framework.runtime_tracker import RuntimeTracker
-from utils import utils
+from synnodb.cpp_runner.compiler.compiler import Compiler
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.utils import utils
 
 logger = logging.getLogger(__name__)
 

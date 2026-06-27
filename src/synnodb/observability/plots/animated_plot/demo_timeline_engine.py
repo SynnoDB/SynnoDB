@@ -7,7 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from observability.plots.plot_timeline import PlotConfig, TimelineEngine
+from synnodb.observability.plots.plot_timeline import PlotConfig, TimelineEngine
 
 
 class XAxisMode(str, Enum):

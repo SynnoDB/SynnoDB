@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from utils.cli_config import Usecase
+from synnodb.utils.cli_config import Usecase
 
 PLAN_FILENAME_BY_USECASE = {
     Usecase.OLAP: "storage_plan.txt",

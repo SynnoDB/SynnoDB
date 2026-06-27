@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from llm.llm_caching.cached_llm_helper import (
+from synnodb.llm.llm_caching.cached_llm_helper import (
     LLMModelHelper,
     remove_absolute_applypatch_paths,
 )

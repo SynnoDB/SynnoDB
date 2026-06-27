@@ -11,14 +11,14 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent.parent))
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
+from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_mt,
     prepare_repo_and_load_snapshot,
 )
-from observability.logging.logger import setup_logging
-from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from observability.plots.utils.wandb_trace_preprocessor import SECTION_RULES
-from synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.observability.plots.utils.wandb_trace_preprocessor import SECTION_RULES
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 
 setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)

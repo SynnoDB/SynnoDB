@@ -2,11 +2,11 @@ import logging
 from abc import abstractmethod
 from pathlib import Path
 
-from conversations.filenames import PLAN_FILENAME_BY_USECASE
-from cpp_runner.prepare_repo.retrieve_framework_version_hash import extract_version_id
-from synth_framework.git_snapshotter import GitSnapshotter
-from utils import utils
-from workloads.workload_provider import WorkloadProvider
+from synnodb.conversations.filenames import PLAN_FILENAME_BY_USECASE
+from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import extract_version_id
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.utils import utils
+from synnodb.workloads.workload_provider import WorkloadProvider
 
 logger = logging.getLogger(__name__)
 

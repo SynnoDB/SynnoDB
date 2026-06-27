@@ -10,21 +10,21 @@ from dotenv import load_dotenv
 
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
 
-from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
+from synnodb.cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
+from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_base,
     prepare_repo_and_load_snapshot,
 )
-from cpp_runner.prepare_repo.prepare_olap import prepare_base
-from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
-from observability.logging.logger import setup_logging
-from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run import RunTool, RunToolMode, RunWorkerResult
-from tools.validate.query_validator_class import QueryValidator
-from utils.utils import DBStorage
-from workloads.query_execution_cache import QueryExecutionCache
-from workloads.system_factory_olap import OLAPSystemFactory
-from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
+from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.tools.run import RunTool, RunToolMode, RunWorkerResult
+from synnodb.tools.validate.query_validator_class import QueryValidator
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.query_execution_cache import QueryExecutionCache
+from synnodb.workloads.system_factory_olap import OLAPSystemFactory
+from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 setup_logging(level=logging.DEBUG)
 

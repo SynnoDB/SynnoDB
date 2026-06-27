@@ -17,10 +17,10 @@ import pandas as pd
 
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
 
-from observability.plots.utils.annotate_speedup_col import (
+from synnodb.observability.plots.utils.annotate_speedup_col import (
     annotate_total_speedup_per_turn,
 )
-from observability.plots.utils.wandb_utils import get_wandb_stats
+from synnodb.observability.plots.utils.wandb_utils import get_wandb_stats
 
 warnings.filterwarnings("ignore")
 

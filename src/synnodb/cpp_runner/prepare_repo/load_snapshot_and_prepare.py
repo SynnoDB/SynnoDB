@@ -2,10 +2,10 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
-from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
-from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run import delete_result_csv_files
-from utils.confirm_dialog import await_user_confirmation
+from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.tools.run import delete_result_csv_files
+from synnodb.utils.confirm_dialog import await_user_confirmation
 
 logger = logging.getLogger(__name__)
 

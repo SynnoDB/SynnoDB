@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-from observability.plots.utils.per_stage_data_prep import (
+from synnodb.observability.plots.utils.per_stage_data_prep import (
     INITIAL_STAGE,
     STAGES_CONFIG,
     _get_stage_starts,

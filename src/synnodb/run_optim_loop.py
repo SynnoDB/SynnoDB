@@ -1,14 +1,14 @@
 import argparse
 
-from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_optim
-from main import run_conv_wrapper
-from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from run_gen_base_impl import base_args, base_args_extract, validate_snapshot
-from utils.cli_config import RunConfig, add_common_args
-from utils.conv_name_utils import ConvMode
-from utils.gen_common import parse_query_ids
-from utils.utils import DBStorage
+from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_optim
+from synnodb.main import run_conv_wrapper
+from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.run_gen_base_impl import base_args, base_args_extract, validate_snapshot
+from synnodb.utils.cli_config import RunConfig, add_common_args
+from synnodb.utils.conv_name_utils import ConvMode
+from synnodb.utils.gen_common import parse_query_ids
+from synnodb.utils.utils import DBStorage
 
 ### RUN CMD
 # python run_optim_loop.py --conv optim1-22v1 --bespoke_storage --benchmark tpch --auto_u --auto_finish
@@ -20,7 +20,7 @@ from utils.utils import DBStorage
 
 def build_optim_conv_args(ctx: FrameworkContext):
     """Shared between the optim (this module) and make-mt conversation factories."""
-    from conversations.optimization_conversation import OptimConvArgs
+    from synnodb.conversations.optimization_conversation import OptimConvArgs
 
     assert ctx.query_validator is not None, (
         "query_validator must be provided for optimization conversations (disable_valtool is set?)"
@@ -40,7 +40,7 @@ def _factory(ctx: FrameworkContext):
     optim_conv_args = build_optim_conv_args(ctx)
 
     if ctx.db_storage == DBStorage.IN_MEMORY:
-        from conversations.in_mem_1_optim_conv import InMem1OptimizationConversation
+        from synnodb.conversations.in_mem_1_optim_conv import InMem1OptimizationConversation
 
         return InMem1OptimizationConversation(
             optim_conv_args=optim_conv_args,
@@ -48,7 +48,7 @@ def _factory(ctx: FrameworkContext):
             **ctx.conv_args,
         )
     elif ctx.db_storage == DBStorage.SSD:
-        from conversations.ssd_1_st_opt_conv import SSD1STOptimConv
+        from synnodb.conversations.ssd_1_st_opt_conv import SSD1STOptimConv
 
         return SSD1STOptimConv(
             optim_conv_args=optim_conv_args,
@@ -161,6 +161,10 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     return parser
 
 
+def cli():
+    """Console-script entry point."""
+    main(build_parser().parse_args())
+
+
 if __name__ == "__main__":
-    args = build_parser().parse_args()
-    main(args)
+    cli()

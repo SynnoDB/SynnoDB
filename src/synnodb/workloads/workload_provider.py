@@ -4,8 +4,8 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 
-from tools.run_tool_mode import RunToolMode
-from utils import utils
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils import utils
 
 
 class Workload(enum.Enum):

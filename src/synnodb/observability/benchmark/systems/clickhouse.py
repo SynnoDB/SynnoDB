@@ -10,7 +10,7 @@ import pandas as pd
 from clickhouse_connect.driver.client import Client
 from tqdm import tqdm
 
-from workloads.dataset.dataset_tables_dict import get_tables_for_benchmark
+from synnodb.workloads.dataset.dataset_tables_dict import get_tables_for_benchmark
 
 logger = logging.getLogger(__name__)
 

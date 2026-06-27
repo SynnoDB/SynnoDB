@@ -2,11 +2,11 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from observability.benchmark.systems.duckdb_connection_manager import (
+from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
-from utils.utils import DBStorage
-from workloads.workload_provider import Workload
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider import Workload
 
 logger = logging.getLogger(__name__)
 

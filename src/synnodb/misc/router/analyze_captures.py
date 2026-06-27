@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pgrouter.analyze import main
+from synnodb.misc.router.pgrouter.analyze import main
 
 
 if __name__ == "__main__":

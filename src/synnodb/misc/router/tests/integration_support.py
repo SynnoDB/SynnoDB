@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 
-from pgrouter.capture_files import load_result_rows
+from synnodb.misc.router.pgrouter.capture_files import load_result_rows
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

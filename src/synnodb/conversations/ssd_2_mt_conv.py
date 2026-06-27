@@ -1,15 +1,15 @@
 import logging
 from typing import List
 
-from conversations.in_mem_2_mt_conv import InMem2MTConversation
-from conversations.prompts_gen import (
+from synnodb.conversations.in_mem_2_mt_conv import InMem2MTConversation
+from synnodb.conversations.prompts_gen import (
     load_expert_knowledge,
     optim2_prompt_introduce_threading,
     optim_prompt_w_expert_knowledge,
     optim_prompt_w_human_reference,
     optim_prompt_w_trace,
 )
-from conversations.stage_config import StageConfig, StaticStageConfig
+from synnodb.conversations.stage_config import StageConfig, StaticStageConfig
 
 logger = logging.getLogger(__name__)
 

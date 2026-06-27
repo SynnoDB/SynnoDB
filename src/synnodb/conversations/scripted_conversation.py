@@ -2,8 +2,8 @@ import json
 import logging
 from typing import List, Optional
 
-from conversations.conversation import AbstractConversation
-from utils.utils import create_dir_and_set_permissions
+from synnodb.conversations.conversation import AbstractConversation
+from synnodb.utils.utils import create_dir_and_set_permissions
 
 logger = logging.getLogger(__name__)
 

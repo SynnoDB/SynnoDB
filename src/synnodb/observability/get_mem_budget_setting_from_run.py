@@ -27,8 +27,8 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from observability.plots.utils.wandb_utils import get_wandb_run
-from utils.cli_config import DEFAULT_ARTIFACTS_DIR
+from synnodb.observability.plots.utils.wandb_utils import get_wandb_run
+from synnodb.utils.cli_config import DEFAULT_ARTIFACTS_DIR
 
 MEM_LIMIT_RE = re.compile(r"mem_limit=(\d+)")
 

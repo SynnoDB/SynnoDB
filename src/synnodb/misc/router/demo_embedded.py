@@ -8,7 +8,7 @@ import logging
 import signal
 import threading
 
-from pgrouter import (
+from synnodb.misc.router.pgrouter import (
     EmbeddedRouter,
     ResultColumn,
     RouterConfig,
@@ -21,8 +21,8 @@ from pgrouter import (
     TransactionStartContext,
     TransactionStatementContext,
 )
-from pgrouter.cli import parse_host_port
-from pgrouter.protocols.postgres.pgtypes import INT4_OID, TEXT_OID
+from synnodb.misc.router.pgrouter.cli import parse_host_port
+from synnodb.misc.router.pgrouter.protocols.postgres.pgtypes import INT4_OID, TEXT_OID
 
 DEFAULT_LISTEN = "127.0.0.1:5432"
 DEFAULT_UPSTREAM = "127.0.0.1:15433"

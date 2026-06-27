@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 
 logger = logging.getLogger(__name__)
 

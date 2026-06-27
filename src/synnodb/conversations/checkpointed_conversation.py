@@ -3,7 +3,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
-from conversations.conversation import (
+from synnodb.conversations.conversation import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_OFF,
@@ -12,15 +12,15 @@ from conversations.conversation import (
     VALIDATE_OUTPUT_STDOUT_ON,
     AbstractConversation,
 )
-from conversations.stage_config import DynamicStageConfig, StaticStageConfig
-from conversations.supervision_agent import (
+from synnodb.conversations.stage_config import DynamicStageConfig, StaticStageConfig
+from synnodb.conversations.supervision_agent import (
     SUPERVISION_STAGE_VISIBILITY_MARKER,
     SupervisionAgent,
 )
-from observability.logging.run_stats_collector import RunStatsCollector
-from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run import RunTool
-from tools.run_tool_mode import RunToolMode
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.tools.run import RunTool
+from synnodb.tools.run_tool_mode import RunToolMode
 
 logger = logging.getLogger(__name__)
 

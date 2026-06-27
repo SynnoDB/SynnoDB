@@ -2,24 +2,24 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from conversations.checkpointed_conversation import (
+from synnodb.conversations.checkpointed_conversation import (
     CheckpointedConversation,
     extract_speedup_of_last_snapshot,
 )
-from conversations.conversation import (
+from synnodb.conversations.conversation import (
     COMPACTION_MARKER,
 )
-from conversations.filenames import get_filenames
-from conversations.stage_config import StaticStageConfig
-from conversations.utils.cleanup_plans import (
+from synnodb.conversations.filenames import get_filenames
+from synnodb.conversations.stage_config import StaticStageConfig
+from synnodb.conversations.utils.cleanup_plans import (
     cleanup_duckdb_plan,
     cleanup_umbra_plan,
 )
-from tools.run import delete_result_csv_files
-from tools.run_tool_mode import RunToolMode
-from tools.validate.query_validator_class import QueryValidator
-from utils.utils import DBStorage
-from workloads.system_factory import System
+from synnodb.tools.run import delete_result_csv_files
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.tools.validate.query_validator_class import QueryValidator
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.system_factory import System
 
 logger = logging.getLogger(__name__)
 

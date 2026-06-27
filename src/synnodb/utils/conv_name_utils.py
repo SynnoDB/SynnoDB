@@ -1,7 +1,7 @@
 import random
 from datetime import datetime
 
-from utils.utils import DBStorage
+from synnodb.utils.utils import DBStorage
 
 
 # conv modes enum

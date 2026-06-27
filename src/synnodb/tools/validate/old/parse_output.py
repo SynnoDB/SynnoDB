@@ -1,6 +1,6 @@
 from typing import List
 
-from tools.validate.run_and_check_queries import Measurement
+from synnodb.tools.validate.run_and_check_queries import Measurement
 
 
 def parse_output(

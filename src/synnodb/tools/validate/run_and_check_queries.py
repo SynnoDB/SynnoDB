@@ -7,11 +7,11 @@ from typing import DefaultDict, Dict, List, Optional
 import pandas as pd
 import wandb
 
-from observability.logging.wandb_plots_gen import create_wandb_speedup_plot
-from utils.utils import prefix_dict
-from workloads.query_execution_cache import QueryExecutionCache
-from workloads.system_factory import System
-from workloads.workload_provider import ExecSettings, QueryBatch
+from synnodb.observability.logging.wandb_plots_gen import create_wandb_speedup_plot
+from synnodb.utils.utils import prefix_dict
+from synnodb.workloads.query_execution_cache import QueryExecutionCache
+from synnodb.workloads.system_factory import System
+from synnodb.workloads.workload_provider import ExecSettings, QueryBatch
 
 logger = logging.getLogger(__name__)
 

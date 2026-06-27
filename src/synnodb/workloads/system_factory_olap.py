@@ -1,10 +1,10 @@
-from observability.benchmark.systems.duckdb_connection_manager import (
+from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
-from observability.benchmark.systems.umbra import UmbraRunner
-from workloads.system_factory import System, SystemFactory
-from workloads.workload_provider import ExecSettings, GeneralSystemConfig, Workload
-from workloads.workload_provider_olap import (
+from synnodb.observability.benchmark.systems.umbra import UmbraRunner
+from synnodb.workloads.system_factory import System, SystemFactory
+from synnodb.workloads.workload_provider import ExecSettings, GeneralSystemConfig, Workload
+from synnodb.workloads.workload_provider_olap import (
     OLAPExecSettings,
     OLAPWorkload,
     OLAPWorkloadProvider,

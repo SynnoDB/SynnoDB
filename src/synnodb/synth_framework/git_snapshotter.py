@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Iterable, Tuple
 from urllib.parse import urlparse
 
-from observability.logging.notify import send_notification
-from utils.confirm_dialog import await_user_confirmation
+from synnodb.observability.logging.notify import send_notification
+from synnodb.utils.confirm_dialog import await_user_confirmation
 
 logger = logging.getLogger(__name__)
 

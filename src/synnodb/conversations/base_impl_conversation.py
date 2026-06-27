@@ -3,19 +3,19 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from conversations.checkpointed_conversation import (
+from synnodb.conversations.checkpointed_conversation import (
     CheckpointedConversation,
     extract_speedup_of_last_snapshot,
 )
-from conversations.conversation import (
+from synnodb.conversations.conversation import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_OFF,
     VALIDATE_ON,
     VALIDATE_OUTPUT_STDOUT_OFF,
 )
-from conversations.filenames import get_filenames
-from conversations.prompts_gen import (
+from synnodb.conversations.filenames import get_filenames
+from synnodb.conversations.prompts_gen import (
     base_check_correctness_all_prompt,
     base_exec_validate_for_query_prompt,
     base_exec_validate_prompt,
@@ -27,18 +27,18 @@ from conversations.prompts_gen import (
     base_planner_prompt,
     base_run_all_and_fix_prompt,
 )
-from conversations.stage_config import (
+from synnodb.conversations.stage_config import (
     DynamicStageConfig,
     StageConfig,
     StaticStageConfig,
 )
-from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
-from observability.logging.debug_logger import DebugLogger
-from tools.run import RunTool
-from tools.run_tool_mode import RunToolMode
-from utils.utils import DBStorage, is_persistent_storage, storage_label
-from workloads.workload_provider import Workload
-from workloads.workload_provider_olap import OLAPWorkload
+from synnodb.conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
+from synnodb.observability.logging.debug_logger import DebugLogger
+from synnodb.tools.run import RunTool
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils.utils import DBStorage, is_persistent_storage, storage_label
+from synnodb.workloads.workload_provider import Workload
+from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
 logger = logging.getLogger(__name__)
 

@@ -8,12 +8,12 @@ from typing import Callable, Dict, List, Optional, Tuple
 import pandas as pd
 from tqdm import tqdm
 
-from observability.benchmark.systems.duckdb_connection_manager import (
+from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
-from observability.benchmark.systems.umbra import UmbraRunner
-from utils.sql_utils import extract_order_by_columns
-from utils.utils import (
+from synnodb.observability.benchmark.systems.umbra import UmbraRunner
+from synnodb.utils.sql_utils import extract_order_by_columns
+from synnodb.utils.utils import (
     DBStorage,
     create_dir_and_set_permissions,
     dump_pickle,

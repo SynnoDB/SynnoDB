@@ -12,10 +12,10 @@ from agents.memory.openai_responses_compaction_session import (
 )
 from agents.memory.session import OpenAIResponsesCompactionArgs
 
-from llm.anthropic.claude_compaction_helper import ClaudeCompactionHelper
-from observability.logging.run_stats_collector import RunStatsCollector
-from synth_framework.runtime_tracker import RuntimeTracker
-from utils import utils
+from synnodb.llm.anthropic.claude_compaction_helper import ClaudeCompactionHelper
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.utils import utils
 
 logger = logging.getLogger(__name__)
 

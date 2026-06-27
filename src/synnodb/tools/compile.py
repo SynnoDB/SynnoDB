@@ -2,12 +2,12 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
-from observability.logging.run_stats_collector import RunStatsCollector
-from synth_framework.git_snapshotter import GitSnapshotter
-from synth_framework.runtime_tracker import RuntimeTracker
-from utils.cli_config import Usecase
-from utils.utils import DBStorage
+from synnodb.cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.utils.cli_config import Usecase
+from synnodb.utils.utils import DBStorage
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.integration_support import (
+from synnodb.misc.router.tests.integration_support import (
     DockerPostgresInstance,
     cleanup_test_postgres_containers,
     compile_jdbc_test_client,

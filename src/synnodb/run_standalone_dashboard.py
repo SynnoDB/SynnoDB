@@ -24,7 +24,7 @@ import logging
 import sys
 from urllib.parse import urlencode
 
-from observability.live_ui.live_dashboard import StandaloneDashboard
+from synnodb.observability.live_ui.live_dashboard import StandaloneDashboard
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 

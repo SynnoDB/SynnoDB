@@ -10,18 +10,18 @@ import random
 import sys
 from pathlib import Path
 
-import cpp_runner
-from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from tools.validate.query_validator_class import format_args_string
-from workloads.dataset.query_gen_factory import get_query_gen
+import synnodb.cpp_runner as cpp_runner
+from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.tools.validate.query_validator_class import format_args_string
+from synnodb.workloads.dataset.query_gen_factory import get_query_gen
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from observability.benchmark.run import get_all_query_ids
-from observability.logging.logger import setup_logging
-from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run import RunTool
-from utils.confirm_dialog import await_user_confirmation
+from synnodb.observability.benchmark.run import get_all_query_ids
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.tools.run import RunTool
+from synnodb.utils.confirm_dialog import await_user_confirmation
 
 BASE_PARQUET_DIR = "/mnt/labstore/bespoke_olap"
 

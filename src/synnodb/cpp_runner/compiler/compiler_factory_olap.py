@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from cpp_runner.compiler.compiler_factory import CompilerFactory, FilePaths
-from utils.utils import DBStorage
+from synnodb.cpp_runner.compiler.compiler_factory import CompilerFactory, FilePaths
+from synnodb.utils.utils import DBStorage
 
 
 class OLAPCompilerFactory(CompilerFactory):

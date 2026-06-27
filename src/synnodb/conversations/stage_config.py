@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from workloads.workload_provider import ExecSettings
+from synnodb.workloads.workload_provider import ExecSettings
 
 
 @dataclass

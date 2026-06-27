@@ -11,7 +11,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from tqdm import tqdm
 
-from observability.plots.animated_plot.config import (
+from synnodb.observability.plots.animated_plot.config import (
     BACKGROUND_IMAGE_PATH,
     BG,
     BLACK_TEXT,
@@ -44,11 +44,11 @@ from observability.plots.animated_plot.config import (
     H,
     W,
 )
-from observability.plots.animated_plot.demo_timeline_engine import (
+from synnodb.observability.plots.animated_plot.demo_timeline_engine import (
     DemoTimelineEngine,
 )
-from observability.plots.animated_plot.live_plot import TimelinePlotRenderer
-from observability.plots.animated_plot.terminal_input_builder import (
+from synnodb.observability.plots.animated_plot.live_plot import TimelinePlotRenderer
+from synnodb.observability.plots.animated_plot.terminal_input_builder import (
     PROMPT_CWD,
     PROMPT_PREFIX,
     PROMPT_USER_HOST,

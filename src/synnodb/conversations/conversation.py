@@ -12,10 +12,10 @@ from prompt_toolkit.filters import is_multiline
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
-from llm.sdk.sdk_wrapper import SDKWrapper
-from observability.logging.notify import send_notification
-from synth_framework.runtime_tracker import RuntimeTracker
-from utils.utils import atomic_write, create_parent_and_set_permissions
+from synnodb.llm.sdk.sdk_wrapper import SDKWrapper
+from synnodb.observability.logging.notify import send_notification
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.utils.utils import atomic_write, create_parent_and_set_permissions
 
 COMPACTION_MARKER = "<<COMPACTION>>"
 BENCHMARK_MARKER = "<<BENCHMARK>>"

@@ -1,9 +1,9 @@
-from observability.plots.classify_bespoke_storage.llms import (
+from synnodb.observability.plots.classify_bespoke_storage.llms import (
     cost,
     count_tokens,
     execute,
 )
-from observability.plots.utils.per_stage_data_prep import load_wandb_data
+from synnodb.observability.plots.utils.per_stage_data_prep import load_wandb_data
 
 
 def get_run_info(

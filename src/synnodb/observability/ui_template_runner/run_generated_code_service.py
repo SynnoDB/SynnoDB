@@ -44,11 +44,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from observability.benchmark.systems.duckdb_connection_manager import (
+from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
-from workloads.dataset.dataset_tables_dict import get_dataset_name
-from workloads.dataset.query_gen_factory import get_query_gen
+from synnodb.workloads.dataset.dataset_tables_dict import get_dataset_name
+from synnodb.workloads.dataset.query_gen_factory import get_query_gen
 
 try:
     import geoip2.database
@@ -58,13 +58,13 @@ except ImportError:  # Optional; deploy.sh installs it for the demo stack.
 
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
 
-from observability.benchmark.run import get_all_query_ids
-from observability.logging.logger import setup_logging
-from observability.ui_template_runner.service_notify import (
+from synnodb.observability.benchmark.run import get_all_query_ids
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.observability.ui_template_runner.service_notify import (
     notify_5xx_response,
     notify_service_crash,
 )
-from observability.ui_template_runner.ui_handler import handle_static
+from synnodb.observability.ui_template_runner.ui_handler import handle_static
 
 MAX_PLACEHOLDER_VALUE_LEN = 128
 

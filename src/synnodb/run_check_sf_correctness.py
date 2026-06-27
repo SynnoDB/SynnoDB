@@ -1,14 +1,14 @@
 import argparse
 
-from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_replay_source_run
-from main import run_conv_wrapper
-from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from run_gen_base_impl import base_args, base_args_extract, validate_snapshot
-from utils.cli_config import RunConfig, add_common_args
-from utils.conv_name_utils import ConvMode
-from utils.gen_common import parse_query_ids
-from utils.utils import DBStorage
+from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_replay_source_run
+from synnodb.main import run_conv_wrapper
+from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.run_gen_base_impl import base_args, base_args_extract, validate_snapshot
+from synnodb.utils.cli_config import RunConfig, add_common_args
+from synnodb.utils.conv_name_utils import ConvMode
+from synnodb.utils.gen_common import parse_query_ids
+from synnodb.utils.utils import DBStorage
 
 ### RUN CMD
 # python run_check_sf_correctness.py --source_run_id <wandb-id> --target_sf 100 \
@@ -16,7 +16,7 @@ from utils.utils import DBStorage
 
 
 def _factory(ctx: FrameworkContext):
-    from conversations.check_sf_correctness_conv import CheckSFCorrectnessConv
+    from synnodb.conversations.check_sf_correctness_conv import CheckSFCorrectnessConv
 
     assert ctx.args.target_sf is not None, (
         "target_sf must be provided for check-sf correctness conversation"
@@ -122,6 +122,10 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     return parser
 
 
+def cli():
+    """Console-script entry point."""
+    main(build_parser().parse_args())
+
+
 if __name__ == "__main__":
-    args = build_parser().parse_args()
-    main(args)
+    cli()

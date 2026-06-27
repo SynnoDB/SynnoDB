@@ -4,8 +4,8 @@ import pickle
 import sys
 from pathlib import Path
 
-from pipeline.git_snapshotter import GitSnapshotter
-from utils.logging_and_reporting.logger import setup_logging
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.utils.logging_and_reporting.logger import setup_logging
 
 logger = logging.getLogger(__name__)
 

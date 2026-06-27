@@ -7,19 +7,19 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from cpp_runner.compiler.compiler_cached import CachedCompiler
-from cpp_runner.hotpatch.hotpatch_proc import HotpatchProc, HotpatchProcRunResult
-from cpp_runner.hotpatch.pool import HotpatchPool
-from observability.logging.run_stats_collector import RunStatsCollector
-from tools.run_tool_mode import RunToolMode
-from tools.validate.query_validator_class import (
+from synnodb.cpp_runner.compiler.compiler_cached import CachedCompiler
+from synnodb.cpp_runner.hotpatch.hotpatch_proc import HotpatchProc, HotpatchProcRunResult
+from synnodb.cpp_runner.hotpatch.pool import HotpatchPool
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.tools.validate.query_validator_class import (
     ExecCallbackResult,
     QueryValidator,
 )
-from tools.validate.run_and_check_queries import assemble_error
-from utils.json_utils import json_dumps
-from utils.utils import DBStorage
-from workloads.workload_provider import QueryBatch, WorkloadProvider
+from synnodb.tools.validate.run_and_check_queries import assemble_error
+from synnodb.utils.json_utils import json_dumps
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider import QueryBatch, WorkloadProvider
 
 logger = logging.getLogger(__name__)
 

@@ -2,8 +2,8 @@ import textwrap
 from pathlib import Path
 from string import Template
 
-from tools.run_tool_mode import RunToolMode
-from workloads.workload_provider import ExecSettings
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.workloads.workload_provider import ExecSettings
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 

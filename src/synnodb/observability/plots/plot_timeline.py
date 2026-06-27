@@ -15,15 +15,15 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import pandas as pd
 
-from observability.plots.utils.annotate_speedup_col import (
+from synnodb.observability.plots.utils.annotate_speedup_col import (
     annotate_total_speedup_per_turn,
 )
-from observability.plots.utils.wandb_trace_preprocessor import (
+from synnodb.observability.plots.utils.wandb_trace_preprocessor import (
     SECTION_RULES,
     DataCleaner,
     WorkedOnSpan,
 )
-from observability.plots.utils.wandb_utils import get_wandb_stats
+from synnodb.observability.plots.utils.wandb_utils import get_wandb_stats
 
 warnings.filterwarnings("ignore")
 

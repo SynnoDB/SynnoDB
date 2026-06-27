@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
 
-from cpp_runner.compiler.compiler import Compiler
+from synnodb.cpp_runner.compiler.compiler import Compiler
 
 logger = logging.getLogger(__name__)
 

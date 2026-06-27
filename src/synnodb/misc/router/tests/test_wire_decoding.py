@@ -4,7 +4,7 @@ import datetime as dt
 import struct
 import unittest
 
-from pgrouter.protocols.postgres.pgtypes import (
+from synnodb.misc.router.pgrouter.protocols.postgres.pgtypes import (
     BOOL_OID,
     BYTEA_OID,
     DATE_OID,
@@ -17,7 +17,7 @@ from pgrouter.protocols.postgres.pgtypes import (
     TIMESTAMPTZ_OID,
     UUID_OID,
 )
-from pgrouter.protocols.postgres.value_decoding import (
+from synnodb.misc.router.pgrouter.protocols.postgres.value_decoding import (
     decode_binary_value,
 )
 

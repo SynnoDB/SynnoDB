@@ -14,17 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from cpp_runner.compiler.compiler_cached import CachedCompiler
-from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareFn
-from cpp_runner.prepare_repo.prepare_olap import prepare_mt, prepare_optim
-from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
-from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
-from synth_framework.git_snapshotter import GitSnapshotter
-from utils.cli_config import Usecase
-from utils.utils import DBStorage
-from workloads.workload_provider import Workload, WorkloadProvider
-from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from synnodb.cpp_runner.compiler.compiler_cached import CachedCompiler
+from synnodb.cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
+from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareFn
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_mt, prepare_optim
+from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.utils.cli_config import Usecase
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider import Workload, WorkloadProvider
+from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 # Systems that are meaningful per use-case.
 AVAILABLE_SYSTEMS_BY_USECASE: dict[Usecase, tuple[str, ...]] = {

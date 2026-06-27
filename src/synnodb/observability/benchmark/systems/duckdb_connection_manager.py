@@ -8,9 +8,9 @@ import duckdb
 import pandas as pd
 from tqdm import tqdm
 
-from utils.drop_caches import drop_os_caches, is_memory_backed
-from utils.utils import DBStorage
-from workloads.workload_provider import Workload
+from synnodb.utils.drop_caches import drop_os_caches, is_memory_backed
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider import Workload
 
 
 class DuckDBConnectionManager:

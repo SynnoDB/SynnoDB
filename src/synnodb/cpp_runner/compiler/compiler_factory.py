@@ -2,9 +2,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from cpp_runner.compiler.compiler_utils import _DynamicQueryCompiler
-from synth_framework.git_snapshotter import GitSnapshotter
-from synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.cpp_runner.compiler.compiler_utils import _DynamicQueryCompiler
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
 
 
 @dataclass

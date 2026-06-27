@@ -1,6 +1,6 @@
 import logging
 
-from tools.workspace_editor import WorkspaceEditor
+from synnodb.tools.workspace_editor import WorkspaceEditor
 
 logger = logging.getLogger(__name__)
 

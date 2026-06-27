@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pgrouter.testclient import (
+from synnodb.misc.router.pgrouter.testclient import (
     BINARY_EXTENDED_QUERY,
     BINARY_EXTENDED_RESULT_TYPES,
     BINARY_EXTENDED_STATEMENT_NAME,
@@ -21,7 +21,7 @@ from pgrouter.testclient import (
     run_queries,
 )
 
-from tests.integration_support import (
+from synnodb.misc.router.tests.integration_support import (
     DockerPostgresInstance,
     cleanup_test_postgres_containers,
     load_jsonl_records,

@@ -1,15 +1,15 @@
 import argparse
 
-from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_mt
-from main import run_conv_wrapper
-from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from run_gen_base_impl import base_args, base_args_extract, validate_snapshot
-from run_optim_loop import build_optim_conv_args
-from utils.cli_config import RunConfig, add_common_args
-from utils.conv_name_utils import ConvMode
-from utils.gen_common import parse_query_ids
-from utils.utils import DBStorage
+from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_mt
+from synnodb.main import run_conv_wrapper
+from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.run_gen_base_impl import base_args, base_args_extract, validate_snapshot
+from synnodb.run_optim_loop import build_optim_conv_args
+from synnodb.utils.cli_config import RunConfig, add_common_args
+from synnodb.utils.conv_name_utils import ConvMode
+from synnodb.utils.gen_common import parse_query_ids
+from synnodb.utils.utils import DBStorage
 
 ### RUN CMD
 # python run_add_multi_threading.py --optim_run_id <wandb-id> --bespoke_storage --benchmark tpch \
@@ -23,7 +23,7 @@ def _factory(ctx: FrameworkContext):
     optim_conv_args = build_optim_conv_args(ctx)
 
     if ctx.db_storage == DBStorage.IN_MEMORY:
-        from conversations.in_mem_2_mt_conv import InMem2MTConversation
+        from synnodb.conversations.in_mem_2_mt_conv import InMem2MTConversation
 
         return InMem2MTConversation(
             benchmark=ctx.args.benchmark,
@@ -32,7 +32,7 @@ def _factory(ctx: FrameworkContext):
             **ctx.conv_args,
         )
     elif ctx.db_storage == DBStorage.SSD:
-        from conversations.ssd_2_mt_conv import SSD2MTOptConv
+        from synnodb.conversations.ssd_2_mt_conv import SSD2MTOptConv
 
         return SSD2MTOptConv(
             benchmark=ctx.args.benchmark,
@@ -136,6 +136,10 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     return parser
 
 
+def cli():
+    """Console-script entry point."""
+    main(build_parser().parse_args())
+
+
 if __name__ == "__main__":
-    args = build_parser().parse_args()
-    main(args)
+    cli()

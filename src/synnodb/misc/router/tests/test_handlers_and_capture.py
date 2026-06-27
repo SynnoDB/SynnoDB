@@ -7,10 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pgrouter.protocols.postgres.frontend import handle_frontend_message
-from pgrouter.output import append_query_record, append_result_row
-from pgrouter.query_capture import start_query_tracking
-from pgrouter.state import ColumnInfo, SessionState
+from synnodb.misc.router.pgrouter.protocols.postgres.frontend import handle_frontend_message
+from synnodb.misc.router.pgrouter.output import append_query_record, append_result_row
+from synnodb.misc.router.pgrouter.query_capture import start_query_tracking
+from synnodb.misc.router.pgrouter.state import ColumnInfo, SessionState
 
 
 INT4_OID = 23

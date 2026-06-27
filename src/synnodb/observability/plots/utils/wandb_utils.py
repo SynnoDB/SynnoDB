@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 
-from utils.utils import (
+from synnodb.utils.utils import (
     create_dir_and_set_permissions,
     dump_pickle,
     load_pickle,

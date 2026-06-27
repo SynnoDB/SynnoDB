@@ -10,49 +10,49 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from conversations.filenames import get_filenames, get_plan_filename
-from conversations.prompts_gen import gen_incorrect_output_prompt
-from conversations.supervision_agent import SupervisionAgent
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
+from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.conversations.filenames import get_filenames, get_plan_filename
+from synnodb.conversations.prompts_gen import gen_incorrect_output_prompt
+from synnodb.conversations.supervision_agent import SupervisionAgent
+from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
-from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
-from cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
-from cpp_runner.prepare_repo.retrieve_framework_version_hash import (
+from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
+from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
 )
-from llm.sdk.agents_sdk.openai_sdk import OpenAIAgentsSDKWrapper
-from observability.live_ui.live_dashboard import LiveDashboardDrain
-from observability.logging import notify
-from observability.logging.logger import setup_logging
-from observability.logging.run_stats_collector import RunStatsCollector
-from observability.logging.run_stats_drain import DataDrain, DuckDBDrain, WandbDrain
-from observability.logging.weave_cache import configure_weave_cache_dirs
-from synth_framework.git_snapshotter import GitSnapshotter
-from synth_framework.handle_prompt import handle_prompt
-from synth_framework.runtime_tracker import RuntimeTracker
-from tools.compile import CompileTool
-from tools.run import RunTool
-from tools.shell_executor import ShellExecutor
-from tools.validate.query_validator_class import QueryValidator
-from tools.workspace_editor import WorkspaceEditor
-from utils.cli_config import RunConfig, Usecase, add_common_args
-from utils.confirm_dialog import await_user_confirmation
-from utils.conv_name_utils import generate_conv_name
-from utils.core_utils import get_cores_for_current_machine
-from utils.hugepages import get_num_numa_nodes, set_hugepages
-from utils.pkgconfig import check_pkg
-from utils.snapshot_utils import load_storage_plan_from_snapshot
-from utils.utils import (
+from synnodb.llm.sdk.agents_sdk.openai_sdk import OpenAIAgentsSDKWrapper
+from synnodb.observability.live_ui.live_dashboard import LiveDashboardDrain
+from synnodb.observability.logging import notify
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.observability.logging.run_stats_drain import DataDrain, DuckDBDrain, WandbDrain
+from synnodb.observability.logging.weave_cache import configure_weave_cache_dirs
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.handle_prompt import handle_prompt
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.tools.compile import CompileTool
+from synnodb.tools.run import RunTool
+from synnodb.tools.shell_executor import ShellExecutor
+from synnodb.tools.validate.query_validator_class import QueryValidator
+from synnodb.tools.workspace_editor import WorkspaceEditor
+from synnodb.utils.cli_config import RunConfig, Usecase, add_common_args
+from synnodb.utils.confirm_dialog import await_user_confirmation
+from synnodb.utils.conv_name_utils import generate_conv_name
+from synnodb.utils.core_utils import get_cores_for_current_machine
+from synnodb.utils.hugepages import get_num_numa_nodes, set_hugepages
+from synnodb.utils.pkgconfig import check_pkg
+from synnodb.utils.snapshot_utils import load_storage_plan_from_snapshot
+from synnodb.utils.utils import (
     DBStorage,
     ask_yes_no,
     create_dir_and_set_permissions,
     get_disk_db_dir,
 )
-from workloads.query_execution_cache import QueryExecutionCache
-from workloads.system_factory_olap import OLAPSystemFactory
-from workloads.workload_provider_olap import (
+from synnodb.workloads.query_execution_cache import QueryExecutionCache
+from synnodb.workloads.system_factory_olap import OLAPSystemFactory
+from synnodb.workloads.workload_provider_olap import (
     OLAPWorkload,
     OLAPWorkloadProvider,
 )
@@ -799,7 +799,7 @@ if __name__ == "__main__":
     if args.command == "manual":
         # the manual debug entry point is the only consumer that resolves a spec
         # by name; the run_*.py scripts pass their own spec directly.
-        from conversations.manual_specs import get_spec
+        from synnodb.conversations.manual_specs import get_spec
 
         spec = get_spec(args.conv_mode)
         run_conv_wrapper(args, run_config=None, spec=spec)

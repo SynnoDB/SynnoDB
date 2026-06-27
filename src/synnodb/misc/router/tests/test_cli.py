@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import unittest
 
-from pgrouter.cli import parse_host_port
+from synnodb.misc.router.pgrouter.cli import parse_host_port
 
 
 class CliParseTest(unittest.TestCase):

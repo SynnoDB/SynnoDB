@@ -18,7 +18,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from observability.logging import notify
+from synnodb.observability.logging import notify
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
 

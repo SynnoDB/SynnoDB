@@ -9,10 +9,10 @@ from pathlib import Path
 import psycopg2
 from tqdm import tqdm
 
-from utils.drop_caches import drop_os_caches, is_memory_backed
-from utils.utils import DBStorage, create_dir_and_set_permissions
-from workloads.workload_provider import Workload
-from workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from synnodb.utils.drop_caches import drop_os_caches, is_memory_backed
+from synnodb.utils.utils import DBStorage, create_dir_and_set_permissions
+from synnodb.workloads.workload_provider import Workload
+from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 

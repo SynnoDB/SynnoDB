@@ -12,12 +12,12 @@ from agents.extensions.models.litellm_model import LitellmModel
 from agents.models.reasoning_content_replay import ReasoningContentReplayContext
 from litellm.exceptions import BadGatewayError, InternalServerError, RateLimitError
 
-from llm.llm_caching.cached_llm_helper import LLMModelHelper
-from observability.logging.run_stats_collector import RunStatsCollector, get_response_id
-from synth_framework.git_snapshotter import GitSnapshotter
-from synth_framework.runtime_tracker import RuntimeTracker
-from tools.tool_call_error_logger import log_tool_call_error
-from utils.utils import create_dir_and_set_permissions
+from synnodb.llm.llm_caching.cached_llm_helper import LLMModelHelper
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector, get_response_id
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.tools.tool_call_error_logger import log_tool_call_error
+from synnodb.utils.utils import create_dir_and_set_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ class CachedLitellmModel(LitellmModel):
                 ResponseReasoningItem,
             )
 
-            from llm.glm.glm_xml_tool_call_parser import parse_xml_tool_calls
+            from synnodb.llm.glm.glm_xml_tool_call_parser import parse_xml_tool_calls
 
             for item in resp.output:
                 if isinstance(item, ResponseReasoningItem):

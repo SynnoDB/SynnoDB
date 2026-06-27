@@ -15,11 +15,11 @@ from agents import (
     custom_span,
 )
 
-from observability.logging.run_stats_collector import RunStatsCollector
-from synth_framework.git_snapshotter import GitSnapshotter
-from synth_framework.runtime_tracker import RuntimeTracker
-from tools.sandbox import SandboxConfig, sandbox_shell_async
-from utils import utils
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.tools.sandbox import SandboxConfig, sandbox_shell_async
+from synnodb.utils import utils
 
 logger = logging.getLogger(__name__)
 

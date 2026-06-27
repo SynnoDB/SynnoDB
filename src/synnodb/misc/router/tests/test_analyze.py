@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from pgrouter.analyze import NORMALIZATION_RULES, analyze_main, find_repetitions, normalize_query_structure
+from synnodb.misc.router.pgrouter.analyze import NORMALIZATION_RULES, analyze_main, find_repetitions, normalize_query_structure
 
 
 class AnalyzeToolTest(unittest.TestCase):

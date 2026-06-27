@@ -9,11 +9,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 
-from observability.plots.animated_plot.config import (
+from synnodb.observability.plots.animated_plot.config import (
     DEFAULT_VIDEO_PATH,
     frames_dir_for_run_ids,
 )
-from observability.plots.animated_plot.screen_renderer import create_mp4_from_frames
+from synnodb.observability.plots.animated_plot.screen_renderer import create_mp4_from_frames
 
 
 def parse_args() -> argparse.Namespace:

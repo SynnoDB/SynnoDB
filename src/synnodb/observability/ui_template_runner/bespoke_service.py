@@ -25,21 +25,21 @@ import sys
 import threading
 from pathlib import Path
 
-from cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
-from observability.logging.logger import setup_logging
-from tools.validate.query_validator_class import format_args_string
-from workloads.dataset.dataset_tables_dict import get_dataset_name
-from workloads.dataset.query_gen_factory import get_query_gen
+from synnodb.cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.tools.validate.query_validator_class import format_args_string
+from synnodb.workloads.dataset.dataset_tables_dict import get_dataset_name
+from synnodb.workloads.dataset.query_gen_factory import get_query_gen
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from observability.benchmark.run import get_all_query_ids
-from observability.ui_template_runner.service_notify import (
+from synnodb.observability.benchmark.run import get_all_query_ids
+from synnodb.observability.ui_template_runner.service_notify import (
     notify_5xx_response,
     notify_service_crash,
 )
-from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run import RunTool, RunWorkerResult, delete_result_csv_files
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.tools.run import RunTool, RunWorkerResult, delete_result_csv_files
 
 setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ def init_service(args) -> None:
 
     assert workspace_dir.exists(), f"Workspace directory not found: {workspace_dir}"
     if args.wandb_snapshot is not None:
-        from observability.logging.wandb_api_helper import (
+        from synnodb.observability.logging.wandb_api_helper import (
             wandb_retrieve_metrics_for_run,
         )
 

@@ -1,6 +1,6 @@
 import wandb
 
-from workloads.workload_provider import ExecSettings
+from synnodb.workloads.workload_provider import ExecSettings
 
 
 def create_wandb_speedup_plot(wandb_table, exec_settings: ExecSettings):

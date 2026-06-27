@@ -2,7 +2,7 @@ import atexit
 import logging
 from typing import Callable
 
-from cpp_runner.hotpatch.hotpatch_proc import HotpatchProc
+from synnodb.cpp_runner.hotpatch.hotpatch_proc import HotpatchProc
 
 logger = logging.getLogger(__name__)
 

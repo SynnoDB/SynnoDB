@@ -1,14 +1,14 @@
 import logging
 from typing import List, Optional
 
-from conversations.conversation import (
+from synnodb.conversations.conversation import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_ON,
     VALIDATE_OUTPUT_STDOUT_ON,
 )
-from conversations.optimization_conversation import OptimizationConversation
-from conversations.prompts_gen import (
+from synnodb.conversations.optimization_conversation import OptimizationConversation
+from synnodb.conversations.prompts_gen import (
     optim2_prompt_add_threadpool,
     optim2_prompt_check_large_sf,
     optim2_prompt_constraints,
@@ -16,10 +16,10 @@ from conversations.prompts_gen import (
     optim2_prompt_optimize_w_trace,
     optim_prompt_pretext_optim,
 )
-from conversations.stage_config import StageConfig, StaticStageConfig
-from tools.run import delete_result_csv_files
-from tools.run_tool_mode import RunToolMode
-from workloads.workload_provider_olap import OLAPWorkloadProvider
+from synnodb.conversations.stage_config import StageConfig, StaticStageConfig
+from synnodb.tools.run import delete_result_csv_files
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 

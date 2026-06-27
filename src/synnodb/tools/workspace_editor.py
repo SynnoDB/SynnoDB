@@ -8,12 +8,12 @@ from typing import Optional
 from agents import apply_diff, custom_span
 from agents.editor import ApplyPatchOperation, ApplyPatchResult
 
-from observability.logging.logger import PLAIN
-from observability.logging.run_stats_collector import RunStatsCollector
-from synth_framework.git_snapshotter import GitSnapshotter
-from synth_framework.runtime_tracker import RuntimeTracker
-from tools.tool_call_error_logger import log_tool_call_error
-from utils import utils
+from synnodb.observability.logging.logger import PLAIN
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.tools.tool_call_error_logger import log_tool_call_error
+from synnodb.utils import utils
 
 logger = logging.getLogger(__name__)
 

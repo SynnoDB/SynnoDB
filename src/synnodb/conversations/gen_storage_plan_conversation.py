@@ -1,13 +1,13 @@
 import logging
 from pathlib import Path
 
-from conversations.checkpointed_conversation import CheckpointedConversation
-from conversations.filenames import get_filenames
-from conversations.prompts_gen import gen_storage_plan_prompt
-from conversations.stage_config import StaticStageConfig
-from observability.logging.debug_logger import DebugLogger
-from utils.utils import DBStorage, storage_label
-from workloads.workload_provider import Workload
+from synnodb.conversations.checkpointed_conversation import CheckpointedConversation
+from synnodb.conversations.filenames import get_filenames
+from synnodb.conversations.prompts_gen import gen_storage_plan_prompt
+from synnodb.conversations.stage_config import StaticStageConfig
+from synnodb.observability.logging.debug_logger import DebugLogger
+from synnodb.utils.utils import DBStorage, storage_label
+from synnodb.workloads.workload_provider import Workload
 
 logger = logging.getLogger(__name__)
 

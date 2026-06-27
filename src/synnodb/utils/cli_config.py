@@ -4,9 +4,9 @@ import argparse
 import enum
 from dataclasses import dataclass
 
-from utils.utils import DBStorage
-from workloads.workload_provider import Workload
-from workloads.workload_provider_olap import OLAPWorkload
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider import Workload
+from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
 
 class Usecase(enum.Enum):

@@ -6,7 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.append(Path(__file__).parent.parent.parent.as_posix())
-from observability.logging.logger import setup_logging
+from synnodb.observability.logging.logger import setup_logging
 
 # Load SYNNO_DATA_DIR and friends from .env so the module can run standalone
 # (mirrors main.py / run_ff_base.py).
@@ -16,9 +16,9 @@ load_dotenv()
 # (mirrors main.py / run_ff_base.py).
 load_dotenv()
 
-from observability.benchmark.plot import plot_logs
-from observability.benchmark.run import run_benchmark
-from utils.cli_config import Usecase, add_common_args
+from synnodb.observability.benchmark.plot import plot_logs
+from synnodb.observability.benchmark.run import run_benchmark
+from synnodb.utils.cli_config import Usecase, add_common_args
 
 
 def build_run_parser(*, add_help: bool = True) -> argparse.ArgumentParser:

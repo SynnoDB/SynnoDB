@@ -3,7 +3,7 @@ import re
 
 from agents.editor import ApplyPatchOperation
 
-from tools.workspace_editor import WorkspaceEditor
+from synnodb.tools.workspace_editor import WorkspaceEditor
 
 logger = logging.getLogger(__name__)
 

@@ -1,11 +1,11 @@
 import logging
 from typing import List
 
-from conversations.in_mem_1_optim_conv import InMem1OptimizationConversation
-from conversations.prompts_gen import (
+from synnodb.conversations.in_mem_1_optim_conv import InMem1OptimizationConversation
+from synnodb.conversations.prompts_gen import (
     optim_prompt_w_sample_plan,
 )
-from conversations.stage_config import StaticStageConfig
+from synnodb.conversations.stage_config import StaticStageConfig
 
 logger = logging.getLogger(__name__)
 

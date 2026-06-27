@@ -4,20 +4,20 @@ from pathlib import Path
 
 import pandas as pd
 
-from observability.benchmark.systems.duckdb_connection_manager import (
+from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
-from observability.benchmark.systems.umbra import UmbraRunner
-from utils import utils
-from workloads.system_factory import System, SystemFactory
-from workloads.workload_provider import (
+from synnodb.observability.benchmark.systems.umbra import UmbraRunner
+from synnodb.utils import utils
+from synnodb.workloads.system_factory import System, SystemFactory
+from synnodb.workloads.workload_provider import (
     ExecSettings,
     GeneralSystemConfig,
     QueryBatch,
     QueryEntry,
     Workload,
 )
-from workloads.workload_provider_olap import OLAPExecSettings
+from synnodb.workloads.workload_provider_olap import OLAPExecSettings
 
 logger = logging.getLogger(__name__)
 

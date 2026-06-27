@@ -1,15 +1,15 @@
 import logging
 from pathlib import Path
 
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import (
+from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
-from observability.benchmark.systems.track import BespokePrep
-from synth_framework.git_snapshotter import GitSnapshotter
-from tools.run import RunTool, RunWorkerResult
-from tools.run_tool_mode import RunToolMode
-from utils.utils import DBStorage
-from workloads.workload_provider import WorkloadProvider
+from synnodb.observability.benchmark.systems.track import BespokePrep
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.tools.run import RunTool, RunWorkerResult
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider import WorkloadProvider
 
 logger = logging.getLogger(__name__)
 

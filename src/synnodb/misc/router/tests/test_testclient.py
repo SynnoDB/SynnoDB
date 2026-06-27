@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from pgrouter.testclient import EMBEDDED_DEMO_QUERIES, query_set_for_mode
+from synnodb.misc.router.pgrouter.testclient import EMBEDDED_DEMO_QUERIES, query_set_for_mode
 
 
 class DemoClientModeTest(unittest.TestCase):

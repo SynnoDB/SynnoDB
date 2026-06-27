@@ -4,17 +4,17 @@ from pathlib import Path
 
 # add parent to path
 sys.path.append(Path(__file__).parent.as_posix())
-from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_storage_plan
-from main import run_conv_wrapper
-from run_gen_base_impl import base_args, base_args_extract
-from utils.cli_config import RunConfig, add_common_args
-from utils.conv_name_utils import ConvMode
-from utils.gen_common import parse_query_ids
+from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_storage_plan
+from synnodb.main import run_conv_wrapper
+from synnodb.run_gen_base_impl import base_args, base_args_extract
+from synnodb.utils.cli_config import RunConfig, add_common_args
+from synnodb.utils.conv_name_utils import ConvMode
+from synnodb.utils.gen_common import parse_query_ids
 
 
 def _factory(ctx: FrameworkContext):
-    from conversations.gen_storage_plan_conversation import GenStoragePlanConversation
+    from synnodb.conversations.gen_storage_plan_conversation import GenStoragePlanConversation
 
     return GenStoragePlanConversation(
         benchmark=ctx.args.benchmark,
@@ -65,6 +65,10 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     return parser
 
 
+def cli():
+    """Console-script entry point."""
+    main(build_parser().parse_args())
+
+
 if __name__ == "__main__":
-    args = build_parser().parse_args()
-    main(args)
+    cli()

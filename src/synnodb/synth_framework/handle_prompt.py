@@ -5,7 +5,7 @@ from agents import MaxTurnsExceeded, ModelBehaviorError
 from agents.exceptions import UserError
 from litellm.exceptions import BadRequestError, InternalServerError
 
-from conversations.conversation import (
+from synnodb.conversations.conversation import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_OFF,
@@ -13,13 +13,13 @@ from conversations.conversation import (
     VALIDATE_OUTPUT_STDOUT_OFF,
     VALIDATE_OUTPUT_STDOUT_ON,
 )
-from llm.sdk.sdk_wrapper import SDKWrapper
-from observability.logging.run_stats_collector import RunStatsCollector
-from observability.logging.truncate_model_log import truncate_model_final_output
-from tools.run import RunTool
-from tools.run_tool_mode import RunToolMode
-from tools.tool_call_error_logger import log_tool_call_error
-from tools.validate.query_validator_class import QueryValidator
+from synnodb.llm.sdk.sdk_wrapper import SDKWrapper
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.observability.logging.truncate_model_log import truncate_model_final_output
+from synnodb.tools.run import RunTool
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.tools.tool_call_error_logger import log_tool_call_error
+from synnodb.tools.validate.query_validator_class import QueryValidator
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,7 @@ async def handle_prompt(
         if "ResponseOutputMessage" in str(e):
             xml_calls = getattr(agent_sdk_wrapper.model, "last_xml_tool_calls", None)
             if xml_calls:
-                from llm.glm.glm_xml_tool_call_parser import format_for_reprompt
+                from synnodb.llm.glm.glm_xml_tool_call_parser import format_for_reprompt
 
                 call_summary = format_for_reprompt(xml_calls)
                 reprompt = (
@@ -271,7 +271,7 @@ async def handle_prompt(
     if not final_output or not final_output.strip():
         xml_calls = getattr(agent_sdk_wrapper.model, "last_xml_tool_calls", None)
         if xml_calls:
-            from llm.glm.glm_xml_tool_call_parser import format_for_reprompt
+            from synnodb.llm.glm.glm_xml_tool_call_parser import format_for_reprompt
 
             call_summary = format_for_reprompt(xml_calls)
             reasoning_reprompt = (

@@ -8,21 +8,21 @@ REPO_ROOT = Path(__file__).parent.parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from observability.plots.animated_plot.config import (
+from synnodb.observability.plots.animated_plot.config import (
     WANDB_RUN_CACHE_PATH,
     H,
     W,
     frames_dir_for_run_ids,
 )
-from observability.plots.animated_plot.demo_timeline_engine import (
+from synnodb.observability.plots.animated_plot.demo_timeline_engine import (
     FrameViewportConfig,
     XAxisMode,
 )
-from observability.plots.animated_plot.live_plot import (
+from synnodb.observability.plots.animated_plot.live_plot import (
     enrich_turns,
     load_turns_from_wandb,
 )
-from observability.plots.animated_plot.screen_renderer import render_frames
+from synnodb.observability.plots.animated_plot.screen_renderer import render_frames
 
 
 def parse_args() -> argparse.Namespace:

@@ -28,13 +28,13 @@ import threading
 import time
 from pathlib import Path
 
-from observability.logging.logger import setup_logging
-from workloads.dataset.dataset_tables_dict import get_dataset_name
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.workloads.dataset.dataset_tables_dict import get_dataset_name
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from observability.benchmark.systems.umbra import UmbraRunner
-from observability.ui_template_runner.service_notify import (
+from synnodb.observability.benchmark.systems.umbra import UmbraRunner
+from synnodb.observability.ui_template_runner.service_notify import (
     notify_5xx_response,
     notify_service_crash,
 )

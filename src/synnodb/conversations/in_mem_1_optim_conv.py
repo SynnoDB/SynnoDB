@@ -1,13 +1,13 @@
 import logging
 from typing import List, Optional
 
-from conversations.conversation import (
+from synnodb.conversations.conversation import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_ON,
 )
-from conversations.optimization_conversation import OptimizationConversation
-from conversations.prompts_gen import (
+from synnodb.conversations.optimization_conversation import OptimizationConversation
+from synnodb.conversations.prompts_gen import (
     load_expert_knowledge,
     optim_prompt_add_timings_per_query,
     optim_prompt_add_timings_pretext,
@@ -19,10 +19,10 @@ from conversations.prompts_gen import (
     optim_prompt_w_sample_plan,
     optim_prompt_w_trace,
 )
-from conversations.stage_config import StageConfig, StaticStageConfig
-from conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
-from tools.run import delete_result_csv_files
-from tools.run_tool_mode import RunToolMode
+from synnodb.conversations.stage_config import StageConfig, StaticStageConfig
+from synnodb.conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
+from synnodb.tools.run import delete_result_csv_files
+from synnodb.tools.run_tool_mode import RunToolMode
 
 logger = logging.getLogger(__name__)
 

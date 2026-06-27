@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pgrouter.output import append_query_record, append_result_row, register_result_writer
-from pgrouter.query_capture import start_query_tracking
-from pgrouter.state import ColumnInfo, SessionState
+from synnodb.misc.router.pgrouter.output import append_query_record, append_result_row, register_result_writer
+from synnodb.misc.router.pgrouter.query_capture import start_query_tracking
+from synnodb.misc.router.pgrouter.state import ColumnInfo, SessionState
 
 
 class DummyWriter:
@@ -79,7 +79,7 @@ class OutputWriterTest(unittest.TestCase):
                 self.assertTrue(result_path.exists())
                 self.assertEqual(json.loads(result_path.read_text(encoding="utf-8")), {"rows": [{"value": 1}]})
             finally:
-                from pgrouter.output import RESULT_WRITER_FACTORIES
+                from synnodb.misc.router.pgrouter.output import RESULT_WRITER_FACTORIES
 
                 RESULT_WRITER_FACTORIES.pop("dummy", None)
 

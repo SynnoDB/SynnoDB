@@ -2,12 +2,12 @@ import re
 from pathlib import Path
 from string import Template
 
-from conversations.filenames import get_plan_filename
-from cpp_runner.prepare_repo.assemble_args_parser import assemble_args_parser_file
-from cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
-from cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
-from utils.utils import DBStorage
-from workloads.workload_provider_olap import OLAPWorkloadProvider
+from synnodb.conversations.filenames import get_plan_filename
+from synnodb.cpp_runner.prepare_repo.assemble_args_parser import assemble_args_parser_file
+from synnodb.cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
+from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 
 class OLAPPrepareWorkspace(PrepareWorkspace):

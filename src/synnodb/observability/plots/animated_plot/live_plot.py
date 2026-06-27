@@ -10,20 +10,20 @@ import matplotlib.ticker as mticker
 import pandas as pd
 from PIL import Image
 
-from observability.plots.animated_plot.config import (
+from synnodb.observability.plots.animated_plot.config import (
     COMBINED_HISTORY_COLUMNS,
     COMBINED_HISTORY_CSV_PATH,
 )
-from observability.plots.animated_plot.demo_timeline_engine import (
+from synnodb.observability.plots.animated_plot.demo_timeline_engine import (
     DemoTimelineEngine,
     FrameViewportConfig,
     XAxisMode,
 )
-from observability.plots.animated_plot.terminal_input_builder import (
+from synnodb.observability.plots.animated_plot.terminal_input_builder import (
     build_terminal_turns,
 )
-from observability.plots.plot_timeline import PlotConfig
-from observability.plots.utils.wandb_utils import combine_histories, get_wandb_stats
+from synnodb.observability.plots.plot_timeline import PlotConfig
+from synnodb.observability.plots.utils.wandb_utils import combine_histories, get_wandb_stats
 
 
 @dataclass

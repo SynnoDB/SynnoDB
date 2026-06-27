@@ -7,7 +7,7 @@ import pickle
 from pathlib import Path
 from typing import Any, TypeVar
 
-from utils.json_utils import JsonEncoder
+from synnodb.utils.json_utils import JsonEncoder
 
 logger = logging.getLogger(__name__)
 

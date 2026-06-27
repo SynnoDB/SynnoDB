@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from pgrouter.protocols.postgres.catalog import build_catalog_lookup_connect_kwargs, fetch_type_names_from_catalog_sync
-from pgrouter.state import SessionState
+from synnodb.misc.router.pgrouter.protocols.postgres.catalog import build_catalog_lookup_connect_kwargs, fetch_type_names_from_catalog_sync
+from synnodb.misc.router.pgrouter.state import SessionState
 
 
 def make_state() -> SessionState:

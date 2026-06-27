@@ -6,7 +6,7 @@ To add a new system:
 2. Register it in ``SYSTEM_REGISTRY`` with a lower-case key.
 """
 
-from observability.benchmark.systems.base import SystemRunner
+from synnodb.observability.benchmark.systems.base import SystemRunner
 
 __all__ = [
     "SystemRunner",

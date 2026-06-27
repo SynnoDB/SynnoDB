@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pgrouter import (
+from synnodb.misc.router.pgrouter import (
     EmbeddedRouter,
     ResultColumn,
     RouterConfig,
@@ -20,7 +20,7 @@ from pgrouter import (
     TransactionStartContext,
     TransactionStatementContext,
 )
-from pgrouter.protocols.postgres.demo_client import (
+from synnodb.misc.router.pgrouter.protocols.postgres.demo_client import (
     read_until_ready,
     send_bind,
     send_describe,
@@ -30,9 +30,9 @@ from pgrouter.protocols.postgres.demo_client import (
     send_sync,
     send_terminate,
 )
-from pgrouter.protocols.postgres.pgtypes import INT4_OID, TEXT_OID
+from synnodb.misc.router.pgrouter.protocols.postgres.pgtypes import INT4_OID, TEXT_OID
 
-from tests.integration_support import (
+from synnodb.misc.router.tests.integration_support import (
     DockerPostgresInstance,
     cleanup_test_postgres_containers,
     load_jsonl_records,

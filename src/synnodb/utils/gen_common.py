@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import List
 
-from workloads.workload_provider import Workload
-from workloads.workload_provider_olap import OLAPWorkload
+from synnodb.workloads.workload_provider import Workload
+from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
 
 def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:

@@ -1,7 +1,7 @@
 import logging
 
 
-from conversations.conversation import (
+from synnodb.conversations.conversation import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_OFF,
@@ -9,13 +9,13 @@ from conversations.conversation import (
     VALIDATE_OUTPUT_STDOUT_OFF,
     VALIDATE_OUTPUT_STDOUT_ON,
 )
-from conversations.prompts_gen import (
+from synnodb.conversations.prompts_gen import (
     SUPERVISION_SUCCESS_KW,
     supervision_agent_prompt,
 )
-from conversations.stage_config import StageConfig
-from llm.sdk.sdk_wrapper import SDKWrapper
-from observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.conversations.stage_config import StageConfig
+from synnodb.llm.sdk.sdk_wrapper import SDKWrapper
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 
 logger = logging.getLogger(__name__)
 

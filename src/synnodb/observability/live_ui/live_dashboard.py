@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from observability.logging.run_stats_drain import DataDrain, _duckdb_col_value
+from synnodb.observability.logging.run_stats_drain import DataDrain, _duckdb_col_value
 
 _UI_DIR = Path(__file__).parent
 

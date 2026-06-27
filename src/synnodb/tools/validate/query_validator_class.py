@@ -6,18 +6,18 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agents import custom_span
 
-from observability.logging.truncate_csv import truncate_csvs_recursively
-from synth_framework.runtime_tracker import RuntimeTracker
-from tools.validate.run_and_check_queries import (
+from synnodb.observability.logging.truncate_csv import truncate_csvs_recursively
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.tools.validate.run_and_check_queries import (
     Measurement,
     ValidationOutput,
     assemble_error,
     assemble_exec,
     check_output_correctness,
 )
-from utils import utils
-from workloads.query_execution_cache import QueryExecutionCache
-from workloads.workload_provider import (
+from synnodb.utils import utils
+from synnodb.workloads.query_execution_cache import QueryExecutionCache
+from synnodb.workloads.workload_provider import (
     ExecSettings,
     QueryBatch,
     QueryEntry,

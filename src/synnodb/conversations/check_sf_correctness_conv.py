@@ -1,16 +1,16 @@
 import logging
 from typing import List, Optional
 
-from conversations.checkpointed_conversation import CheckpointedConversation
-from conversations.filenames import get_filenames
-from conversations.prompts_gen import (
+from synnodb.conversations.checkpointed_conversation import CheckpointedConversation
+from synnodb.conversations.filenames import get_filenames
+from synnodb.conversations.prompts_gen import (
     optim2_prompt_check_large_sf,
     optim_prompt_constraints,
     optim_prompt_pretext_optim,
 )
-from conversations.stage_config import StaticStageConfig
-from utils.utils import DBStorage
-from workloads.workload_provider_olap import OLAPWorkloadProvider
+from synnodb.conversations.stage_config import StaticStageConfig
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 

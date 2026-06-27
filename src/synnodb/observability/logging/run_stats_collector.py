@@ -14,16 +14,16 @@ from openai.types.responses.response_function_shell_tool_call import (
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_output_message import ResponseOutputMessage
 
-from conversations.prompts_gen import SUPERVISION_SUCCESS_KW
-from llm.sdk.agents_sdk.openai_token_usage import (
+from synnodb.conversations.prompts_gen import SUPERVISION_SUCCESS_KW
+from synnodb.llm.sdk.agents_sdk.openai_token_usage import (
     openai_get_tokens_context_and_dollar_info,
 )
-from observability.logging.cloc_utils import calculate_loc
-from observability.logging.debug_logger import DebugLogger
-from observability.logging.run_stats_drain import DataDrain
-from synth_framework.git_snapshotter import GitSnapshotter
-from synth_framework.runtime_tracker import RuntimeTracker
-from utils.utils import create_dir_and_set_permissions
+from synnodb.observability.logging.cloc_utils import calculate_loc
+from synnodb.observability.logging.debug_logger import DebugLogger
+from synnodb.observability.logging.run_stats_drain import DataDrain
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.utils.utils import create_dir_and_set_permissions
 
 logger = logging.getLogger(__name__)
 

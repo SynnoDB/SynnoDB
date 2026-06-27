@@ -1,26 +1,25 @@
 import argparse
 from typing import TypedDict
 
-from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_base
-from cpp_runner.prepare_repo.prepare_olap import prepare_base
-from main import run_conv_wrapper
-from observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
-from utils.cli_config import RunConfig, add_common_args
-from utils.confirm_dialog import await_user_confirmation
-from utils.conv_name_utils import ConvMode
-from utils.gen_common import parse_query_ids
-from utils.utils import DBStorage
-from workloads.workload_provider import Workload
+from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
+from synnodb.main import run_conv_wrapper
+from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.utils.cli_config import RunConfig, add_common_args
+from synnodb.utils.confirm_dialog import await_user_confirmation
+from synnodb.utils.conv_name_utils import ConvMode
+from synnodb.utils.gen_common import parse_query_ids
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.workload_provider import Workload
 
 ### RUN CMD
 # python run_gen_base_impl.py --conv initial1-22v66 --benchmark tpch --bespoke_storage --auto_u --auto_finish
 
 
 def _factory(ctx: FrameworkContext):
-    from conversations.base_impl_conversation import BaseImplConversation
-    from utils.get_sample_q_args import get_sample_exec_settings, get_sample_query_args
-    from workloads.workload_provider_olap import OLAPExecSettings
+    from synnodb.conversations.base_impl_conversation import BaseImplConversation
+    from synnodb.utils.get_sample_q_args import get_sample_exec_settings, get_sample_query_args
+    from synnodb.workloads.workload_provider_olap import OLAPExecSettings
 
     sample_query_args_dict = get_sample_query_args(
         workload_provider=ctx.workload_provider
@@ -254,6 +253,10 @@ def base_args_extract(args) -> BaseArgs:
     return args_dict
 
 
+def cli():
+    """Console-script entry point."""
+    main(build_parser().parse_args())
+
+
 if __name__ == "__main__":
-    args = build_parser().parse_args()
-    main(args)
+    cli()

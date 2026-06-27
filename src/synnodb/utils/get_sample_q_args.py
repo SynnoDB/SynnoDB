@@ -1,8 +1,8 @@
 import random
 from collections import defaultdict
 
-from tools.run_tool_mode import RunToolMode
-from workloads.workload_provider import WorkloadProvider, format_sample_args
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.workloads.workload_provider import WorkloadProvider, format_sample_args
 
 
 def get_sample_query_args(workload_provider: WorkloadProvider, seed=42):

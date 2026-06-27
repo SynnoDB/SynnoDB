@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from pgrouter.inspect import inspect_main
+from synnodb.misc.router.pgrouter.inspect import inspect_main
 
 
 class InspectToolTest(unittest.TestCase):

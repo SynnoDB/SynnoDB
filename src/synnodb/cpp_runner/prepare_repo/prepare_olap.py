@@ -1,7 +1,7 @@
 import logging
 
-from conversations.filenames import get_filenames
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext, PrepareFn
+from synnodb.conversations.filenames import get_filenames
+from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext, PrepareFn
 
 logger = logging.getLogger(__name__)
 

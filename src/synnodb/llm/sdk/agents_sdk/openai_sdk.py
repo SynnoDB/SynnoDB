@@ -15,31 +15,31 @@ from agents import (
 )
 from agents.extensions.memory import AdvancedSQLiteSession
 
-from llm.llm_caching.cached_compaction_session import (
+from synnodb.llm.llm_caching.cached_compaction_session import (
     CachedOpenAIResponsesCompactionSession,
 )
-from llm.llm_caching.cached_litellm import CachedLitellmModel
-from llm.llm_caching.cached_openai import CachedOpenAIResponsesModel
-from llm.sdk.agents_sdk.compaction_trigger import (
+from synnodb.llm.llm_caching.cached_litellm import CachedLitellmModel
+from synnodb.llm.llm_caching.cached_openai import CachedOpenAIResponsesModel
+from synnodb.llm.sdk.agents_sdk.compaction_trigger import (
     COMPACTION_TRIGGER_FRACTION,
     context_usage_at_or_above,
 )
-from llm.sdk.agents_sdk.openai_make_compile_tool import make_openai_compile_tool
-from llm.sdk.agents_sdk.openai_make_run_tool import make_openai_run_tool
-from llm.sdk.agents_sdk.openai_sdk_tools import (
+from synnodb.llm.sdk.agents_sdk.openai_make_compile_tool import make_openai_compile_tool
+from synnodb.llm.sdk.agents_sdk.openai_make_run_tool import make_openai_run_tool
+from synnodb.llm.sdk.agents_sdk.openai_sdk_tools import (
     make_custom_openai_apply_patch_tool,
     make_custom_openai_replace_in_file_tool,
     make_custom_openai_shell_tool,
 )
-from llm.sdk.agents_sdk.openai_token_usage import (
+from synnodb.llm.sdk.agents_sdk.openai_token_usage import (
     openai_get_tokens_context_and_dollar_info,
 )
-from llm.sdk.sdk_wrapper import SDKWrapper
-from observability.logging.run_stats_collector import (
+from synnodb.llm.sdk.sdk_wrapper import SDKWrapper
+from synnodb.observability.logging.run_stats_collector import (
     SUPERVISOR_AGENT_NAME,
     RunStatsCollector,
 )
-from utils.model_setup import setup_model_config
+from synnodb.utils.model_setup import setup_model_config
 
 logger = logging.getLogger(__name__)
 

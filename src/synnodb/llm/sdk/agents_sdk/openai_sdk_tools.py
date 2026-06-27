@@ -10,10 +10,10 @@ from agents.run_context import RunContextWrapper
 from agents.tool import FunctionTool
 from pydantic import BaseModel, Field
 
-from tools.custom_apply_patch import CustomApplyPatchTool
-from tools.custom_replace_in_file import CustomReplaceInFileTool
-from tools.shell_executor import ShellExecutor
-from tools.workspace_editor import WorkspaceEditor
+from synnodb.tools.custom_apply_patch import CustomApplyPatchTool
+from synnodb.tools.custom_replace_in_file import CustomReplaceInFileTool
+from synnodb.tools.shell_executor import ShellExecutor
+from synnodb.tools.workspace_editor import WorkspaceEditor
 
 logger = logging.getLogger(__name__)
 

@@ -8,19 +8,18 @@ NOT depend on this module. It exists solely so ``python main.py manual
 The ``scripted`` conversation has no run script, so its spec is defined here.
 """
 
-from conversations.conversation_spec import ConversationSpec, FrameworkContext
-from cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_base
-from cpp_runner.prepare_repo.prepare_olap import prepare_base
-from run_add_multi_threading import SPEC as _MT_SPEC
-from run_check_sf_correctness import SPEC as _CHECK_SF_SPEC
-from run_gen_base_impl import SPEC as _BASE_SPEC
-from run_gen_storage_plan import SPEC as _STORAGE_PLAN_SPEC
-from run_optim_loop import SPEC as _OPTIM_SPEC
-from utils.conv_name_utils import ConvMode
+from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
+from synnodb.run_add_multi_threading import SPEC as _MT_SPEC
+from synnodb.run_check_sf_correctness import SPEC as _CHECK_SF_SPEC
+from synnodb.run_gen_base_impl import SPEC as _BASE_SPEC
+from synnodb.run_gen_storage_plan import SPEC as _STORAGE_PLAN_SPEC
+from synnodb.run_optim_loop import SPEC as _OPTIM_SPEC
+from synnodb.utils.conv_name_utils import ConvMode
 
 
 def _scripted_factory(ctx: FrameworkContext):
-    from conversations.scripted_conversation import ScriptedConversation
+    from synnodb.conversations.scripted_conversation import ScriptedConversation
 
     return ScriptedConversation(**ctx.conv_args)
 

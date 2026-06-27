@@ -4,7 +4,7 @@ import pickle
 import subprocess
 from pathlib import Path
 
-from utils import utils
+from synnodb.utils import utils
 
 logger = logging.getLogger(__name__)
 

@@ -5,13 +5,13 @@ import random
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from tools.run_tool_mode import RunToolMode
-from utils import utils
-from utils.sql_utils import extract_order_by_columns
-from utils.utils import DBStorage
-from workloads.dataset.gen_ceb.ceb_queries import ceb_templates
-from workloads.dataset.gen_tpch.tpch_queries import tpc_h
-from workloads.workload_provider import (
+from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils import utils
+from synnodb.utils.sql_utils import extract_order_by_columns
+from synnodb.utils.utils import DBStorage
+from synnodb.workloads.dataset.gen_ceb.ceb_queries import ceb_templates
+from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
+from synnodb.workloads.workload_provider import (
     ExecSettings,
     GeneralSystemConfig,
     QueryBatch,
@@ -263,11 +263,11 @@ class OLAPWorkloadProvider(WorkloadProvider):
     def _get_query_gen_fn(self):
         # prepare query gen
         if self.benchmark == OLAPWorkload.TPCH:
-            from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
+            from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
 
             gen_query_fn = gen_query
         elif self.benchmark == OLAPWorkload.CEB:
-            from workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
+            from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
 
             gen_query_fn = functools.partial(
                 gen_query_single_only, ceb_dir=CEB_QUERY_DIR
@@ -281,7 +281,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
         # prepare query gen
         gen_fn = None
         if self.benchmark == OLAPWorkload.TPCH:
-            from workloads.dataset.gen_tpch.gen_tpch_query import gen_query
+            from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
 
             def gen_placeholder_tpch(**kwargs):
                 # we only need the placeholders dict
@@ -290,7 +290,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
             gen_fn = gen_placeholder_tpch
 
         elif self.benchmark == OLAPWorkload.CEB:
-            from workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
+            from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
 
             # load placeholders from disk
 
@@ -396,11 +396,11 @@ class OLAPWorkloadProvider(WorkloadProvider):
     @staticmethod
     def _get_dataset_schema(benchmark: OLAPWorkload) -> str:
         if benchmark == OLAPWorkload.TPCH:
-            from workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
+            from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
 
             return tpc_h_schema
         elif benchmark == OLAPWorkload.CEB:
-            from workloads.dataset.gen_ceb.imdb_schema import imdb_schema
+            from synnodb.workloads.dataset.gen_ceb.imdb_schema import imdb_schema
 
             return imdb_schema
         else:

@@ -3,7 +3,7 @@ import logging
 from agents import Usage
 from openai.types.responses import ResponseUsage
 
-from llm.models import context_window_usage, request_cost_usd
+from synnodb.llm.models import context_window_usage, request_cost_usd
 
 logger = logging.getLogger(__name__)
 

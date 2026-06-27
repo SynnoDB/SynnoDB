@@ -6,17 +6,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from conversations.conversation import AbstractConversation
-    from cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext
-    from observability.logging.run_stats_collector import RunStatsCollector
-    from synth_framework.git_snapshotter import GitSnapshotter
-    from synth_framework.runtime_tracker import RuntimeTracker
-    from tools.run import RunTool
-    from tools.compile import CompileTool
-    from tools.validate.query_validator_class import QueryValidator
-    from conversations.supervision_agent import SupervisionAgent
-    from llm.sdk.agents_sdk.openai_sdk import OpenAIAgentsSDKWrapper
-    from utils.utils import DBStorage
+    from synnodb.conversations.conversation import AbstractConversation
+    from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext
+    from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+    from synnodb.synth_framework.git_snapshotter import GitSnapshotter
+    from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+    from synnodb.tools.run import RunTool
+    from synnodb.tools.compile import CompileTool
+    from synnodb.tools.validate.query_validator_class import QueryValidator
+    from synnodb.conversations.supervision_agent import SupervisionAgent
+    from synnodb.llm.sdk.agents_sdk.openai_sdk import OpenAIAgentsSDKWrapper
+    from synnodb.utils.utils import DBStorage
 
 
 @dataclass
