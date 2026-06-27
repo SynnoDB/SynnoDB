@@ -20,12 +20,12 @@ import pytest
 from agents import apply_diff
 from agents.editor import ApplyPatchOperation
 
-from tools import workspace_editor as wse
-from tools.workspace_editor import (
+from synnodb.tools import workspace_editor as wse
+from synnodb.tools.workspace_editor import (
     _canonicalize_line,
     repair_diff_context,
 )
-from tools.workspace_editor import WorkspaceEditor
+from synnodb.tools.workspace_editor import WorkspaceEditor
 
 
 # ───────────────────────── editor harness (file-local) ─────────────────────────
