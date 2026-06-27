@@ -1,6 +1,6 @@
 import re
 
-from workloads.workload_provider import format_args_element
+from synnodb.workloads.workload_provider import format_args_element
 
 
 def test_format_args_element_is_deterministic() -> None:

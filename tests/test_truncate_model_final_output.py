@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from observability.logging.truncate_model_log import truncate_model_final_output
+from synnodb.observability.logging.truncate_model_log import truncate_model_final_output
 
 sys.path.append(str(Path(__file__).parent.parent))
 

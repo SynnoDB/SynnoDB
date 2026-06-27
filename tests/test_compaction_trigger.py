@@ -11,11 +11,11 @@ task afterward:
 
 from types import SimpleNamespace
 
-from llm.sdk.agents_sdk.compaction_trigger import (
+from synnodb.llm.sdk.agents_sdk.compaction_trigger import (
     COMPACTION_TRIGGER_FRACTION,
     context_usage_at_or_above,
 )
-from observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 
 
 # ---------- the proactive trigger predicate ----------

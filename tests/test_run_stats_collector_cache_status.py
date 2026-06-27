@@ -5,7 +5,7 @@ from pathlib import Path
 from agents import ModelResponse
 from agents.usage import Usage
 
-from observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 
 sys.path.append(Path(__file__).parent.parent.as_posix())
 
