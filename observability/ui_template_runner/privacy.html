@@ -24,6 +24,18 @@
 </style>
 </head>
 <body>
+<script>
+/* Mirror the wrapper site's light/dark theme (see ui.html for rationale). */
+(function () {
+  var KEY = 'bespoke-demo-theme';
+  function norm(t) { return (t === 'dark' || t === 'light') ? t : null; }
+  var t = null;
+  try { t = norm(new URLSearchParams(location.search).get('theme')); } catch (e) {}
+  if (!t) { try { t = norm(localStorage.getItem(KEY)); } catch (e) {} }
+  if (!t) t = 'light';
+  document.body.setAttribute('data-theme', t);
+})();
+</script>
 <header class="site-header">
   <span class="site-logo">BespokeOLAP</span>
   <span class="site-badge">Privacy Statement</span>
