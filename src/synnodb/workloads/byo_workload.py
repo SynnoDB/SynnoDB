@@ -1,10 +1,16 @@
-"""Register a workload from data: a directory of SQL files plus existing parquet, with
-no source edits.
+"""Register a workload from data: queries plus existing parquet, with no source edits.
 
-  * SQL comes from a directory of `*.sql` files (filename stem = query id);
-  * the schema shown to the planner is derived from the parquet via DuckDB DESCRIBE;
-  * table names are inferred from the parquet directory;
-  * static (parameterless) SQL gets an identity query/placeholder generator.
+Two input forms, both bringing their parameter values explicitly (no inference):
+
+  * a single ``queries.json`` mapping each query id to ``{"sql": ..., "params": {PH: [v,...]}}``
+    (a plain SQL string is shorthand for a static query with no params);
+  * a directory of ``*.sql`` files (filename stem = query id) plus an optional sidecar
+    ``params.json`` of the form ``{id: {PH: [values]}}``.
+
+The schema shown to the planner is derived from the parquet via DuckDB DESCRIBE; table names
+are inferred from the parquet directory. A templated query's per-placeholder value lists are
+expanded into instantiations by :func:`query_params.expand_param_grid`; static (parameterless)
+queries get an identity generator.
 """
 from __future__ import annotations
 
@@ -15,13 +21,11 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from synnodb.workloads.param_infer import (
-    build_schema,
+from synnodb.workloads.query_params import (
+    expand_param_grid,
     find_placeholders,
-    infer_valid_assignments,
     substitute,
 )
-from synnodb.workloads.workload_provider import DEFAULT_NUM_INSTANTIATIONS
 from synnodb.workloads.workload_spec import WorkloadSpec, register_workload
 
 if TYPE_CHECKING:
@@ -118,34 +122,57 @@ def _preflight_workload(
         logger.debug("  %s: instantiated SQL -> %s", qn, inst_sql)
 
 
-def _infer_template_assignments(
+def _normalize_params(raw: dict, source: str) -> dict[str, dict]:
+    """Normalize the keys of a params mapping (``{qid: {PH: [values]}}``) to the canonical
+    bare query ids, reusing the same key parsing as the queries so ``19``/``q19``/``Q19`` all
+    resolve."""
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{source} must be a JSON object mapping query-id -> {{placeholder: [values]}}."
+        )
+    out: dict[str, dict] = {}
+    for key, val in raw.items():
+        m = _QID_RE.match(str(key))
+        if not m:
+            raise ValueError(
+                f"{source}: cannot parse a query id from key {key!r}. Expected forms like "
+                f"'1', 'q1', 'Q1', 'query1', '2b'."
+            )
+        out[m.group("id")] = val
+    return out
+
+
+def _load_template_assignments(
     sql_by_id: dict[str, str],
-    parquet_dir: Path,
-    tables: list[str],
-    sf: float,
-    num_instantiations: int,
+    params_by_id: dict[str, dict],
+    params_source: str = "params",
 ) -> dict[str, list[dict]]:
-    """For every templated query (one with ``[PLACEHOLDER]`` holes), infer valid data-
-    driven instantiations against the parquet. Static queries are skipped (no entry)."""
+    """Expand each templated query's per-placeholder value lists into instantiations.
+
+    Every query with ``[PLACEHOLDER]`` holes must have a matching ``params`` entry; one that
+    does not is an error (we do not invent values). Static queries are skipped (no entry).
+    """
     templated = {qid: sql for qid, sql in sql_by_id.items() if find_placeholders(sql)}
-    if not templated:
-        return {}
-
-    import duckdb
-
-    con = duckdb.connect()
-    base = Path(parquet_dir) / f"sf{sf}"
-    for t in tables:
-        p = (base / f"{t}.parquet").as_posix()
-        con.execute(f'CREATE VIEW "{t}" AS SELECT * FROM read_parquet(\'{p}\')')
-    schema = build_schema(con, tables)
-    try:
-        return {
-            qid: infer_valid_assignments(tmpl, con, schema, n=num_instantiations)
-            for qid, tmpl in templated.items()
-        }
-    finally:
-        con.close()
+    unknown = set(params_by_id) - set(templated)
+    if unknown:
+        logger.warning(
+            "%s has entries for queries that are not templated/known and were ignored: %s",
+            params_source, sorted(unknown),
+        )
+    missing = sorted(qid for qid in templated if qid not in params_by_id)
+    if missing:
+        raise ValueError(
+            f"Templated queries {missing} have no parameter values. Provide them in "
+            f'{params_source}, e.g. "{missing[0]}": {{"params": {{"<PLACEHOLDER>": '
+            f'["<value>", ...]}}}}.'
+        )
+    out: dict[str, list[dict]] = {}
+    for qid, tmpl in templated.items():
+        try:
+            out[qid] = expand_param_grid(tmpl, params_by_id[qid])
+        except ValueError as e:
+            raise ValueError(f"Q{qid}: {e}") from e
+    return out
 
 
 def _natural_sort(ids: list[str]) -> list[str]:
@@ -203,7 +230,6 @@ def register_workload_from_dir(
     dataset_name: str | None = None,
     scale_factors: tuple[float, ...] = (1,),
     schema_example_table: str | None = None,
-    num_instantiations: int = DEFAULT_NUM_INSTANTIATIONS,
 ) -> WorkloadSpec:
     """Build + register a WorkloadSpec from a SQL directory and existing parquet.
 
@@ -217,7 +243,9 @@ def register_workload_from_dir(
         dataset_name: parquet dir name (defaults to `name`).
         scale_factors: the scale factors that exist on disk (defaults to (1,)).
         schema_example_table: table shown in the planner's schema-read example.
-        num_instantiations: instantiations inferred per templated query.
+
+    Templated queries take their values from a sidecar ``<sql_dir>/params.json`` of the form
+    ``{id: {PLACEHOLDER: [values]}}``.
     """
     sql_dir = Path(sql_dir)
     sql_files = sorted(sql_dir.glob("*.sql"))
@@ -225,6 +253,14 @@ def register_workload_from_dir(
         raise FileNotFoundError(f"No .sql files found in '{sql_dir}'.")
 
     sql_by_id = {f.stem: f.read_text() for f in sql_files}
+
+    params_by_id: dict[str, dict] = {}
+    params_source = "params.json"
+    params_path = sql_dir / "params.json"
+    if params_path.is_file():
+        params_by_id = _normalize_params(json.loads(params_path.read_text()), str(params_path))
+        params_source = str(params_path)
+
     return _register_static_workload(
         name=name,
         sql_by_id=sql_by_id,
@@ -233,7 +269,8 @@ def register_workload_from_dir(
         dataset_name=dataset_name,
         scale_factors=scale_factors,
         schema_example_table=schema_example_table,
-        num_instantiations=num_instantiations,
+        params_by_id=params_by_id,
+        params_source=params_source,
     )
 
 
@@ -246,21 +283,44 @@ def register_workload_from_json(
     dataset_name: str | None = None,
     scale_factors: tuple[float, ...] = (1,),
     schema_example_table: str | None = None,
-    num_instantiations: int = DEFAULT_NUM_INSTANTIATIONS,
 ) -> WorkloadSpec:
-    """Build + register a WorkloadSpec from a ``queries.json`` mapping ``{id: sql}``.
+    """Build + register a WorkloadSpec from a single self-describing ``queries.json``.
 
-    Equivalent to :func:`register_workload_from_dir` but with a single explicit file —
-    the number of queries is ``len(keys)``, ids are the keys, SQL the values. Use this
-    when you want one self-contained input artifact instead of a directory.
+    Each entry is keyed by query id and is either:
+
+      * an object ``{"sql": <str>, "params": {PLACEHOLDER: [values, ...]}}`` - the per-
+        placeholder value lists are expanded (index-zipped, length-1 broadcast) into the
+        query's instantiations; ``params`` may be omitted for a static query; or
+      * a plain SQL string - shorthand for a static query with no params (an error if it
+        actually contains ``[PLACEHOLDER]`` holes).
+
+    One self-contained input artifact: SQL and parameter values live together, the shape a
+    dashboard would populate.
     """
     queries_json = Path(queries_json)
     raw = json.loads(queries_json.read_text())
     if not isinstance(raw, dict) or not raw:
         raise ValueError(
-            f"{queries_json} must be a non-empty JSON object mapping query-id -> SQL string."
+            f"{queries_json} must be a non-empty JSON object mapping query-id -> "
+            f'{{"sql": ..., "params": ...}} (or a plain SQL string).'
         )
-    sql_by_id = {str(qid): str(sql) for qid, sql in raw.items()}
+
+    sql_by_id: dict[str, str] = {}
+    params_by_id: dict[str, dict] = {}
+    for qid, entry in raw.items():
+        qid = str(qid)
+        if isinstance(entry, str):
+            sql_by_id[qid] = entry
+            continue
+        if not isinstance(entry, dict) or "sql" not in entry:
+            raise ValueError(
+                f'{queries_json}: query {qid!r} must be a SQL string or an object with a '
+                f'"sql" key, got {type(entry).__name__}.'
+            )
+        sql_by_id[qid] = str(entry["sql"])
+        if entry.get("params"):
+            params_by_id[qid] = entry["params"]
+
     return _register_static_workload(
         name=name,
         sql_by_id=sql_by_id,
@@ -269,7 +329,8 @@ def register_workload_from_json(
         dataset_name=dataset_name,
         scale_factors=scale_factors,
         schema_example_table=schema_example_table,
-        num_instantiations=num_instantiations,
+        params_by_id=_normalize_params(params_by_id, str(queries_json)),
+        params_source=str(queries_json),
     )
 
 
@@ -282,11 +343,13 @@ def _register_static_workload(
     dataset_name: str | None,
     scale_factors: tuple[float, ...],
     schema_example_table: str | None,
-    num_instantiations: int = DEFAULT_NUM_INSTANTIATIONS,
+    params_by_id: dict[str, dict] | None = None,
+    params_source: str = "params",
 ) -> WorkloadSpec:
-    """Shared builder: turn an ``{id: sql}`` map + parquet into a registered static
-    (parameterless) workload. Schema is derived from the parquet; tables inferred if
-    not given; each query gets an identity generator (the SQL verbatim, no params)."""
+    """Shared builder: turn an ``{id: sql}`` map + parquet into a registered workload.
+    Schema is derived from the parquet; tables inferred if not given. Templated queries are
+    filled from ``params_by_id`` (per-placeholder value lists); static queries get an
+    identity generator."""
     parquet_dir = Path(parquet_dir)
     # Normalize keys (q1/Q1/query1/1/2b) to canonical bare ids, reliably + reported.
     key_to_id = _normalize_query_keys(list(sql_by_id))
@@ -299,15 +362,10 @@ def _register_static_workload(
     def schema_factory() -> str:
         return schema_ddl_from_parquet(parquet_dir, resolved_tables, scale_factors[0])
 
-    # Templated queries (those with [PLACEHOLDER] holes) get data-driven instantiations
-    # inferred ONCE here against the parquet; static queries use an identity generator.
-    assignments = _infer_template_assignments(
-        sql_by_id=sql_by_norm,
-        parquet_dir=parquet_dir,
-        tables=resolved_tables,
-        sf=scale_factors[0],
-        num_instantiations=num_instantiations,
-    )
+    # Templated queries (those with [PLACEHOLDER] holes) are filled from the user-supplied
+    # per-placeholder value lists; static queries use an identity generator. Params keys were
+    # already normalized to bare ids (same _QID_RE) by the callers.
+    assignments = _load_template_assignments(sql_by_norm, params_by_id or {}, params_source)
     # Validate the placeholder values and, under SYNNODB_BYO_DEBUG, log the SQL + args
     # line per query.
     _preflight_workload(name, sql_dict, ids, resolved_tables, assignments)

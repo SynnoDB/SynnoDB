@@ -13,7 +13,7 @@ from synnodb.workloads.engine_publish import (
     derive_template,
     publish_engine,
 )
-from synnodb.workloads.param_infer import substitute
+from synnodb.workloads.query_params import substitute
 
 Q1 = (
     "select sum(l_quantity) as q from lineitem "

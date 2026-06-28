@@ -170,40 +170,6 @@ def test_unparseable_key_raises(tmp_path):
         register_workload_from_json("bad", qjson, parquet)
 
 
-TPCH_SF1 = "/mnt/labstore/learneddb/synno_data/workloads/tpch/tpch_parquet/sf1"
-
-
-def test_templated_byo_q1_q7(tmp_path):
-    """A TEMPLATED queries.json (Q1's embedded [DELTA], Q7's correlated nations) must
-    register with valid, data-inferred instantiations — no hand-written generator."""
-    import json as _json
-    import os
-
-    if not os.path.isdir(TPCH_SF1):
-        pytest.skip("TPC-H SF1 parquet not present")
-    pytest.importorskip("duckdb")
-
-    from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
-    from synnodb.workloads.byo_workload import register_workload_from_json
-
-    qjson = tmp_path / "queries.json"
-    qjson.write_text(_json.dumps({"1": tpc_h["Q1"], "7": tpc_h["Q7"]}))
-
-    spec = register_workload_from_json(
-        "tpch_byo", qjson, TPCH_SF1.rsplit("/sf1", 1)[0], scale_factors=(1,)
-    )
-    assert spec.all_query_ids == ("1", "7")
-
-    # the generator yields instantiated SQL with placeholders filled + a params dict
-    gen = spec.query_gen_factory(None)
-    import random as _random
-
-    name, sql, params = gen("Q1", _random.Random(1))
-    assert "[DELTA]" not in sql and "DELTA" in params
-    name7, sql7, params7 = gen("Q7", _random.Random(1))
-    assert "[NATION1]" not in sql7 and "NATION1" in params7 and "NATION2" in params7
-
-
 def test_preflight_catches_nonstring_placeholder():
     """Registration-time self-check rejects a non-string placeholder value (which would
     otherwise fail deep in a run with 'failed to parse <name>')."""
@@ -235,14 +201,147 @@ def test_preflight_passes_for_string_placeholders():
 def test_byo_debug_toggle(monkeypatch):
     import logging
 
-    from synnodb.workloads.param_infer import configure_byo_debug
+    from synnodb.workloads.query_params import configure_byo_debug
 
     monkeypatch.setenv("SYNNODB_BYO_DEBUG", "1")
     assert configure_byo_debug() is True
-    assert logging.getLogger("synnodb.workloads.param_infer").level == logging.DEBUG
+    assert logging.getLogger("synnodb.workloads.query_params").level == logging.DEBUG
     assert logging.getLogger("synnodb.workloads.byo_workload").level == logging.DEBUG
     monkeypatch.delenv("SYNNODB_BYO_DEBUG")
     assert configure_byo_debug() is False
+
+
+def _orders_parquet(tmp_path):
+    """A small parquet workload with a few typed columns for the param tests."""
+    pa = pytest.importorskip("pyarrow")
+    import datetime
+
+    import pyarrow.parquet as pq
+
+    sf1 = tmp_path / "data" / "sf1"
+    sf1.mkdir(parents=True)
+    pq.write_table(
+        pa.table({
+            "o_key": [1, 2, 3, 4, 5],
+            "o_orderdate": [datetime.date(y, 6, 1) for y in (1993, 1994, 1995, 1996, 1995)],
+            "o_seg": ["BUILDING", "AUTOMOBILE", "BUILDING", "MACHINERY", "AUTOMOBILE"],
+            "o_amt": [25.0, 11.0, 40.0, 7.0, 33.0],
+        }),
+        sf1 / "orders.parquet",
+    )
+    return tmp_path / "data"
+
+
+def _register(tmp_path, queries, name="byo"):
+    import json as _json
+
+    from synnodb.workloads.byo_workload import register_workload_from_json
+
+    parquet = _orders_parquet(tmp_path)
+    qjson = tmp_path / "queries.json"
+    qjson.write_text(_json.dumps(queries))
+    return register_workload_from_json(name, qjson, parquet)
+
+
+def test_templated_inline_params(tmp_path):
+    """A templated query carries its values inline; an int is coerced to a string."""
+    spec = _register(tmp_path, {
+        "1": {"sql": "SELECT * FROM orders WHERE o_amt > [MINAMT]",
+              "params": {"MINAMT": [10, 20, 30]}},
+    })
+    gen = spec.query_gen_factory(None)
+    import random as _random
+    name, sql, params = gen("Q1", _random.Random(1))
+    assert "[MINAMT]" not in sql
+    assert params["MINAMT"] in {"10", "20", "30"}
+
+
+def test_templated_correlated_zip(tmp_path):
+    """Per-placeholder lists are index-zipped, so a correlated pair stays aligned."""
+    spec = _register(tmp_path, {
+        "7": {"sql": "SELECT * FROM orders WHERE o_seg = '[A]' OR o_seg = '[B]'",
+              "params": {"A": ["BUILDING", "MACHINERY"], "B": ["MACHINERY", "BUILDING"]}},
+    })
+    ph = spec.placeholders_factory(None)
+    first = ph("Q7")
+    assert (first["A"], first["B"]) == ("BUILDING", "MACHINERY")  # index 0 stays paired
+
+
+def test_templated_length_one_broadcast(tmp_path):
+    spec = _register(tmp_path, {
+        "1": {"sql": "SELECT * FROM orders WHERE o_seg = '[SEG]' AND o_amt > [MIN]",
+              "params": {"SEG": ["BUILDING"], "MIN": [5, 15]}},
+    })
+    # broadcast SEG across both instantiations of MIN
+    gen = spec.query_gen_factory(None)
+    seen = {gen("Q1")[2]["SEG"] for _ in range(5)}
+    assert seen == {"BUILDING"}
+
+
+def test_templated_in_list_roundtrips_unquoted(tmp_path):
+    from synnodb.workloads.workload_provider import format_args_element
+
+    spec = _register(tmp_path, {
+        "9": {"sql": "SELECT * FROM orders WHERE o_seg IN [SEGS]",
+              "params": {"SEGS": [["BUILDING", "AUTOMOBILE"]]}},
+    })
+    ph = spec.placeholders_factory(None)
+    val = ph("Q9")["SEGS"]
+    assert val == "('BUILDING', 'AUTOMOBILE')"
+    args = format_args_element("9", ph("Q9"))
+    assert f" {val}" in args and f'"{val}"' not in args  # leading '(' -> left unquoted
+
+
+def test_missing_params_raises(tmp_path):
+    with pytest.raises(ValueError, match="have no parameter values"):
+        _register(tmp_path, {"1": {"sql": "SELECT * FROM orders WHERE o_amt > [MINAMT]"}})
+
+
+def test_plain_string_entry_is_static(tmp_path):
+    spec = _register(tmp_path, {"1": "SELECT count(*) FROM orders"})
+    _, sql, params = spec.query_gen_factory(None)("Q1")
+    assert params == {} and "count(*)" in sql
+
+
+def test_plain_string_entry_with_placeholder_raises(tmp_path):
+    with pytest.raises(ValueError, match="have no parameter values"):
+        _register(tmp_path, {"1": "SELECT * FROM orders WHERE o_amt > [MINAMT]"})
+
+
+def test_mixed_templated_and_static(tmp_path):
+    spec = _register(tmp_path, {
+        "1": {"sql": "SELECT * FROM orders WHERE o_amt > [MINAMT]",
+              "params": {"MINAMT": ["10"]}},
+        "2": "SELECT count(*) FROM orders",
+    })
+    _, _, p1 = spec.query_gen_factory(None)("Q1")
+    _, _, p2 = spec.query_gen_factory(None)("Q2")
+    assert p1 == {"MINAMT": "10"} and p2 == {}
+
+
+def test_inconsistent_param_lengths_raise(tmp_path):
+    with pytest.raises(ValueError, match="inconsistent number of values"):
+        _register(tmp_path, {
+            "1": {"sql": "SELECT * FROM orders WHERE o_seg='[A]' AND o_amt>[B]",
+                  "params": {"A": ["BUILDING", "MACHINERY"], "B": [1, 2, 3]}},
+        })
+
+
+def test_dir_sidecar_params(tmp_path):
+    """register_workload_from_dir reads SQL files + a sidecar params.json."""
+    import json as _json
+
+    from synnodb.workloads.byo_workload import register_workload_from_dir
+
+    parquet = _orders_parquet(tmp_path)
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    (sql_dir / "1.sql").write_text("SELECT * FROM orders WHERE o_amt > [MINAMT]")
+    (sql_dir / "params.json").write_text(_json.dumps({"1": {"MINAMT": ["10", "20"]}}))
+
+    spec = register_workload_from_dir("dirp", sql_dir, parquet)
+    gen = spec.query_gen_factory(None)
+    assert {gen("Q1")[2]["MINAMT"] for _ in range(8)} <= {"10", "20"}
 
 
 def test_resolve_workload(myshop):

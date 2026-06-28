@@ -665,6 +665,22 @@ def _setup() -> None:
         set_hugepages(node=node, page_kb=2048, count=0)
 
 
+def _run_coroutine(coro):
+    """Drive a top-level coroutine to completion, whether or not an event loop is already
+    running. Plain ``asyncio.run`` raises "cannot be called from a running event loop" when
+    invoked from inside one - which is exactly the case when the API is driven from a Jupyter
+    notebook (the documented in-process usage). In that case we run it on a fresh loop in a
+    worker thread; otherwise we use ``asyncio.run`` directly."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)  # no loop running: the normal CLI path
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def run_conv_wrapper(
     args: argparse.Namespace | None,
     run_config: RunConfig | None,
@@ -773,7 +789,7 @@ def run_conv_wrapper(
         )
 
     try:
-        asyncio.run(main(args, spec))
+        _run_coroutine(main(args, spec))
 
         if args.notify:
             # notify about successful completion

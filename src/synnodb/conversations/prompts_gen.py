@@ -241,9 +241,9 @@ def base_impl_query_prompt(
     template = Template(template_str)
 
     if is_first_query:
-        prefix = "Lets start implementing the query execution logic. Implement all queries in the next steps step by step. Start with"
+        prefix = "Start implementing the query execution logic. Implement ONLY"
     else:
-        prefix = "Next, continue implementing the query execution logic for"
+        prefix = "Continue implementing the query execution logic. Implement ONLY"
 
     if sample_query_args_dict is not None and query_id in sample_query_args_dict:
         sample_args_str = f" Example instantiation of the query placeholders are:\n{sample_query_args_dict[query_id]}\nNULL values might appear in IN-Lists and are represented with the string '<<NULL>>'."

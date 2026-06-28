@@ -79,7 +79,7 @@ def test_publish_discover_route_q1_q6():
 
 def test_near_miss_constant_falls_back():
     from synnodb.workloads.engine_publish import publish_from_provider
-    from synnodb.workloads.param_infer import substitute
+    from synnodb.workloads.query_params import substitute
 
     provider = _provider()
     with tempfile.TemporaryDirectory() as tmp:

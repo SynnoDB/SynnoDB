@@ -28,7 +28,7 @@ from ..duckdb_compat.discovery import resolve_engines_dir
 from ..router.manifest import EngineManifest, QueryTemplate, build_manifest_from_dir, infer_duckdb_type
 from ..router.normalize import normalize_sql, unify_and_bind
 from ..router.registry import PlaceholderSpec
-from .param_infer import render_value, substitute
+from .query_params import render_value, substitute
 
 log = logging.getLogger("synnodb.engine_publish")
 
@@ -379,7 +379,7 @@ def _lookup_template(sql_dict: Mapping[str, str], qid: str) -> Optional[str]:
 
 def _sample_assignments(provider: object, query_id: str, n: int) -> List[Mapping[str, object]]:
     """A few placeholder assignments for a query, from the workload's own generator (which
-    needs no live data: TPC-H draws from fixed ranges, bring-your-own from pre-inferred
+    needs no live data: TPC-H draws from fixed ranges, bring-your-own from user-supplied
     values). Best-effort: returns what it can, possibly empty."""
     import random
 

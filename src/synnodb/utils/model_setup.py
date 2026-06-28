@@ -36,7 +36,7 @@ def setup_model_config(
         )
         # Default to DGX local model endpoint for non-cloud providers (llama is listening on all interfaces not just localhost)
         if not api_base and provider not in ("anthropic", "azure", "bedrock", "vertex_ai"):
-            api_base = "http://dgx02:13505/v1"
+            api_base = "http://dgx02:13506/v1"
             logger.info(f"No LLM_API_BASE set, defaulting to local model endpoint: {api_base}")
         openai_client = None
     else:

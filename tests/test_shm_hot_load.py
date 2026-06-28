@@ -19,7 +19,7 @@ from synnodb import optimize_database
 from synnodb.router import RouterMode, RouterPolicy
 from synnodb.router.adapt import results_equal
 from synnodb.router.manifest import EngineManifest
-from synnodb.workloads.param_infer import substitute
+from synnodb.workloads.query_params import substitute
 from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 from synnodb.utils.utils import DBStorage
 
