@@ -19,11 +19,11 @@ must reproduce DuckDB's type AND value exactly:
   with decimal_column(values, precision, scale), where scale is DuckDB's column scale (e.g.
   SUM(l_extendedprice) -> DECIMAL(38,2), scale 2; a product of two DECIMAL(_,2) -> scale 4).
   precision>38 emits decimal256 automatically.
-- Only genuinely DOUBLE columns (AVG, ...) use double_column. Pick the builder by value family:
+- Only genuinely DOUBLE columns (AVG, ...) use double_column. Pick the builder that matches the column's type category:
   int64_column for any integer (pass an arrow target like arrow::int32() to narrow), bool_column
   for BOOLEAN, string_column for text, date_column for DATE, timestamp_column for TIMESTAMP. The
   builder casts to the column's exact Arrow type and THROWS on an impossible/overflowing cast, so
-  feed the right family. Build the result with make_table({{name, column}, ...}) in DuckDB's
+  feed it the matching type. Build the result with make_table({{name, column}, ...}) in DuckDB's
   column order.
 - NULLs are first class and must follow SQL semantics, never null->0/"". If an output cell can be
   NULL (a LEFT JOIN miss, MIN/MAX/AVG over an empty/all-null group, NULLIF, a NULL-propagating
