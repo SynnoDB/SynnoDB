@@ -7,38 +7,70 @@ logger = logging.getLogger(__name__)
 
 
 class ProcTreeTimeoutKiller:
-    def __init__(self, root_pid: int, timeout: int, *, min_descendant_depth: int = 0):
+    def __init__(
+        self,
+        root_pid: int,
+        timeout: int,
+        *,
+        min_descendant_depth: int = 0,
+        build_timeout: int = 0,
+        build_min_depth: int = 1,
+    ):
         self.root_pid = root_pid
         self.timeout = timeout
         self.min_descendant_depth = min_descendant_depth
+        # Independent, usually larger, deadline for the build/load stages — any
+        # live descendant shallower than the query stage (depth in
+        # [build_min_depth, min_descendant_depth)). 0 disables it, preserving the
+        # original query-only behaviour. Without this, a livelock inside the
+        # build/loader stage never spawns the depth-`min_descendant_depth` query
+        # leaf, so the query timer never arms and the hang runs unbounded.
+        self.build_timeout = build_timeout
+        self.build_min_depth = build_min_depth
         self.start: float | None = None
+        self.phase: str | None = None
         self.killed = False
 
-    def expired(self) -> bool:
-        if self.timeout <= 0:
-            return False
-        if self.start is None:
-            return False
-        return (time.monotonic() - self.start) >= self.timeout
+    def _active_stage(self, depth: int) -> tuple[str | None, int]:
+        """Map the rightmost-descendant depth to its (stage, deadline_seconds).
+
+        The query stage takes priority; anything shallower (but still a real
+        descendant) is treated as the build/load stage when a build_timeout is
+        configured. Returns (None, 0) when nothing should be timed.
+        """
+        if self.timeout > 0 and depth >= self.min_descendant_depth:
+            return "query", self.timeout
+        if self.build_timeout > 0 and depth >= self.build_min_depth:
+            return "build", self.build_timeout
+        return None, 0
 
     def enforce(self) -> None:
         """
-        Kill the rightmost eligible descendant exactly once when timeout expires.
+        Kill the rightmost eligible descendant exactly once when its stage's
+        deadline expires. The query and (longer) build stages are timed
+        independently; the timer restarts whenever the active stage changes so
+        build time is never charged against the query budget and vice versa.
         """
         if self.killed:
             return
 
         victim, depth = self._rightmost_descendant(self.root_pid)
-        if depth < self.min_descendant_depth:
+        stage, deadline = self._active_stage(depth)
+
+        if stage is None:
             self.start = None
+            self.phase = None
             return
-        if self.start is None:
+        if self.phase != stage or self.start is None:
+            self.phase = stage
             self.start = time.monotonic()
             return
-        if not self.expired():
+        if (time.monotonic() - self.start) < deadline:
             return
 
-        logger.warning(f"Timeout, killing {victim}")
+        logger.warning(
+            f"Timeout: {stage} stage exceeded {deadline}s; killing pid {victim} (depth {depth})"
+        )
         self._kill(victim)
 
         self.killed = True

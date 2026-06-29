@@ -3,9 +3,12 @@ from pathlib import Path
 from string import Template
 
 from synnodb.conversations.filenames import get_plan_filename
-from synnodb.cpp_runner.prepare_repo.assemble_args_parser import assemble_args_parser_file
+from synnodb.cpp_runner.prepare_repo.assemble_args_parser import (
+    assemble_args_parser_file,
+)
 from synnodb.cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from synnodb.utils.cli_config import Usecase
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
@@ -52,6 +55,17 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
         else:
             raise ValueError(f"Unsupported db source: {self.db_storage}")
 
+        # Copy the ingress/egress helpers into the workspace (they are also on the compiler include
+        # path). This lets the agent READ exactly what each helper does - and, since they are not in
+        # the read-only set, ADAPT one if a column needs handling it does not yet cover (e.g. a
+        # wider accumulator for a value that overflows int64). The quoted #include in
+        # db_loader.cpp / queryX.cpp resolves to this workspace copy first.
+        cpp_helpers_dir = project_dir.parent / "cpp_helpers"
+        file_sources += [
+            ("column_ingest.hpp", cpp_helpers_dir / "column_ingest.hpp"),
+            ("column_egress.hpp", cpp_helpers_dir / "column_egress.hpp"),
+        ]
+
         assert isinstance(self.workload_provider, OLAPWorkloadProvider), (
             f"Expected workload_provider to be an instance of OLAPWorkloadProvider, got {type(self.workload_provider)}"
         )
@@ -86,7 +100,7 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             result[filename] = file_content
 
         if storage_plan is not None:
-            result[get_plan_filename("olap")] = storage_plan
+            result[get_plan_filename(Usecase.OLAP)] = storage_plan
 
         sql_template_list = [
             f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
@@ -186,8 +200,22 @@ def _gen_table_reads(tables: list[str], persistent_storage: bool) -> str:
         return "\n".join(
             f'{indent}tables->{name}_path = path + "{name}.parquet";' for name in tables
         )
-    else:
-        return "\n".join(
-            f'{indent}tables->{name} = ReadParquetTable(path + "{name}.parquet");'
-            for name in tables
-        )
+    # In-memory plane: read each table from parquet, unless the shm hot-load is active
+    # (SYNNODB_SHM_INGEST set), in which case map it zero-copy from its /dev/shm Arrow
+    # segment. One binary serves both planes; the choice is made at run time by env.
+    shm_reads = "\n".join(
+        f"{indent}{indent}tables->{name} = "
+        f'synnodb::ReadArrowTableFromShm(synnodb::shm_ingest_path_for("{name}"));'
+        for name in tables
+    )
+    parquet_reads = "\n".join(
+        f'{indent}{indent}tables->{name} = ReadParquetTable(path + "{name}.parquet");'
+        for name in tables
+    )
+    return (
+        f"{indent}if (synnodb::shm_ingest_enabled()) {{\n"
+        f"{shm_reads}\n"
+        f"{indent}}} else {{\n"
+        f"{parquet_reads}\n"
+        f"{indent}}}"
+    )

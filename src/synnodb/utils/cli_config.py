@@ -74,6 +74,9 @@ class RunConfig:
         None  # target scale factor for the check-sf correctness conversation
     )
     usecase: Usecase = Usecase.OLAP
+    workspace_dir: str | None = (
+        None  # output/workspace dir; None -> settings.get_workspace_dir() (local ./output)
+    )
 
 
 def add_common_args(
@@ -117,6 +120,24 @@ def add_common_args(
     include_memory_budget_mb: bool = False,
     include_include_mem_budget_for_in_mem_in_hashes: bool = False,
 ) -> None:
+    # Always available: where the run's git-tracked output lives. Local disk by
+    # default (the snapshotter does heavy git ops); avoid putting it on NFS.
+    parser.add_argument(
+        "--workspace",
+        dest="workspace_dir",
+        default=None,
+        help="Output/workspace directory (default: local ./output).",
+    )
+
+    # Number of parameter instantiations per query for the correctness sweep. None ->
+    # the provider's default (DEFAULT_NUM_INSTANTIATIONS).
+    parser.add_argument(
+        "--num_instantiations",
+        type=int,
+        default=None,
+        help="Parameter instantiations per query in the correctness sweep.",
+    )
+
     if include_model:
         parser.add_argument(
             "--model",
@@ -125,12 +146,21 @@ def add_common_args(
         )
 
     if include_benchmark:
+
+        def _benchmark_type(value):
+            # built-in enum member, or any registered (bring-your-own) workload name
+            try:
+                return benchmark_class(value)
+            except ValueError:
+                from synnodb.workloads.workload_spec import resolve_workload
+
+                return resolve_workload(value)
+
         parser.add_argument(
             "--benchmark",
-            type=benchmark_class,
-            choices=list(benchmark_class),
+            type=_benchmark_type,
             default=benchmark_class.TPCH,
-            help="Benchmark to use for the agent.",
+            help="Benchmark/workload: a built-in (tpch/ceb) or any registered workload name.",
         )
     if include_replay:
         parser.add_argument(

@@ -154,14 +154,12 @@ def gen_query_impl_query_select_block(
     case_template = string.Template(
         '${prefix}${kw} (req.query_id == "${qid}") {\n'
         "${body}Q${qid}Args args = parse_q${qid}(req);\n"
-        "${body}std::vector<std::vector<std::string>> rows;\n"
         "${body}auto start = std::chrono::steady_clock::now();\n"
         f"{sample_trace_str}"
-        "${body}rows = run_q${qid}(db, args);\n"
+        "${body}std::shared_ptr<arrow::Table> result = run_q${qid}(db, args);\n"
         "${body}auto end = std::chrono::steady_clock::now();\n"
         "${body}elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();\n"
-        '${body}const std::string filename = "result_" + req.req_id + ".csv";\n'
-        "${body}write_csv(filename, rows);\n"
+        "${body}synnodb::write_result(result, req.req_id);\n"
         "${indent}}"
     )
 

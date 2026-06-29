@@ -21,49 +21,63 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "duckdb>=1.4.3",
+    "pyarrow>=23.0.1",
+    "sqlglot>=25.0.0",   # query normalization / template matching
+    "pandas>=2.3.3",     # DuckDB .df() egress; common in user code
+    "python-dotenv>=1.2.1",
+]
+
+[project.optional-dependencies]
+# The agent factory that *generates* bespoke engines (LLM clients, tracing, the
+# sandbox, Postgres). Heavy; only needed to build engines, never to run the router.
+# Install with: pip install "synnodb[factory]"
+factory = [
     "anthropic>=0.84.0",
-    "clickhouse-connect>=0.14.0",
     "chardet>=5,<6",
     "charset-normalizer>=3.4.5",
-    "duckdb>=1.4.3",
-    "geoip2>=5.2.0",
-    "ipykernel>=7.1.0",
-    "ipywidgets>=8.1.8",
     "landlock>=1.0.0.dev5",
     "litellm>=1.82.0",
-    "matplotlib>=3.10.8",
     "openai>=2.11.0",
     "openai-agents[litellm]>=0.15.0",
-    "pandas>=2.3.3",
     "prompt-toolkit>=3.0.52",
     "psycopg[binary]>=3.2",
     "psycopg2-binary>=2.9.11",
     "sqlglot>=26.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
-    "seaborn>=0.13.2",
     "tabulate>=0.9.0",
     "urllib3>=2.6.3",
-    "weave>=0.52.22",
-    "pyarrow>=23.0.1",
     "wandb>=0.26.0",
-    "dotenv>=0.9.9",
+    "weave>=0.52.22",
 ]
+dev = ["pytest>=9.0.2", "pytest-asyncio>=1.3.0"]
+viz = ["matplotlib>=3.10.8", "seaborn>=0.13.2"]
+benchmark = ["clickhouse-connect>=0.14.0"]
+notebook = ["ipykernel>=7.1.0", "ipywidgets>=8.1.8"]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=9.0.2",
-    "pytest-asyncio>=1.3.0",
-]
+[project.scripts]
+synnodb-storage-plan = "synnodb.run_gen_storage_plan:cli"
+synnodb-base-impl = "synnodb.run_gen_base_impl:cli"
+synnodb-optim = "synnodb.run_optim_loop:cli"
+synnodb-check-sf = "synnodb.run_check_sf_correctness:cli"
+synnodb-multi-threading = "synnodb.run_add_multi_threading:cli"
+synnodb-optimize = "synnodb.optimize:cli"
+pgrouter = "synnodb.misc.router.pgrouter.cli:run"
+pgrouter-analyze = "synnodb.misc.router.pgrouter.analyze:main"
+pgrouter-inspect = "synnodb.misc.router.pgrouter.inspect:main"
 
 [project.urls]
 Homepage = "https://github.com/JWehrstein/SynnoDB"
 Repository = "https://github.com/JWehrstein/SynnoDB"
 
-[project.scripts]
-pgrouter = "synnodb.misc.router.pgrouter.cli:run"
-pgrouter-analyze = "synnodb.misc.router.pgrouter.analyze:main"
-pgrouter-inspect = "synnodb.misc.router.pgrouter.inspect:main"
+[tool.pytest.ini_options]
+# Collect the canonical package test suite (CLAUDE.md: "All tests live in the tests/
+# folder"). The router sub-project under src/synnodb/misc/router ships its own pyproject
+# and run_tests.py; its integration tests launch the router via `uv run` from that dir,
+# which resolves the router's own environment (no synnodb installed), so they only run
+# under that sub-project's own setup, not the package CI.
+testpaths = ["tests"]
 
 [build-system]
 requires = ["setuptools>=77.0"]

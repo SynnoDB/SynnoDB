@@ -2,12 +2,11 @@ import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import pandas as pd
+import pyarrow as pa
 
 from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
-from synnodb.observability.benchmark.systems.umbra import UmbraRunner
 from synnodb.utils import utils
 from synnodb.workloads.system_factory import System, SystemFactory
 from synnodb.workloads.workload_provider import (
@@ -30,7 +29,7 @@ class QueryExecutionResult:
     general_system_config: (
         GeneralSystemConfig  # e.g. memory limit, num threads, core ids, ...
     )
-    result: pd.DataFrame | None
+    result: "pa.Table | None"  # exact Arrow (DECIMAL preserved); pandas would coerce it to float
     exec_time_ms: float
     plan: dict | None
 
@@ -159,7 +158,9 @@ class QueryExecutionCache:
         # Create a stable hash of the query entry by converting it to a JSON string with sorted keys.
         # query_exec_cache_hash_entries() omits query_args (including req_id) and
         # includes the repetition info so every repetition gets its own cache entry / runtime.
-        query_entry_json = utils.stable_json(query_entry.query_exec_cache_hash_entries())
+        query_entry_json = utils.stable_json(
+            query_entry.query_exec_cache_hash_entries()
+        )
 
         entry_dict = {
             "system": system,
@@ -167,6 +168,9 @@ class QueryExecutionCache:
             "query_entry": query_entry_json,
             "general_system_config": utils.stable_json(asdict(general_system_config)),
             "exec_settings": utils.stable_json(asdict(exec_settings)),
+            # Cached result format. Bumped when the stored result type changes (DataFrame -> exact
+            # Arrow) so stale float-coerced DataFrame caches are bypassed and re-executed.
+            "result_format": "arrow_v1",
         }
         hash_payload = utils.stable_json(entry_dict)
         hash = utils.sha256(hash_payload)
@@ -197,8 +201,10 @@ class QueryExecutionCache:
             for query_entry in missing_entries:
                 assert isinstance(system_instance, DuckDBConnectionManager)
                 try:
-                    duckdb_time, duckdb_df, duckdb_plan = system_instance.duckdb_sql(
-                        query_entry.sql
+                    # Keep the reference as exact Arrow so the correctness check compares decimals
+                    # bit-for-bit (a pandas DataFrame would coerce DECIMAL to float64).
+                    duckdb_time, duckdb_table, duckdb_plan = (
+                        system_instance.duckdb_sql_arrow(query_entry.sql)
                     )
                 except Exception as e:
                     logger.error(
@@ -212,12 +218,14 @@ class QueryExecutionCache:
                         query_entry=query_entry,
                         exec_settings=exec_settings,
                         general_system_config=general_system_config,
-                        result=duckdb_df,
+                        result=duckdb_table,
                         exec_time_ms=duckdb_time,
                         plan=duckdb_plan,
                     )
                 )
         elif system == System.UMBRA:
+            from synnodb.observability.benchmark.systems.umbra import UmbraRunner
+
             assert isinstance(system_instance, UmbraRunner)
             assert isinstance(exec_settings, OLAPExecSettings)
 

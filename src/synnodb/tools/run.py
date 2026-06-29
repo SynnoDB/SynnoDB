@@ -204,11 +204,11 @@ class RunTool:
             f"Run with: {query_ids=} {mode=} {self.dataset_name=} {trace_mode=} {optimize=} {self.base_parquet_dir=} num_threads={len(current_core_ids) if current_parallelism else '1'} mem_limit={self.memory_budget_mb}"  # type: ignore
         )
 
-        # Delete any result CSV files written by a previous run so we never
+        # Delete any result files written by a previous run so we never
         # accidentally read stale results if the child crashes before writing
         # fresh ones.
         if self.delete_result_csv_before_execution:
-            delete_result_csv_files(self.cwd)
+            delete_result_files(self.cwd)
 
         #################
         # COMPILATION
@@ -543,13 +543,20 @@ class RunTool:
         )[0]
 
 
-def delete_result_csv_files(workspace_path: Path):
-    # delete all .csv files from prior runs
-    csv_files = list(workspace_path.rglob("result*.csv"))
-    if len(csv_files) > 0:
-        logger.info(f"Deleting existing result-csv files ({len(csv_files)} files).")
-        for csv_file in csv_files:
-            csv_file.unlink()
+def delete_result_files(workspace_path: Path):
+    # Delete every prior result file - the exact Arrow result the engine writes now
+    # (result_<req_id>.arrow) and the legacy CSV. Result names are keyed by request id and so
+    # are stable across iterations, so an uncleaned file from a crashed run would otherwise be
+    # silently validated as the current run's output.
+    result_files = [
+        p
+        for pattern in ("result*.arrow", "result*.csv")
+        for p in workspace_path.rglob(pattern)
+    ]
+    if result_files:
+        logger.info(f"Deleting existing result files ({len(result_files)} files).")
+        for f in result_files:
+            f.unlink()
 
 
 # callback executing the query

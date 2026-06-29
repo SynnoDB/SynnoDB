@@ -24,12 +24,14 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 sys.path.append(str(REPO_ROOT))
 
+from synnodb.observability.logging.wandb_api_helper import (
+    wandb_retrieve_metrics_for_run,
+)
 from synnodb.observability.plots.classify_bespoke_execution.strategy_display_names import (
     STRATEGY_DISPLAY_NAMES,
 )
 from synnodb.observability.plots.classify_bespoke_storage import llms
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
-from synnodb.utils.logging_and_reporting.wandb_api_helper import wandb_retrieve_metrics_for_run
 
 # -- path setup ----------------------------------------------------------------
 THIS_DIR = Path(__file__).parent

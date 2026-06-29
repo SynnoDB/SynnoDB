@@ -17,6 +17,8 @@ tmp/
 *.tmp
 data/
 .plans/
+CLAUDE.md
+.claude/
 # Private webpage — tracked in its own separate PRIVATE repo, kept out of the public SynnoDB repo
 webpage/
 code_v*/
@@ -241,3 +243,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+/build/
+/dist/
+*.egg-info/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Local engine build/test harness (personal scratch)
+build_and_test_engine.py
+# Locally generated engine folders (sources + compiled `db` + per-folder .git)
+synthesized_engines/

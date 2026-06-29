@@ -444,13 +444,16 @@ def get_response_id(output: ModelResponse):
         logger.warning(
             f"Expected single ResponseOutputMessage in output for cache status. Got {len(msgs)} [{types_str}]. Using last one for cache status."
         )
+    # Best-effort: msgs[-1] can be a tool/shell call (see the "Using last one"
+    # warning above) that carries no provider_data. Cache-status consumption must
+    # never crash the agent loop, so fail soft to None (as the reasoning-only
+    # branch above already does).
     last_response = msgs[-1]
-    assert hasattr(last_response, "provider_data"), (
-        f"Expected last response object to have provider_data attribute to consume cache status. Got {type(last_response)} with attributes {dir(last_response)}"
-    )
-    response_id = last_response.provider_data["response_id"]  # type: ignore
-
-    assert response_id is not None, (
-        f"Expected response_id in ModelResponse to consume cache status: {output}"
-    )
-    return response_id
+    provider_data = getattr(last_response, "provider_data", None)
+    if not provider_data or provider_data.get("response_id") is None:
+        logger.warning(
+            "No provider_data/response_id on %s; skipping cache status.",
+            type(last_response).__name__,
+        )
+        return None
+    return provider_data["response_id"]

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+from synnodb import settings
 
 W = 1920
 H = 1080
@@ -11,10 +12,6 @@ PLOT_WINDOW_TITLE = "metrics_live.py"
 PROMPT_WINDOW_TITLE = "current_prompt.txt"
 COST_WINDOW_TITLE = "Cost"
 
-SYNNO_DATA_DIR = os.getenv("SYNNO_DATA_DIR", default=None)
-assert SYNNO_DATA_DIR is not None, "SYNNO_DATA_DIR environment variable is not set"
-SYNNO_DATA_DIR = Path(SYNNO_DATA_DIR)
-WANDB_RUN_CACHE_PATH = SYNNO_DATA_DIR / "wandb_cache"
 DEFAULT_VIDEO_PATH = Path(__file__).resolve().parent / "terminal_demo.mp4"
 
 BG = (30, 34, 40)
@@ -55,6 +52,12 @@ COMBINED_HISTORY_COLUMNS = [
     "code_size",
     "speedup",
 ]
+
+
+def wandb_run_cache_path() -> Path:
+    """wandb run-cache dir, resolved lazily so importing this config needs no
+    SYNNO_DATA_DIR (config is resolved on first use via settings)."""
+    return settings.get_data_dir() / "wandb_cache"
 
 
 def frames_dir_for_run_ids(run_ids: list[str]) -> Path:
