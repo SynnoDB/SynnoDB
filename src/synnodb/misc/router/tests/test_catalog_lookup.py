@@ -68,7 +68,9 @@ class CatalogLookupTest(unittest.TestCase):
         fake_psycopg = mock.MagicMock()
         fake_psycopg.connect.return_value = fake_connection
 
-        with mock.patch("pgrouter.protocols.postgres.catalog.psycopg", fake_psycopg):
+        with mock.patch(
+            "synnodb.misc.router.pgrouter.protocols.postgres.catalog.psycopg", fake_psycopg
+        ):
             result = fetch_type_names_from_catalog_sync(state, [25, 23, 25])
 
         self.assertEqual(result, {23: "int4", 25: "text"})
