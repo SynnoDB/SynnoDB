@@ -93,8 +93,8 @@ def base_planner_prompt(
 
     # In-memory loading: the framework owns turning Arrow columns into typed C++ vectors,
     # which is easy to get wrong. The agent composes these helpers rather than decoding
-    # Arrow itself; the helpers cast via Arrow, so any source type is handled and a bad
-    # cast or overflow raises. See
+    # Arrow itself; the helpers cast via Arrow, so physical representations are handled
+    # centrally and a bad cast or overflow raises. See
     # docs/CAUGHT_ERRORS_IN_GENERATION.md (G2: a hand-written decimal decode loaded every
     # value column as zero).
     ingest_hint = (
@@ -102,17 +102,25 @@ def base_planner_prompt(
         'the framework helpers in `column_ingest.hpp` (already on the include path: add '
         '`#include "column_ingest.hpp"`). Do NOT decode Arrow buffers yourself '
         "(no raw_values()/GetValue()/Decimal128/endianness/scale handling — that is a "
-        "frequent source of silent bugs like all aggregates coming out zero). Each helper "
-        "takes the table and column name, accepts ANY source Arrow type, and returns a "
-        "std::vector you index positionally into your struct-of-arrays:\n"
-        '  - DECIMAL / money / quantity -> `synnodb::ingest::scaled_int64(*tables->TBL, "COL", DECIMALS)` '
-        "(std::vector<int64_t> of value*10^DECIMALS, exact fixed-point; use the column's decimal "
-        "scale, e.g. DECIMALS=2 for 2-dp money/quantity);\n"
-        '  - integer columns -> `synnodb::ingest::as_int64(*tables->TBL, "COL")`;\n'
+        "frequent source of silent bugs like all aggregates coming out zero). `column_ingest.hpp` "
+        "is the sanctioned extension point for generic ingest behavior: if a flat scalar column "
+        "needs handling the current helpers do not cover, extend that helper once while preserving "
+        "Arrow safe-cast, null-mask, scale, and range-check semantics, then call it from the loader. "
+        "Each helper takes the table and column name, accepts Arrow physical representations "
+        "through Arrow casts, and returns a "
+        "std::vector you index positionally into your struct-of-arrays. Use Arrow casts to decode "
+        "correctly, then store the narrowest correct C++ representation chosen by the storage plan:\n"
+        '  - DECIMAL / money / quantity -> `synnodb::ingest::scaled_integer<T>(*tables->TBL, "COL", DECIMALS)` '
+        "(std::vector<T> of value*10^DECIMALS, exact fixed-point; choose T as the narrowest safe "
+        "integer such as int16_t/int32_t/int64_t, and use the column's decimal scale);\n"
+        '  - integer/code/key columns -> `synnodb::ingest::as_integer<T>(*tables->TBL, "COL")` '
+        "(choose T from int8_t/uint8_t/.../int64_t/uint64_t based on the declared/ranged domain; "
+        "do not default to int64_t when the plan proves a narrower type is correct);\n"
         '  - string columns  -> `synnodb::ingest::as_string(*tables->TBL, "COL")`;\n'
         '  - date columns    -> `synnodb::ingest::as_date_days(*tables->TBL, "COL")` (int32 days since 1970-01-01);\n'
         '  - floating columns -> `synnodb::ingest::as_double(*tables->TBL, "COL")`.\n'
-        "Declare each Database column with the matching element type."
+        "`as_int64` and `scaled_int64` remain compatibility aliases, not a storage-layout default. "
+        "Declare each Database column with the matching narrow element type."
     )
 
     if read_storage_plan:
