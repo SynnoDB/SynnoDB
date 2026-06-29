@@ -2,6 +2,7 @@ import json
 import math
 import mimetypes
 import socketserver
+import threading
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -9,6 +10,16 @@ from urllib.parse import urlparse
 from synnodb.observability.logging.run_stats_drain import DataDrain, _duckdb_col_value
 
 _UI_DIR = Path(__file__).parent
+
+# A single live-dashboard HTTP server is shared by every stage that runs in ONE process, so the
+# dashboard URL keeps following the active stage. Without this, each stage's LiveDashboardDrain
+# started its own server and, because the previous stage's server still held the port, hopped to
+# the next one (8765 -> 8766 -> ...) - stranding the dashboard on the first stage (the storage
+# plan) while later stages (base impl) served on a port nobody was watching. The first drain binds
+# the server; later drains reuse it and retarget ``_ACTIVE_SNAPSHOT["fn"]`` at their own data.
+_SHARED_SERVER: "tuple[socketserver.TCPServer, int] | None" = None
+_SHARED_SERVER_LOCK = threading.Lock()
+_ACTIVE_SNAPSHOT: dict = {"fn": lambda: json.dumps({"meta": {}, "steps": [], "data": {}})}
 
 
 def _make_http_server(
@@ -412,9 +423,16 @@ class LiveDashboardDrain(DataDrain):
         )
 
     def _start_server(self, host: str, start_port: int) -> int:
-        import threading
-
-        port, server = _make_http_server(host, start_port, self._snapshot)
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        return port
+        # Retarget the shared server at THIS stage's data, binding the server only the first time.
+        # Reading _ACTIVE_SNAPSHOT["fn"] per request (via the closure below) means a later stage's
+        # data appears on the same URL with no port change, so the dashboard follows the run.
+        global _SHARED_SERVER
+        _ACTIVE_SNAPSHOT["fn"] = self._snapshot
+        with _SHARED_SERVER_LOCK:
+            if _SHARED_SERVER is not None:
+                return _SHARED_SERVER[1]
+            port, server = _make_http_server(host, start_port, lambda: _ACTIVE_SNAPSHOT["fn"]())
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            _SHARED_SERVER = (server, port)
+            return port

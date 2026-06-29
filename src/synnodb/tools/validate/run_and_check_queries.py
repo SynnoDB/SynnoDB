@@ -5,9 +5,11 @@ from pathlib import Path
 from typing import DefaultDict, Dict, List, Optional
 
 import pandas as pd
-import wandb
+import pyarrow as pa
 
+import wandb
 from synnodb.observability.logging.wandb_plots_gen import create_wandb_speedup_plot
+from synnodb.router.adapt import results_diff, results_equal
 from synnodb.utils.utils import prefix_dict
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
 from synnodb.workloads.system_factory import System
@@ -79,7 +81,7 @@ def check_output_correctness(
     trace_mode: bool,
     query_execution_cache: QueryExecutionCache,
     trace_data: str = "",
-    use_umbra: bool = True,
+    use_umbra: bool = False,
 ) -> ValidationOutput:
     logger.info(f"Comparing results with DuckDB for {exec_settings}...")
 
@@ -143,15 +145,15 @@ def check_output_correctness(
         if umbra_time_ms is not None:
             umbra_rt_lists[inst.query_id].append(umbra_time_ms)
 
-        # write df to csv and read back in - ensure consistent formatting
+        # The reference is exact Arrow (DECIMAL stays decimal128). The comparison below is
+        # Arrow-to-Arrow so decimals compare exactly and only genuine float columns use a
+        # tolerance. A pandas round-trip would coerce DuckDB's decimals to float64 and make an
+        # exact-but-differently-typed bespoke value compare unequal - the "values look identical
+        # but pandas says they differ" failure.
         assert duckdb_res.result is not None, (
             "DuckDB result is None, cannot compare results"
         )
-        duckdb_res.result.to_csv(out_path / "ref_result.csv", index=False)
-        reference_df = pd.read_csv(out_path / "ref_result.csv")
-
-        # remove ref_result.csv
-        (out_path / "ref_result.csv").unlink()
+        reference_table = duckdb_res.result
 
         # log times
         if umbra_time_ms is not None:
@@ -166,9 +168,9 @@ def check_output_correctness(
 
         bespoke_rt_lists[inst.query_id].append(rt.exec_time)
 
-        # check that result was produced. The runner names result files by the
-        # request id (see query_impl writer template: "result_" + req_id + ".csv").
-        filename = f"result_{rt.req_id}.csv"
+        # The engine writes its result as exact Arrow (cpp_helpers/result_writer.hpp:
+        # "result_<req_id>.arrow"). Read it as Arrow and keep it that way for the comparison.
+        filename = f"result_{rt.req_id}.arrow"
         res_path = out_path / filename
         if not res_path.exists():
             return ValidationOutput(
@@ -183,19 +185,13 @@ def check_output_correctness(
                 trace_output=trace_output,
             )
 
-        # load result from csv into dataframe
         try:
-            bespoke_df = pd.read_csv(
-                res_path,
-                header=0,
-                delimiter=",",
-                escapechar="\\",
-                quotechar='"',
-                doublequote=True,
-            )
+            bespoke_table = pa.ipc.open_file(
+                pa.memory_map(str(res_path), "r")
+            ).read_all()
         except Exception as e:
             return ValidationOutput(
-                result_message=f"Error: failed to read result CSV {filename} into DataFrame: {e}",
+                result_message=f"Error: failed to read result Arrow {filename}: {e}",
                 correct=False,
                 metrics=assemble_error(
                     exec_settings=exec_settings,
@@ -206,13 +202,21 @@ def check_output_correctness(
                 trace_output=trace_output,
             )
 
-        # check equality of columns
-        if set(reference_df.columns) != set(bespoke_df.columns):
+        # ---- Arrow-to-Arrow correctness check -------------------------------------------------
+        # Compare the engine's exact Arrow result to DuckDB's exact Arrow reference with the shared
+        # comparator (router.adapt.results_equal): DECIMAL / int / string / date / bool columns must
+        # match EXACTLY (a NULL is distinct from any value), and only genuine float (DOUBLE) columns
+        # use a tolerance. A top-level ORDER BY is checked tie-aware - the key columns must agree in
+        # sequence while rows tied on the keys may permute. This replaces a pandas
+        # assert_frame_equal that coerced decimals to float and flagged exact-but-differently-typed
+        # values as different.
+        ref_names = list(reference_table.column_names)
+        bes_names = list(bespoke_table.column_names)
+        if set(ref_names) != set(bes_names):
             output = (
                 f"Result columns do not match for query {inst.query_id} "
                 f"with placeholders: {inst.placeholders}\n(SQL: {inst.sql})\n"
-                f"Reference columns: {reference_df.columns.tolist()}\n"
-                f"Bespoke columns: {bespoke_df.columns.tolist()}\n"
+                f"Reference columns: {ref_names}\nBespoke columns: {bes_names}\n"
             )
             if stop_on_first_error:
                 return ValidationOutput(
@@ -226,94 +230,51 @@ def check_output_correctness(
                     ),
                     trace_output=trace_output,
                 )
-            else:
-                logger.error(output)
-                log_collector += output + "\n"
+            logger.error(output)
+            log_collector += output + "\n"
+        else:
+            # Align bespoke columns to the reference order so the positional comparison lines up.
+            bespoke_aligned = bespoke_table.select(ref_names)
 
-        # check row-content using set semantic (i.e., ignore ordering)
-        reference_df_sorted = reference_df.sort_values(
-            by=list(reference_df.columns)
-        ).reset_index(drop=True)
-        bespoke_df_sorted = bespoke_df.sort_values(
-            by=list(bespoke_df.columns)
-        ).reset_index(drop=True)
-
-        try:
-            pd.testing.assert_frame_equal(
-                reference_df_sorted,
-                bespoke_df_sorted,
-                check_dtype=False,
-                check_column_type=False,
-                check_index_type=False,
-                check_exact=False,
-                atol=1e-5,  # allow for some numerical tolerance in float comparisons
-                rtol=1e-5,
-            )
-        except AssertionError as e:
-            output = (
-                f"Results do not match for query {inst.query_id} "
-                f"with placeholders: {inst.placeholders}\n(SQL: {inst.sql}). "
-                "Checking with set-semantic and rows are not equal.\n"
-                f"Reference result:\n{reference_df_sorted}\n"
-                f"Bespoke result:\n{bespoke_df_sorted}\n"
-                f"Assert Dataframe Equal Error:\n{e}\n"
-            )
-            if stop_on_first_error:
-                return ValidationOutput(
-                    result_message=output,
-                    correct=False,
-                    metrics=assemble_error(
-                        exec_settings=exec_settings,
-                        query_ids_executed=query_ids_executed,
-                        exception=False,
-                        query_id=inst.query_id,
-                    ),
-                    trace_output=trace_output,
+            # A top-level ORDER BY makes row order meaningful: resolve its key columns to output
+            # indices for a tie-aware comparison; otherwise compare with set/multiset semantics.
+            ordered = inst.order_by_info is not None and len(inst.order_by_info) > 0
+            order_keys = None
+            if ordered:
+                sort_cols = [
+                    "count_star()" if col.lower() == "count(*)" else col
+                    for col, _ in inst.order_by_info
+                ]
+                missing = [c for c in sort_cols if c not in ref_names]
+                assert not missing, (
+                    f"ORDER BY column(s) {missing} not in result {ref_names}\n{inst.sql}\n{inst.placeholders}"
                 )
-            else:
-                logger.error(output)
-                log_collector += output + "\n"
+                order_keys = [ref_names.index(c) for c in sort_cols]
 
-        # Check that ordering constraints are obeyed
-        if inst.order_by_info is not None and len(inst.order_by_info) > 0:
-            sort_cols = [col for col, _ in inst.order_by_info]
-
-            # perform col rewrites
-            rewritten_cols = []
-            for c in sort_cols:
-                if c.lower() == "count(*)":
-                    rewritten_cols.append("count_star()")
-                else:
-                    rewritten_cols.append(c)
-
-            # overwrite with rewritten cols
-            sort_cols = rewritten_cols
-
-            # ensure all sort cols are present
-            for c in sort_cols:
-                assert c in reference_df.columns, (
-                    f"ORDER BY column {c} not in Reference result {reference_df.columns.tolist()}\n{inst.sql}\n{inst.placeholders}"
+            if not results_equal(
+                bespoke_aligned,
+                reference_table,
+                ordered=ordered,
+                order_keys=order_keys,
+                float_tol=1e-5,
+            ):
+                diffs, total = results_diff(
+                    bespoke_aligned,
+                    reference_table,
+                    ordered=ordered,
+                    order_keys=order_keys,
                 )
-
-            try:
-                pd.testing.assert_frame_equal(
-                    reference_df[sort_cols],
-                    bespoke_df[sort_cols],
-                    check_dtype=False,
-                    check_column_type=False,
-                    check_index_type=False,
-                    check_exact=False,
-                    atol=1e-5,
-                    rtol=1e-5,
+                diff_lines = "\n".join(
+                    f"  row {r}, column '{c}': bespoke={a!r} duckdb={b!r}"
+                    for r, c, a, b in diffs
                 )
-            except AssertionError as e:
                 output = (
-                    f"Ordering constraints violated for query {inst.query_id} "
+                    f"Results do not match for query {inst.query_id} "
                     f"with placeholders: {inst.placeholders}\n(SQL: {inst.sql})\n"
-                    f"Expected ORDER BY: {inst.order_by_info}\n"
-                    f"Reference result:\n{reference_df[sort_cols]}\n"
-                    f"Bespoke result:\n{bespoke_df[sort_cols]}\n"
-                    f"Assert Dataframe Equal Error:\n{e}\n"
+                    f"{'Order or data' if ordered else 'Data (set-semantic)'} differs: {total} "
+                    f"differing cell(s)/row(s); first {len(diffs)}:\n{diff_lines}\n"
+                    f"Reference (first rows):\n{reference_table.slice(0, 12).to_pandas()}\n"
+                    f"Bespoke (first rows):\n{bespoke_aligned.slice(0, 12).to_pandas()}\n"
                 )
                 if stop_on_first_error:
                     return ValidationOutput(
@@ -327,9 +288,8 @@ def check_output_correctness(
                         ),
                         trace_output=trace_output,
                     )
-                else:
-                    logger.error(output)
-                    log_collector += output + "\n"
+                logger.error(output)
+                log_collector += output + "\n"
 
     if log_collector != "":
         return ValidationOutput(
@@ -413,7 +373,11 @@ def check_output_correctness(
         )
     ) / len(avg_duckdb_rts)
 
-    umbra_rt_str = f"{total_umbra_rt:.2f}ms (Umbra)" if total_umbra_rt is not None else "N/A (Umbra)"
+    umbra_rt_str = (
+        f"{total_umbra_rt:.2f}ms (Umbra)"
+        if total_umbra_rt is not None
+        else "N/A (Umbra)"
+    )
     logger.info(
         f"Aggregated Runtimes: {total_bespoke_rt:.2f}ms (Bespoke) vs {umbra_rt_str} vs {total_duckdb_rt:.2f}ms (DuckDB)"
     )
@@ -451,7 +415,9 @@ def check_output_correctness(
                 "bespoke_runtime_ms": [
                     avg_bespoke_rts[str(q)] for q in query_ids_executed
                 ],
-                "umbra_runtime_ms": [avg_umbra_rts.get(str(q)) for q in query_ids_executed],
+                "umbra_runtime_ms": [
+                    avg_umbra_rts.get(str(q)) for q in query_ids_executed
+                ],
             }
         )
         t = wandb.Table(dataframe=measurements_df)

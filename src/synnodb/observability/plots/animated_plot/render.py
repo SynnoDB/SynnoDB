@@ -9,10 +9,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 from synnodb.observability.plots.animated_plot.config import (
-    WANDB_RUN_CACHE_PATH,
     H,
     W,
     frames_dir_for_run_ids,
+    wandb_run_cache_path,
 )
 from synnodb.observability.plots.animated_plot.demo_timeline_engine import (
     FrameViewportConfig,
@@ -98,7 +98,7 @@ def main() -> None:
     print(f"Loading W&B histories (skip_cache={args.skip_cache})...")
     turns, plot_renderer = load_turns_from_wandb(
         run_ids=run_ids,
-        wandb_run_cache_path=WANDB_RUN_CACHE_PATH,
+        wandb_run_cache_path=wandb_run_cache_path(),
         skip_cache=args.skip_cache,
         viewport=viewport,
     )

@@ -17,7 +17,7 @@ from synnodb.conversations.prompts_gen import (
     optim_prompt_pretext_optim,
 )
 from synnodb.conversations.stage_config import StageConfig, StaticStageConfig
-from synnodb.tools.run import delete_result_csv_files
+from synnodb.tools.run import delete_result_files
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
@@ -158,8 +158,8 @@ class InMem2MTConversation(OptimizationConversation):
             self.single_threaded_rt_ms[query_id] = metrics[key]
 
         # tracing instrumentation is already present from round 1; no need to re-add it.
-        # delete any stale result.csv files before starting the loop
-        delete_result_csv_files(self.run_tool.cwd)
+        # delete any stale result files before starting the loop
+        delete_result_files(self.run_tool.cwd)
 
         # cleanup up supervision agent horizon - there are no clear outlined stages following
         if self.supervision_agent is not None:

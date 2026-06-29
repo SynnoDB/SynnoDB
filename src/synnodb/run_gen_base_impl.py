@@ -4,7 +4,9 @@ from typing import TypedDict
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
 from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
 from synnodb.main import run_conv_wrapper
-from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.observability.logging.wandb_api_helper import (
+    wandb_retrieve_metrics_for_run,
+)
 from synnodb.utils.cli_config import RunConfig, add_common_args
 from synnodb.utils.confirm_dialog import await_user_confirmation
 from synnodb.utils.conv_name_utils import ConvMode
@@ -18,7 +20,10 @@ from synnodb.workloads.workload_provider import Workload
 
 def _factory(ctx: FrameworkContext):
     from synnodb.conversations.base_impl_conversation import BaseImplConversation
-    from synnodb.utils.get_sample_q_args import get_sample_exec_settings, get_sample_query_args
+    from synnodb.utils.get_sample_q_args import (
+        get_sample_exec_settings,
+        get_sample_query_args,
+    )
     from synnodb.workloads.workload_provider_olap import OLAPExecSettings
 
     sample_query_args_dict = get_sample_query_args(
@@ -63,8 +68,9 @@ def validate_snapshot(
     snapshot_model = snapshot_config["model"]
     snapshot_db_storage = snapshot_config["db_storage"]
 
-    assert snapshot_benchmark.upper() == benchmark.name.upper(), (
-        f"Expected benchmark {benchmark.name.upper()} in storage plan run, got {snapshot_benchmark}"
+    # .value works for both the built-in enum members and a WorkloadId (bring-your-own)
+    assert snapshot_benchmark.upper() == benchmark.value.upper(), (
+        f"Expected benchmark {benchmark.value.upper()} in storage plan run, got {snapshot_benchmark}"
     )
     if queries_str is not None:
         assert snapshot_queries_str == queries_str, (
@@ -155,7 +161,7 @@ def main(args):
     )
 
     # run conversation
-    run_conv_wrapper(args=None, run_config=config, spec=SPEC)
+    return run_conv_wrapper(args=None, run_config=config, spec=SPEC)
 
 
 def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:

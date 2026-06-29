@@ -1,10 +1,12 @@
 #include "parquet_reader.hpp"
 
 // Increment file version to invalidate cache when this file is changed. This is needed because this file is included in the generated code and changes to it should trigger regeneration of all code that includes it.
-// FILE_VERSION: 1
+// FILE_VERSION: 2
 
 
 #include "loader_utils.hpp"
+#include "shm_arrow_loader.hpp"
+#include "shm_paths.hpp"
 
 #include <stdio.h>
 #include <unistd.h>

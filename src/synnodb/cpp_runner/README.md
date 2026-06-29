@@ -75,29 +75,25 @@ std::vector<QueryResult> query(Database* db, const std::vector<std::string>& que
 
 Each per-query implementation (`run_qN()`) then parses its own arguments from the full `line` string using a generated args-parser struct (`Q<N>Args`).
 
-## Result Files (CSV)
+## Result Files (Arrow)
 
-Each query writes its result to a CSV file in the `results/` subdirectory of the workspace:
+Each query writes its result as an Arrow IPC file, named by request id:
 
 ```
-results/result1.csv    ← result of 1st query invocation
-results/result2.csv    ← result of 2nd query invocation
-...
-results/resultN.csv    ← result of Nth query invocation
+result_<req_id>.arrow    ← result of one query invocation
 ```
 
-Files are named by **execution order** (1-indexed), not by query ID. If queries are repeated (multiple repetitions for benchmarking), each repetition gets its own sequentially numbered file.
+`run_qN()` returns a `std::shared_ptr<arrow::Table>` built with [`column_egress.hpp`](cpp_helpers/column_egress.hpp): a DECIMAL output column is built as `arrow::decimal128(p, s)` **directly from the unscaled `__int128` accumulator** (never through `double` or a formatted string), so a routed result is bit-identical to DuckDB's DECIMAL; only genuinely floating columns (AVG / DOUBLE) use `double_column`. This is the egress counterpart to the exact `column_ingest.hpp` cast on the input side - Arrow in, Arrow out, exact throughout.
 
-The C++ side writes these via `write_csv()` (template: [query_impl.cpp:19](../../prepare_repo/templates/query_impl.cpp#L19)):
+The dispatch in `query_impl.cpp` writes the table via `synnodb::write_result()` ([`result_writer.hpp`](cpp_helpers/result_writer.hpp)):
 ```cpp
-write_csv("result" + std::to_string(i+1) + ".csv", rows);
+std::shared_ptr<arrow::Table> result = run_qN(db, args);
+synnodb::write_result(result, req.req_id);   // -> <SYNNODB_RESULT_DIR>/result_<req_id>.arrow
 ```
 
-Format: comma-separated, all values quoted, with `"` and `\` backslash-escaped. `write_csv()` writes exactly the rows it is given; the per-query `run_qN()` implementation is expected to include the header as the first row.
+The destination is `SYNNODB_RESULT_DIR` when set (a `/dev/shm` directory for the shm hot-load, so the result rides shared memory back to the runtime zero-copy), otherwise `results/` relative to the runner working directory. Stale `result_<req_id>.{arrow,csv}` files are removed before each execution so a prior run's output is never validated as the current one's.
 
-`RunTool` **deletes all `result*.csv` files under the workspace** before each execution (`delete_result_csv_before_execution=True`) to prevent stale results from a prior run from being validated as if they were from the current run. The generated query code writes to `results/` relative to the runner working directory, and validation reads from that same directory.
-
-`check_output_correctness()` ([run_and_check_queries.py:138](../tools/validate/run_and_check_queries.py#L138)) then reads each `resultN.csv` back with pandas and compares it against the DuckDB reference result for the corresponding query instantiation.
+The runtime ([`process_engine.py`](../router/process_engine.py)) and the generation validator ([`run_and_check_queries.py`](../tools/validate/run_and_check_queries.py)) both read the Arrow back (`pa.ipc.open_file(pa.memory_map(...))`), which keeps DECIMAL columns as exact `Decimal` objects, and compare against the DuckDB reference (also fetched via Arrow) - so DECIMAL columns are checked for **exact** equality, only DOUBLE columns tolerantly. A legacy engine that still writes `result_<req_id>.csv` is read with the per-query output schema and the same exact-cast path, so older engines keep working.
 
 ## IPC Protocol
 
@@ -181,8 +177,8 @@ Virtual memory is bounded at process start via `RLIMIT_AS` (default: 90% of syst
 ### Compilation error
 `CachedCompiler.build_cached()` returns an error string on failure. `RunTool` truncates it to 10 000 characters and returns it as the tool result.
 
-### Missing result CSV
-If a `resultN.csv` is absent after execution, `check_output_correctness()` returns an error immediately, reporting which file was missing.
+### Missing result file
+If `result_<req_id>.arrow` is absent after execution, `check_output_correctness()` returns an error immediately, reporting which file was missing.
 
 ### Broken pipe / child dies during stage message
 `pipeline.hpp` checks pipe-write return values. If the child died before reading its RUN message, the error propagates through the done-token mechanism.
@@ -201,7 +197,7 @@ If a `resultN.csv` is absent after execution, `check_output_correctness()` retur
 3. Each run cycle:
    - db parent checks build IDs, reloads changed .so files
    - Stage children execute: load → build (if changed) → query
-   - libquery receives the framed batch lines, runs queries, writes result*.csv, sends query_results via pipe
+   - libquery receives the framed batch lines, runs queries, writes result_<req_id>.arrow, sends query_results via pipe
    - db parent writes JSON response to c2p
    - Python reads response, parses query_results[]
 

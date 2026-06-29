@@ -1,9 +1,10 @@
 #include "query_impl.hpp"
 #include "cpu_affinity.hpp"
+#include "crash_handler.hpp"  // turn a run_qN SIGSEGV into a symbolized stack trace
 // <<thread_pool_include>>
 // <<trace_include>>
 // Increment file version to invalidate cache when this file is changed. This is needed because this file is included in the generated code and changes to it should trigger regeneration of all code that includes it.
-// FILE_VERSION: 6
+// FILE_VERSION: 7
 
 
 #include <chrono>
@@ -18,25 +19,10 @@
 #include <cstdlib>
 // <<get_thread_pool_placeholder>>
 #include "args_parser.hpp"
+#include "result_writer.hpp"  // synnodb::write_result - exact Arrow egress
 // <<include_query_headers>>
 
 
-void write_csv(const std::string& filename, const std::vector<std::vector<std::string>>& rows) {
-    std::filesystem::create_directories("results");
-    std::ofstream out("results/" + filename);
-    for (const auto& row : rows) {
-        for (std::size_t i = 0; i < row.size(); ++i) {
-            if (i) out << ',';
-            out << '"';
-            for (char c : row[i]) {
-                if (c == '"' || c == '\\') out << '\\';
-                out << c;
-            }
-            out << '"';
-        }
-        out << '\n';
-    }
-}
 // <<drop_buffer_and_os_caches_def_start>>
 void drop_buffer_and_os_caches(Database* db) {
     // clear the buffer pool
@@ -64,6 +50,11 @@ void drop_buffer_and_os_caches(Database* db) {
 }
 // <<drop_buffer_and_os_caches_def_end>>
 std::vector<QueryResult> query(Database* db, const std::vector<std::string>& query_lines) {
+    // A fatal memory fault inside a run_qN escapes the per-query try/catch below and
+    // kills the child; the handler prints the running query + a symbolized backtrace to
+    // stderr (captured by the runner) so the failure is diagnosable, not just "signal 11".
+    synnodb::install_crash_handler();
+
     std::vector<QueryResult> results;
     std::vector<QueryRequest> requests;
     for (const auto& line : query_lines) {
@@ -91,6 +82,8 @@ std::vector<QueryResult> query(Database* db, const std::vector<std::string>& que
         std::string error;
         const std::string prefix =
             "run #" + std::to_string(i + 1) + " Q" + req.query_id+"(" + req.req_id + "): ";
+        // Tag the running query so a crash inside run_qN names it in the stack trace.
+        synnodb::set_query_context(prefix.c_str());
         try {
             // <<impl_fn_calls>>
         } catch (const std::exception& e) {

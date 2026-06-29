@@ -1,0 +1,576 @@
+{
+  "1": {
+    "sql": "select \n    l_returnflag,  \n    l_linestatus,  \n    sum(l_quantity) as sum_qty, \n    sum(l_extendedprice) as sum_base_price, \n    sum(l_extendedprice*(1-l_discount)) as sum_disc_price, \n    sum(l_extendedprice*(1-l_discount)*(1+l_tax)) as sum_charge, \n    avg(l_quantity) as avg_qty,  \n    avg(l_extendedprice) as avg_price, \n    avg(l_discount) as avg_disc,  \n    count(*) as count_order \nfrom  \n    lineitem \nwhere  \n    l_shipdate <= date '1998-12-01' - interval '[DELTA]' day \ngroup by  \n    l_returnflag,  \n    l_linestatus \norder by  \n    l_returnflag,  \n    l_linestatus; ",
+    "params": {
+      "DELTA": [
+        "97",
+        "114",
+        "72",
+        "118",
+        "94",
+        "119"
+      ]
+    }
+  },
+  "2": {
+    "sql": "select\n    s_acctbal,\n    s_name,\n    n_name,\n    p_partkey,\n    p_mfgr,\n    s_address,\n    s_phone,\n    s_comment\nfrom\n    part,\n    supplier,\n    partsupp,\n    nation,\n    region\nwhere\n    p_partkey = ps_partkey\n    and s_suppkey = ps_suppkey\n    and p_size = [SIZE]\n    and p_type like '%[TYPE]'\n    and s_nationkey = n_nationkey\n    and n_regionkey = r_regionkey\n    and r_name = '[REGION]'\n    and ps_supplycost = (\n        select\n            min (ps_supplycost)\n        from\n            partsupp, supplier,\n            nation, region\n        where\n            p_partkey = ps_partkey\n            and s_suppkey = ps_suppkey\n            and s_nationkey = n_nationkey\n            and n_regionkey = r_regionkey\n            and r_name = '[REGION]'\n        )\norder by\n    s_acctbal desc,\n    n_name,\n    s_name,\n    p_partkey\nlimit 100;",
+    "params": {
+      "SIZE": [
+        "10",
+        "11",
+        "12",
+        "40",
+        "38",
+        "35"
+      ],
+      "TYPE": [
+        "COPPER",
+        "COPPER",
+        "STEEL",
+        "STEEL",
+        "TIN",
+        "COPPER"
+      ],
+      "REGION": [
+        "ASIA",
+        "MIDDLE EAST",
+        "ASIA",
+        "MIDDLE EAST",
+        "MIDDLE EAST",
+        "MIDDLE EAST"
+      ]
+    }
+  },
+  "3": {
+    "sql": "select l_orderkey,  \n    sum(l_extendedprice*(1-l_discount)) as revenue, \n    o_orderdate,  \n    o_shippriority \nFROM\n    customer,  \n    orders,  \n    lineitem \nWHERE\n    c_mktsegment = '[SEGMENT]' \n    and c_custkey = o_custkey \n    and l_orderkey = o_orderkey \n    and o_orderdate < date '[DATE]' \n    and l_shipdate > date '[DATE]' \nGROUP BY\n    l_orderkey,  \n    o_orderdate,  \n    o_shippriority \nORDER BY\n    revenue desc,  \n    o_orderdate\nlimit 10;",
+    "params": {
+      "SEGMENT": [
+        "HOUSEHOLD",
+        "BUILDING",
+        "AUTOMOBILE",
+        "MACHINERY",
+        "AUTOMOBILE",
+        "HOUSEHOLD"
+      ],
+      "DATE": [
+        "1995-03-30",
+        "1995-03-23",
+        "1995-03-30",
+        "1995-03-24",
+        "1995-03-21",
+        "1995-03-15"
+      ]
+    }
+  },
+  "4": {
+    "sql": "select\n    o_orderpriority,  \n    count(*) as order_count \nfrom  \n    orders \nwhere  \n    o_orderdate >= date '[DATE]' \n    and o_orderdate < date '[DATE]' + interval '3' month \n    and exists ( \n        select \n            *\n        from  \n            lineitem \n        where  \n            l_orderkey = o_orderkey \n            and l_commitdate < l_receiptdate\n    ) \ngroup by  \n    o_orderpriority \norder by  \n    o_orderpriority; \n\n",
+    "params": {
+      "DATE": [
+        "1993-02-01",
+        "1997-08-01",
+        "1994-01-01",
+        "1996-11-01",
+        "1997-02-01",
+        "1994-03-01"
+      ]
+    }
+  },
+  "5": {
+    "sql": "select n_name,  \n    sum(l_extendedprice * (1 - l_discount)) as revenue \nFROM\n    customer,  \n    orders,  \n    lineitem,  \n    supplier,  \n    nation,  \n    region \nWHERE\n    c_custkey = o_custkey \n    and l_orderkey = o_orderkey \n    and l_suppkey = s_suppkey \n    and c_nationkey = s_nationkey \n    and s_nationkey = n_nationkey \n    and n_regionkey = r_regionkey \n    and r_name = '[REGION]' \n    and o_orderdate >= date '[DATE]' \n    and o_orderdate < date '[DATE]' + interval '1' year \nGROUP BY\n    n_name \nORDER BY\n    revenue desc;",
+    "params": {
+      "REGION": [
+        "MIDDLE EAST",
+        "MIDDLE EAST",
+        "AFRICA",
+        "MIDDLE EAST",
+        "ASIA",
+        "AMERICA"
+      ],
+      "DATE": [
+        "1995-01-01",
+        "1993-01-01",
+        "1995-01-01",
+        "1997-01-01",
+        "1995-01-01",
+        "1995-01-01"
+      ]
+    }
+  },
+  "6": {
+    "sql": "\nselect \n    sum(l_extendedprice*l_discount) as revenue \nfrom  \n    lineitem \nwhere  \n    l_shipdate >= date '[DATE]' \n    and l_shipdate < date '[DATE]' + interval '1' year \n    and l_discount between [DISCOUNT] - 0.01 and [DISCOUNT] + 0.01 \n    and l_quantity < [QUANTITY];\n",
+    "params": {
+      "DATE": [
+        "1996-01-01",
+        "1993-01-01",
+        "1994-01-01",
+        "1996-01-01",
+        "1994-01-01",
+        "1996-01-01"
+      ],
+      "DISCOUNT": [
+        "0.02",
+        "0.06",
+        "0.09",
+        "0.09",
+        "0.09",
+        "0.04"
+      ],
+      "QUANTITY": [
+        "25",
+        "24",
+        "25",
+        "25",
+        "25",
+        "24"
+      ]
+    }
+  },
+  "7": {
+    "sql": "select \n    supp_nation,  \n    cust_nation,  \n    l_year, sum(volume) as revenue \nfrom ( \n    select  \n        n1.n_name as supp_nation,  \n        n2.n_name as cust_nation,  \n        extract(year from l_shipdate) as l_year, \n        l_extendedprice * (1 - l_discount) as volume \n    from  \n        supplier,  \n        lineitem,  \n        orders,  \n        customer,  \n        nation n1,  \n        nation n2 \n    where  \n        s_suppkey = l_suppkey \n        and o_orderkey = l_orderkey \n        and c_custkey = o_custkey \n        and s_nationkey = n1.n_nationkey \n        and c_nationkey = n2.n_nationkey \n        and ( \n            (n1.n_name = '[NATION1]' and n2.n_name = '[NATION2]') \n            or (n1.n_name = '[NATION2]' and n2.n_name = '[NATION1]') \n        ) \n        and l_shipdate between date '1995-01-01' and date '1996-12-31' \n    ) as shipping \ngroup by  \n    supp_nation,  \n    cust_nation,  \n    l_year \norder by  \n    supp_nation,  \n    cust_nation,  \n    l_year; ",
+    "params": {
+      "NATION1": [
+        "GERMANY",
+        "CHINA",
+        "UNITED KINGDOM",
+        "JORDAN",
+        "UNITED STATES",
+        "EGYPT"
+      ],
+      "NATION2": [
+        "ROMANIA",
+        "UNITED STATES",
+        "VIETNAM",
+        "MOROCCO",
+        "INDONESIA",
+        "JORDAN"
+      ]
+    }
+  },
+  "8": {
+    "sql": "select \n    o_year,  \n    sum(case  \n        when nation = '[NATION]'  \n        then volume \n        else 0 \n    end) / sum(volume) as mkt_share \nfrom ( \n    select  \n        extract(year from o_orderdate) as o_year, \n        l_extendedprice * (1-l_discount) as volume,  \n        n2.n_name as nation \n    from  \n        part,  \n        supplier,  \n        lineitem,  \n        orders,  \n        customer,  \n        nation n1,  \n        nation n2,  \n        region \n    where  \n        p_partkey = l_partkey \n        and s_suppkey = l_suppkey \n        and l_orderkey = o_orderkey \n        and o_custkey = c_custkey \n        and c_nationkey = n1.n_nationkey \n        and n1.n_regionkey = r_regionkey \n        and r_name = '[REGION]' \n        and s_nationkey = n2.n_nationkey \n        and o_orderdate between date '1995-01-01' and date '1996-12-31' \n        and p_type = '[TYPE]'  \n    ) as all_nations \ngroup by  \n    o_year \norder by  \n    o_year; ",
+    "params": {
+      "NATION": [
+        "EGYPT",
+        "JAPAN",
+        "ETHIOPIA",
+        "CANADA",
+        "CANADA",
+        "SAUDI ARABIA"
+      ],
+      "REGION": [
+        "AFRICA",
+        "AMERICA",
+        "AMERICA",
+        "AMERICA",
+        "MIDDLE EAST",
+        "MIDDLE EAST"
+      ],
+      "TYPE": [
+        "PROMO POLISHED BRASS",
+        "STANDARD PLATED NICKEL",
+        "PROMO PLATED NICKEL",
+        "STANDARD BRUSHED STEEL",
+        "MEDIUM POLISHED NICKEL",
+        "PROMO ANODIZED COPPER"
+      ]
+    }
+  },
+  "9": {
+    "sql": "select  \n    nation,  \n    o_year,  \n    sum(amount) as sum_profit \nfrom ( \n    select  \n        n_name as nation,  \n        extract(year from o_orderdate) as o_year, \n        l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity as amount \n    from  \n        part,  \n        supplier,  \n        lineitem,  \n        partsupp,  \n        orders,  \n        nation \n    where  \n        s_suppkey = l_suppkey \n        and ps_suppkey = l_suppkey \n        and ps_partkey = l_partkey \n        and p_partkey = l_partkey \n        and o_orderkey = l_orderkey \n        and s_nationkey = n_nationkey \n        and p_name like '%[COLOR]%' \n    ) as profit \ngroup by  \n    nation,  \n    o_year \norder by  \n    nation,  \n    o_year desc; ",
+    "params": {
+      "COLOR": [
+        "honeydew",
+        "frosted",
+        "orange",
+        "olive",
+        "rose",
+        "blanched"
+      ]
+    }
+  },
+  "10": {
+    "sql": "select \n    c_custkey,  \n    c_name,  \n    sum(l_extendedprice * (1 - l_discount)) as revenue, \n    c_acctbal,  \n    n_name,  \n    c_address,  \n    c_phone,  \n    c_comment \nfrom  \n    customer,  \n    orders,  \n    lineitem,  \n    nation \nwhere  \n    c_custkey = o_custkey \n    and l_orderkey = o_orderkey \n    and o_orderdate >= date '[DATE]' \n    and o_orderdate < date '[DATE]' + interval '3' month \n    and l_returnflag = 'R' \n    and c_nationkey = n_nationkey \ngroup by  \n    c_custkey,  \n    c_name,  \n    c_acctbal,  \n    c_phone,  \n    n_name,  \n    c_address,  \n    c_comment \norder by  \n    revenue desc\nlimit 20; ",
+    "params": {
+      "DATE": [
+        "1994-02-01",
+        "1994-09-01",
+        "1993-09-01",
+        "1994-03-01",
+        "1994-05-01",
+        "1994-12-01"
+      ]
+    }
+  },
+  "11": {
+    "sql": "select \n    ps_partkey,  \n    sum(ps_supplycost * ps_availqty) as value \nfrom  \n    partsupp,  \n    supplier,  \n    nation \nwhere  \n    ps_suppkey = s_suppkey \n    and s_nationkey = n_nationkey \n    and n_name = '[NATION]' \ngroup by  \n    ps_partkey having  \n        sum(ps_supplycost * ps_availqty) > ( \n            select  \n                sum(ps_supplycost * ps_availqty) * [FRACTION] \n            from  \n                partsupp,  \n                supplier,  \n                nation \n            where  \n                ps_suppkey = s_suppkey \n                and s_nationkey = n_nationkey \n                and n_name = '[NATION]'\n        ) \norder by \n    value desc;",
+    "params": {
+      "NATION": [
+        "FRANCE",
+        "IRAN",
+        "MOROCCO",
+        "FRANCE",
+        "JAPAN",
+        "JORDAN"
+      ],
+      "FRACTION": [
+        "0.0001",
+        "0.0001",
+        "0.0001",
+        "0.0001",
+        "0.0001",
+        "0.0001"
+      ]
+    }
+  },
+  "12": {
+    "sql": "select \n    l_shipmode,  \n    sum(case  \n        when o_orderpriority ='1-URGENT' \n            or o_orderpriority ='2-HIGH' \n        then 1 \n        else 0 \n    end) as high_line_count, \n    sum(case  \n        when o_orderpriority <> '1-URGENT' \n            and o_orderpriority <> '2-HIGH' \n        then 1 \n        else 0 \n    end) as low_line_count \nfrom  \n    orders,  \n    lineitem \nwhere  \n    o_orderkey = l_orderkey \n    and l_shipmode in ('[SHIPMODE1]', '[SHIPMODE2]') \n    and l_commitdate < l_receiptdate \n    and l_shipdate < l_commitdate \n    and l_receiptdate >= date '[DATE]' \n    and l_receiptdate < date '[DATE]' + interval '1' year \ngroup by  \n    l_shipmode \norder by  \n    l_shipmode; ",
+    "params": {
+      "SHIPMODE1": [
+        "SHIP",
+        "TRUCK",
+        "SHIP",
+        "RAIL",
+        "SHIP",
+        "TRUCK"
+      ],
+      "SHIPMODE2": [
+        "MAIL",
+        "RAIL",
+        "MAIL",
+        "AIR REG",
+        "AIR",
+        "AIR REG"
+      ],
+      "DATE": [
+        "1997-01-01",
+        "1996-01-01",
+        "1994-01-01",
+        "1997-01-01",
+        "1996-01-01",
+        "1996-01-01"
+      ]
+    }
+  },
+  "13": {
+    "sql": "select  \n    c_count, count(*) as custdist  \nfrom ( \n    select  \n        c_custkey, \n        count(o_orderkey)  \n    from  \n        customer left outer join orders on  \n            c_custkey = o_custkey \n            and o_comment not like '%[WORD1]%[WORD2]%' \n    group by  \n        c_custkey \n    )as c_orders (c_custkey, c_count) \ngroup by  \n    c_count \norder by  \n    custdist desc,  \n    c_count desc; ",
+    "params": {
+      "WORD1": [
+        "special",
+        "special",
+        "unusual",
+        "express",
+        "special",
+        "pending"
+      ],
+      "WORD2": [
+        "accounts",
+        "deposits",
+        "requests",
+        "packages",
+        "accounts",
+        "accounts"
+      ]
+    }
+  },
+  "14": {
+    "sql": "select \n    100.00 * sum(case  \n        when p_type like 'PROMO%' \n        then l_extendedprice*(1-l_discount) \n        else 0 \n    end) / sum(l_extendedprice * (1 - l_discount)) as promo_revenue \nfrom  \n    lineitem,  \n    part \nwhere  \n    l_partkey = p_partkey \n    and l_shipdate >= date '[DATE]' \n    and l_shipdate < date '[DATE]' + interval '1' month; ",
+    "params": {
+      "DATE": [
+        "1994-04-01",
+        "1996-01-01",
+        "1993-07-01",
+        "1994-10-01",
+        "1996-07-01",
+        "1994-04-01"
+      ]
+    }
+  },
+  "15": {
+    "sql": "with revenue (supplier_no, total_revenue) as (\n    select\n        l_suppkey,\n        sum(l_extendedprice * (1 - l_discount))\n    from\n        lineitem\n    where\n        l_shipdate >= date '[DATE]'\n        and l_shipdate < date '[DATE]' + interval '3' month\n    group by\n        l_suppkey\n)\nselect\n    s_suppkey,\n    s_name,\n    s_address,\n    s_phone,\n    total_revenue\nfrom\n    supplier,\n    revenue\nwhere\n    s_suppkey = supplier_no\n    and total_revenue = (\n        select\n            max(total_revenue)\n        from\n            revenue\n    )\norder by\n    s_suppkey;",
+    "params": {
+      "DATE": [
+        "1997-10-01",
+        "1994-01-01",
+        "1995-11-01",
+        "1994-10-01",
+        "1994-07-01",
+        "1996-08-01"
+      ]
+    }
+  },
+  "16": {
+    "sql": "select \n    p_brand,  \n    p_type,  \n    p_size,  \n    count(distinct ps_suppkey) as supplier_cnt \nfrom  \n    partsupp,  \n    part \nwhere  \n    p_partkey = ps_partkey \n    and p_brand <> '[BRAND]' \n    and p_type not like '[TYPE]%' \n    and p_size in ([SIZE1], [SIZE2], [SIZE3], [SIZE4], [SIZE5], [SIZE6], [SIZE7], [SIZE8]) \n    and ps_suppkey not in ( \n        select  \n            s_suppkey \n        from  \n            supplier \n        where  \n            s_comment like '%Customer%Complaints%' \n    ) \ngroup by  \n    p_brand,  \n    p_type,  \n    p_size \norder by  \n    supplier_cnt desc,  \n    p_brand,  \n    p_type,  \n    p_size;",
+    "params": {
+      "BRAND": [
+        "Brand#55",
+        "Brand#34",
+        "Brand#15",
+        "Brand#51",
+        "Brand#14",
+        "Brand#11"
+      ],
+      "TYPE": [
+        "PROMO PLATED",
+        "ECONOMY POLISHED",
+        "ECONOMY ANODIZED",
+        "ECONOMY POLISHED",
+        "PROMO ANODIZED",
+        "PROMO POLISHED"
+      ],
+      "SIZE1": [
+        "1",
+        "37",
+        "26",
+        "40",
+        "26",
+        "21"
+      ],
+      "SIZE2": [
+        "49",
+        "5",
+        "29",
+        "14",
+        "44",
+        "19"
+      ],
+      "SIZE3": [
+        "42",
+        "29",
+        "11",
+        "37",
+        "49",
+        "15"
+      ],
+      "SIZE4": [
+        "8",
+        "49",
+        "44",
+        "26",
+        "45",
+        "23"
+      ],
+      "SIZE5": [
+        "9",
+        "21",
+        "35",
+        "35",
+        "15",
+        "31"
+      ],
+      "SIZE6": [
+        "31",
+        "34",
+        "24",
+        "17",
+        "22",
+        "27"
+      ],
+      "SIZE7": [
+        "45",
+        "46",
+        "10",
+        "24",
+        "37",
+        "12"
+      ],
+      "SIZE8": [
+        "16",
+        "32",
+        "32",
+        "47",
+        "41",
+        "20"
+      ]
+    }
+  },
+  "17": {
+    "sql": "select\n    sum (l_extendedprice) / 7.0 as avg_yearly\nfrom\n    lineitem,\n    part\nwhere\n    p_partkey = l_partkey\n    and p_brand = '[BRAND]'\n    and p_container = '[CONTAINER]'\n    and l_quantity < (\n        select\n            0.2 * avg(l_quantity)\n        from\n            lineitem\n        where\n            l_partkey = p_partkey\n    );",
+    "params": {
+      "BRAND": [
+        "Brand#22",
+        "Brand#24",
+        "Brand#54",
+        "Brand#15",
+        "Brand#33",
+        "Brand#12"
+      ],
+      "CONTAINER": [
+        "SM PACK",
+        "SM PACK",
+        "LG PKG",
+        "LG BOX",
+        "MED PKG",
+        "MED BOX"
+      ]
+    }
+  },
+  "18": {
+    "sql": "select\n    c_name,\n    c_custkey,\n    o_orderkey,\n    o_orderdate,\n    o_totalprice,\n    sum(l_quantity)\nfrom\n    customer,\n    orders,\n    lineitem\nwhere\n    o_orderkey in (\n        select\n            l_orderkey\n        from\n            lineitem\n        group by\n            l_orderkey having\n                sum(l_quantity) > [QUANTITY]\n    )\n    and c_custkey = o_custkey\n    and o_orderkey = l_orderkey\ngroup by\n    c_name,\n    c_custkey,\n    o_orderkey,\n    o_orderdate,\n    o_totalprice\norder by\n    o_totalprice desc,\n    o_orderdate\nlimit 100;",
+    "params": {
+      "QUANTITY": [
+        "313",
+        "314",
+        "312",
+        "314",
+        "314",
+        "312"
+      ]
+    }
+  },
+  "19": {
+    "sql": "select\n    sum(l_extendedprice * (1 - l_discount) ) as revenue\nfrom\n    lineitem,\n    part\nwhere\n    (\n        p_partkey = l_partkey\n        and p_brand = '[BRAND1]'\n        and p_container in ( 'SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')\n        and l_quantity >= [QUANTITY1] and l_quantity <= [QUANTITY1] + 10\n        and p_size between 1 and 5\n        and l_shipmode in ('AIR', 'AIR REG')\n        and l_shipinstruct = 'DELIVER IN PERSON'\n    )\n    or\n    (\n        p_partkey = l_partkey\n        and p_brand = '[BRAND2]'\n        and p_container in ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK')\n        and l_quantity >= [QUANTITY2] and l_quantity <= [QUANTITY2] + 10\n        and p_size between 1 and 10\n        and l_shipmode in ('AIR', 'AIR REG')\n        and l_shipinstruct = 'DELIVER IN PERSON'\n    )\n    or\n    (\n        p_partkey = l_partkey\n        and p_brand = '[BRAND3]'\n        and p_container in ( 'LG CASE', 'LG BOX', 'LG PACK', 'LG PKG')\n        and l_quantity >= [QUANTITY3] and l_quantity <= [QUANTITY3] + 10\n        and p_size between 1 and 15\n        and l_shipmode in ('AIR', 'AIR REG')\n        and l_shipinstruct = 'DELIVER IN PERSON'\n    );",
+    "params": {
+      "BRAND1": [
+        "Brand#54",
+        "Brand#24",
+        "Brand#32",
+        "Brand#11",
+        "Brand#55",
+        "Brand#23"
+      ],
+      "QUANTITY1": [
+        "5",
+        "3",
+        "7",
+        "9",
+        "8",
+        "2"
+      ],
+      "BRAND2": [
+        "Brand#11",
+        "Brand#51",
+        "Brand#24",
+        "Brand#22",
+        "Brand#21",
+        "Brand#43"
+      ],
+      "QUANTITY2": [
+        "12",
+        "14",
+        "10",
+        "17",
+        "18",
+        "12"
+      ],
+      "BRAND3": [
+        "Brand#42",
+        "Brand#43",
+        "Brand#15",
+        "Brand#44",
+        "Brand#12",
+        "Brand#45"
+      ],
+      "QUANTITY3": [
+        "28",
+        "24",
+        "30",
+        "26",
+        "29",
+        "29"
+      ]
+    }
+  },
+  "20": {
+    "sql": "select\n    s_name,\n    s_address\nfrom\n    supplier, nation\nwhere\n    s_suppkey in (\n        select\n            ps_suppkey\n        from\n            partsupp\n        where\n            ps_partkey in (\n                select\n                    p_partkey\n                from\n                    part\n                where\n                    p_name like '[COLOR]%'\n                    )\n        and ps_availqty > (\n            select\n                0.5 * sum(l_quantity)\n            from\n                lineitem\n            where\n                l_partkey = ps_partkey\n                and l_suppkey = ps_suppkey\n                and l_shipdate >= date('[DATE]')\n                and l_shipdate < date('[DATE]') + interval '1' year\n        )\n    )\n    and s_nationkey = n_nationkey\n    and n_name = '[NATION]'\norder by\n    s_name;",
+    "params": {
+      "COLOR": [
+        "plum",
+        "snow",
+        "orchid",
+        "floral",
+        "lavender",
+        "cyan"
+      ],
+      "DATE": [
+        "1994-01-01",
+        "1997-01-01",
+        "1993-01-01",
+        "1994-01-01",
+        "1995-01-01",
+        "1993-01-01"
+      ],
+      "NATION": [
+        "FRANCE",
+        "VIETNAM",
+        "IRAN",
+        "INDIA",
+        "UNITED KINGDOM",
+        "RUSSIA"
+      ]
+    }
+  },
+  "21": {
+    "sql": "select\n    s_name,\n    count(*) as numwait\nfrom\n    supplier,\n    lineitem l1,\n    orders,\n    nation\nwhere\n    s_suppkey = l1.l_suppkey\n    and o_orderkey = l1.l_orderkey\n    and o_orderstatus = 'F'\n    and l1.l_receiptdate > l1.l_commitdate\n    and exists (\n        select *\n        from\n            lineitem l2\n        where\n            l2.l_orderkey = l1.l_orderkey\n            and l2.l_suppkey <> l1.l_suppkey\n    )\n    and not exists (\n        select *\n        from\n            lineitem l3\n        where\n            l3.l_orderkey = l1.l_orderkey\n            and l3.l_suppkey <> l1.l_suppkey\n            and l3.l_receiptdate > l3.l_commitdate\n    )\n    and s_nationkey = n_nationkey\n    and n_name = '[NATION]'\ngroup by\n    s_name\norder by\n    numwait desc,\n    s_name\nlimit 100;",
+    "params": {
+      "NATION": [
+        "BRAZIL",
+        "FRANCE",
+        "CHINA",
+        "JAPAN",
+        "SAUDI ARABIA",
+        "ETHIOPIA"
+      ]
+    }
+  },
+  "22": {
+    "sql": "select\n    cntrycode,\n    count(*) as numcust,\n    sum(c_acctbal) as totacctbal\nfrom (\n    select\n        substring(c_phone from 1 for 2) as cntrycode,\n        c_acctbal\n    from\n        customer\n    where\n        substring(c_phone from 1 for 2) in ('[I1]','[I2]','[I3]','[I4]','[I5]','[I6]','[I7]')\n        and c_acctbal > (\n            select\n                avg(c_acctbal)\n            from\n                customer\n            where\n                c_acctbal > 0.00\n                and substring (c_phone from 1 for 2) in ('[I1]','[I2]','[I3]','[I4]','[I5]','[I6]','[I7]')\n        )\n        and not exists (\n            select *\n            from\n                orders\n            where\n                o_custkey = c_custkey\n        )\n    ) as custsale\ngroup by\n    cntrycode\norder by\n    cntrycode;",
+    "params": {
+      "I1": [
+        "30",
+        "29",
+        "18",
+        "23",
+        "30",
+        "29"
+      ],
+      "I2": [
+        "31",
+        "18",
+        "31",
+        "29",
+        "17",
+        "17"
+      ],
+      "I3": [
+        "17",
+        "30",
+        "30",
+        "13",
+        "29",
+        "31"
+      ],
+      "I4": [
+        "23",
+        "31",
+        "29",
+        "18",
+        "23",
+        "23"
+      ],
+      "I5": [
+        "13",
+        "13",
+        "17",
+        "30",
+        "31",
+        "30"
+      ],
+      "I6": [
+        "18",
+        "17",
+        "13",
+        "31",
+        "13",
+        "13"
+      ],
+      "I7": [
+        "29",
+        "23",
+        "23",
+        "17",
+        "18",
+        "18"
+      ]
+    }
+  }
+}
