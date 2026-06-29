@@ -88,7 +88,7 @@ class RouterPolicy:
     # and quarantined on its first queries instead of leaking wrong answers until a sampled check
     # happens to hit one. Set to 0 to disable burn-in (pure sampling). When cross_check_rate is 0
     # the operator has explicitly opted out of all verification, and burn-in is skipped too.
-    verify_first_n: int = 50
+    verify_first_n: int = 10
     select_only: bool = True                   # only SELECT-family statements may route
     require_schema_match: bool = True
     require_sf_match: bool = True

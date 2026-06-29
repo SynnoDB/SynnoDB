@@ -54,18 +54,75 @@ class ProcessEngine:
         # Where the engine writes its exact Arrow IPC result (result_<req_id>.arrow). Subclasses
         # (the shm hot-load) point this at /dev/shm for zero-copy egress.
         self._result_dir = self.workspace / "results"
+        # Effective working directory for the engine process. Replaced by a per-user scratch
+        # directory when workspace is owned by another user (see _ensure_writable_cwd).
+        self._cwd = self.workspace
 
     # ---- BespokeEngine ------------------------------------------------
     def health(self) -> bool:
         return not self._closed and (self.workspace / self.binary.lstrip("./")).exists()
 
+    def _ensure_writable_cwd(self) -> None:
+        """Set up a per-user scratch workspace when the engine directory isn't writable.
+
+        The engine's C++ hot-reload code writes to ./build/.reload/ relative to cwd. When
+        the engine was published by a different user, that directory is not writable. We create
+        a scratch directory in /tmp with symlinks to all engine files and a real writable
+        build/.reload/, so any user can run a shared engine without touching the original.
+        """
+        reload_dir = self.workspace / "build" / ".reload"
+        build_dir = self.workspace / "build"
+
+        # Fast path: build/.reload already writable (common case: same user who built it).
+        if os.access(reload_dir, os.W_OK):
+            return
+        # Also fine if build/ is writable and .reload doesn't exist yet (fresh engine).
+        if not reload_dir.exists() and os.access(build_dir, os.W_OK):
+            return
+
+        uid = os.getuid()
+        scratch = Path(tempfile.gettempdir()) / f"synnodb-{uid}" / self.engine_id
+        scratch.mkdir(parents=True, exist_ok=True)
+
+        # Symlink every top-level item except build/ itself.
+        for name in os.listdir(self.workspace):
+            if name == "build":
+                continue
+            dst = scratch / name
+            if not dst.exists():
+                dst.symlink_to(self.workspace / name)
+
+        # Create a real build/ dir in scratch with per-file symlinks (so .so files are
+        # reachable) but a real writable .reload/ dir owned by the current user.
+        scratch_build = scratch / "build"
+        scratch_build.mkdir(exist_ok=True)
+        (scratch_build / ".reload").mkdir(exist_ok=True)
+        if build_dir.exists():
+            for name in os.listdir(build_dir):
+                if name == ".reload":
+                    continue
+                dst = scratch_build / name
+                if not dst.exists():
+                    dst.symlink_to(build_dir / name)
+
+        # Also give this user a writable results dir in the scratch workspace.
+        (scratch / "results").mkdir(exist_ok=True)
+
+        log.debug(
+            "engine=%s: workspace not writable by uid=%d; using scratch cwd=%s",
+            self.engine_id, uid, scratch,
+        )
+        self._cwd = scratch
+        self._result_dir = scratch / "results"
+
     def _runner(self) -> Any:
         from synnodb.cpp_runner.hotpatch.hotpatch_proc import HotpatchProc  # heavy: lazy
 
         if self._proc is None:
+            self._ensure_writable_cwd()
             cmd = f"{self.binary} {self.parquet_dir}"
-            log.info("engine=%s starting warm runner: %s (cwd=%s)", self.engine_id, cmd, self.workspace)
-            self._proc = HotpatchProc(command=cmd, cwd=self.workspace, memory_limit_bytes=self.memory_limit_bytes)
+            log.info("engine=%s starting warm runner: %s (cwd=%s)", self.engine_id, cmd, self._cwd)
+            self._proc = HotpatchProc(command=cmd, cwd=self._cwd, memory_limit_bytes=self.memory_limit_bytes)
         return self._proc
 
     def run(self, query_id: str, placeholders: Mapping[str, Any]) -> pa.Table:
@@ -73,6 +130,8 @@ class ProcessEngine:
 
         qa = format_args_element(str(query_id), dict(placeholders))
         req_id = qa.split()[1]
+        # _runner() must come first: it may update self._result_dir via _ensure_writable_cwd.
+        runner = self._runner()
         self._result_dir.mkdir(parents=True, exist_ok=True)
         arrow_path = self._result_dir / f"result_{req_id}.arrow"
         if arrow_path.exists():
@@ -80,7 +139,7 @@ class ProcessEngine:
 
         run_env = {**self.extra_env, "SYNNODB_RESULT_DIR": str(self._result_dir)}
         log.debug("engine=%s run query_id=%s line=%r", self.engine_id, query_id, qa)
-        result = self._runner().run(timeout=self.timeout_s, query_lines=[qa], run_env=run_env)
+        result = runner.run(timeout=self.timeout_s, query_lines=[qa], run_env=run_env)
 
         for qr in (result.query_results or []):
             err = getattr(qr, "error", None)

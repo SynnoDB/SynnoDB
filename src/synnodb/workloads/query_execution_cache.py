@@ -7,7 +7,6 @@ import pyarrow as pa
 from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
-from synnodb.observability.benchmark.systems.umbra import UmbraRunner
 from synnodb.utils import utils
 from synnodb.workloads.system_factory import System, SystemFactory
 from synnodb.workloads.workload_provider import (
@@ -223,6 +222,7 @@ class QueryExecutionCache:
                     )
                 )
         elif system == System.UMBRA:
+            from synnodb.observability.benchmark.systems.umbra import UmbraRunner
             assert isinstance(system_instance, UmbraRunner)
             assert isinstance(exec_settings, OLAPExecSettings)
 

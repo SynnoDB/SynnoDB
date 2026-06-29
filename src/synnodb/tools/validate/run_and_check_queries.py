@@ -81,7 +81,7 @@ def check_output_correctness(
     trace_mode: bool,
     query_execution_cache: QueryExecutionCache,
     trace_data: str = "",
-    use_umbra: bool = True,
+    use_umbra: bool = False,
 ) -> ValidationOutput:
     logger.info(f"Comparing results with DuckDB for {exec_settings}...")
 

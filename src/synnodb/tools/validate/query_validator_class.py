@@ -123,7 +123,7 @@ class QueryValidator:
         max_snapshot_csv_size_mb: Optional[
             float
         ] = None,  # if set, result CSVs in workspace_path are truncated to this size right before the post-run snapshot so they don't bloat snapshots
-        use_umbra: bool = True,
+        use_umbra: bool = False,
     ):
         self.workspace_path = workspace_path
         self.runtime_tracker = runtime_tracker

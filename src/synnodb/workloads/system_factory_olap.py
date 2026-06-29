@@ -1,7 +1,10 @@
+from __future__ import annotations
+
+from typing import Any
+
 from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
     DuckDBConnectionManager,
 )
-from synnodb.observability.benchmark.systems.umbra import UmbraRunner
 from synnodb.workloads.system_factory import System, SystemFactory
 from synnodb.workloads.workload_provider import (
     ExecSettings,
@@ -22,7 +25,7 @@ UMBRA_PIN_CORE = 3
 class OLAPSystemFactory(SystemFactory):
     # sf -> instance
     duckdb_cons: dict[float, DuckDBConnectionManager] = dict()
-    umbra_runner: UmbraRunner | None = None
+    umbra_runner: "Any | None" = None
 
     def get_system(
         self,
@@ -30,7 +33,7 @@ class OLAPSystemFactory(SystemFactory):
         benchmark: Workload,
         exec_settings: ExecSettings,
         general_system_config: GeneralSystemConfig,
-    ) -> DuckDBConnectionManager | UmbraRunner:
+    ) -> "DuckDBConnectionManager | Any":
         assert isinstance(exec_settings, OLAPExecSettings), (
             "exec_settings must be an instance of OLAPExecSettings"
         )
@@ -64,6 +67,7 @@ class OLAPSystemFactory(SystemFactory):
             return self.duckdb_cons[exec_settings.scale_factor]
         elif system_name == System.UMBRA:
             if self.umbra_runner is None:
+                from synnodb.observability.benchmark.systems.umbra import UmbraRunner
                 self.umbra_runner = UmbraRunner(
                     parquet_path=exec_settings.parquet_dir.parent,
                     benchmark=benchmark,
