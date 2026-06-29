@@ -4,7 +4,7 @@ from typing import Callable
 
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
-from synnodb.tools.run import delete_result_csv_files
+from synnodb.tools.run import delete_result_files
 from synnodb.utils.confirm_dialog import await_user_confirmation
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ def prepare_repo_and_load_snapshot(
         snapshotter.restore(snapshot)
         write_non_tracked_only = True  # tracked files come from the snapshot
 
-    delete_result_csv_files(workspace_path=snapshotter.working_dir)
+    delete_result_files(workspace_path=snapshotter.working_dir)
 
     ctx = PrepareContext(
         prepare_workspace_provider=prepare_workspace_provider,

@@ -1,4 +1,7 @@
 import logging
+import re
+import shutil
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -74,6 +77,59 @@ class ExecValidateResult:
         )
 
 
+_CRASH_BANNER = "SynnoDB engine CRASH"
+# crash_handler.hpp prints frames as "<module>(+0x<file_offset>) <mangled_symbol>".
+_CRASH_FRAME_RE = re.compile(r"^\s*(?P<module>\S+)\(\+0x(?P<off>[0-9a-fA-F]+)\)\s*(?P<sym>\S*)")
+_SYSTEM_LIB_PREFIXES = ("/lib/", "/usr/lib/", "/lib64/", "/usr/lib64/")
+
+
+def _symbolize_crash_backtrace(stderr: str) -> str:
+    """Resolve the engine's raw crash backtrace to ``function  file:line`` frames.
+
+    On a fatal signal, crash_handler.hpp (installed by query_impl.cpp) writes a crash
+    block to stderr with one line per frame shaped as
+    ``<module>(+0x<file_offset>) <mangled_symbol>``. This runs ``addr2line`` on each
+    in-workspace frame so the model sees e.g.
+    ``run_q10(Database*, Q10Args const&)  query10.cpp:289`` instead of a bare address
+    dump - turning "killed by signal 11, failing query unknown" into a precise location.
+    System libraries are skipped (no source); returns "" when there is no crash block or
+    ``addr2line`` is unavailable.
+    """
+    if _CRASH_BANNER not in stderr or shutil.which("addr2line") is None:
+        return ""
+
+    resolved: list[str] = []
+    for raw in stderr.splitlines():
+        match = _CRASH_FRAME_RE.match(raw)
+        if match is None:
+            continue
+        module = match.group("module")
+        if module.startswith(_SYSTEM_LIB_PREFIXES) or not Path(module).exists():
+            continue
+        try:
+            proc = subprocess.run(
+                ["addr2line", "-e", module, "-fCi", "0x" + match.group("off")],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.SubprocessError, OSError):
+            continue
+        lines = [ln.strip() for ln in proc.stdout.splitlines()]
+        # addr2line -fCi emits (function, file:line) pairs, one extra pair per inlined frame.
+        for i in range(0, len(lines) - 1, 2):
+            func, loc = lines[i], lines[i + 1]
+            if not func or func == "??" or "synnodb::crash::" in func:
+                continue
+            resolved.append(f"  {func}  {loc}")
+        if len(resolved) >= 20:
+            break
+
+    if not resolved:
+        return ""
+    return "Resolved crash frames (most recent call first):\n" + "\n".join(resolved)
+
+
 def _format_per_query_errors(query_results: list[QueryResult]) -> str:
     """Build a human-readable summary of per-query errors.
 
@@ -122,7 +178,7 @@ class QueryValidator:
         max_snapshot_csv_size_mb: Optional[
             float
         ] = None,  # if set, result CSVs in workspace_path are truncated to this size right before the post-run snapshot so they don't bloat snapshots
-        use_umbra: bool = True,
+        use_umbra: bool = False,
     ):
         self.workspace_path = workspace_path
         self.runtime_tracker = runtime_tracker
@@ -277,7 +333,10 @@ class QueryValidator:
 
         message = validation_output.result_message
         if ingest_ms is not None:
-            message += f"Build time (ms): {ingest_ms}\n"
+            # Name this for what it is - the one-time data load/build, NOT query execution.
+            # The old "Build time" label repeatedly misled the agent into thinking a crashed
+            # query had actually run to completion.
+            message += f"DB ingest/build time (ms): {ingest_ms}\n"
 
         metrics = validation_output.metrics
         metrics["validation/executed_queries"] = len(args_list)
@@ -397,12 +456,18 @@ class QueryValidator:
             # signal name in `resp` (if any) plus stderr/stdout are the
             # caller's best clues.
             requested = ", ".join(f"Q{i.query_id}" for i in query_batch.query_list)
+            symbolized = _symbolize_crash_backtrace(stderr)
+            crash_block = f"\n\n{symbolized}" if symbolized else ""
             return ValidationOutput(
                 result_message=(
-                    f"Error: no query results received{from_cmd_str}. "
-                    f"The process likely crashed before any results could be "
-                    f"serialised (e.g. SIGSEGV, SIGABRT, or OOM-kill). Exact failing query is unknown: {requested}."
+                    f"Error: the engine process crashed during query execution{from_cmd_str} "
+                    f"and returned no results - a fatal signal (SIGSEGV, SIGABRT, or an "
+                    f"OOM-kill) bypassed the per-query try/catch. This is a crash in the "
+                    f"engine code, not a wrong answer. Requested queries: {requested}. The "
+                    f"crash block on stderr (signal, faulting query, and C++ stack trace) "
+                    f"shows where; any 'ingest time' below is data-loading, not your query."
                     f"{resp_block}"
+                    f"{crash_block}"
                     f"\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
                 ),
                 correct=False,

@@ -21,7 +21,7 @@ from synnodb.conversations.prompts_gen import (
 )
 from synnodb.conversations.stage_config import StageConfig, StaticStageConfig
 from synnodb.conversations.supervision_agent import SUPERVISION_STAGE_VISIBILITY_MARKER
-from synnodb.tools.run import delete_result_csv_files
+from synnodb.tools.run import delete_result_files
 from synnodb.tools.run_tool_mode import RunToolMode
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,9 @@ class InMem1OptimizationConversation(OptimizationConversation):
             qids_str = ", ".join(qids)
             is_first = i == 0
 
-            def _timings_prompt(_exec_settings, _rt, *, qids_str=qids_str, is_first=is_first):
+            def _timings_prompt(
+                _exec_settings, _rt, *, qids_str=qids_str, is_first=is_first
+            ):
                 prompt = optim_prompt_add_timings_per_query(
                     qids_str=qids_str,
                     refer_to_prev_queries=not is_first,
@@ -245,8 +247,8 @@ class InMem1OptimizationConversation(OptimizationConversation):
 
         await self._run_stages(preoptim_stage_list)
 
-        # delete result.csv files before starting the optimization loop
-        delete_result_csv_files(self.run_tool.cwd)
+        # delete prior result files before starting the optimization loop
+        delete_result_files(self.run_tool.cwd)
 
         # cleanup up supervision agent horizon - there are no clear outlined stages following
         if self.supervision_agent is not None:

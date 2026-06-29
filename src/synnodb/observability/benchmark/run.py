@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING, List
 from synnodb.observability.benchmark.systems import track
 from synnodb.observability.benchmark.writer import BenchmarkWriter
 from synnodb.observability.logging.logger import setup_logging
-from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.observability.logging.wandb_api_helper import (
+    wandb_retrieve_metrics_for_run,
+)
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils.cli_config import Usecase
@@ -66,7 +68,8 @@ def _filter_query_ids(all_ids: List[str], query_ids: str | None) -> List[str]:
     if not filtered:
         available = ", ".join(all_ids[:30])
         raise ValueError(
-            f"No matching query IDs found for: {query_ids}. Available: {available}"
+            f"No matching query IDs found for: {query_ids}. "
+            f"Available in snapshot: {available}"
         )
     return filtered
 

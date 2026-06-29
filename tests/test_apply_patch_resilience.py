@@ -147,6 +147,49 @@ def test_normalize_is_identity_on_a_clean_hunk():
 # ───────────────────── end-to-end through _update_file_impl ────────────────────
 
 
+def test_create_file_impl_overwrites_existing_non_readonly(tmp_path):
+    # Agents reach for create_file to (re)write a scaffolded file; it must overwrite,
+    # not fail with "refusing to overwrite" (which left weak models looping).
+    editor, workspace = _make_editor(tmp_path)
+    (workspace / "db_loader.cpp").write_text("// stub\nold content\n", encoding="utf-8")
+
+    op = ApplyPatchOperation(
+        type="create_file", path="db_loader.cpp", diff="+// real impl\n+int build(){return 0;}\n"
+    )
+    result, _ = editor._create_file_impl(op)
+
+    assert result.status == "completed"
+    assert "Overwrote existing" in result.output
+    assert (workspace / "db_loader.cpp").read_text(encoding="utf-8") == "// real impl\nint build(){return 0;}"
+
+
+def test_create_file_impl_creates_new_file(tmp_path):
+    editor, workspace = _make_editor(tmp_path)
+    op = ApplyPatchOperation(type="create_file", path="new.cpp", diff="+hello\n")
+    result, _ = editor._create_file_impl(op)
+    assert result.status == "completed" and "Created" in result.output
+    assert "Overwrote" not in result.output
+    assert (workspace / "new.cpp").read_text(encoding="utf-8") == "hello"
+
+
+def test_create_file_impl_still_blocks_readonly(tmp_path):
+    # read-only framework files must never be overwritten via create_file.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    editor = WorkspaceEditor(
+        root=workspace,
+        run_stats_collector=_FakeRunStatsCollector(),  # type: ignore[arg-type]
+        readonly_files={"args_parser.hpp"},
+        untracked_cpp_runner_content="",
+        snapshotter=_FakeSnapshotter(),  # type: ignore[arg-type]
+    )
+    (workspace / "args_parser.hpp").write_text("// framework", encoding="utf-8")
+    op = ApplyPatchOperation(type="create_file", path="args_parser.hpp", diff="+hacked\n")
+    result, _ = editor._create_file_impl(op)
+    assert result.status == "failed" and "read-only" in result.output
+    assert (workspace / "args_parser.hpp").read_text(encoding="utf-8") == "// framework"
+
+
 def test_update_file_impl_strips_fence_and_applies(tmp_path):
     editor, workspace = _make_editor(tmp_path)
     (workspace / "g.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")

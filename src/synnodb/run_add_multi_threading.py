@@ -3,7 +3,9 @@ import argparse
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
 from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_mt
 from synnodb.main import run_conv_wrapper
-from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.observability.logging.wandb_api_helper import (
+    wandb_retrieve_metrics_for_run,
+)
 from synnodb.run_gen_base_impl import base_args, base_args_extract, validate_snapshot
 from synnodb.run_optim_loop import build_optim_conv_args
 from synnodb.utils.cli_config import RunConfig, add_common_args
@@ -116,7 +118,7 @@ def main(args):
     )
 
     # run conversation
-    run_conv_wrapper(args=None, run_config=config, spec=SPEC)
+    return run_conv_wrapper(args=None, run_config=config, spec=SPEC)
 
 
 def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
@@ -136,7 +138,7 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     return parser
 
 
-def cli():
+def cli() -> None:
     """Console-script entry point."""
     main(build_parser().parse_args())
 

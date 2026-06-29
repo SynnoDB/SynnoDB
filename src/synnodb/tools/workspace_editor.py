@@ -323,15 +323,12 @@ class WorkspaceEditor:
                     activity_summary_entry,
                 )
 
-            if target.exists():
-                activity_summary_entry = f"Apply_patch called: Create file {operation.path} (FAILED - non-empty file exists)"
-                return (
-                    ApplyPatchResult(
-                        status="failed",
-                        output=f"Error: Refusing to overwrite non-empty file {relative}",
-                    ),
-                    activity_summary_entry,
-                )
+            # The target may already exist as a scaffold/stub. create_file supplies the
+            # FULL content, so overwriting is the intended outcome (read-only files were
+            # already rejected above). We overwrite rather than failing: agents routinely
+            # use create_file to (re)write a scaffolded file, and the hard "refusing to
+            # overwrite" error left weaker models confused (delete-then-recreate loops).
+            overwrote_existing = target.exists()
 
             content = apply_diff("", diff, mode="create")
             print_colored_diff(diff, is_create=True)
@@ -348,9 +345,11 @@ class WorkspaceEditor:
                 file_touched=Path(operation.path).name,
             )
 
+            verb = "Overwrote existing file" if overwrote_existing else "Created"
+            suffix = " (overwrote existing file)" if overwrote_existing else ""
             return (
-                ApplyPatchResult(status="completed", output=f"Created {relative}"),
-                f"Apply_patch called: Create file {operation.path}",
+                ApplyPatchResult(status="completed", output=f"{verb} {relative}"),
+                f"Apply_patch called: Create file {operation.path}{suffix}",
             )
 
     def _update_file_impl(

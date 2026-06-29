@@ -15,7 +15,7 @@ Execution phase interface is predefined in ${query_impl_path}. It accepts a Quer
 Sample query implementations are provided in e.g., `query1.cpp/hpp`.
 The output of each query should be written to `result<RUN_NR>.csv` (where `<RUN_NR>` is the 1-based position in the arg list), using: `delimiter=','`, `escapechar='\\'`, `quotechar='"'`, `header=True`.
 
-Table schemas can be inspected with: parquet-dump-schema `${parquet_path}/lineitem.parquet`
+Table schemas can be inspected with: parquet-dump-schema `${parquet_path}/${schema_example_table}.parquet`
 
 # Your Task
 Create a TODO plan for implementing this database engine. Write your plan to `${base_impl_todo_file}`. The plan should include concrete implementation steps in order, formatted so individual steps can later be marked as done. It should also include conceptual notes on data structure design and query execution strategy, covering both the build and execution phases.
@@ -24,4 +24,4 @@ Do not start executing any of your todo steps yet.
 
 Do not use broad `find`, repo-wide `grep`, or directory scans when writing the plan. Limit inspection to `${queries_path}`, `${builder_path}`, `${query_impl_path}`, `${args_path}`, and the parquet schema output of `parquet-dump-schema`. Do not read build scripts, framework internals, or system paths.
 
-Note: `parquet-dump-schema` reports logical types. At runtime, Arrow may expose a different physical type (e.g. DECIMAL128 instead of INT64, or DOUBLE instead of DECIMAL). When planning the build phase, do not assume the Arrow type_id matches the logical schema type for numeric columns. Plan for runtime type dispatch.
+Note: `parquet-dump-schema` reports logical types; at runtime Arrow may expose a different physical type (e.g. DECIMAL128 instead of INT64, or DOUBLE instead of DECIMAL). You do NOT need to handle this yourself — the `column_ingest.hpp` helpers used in the build phase delegate to Arrow's cast and accept any physical type. Plan the storage layout in terms of the logical column types; pick the matching helper per column (scaled_int64 for decimals/money/quantity, as_int64, as_string, as_date_days, as_double).

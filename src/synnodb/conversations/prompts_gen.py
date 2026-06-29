@@ -79,6 +79,7 @@ def base_planner_prompt(
     parquet_path: str,
     base_impl_todo_file: str,
     persistent_storage: bool,
+    schema_example_table: str,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_planner_ssd.txt"
@@ -90,16 +91,40 @@ def base_planner_prompt(
 
     query_str = f"{num_queries} {'query' if num_queries == 1 else 'queries'}"
 
+    # In-memory loading: the framework owns turning Arrow columns into typed C++ vectors,
+    # which is easy to get wrong. The agent composes these helpers rather than decoding
+    # Arrow itself; the helpers cast via Arrow, so any source type is handled and a bad
+    # cast or overflow raises. See
+    # docs/CAUGHT_ERRORS_IN_GENERATION.md (G2: a hand-written decimal decode loaded every
+    # value column as zero).
+    ingest_hint = (
+        " To populate the in-memory columns from the input ArrowTables, you MUST compose "
+        'the framework helpers in `column_ingest.hpp` (already on the include path: add '
+        '`#include "column_ingest.hpp"`). Do NOT decode Arrow buffers yourself '
+        "(no raw_values()/GetValue()/Decimal128/endianness/scale handling — that is a "
+        "frequent source of silent bugs like all aggregates coming out zero). Each helper "
+        "takes the table and column name, accepts ANY source Arrow type, and returns a "
+        "std::vector you index positionally into your struct-of-arrays:\n"
+        '  - DECIMAL / money / quantity -> `synnodb::ingest::scaled_int64(*tables->TBL, "COL", DECIMALS)` '
+        "(std::vector<int64_t> of value*10^DECIMALS, exact fixed-point; use the column's decimal "
+        "scale, e.g. DECIMALS=2 for 2-dp money/quantity);\n"
+        '  - integer columns -> `synnodb::ingest::as_int64(*tables->TBL, "COL")`;\n'
+        '  - string columns  -> `synnodb::ingest::as_string(*tables->TBL, "COL")`;\n'
+        '  - date columns    -> `synnodb::ingest::as_date_days(*tables->TBL, "COL")` (int32 days since 1970-01-01);\n'
+        '  - floating columns -> `synnodb::ingest::as_double(*tables->TBL, "COL")`.\n'
+        "Declare each Database column with the matching element type."
+    )
+
     if read_storage_plan:
         if persistent_storage:
             storage_hint = f"The storage plan is described in the file `{storage_plan_path}`. It describes the SSD-backed columnar storage layout: which columns to serialize to binary files, their sort order, and any zone-map or acceleration structures that fit within the RAM budget. Implement the ColumnHandle<T> and StringColumnHandle fields in the Database struct according to this plan, and make sure build() streams Parquet row groups and writes/registers every referenced persisted column. "
         else:
-            storage_hint = f"The storage plan is described in the file `{storage_plan_path}`. It describes how to store the parquet data in-memory for optimal query execution. Use this storage plan to implement the in-memory data structure accordingly. "
+            storage_hint = f"The storage plan is described in the file `{storage_plan_path}`. It describes how to store the parquet data in-memory for optimal query execution. Use this storage plan to implement the in-memory data structure accordingly. " + ingest_hint
     else:
         if persistent_storage:
             storage_hint = """Use ColumnHandle<T> (from column_handle.hpp) for page-safe fixed-width numeric columns and StringColumnHandle for variable-length string columns. The minimum should be one binary file per page-safe fixed-width column and offsets + bytes files for each string column, struct-of-arrays layout. Flat fixed-width storage is valid only when BP_PAGE_BYTES % sizeof(T) == 0; otherwise use StringColumnHandle or the page-aligned fixed-char helpers. The Database struct must declare a handle for every column needed by the queries, and build() must stream Parquet row groups, serialize, register, and assign each handle."""
         else:
-            storage_hint = "The minimum should be a struct-of-arrays."
+            storage_hint = "The minimum should be a struct-of-arrays." + ingest_hint
 
     return template.substitute(
         queries_path=queries_path,
@@ -112,6 +137,7 @@ def base_planner_prompt(
         args_path=args_path,
         parquet_path=parquet_path,
         base_impl_todo_file=base_impl_todo_file,
+        schema_example_table=schema_example_table,
     )
 
 
@@ -215,9 +241,9 @@ def base_impl_query_prompt(
     template = Template(template_str)
 
     if is_first_query:
-        prefix = "Lets start implementing the query execution logic. Implement all queries in the next steps step by step. Start with"
+        prefix = "Start implementing the query execution logic. Implement ONLY"
     else:
-        prefix = "Next, continue implementing the query execution logic for"
+        prefix = "Continue implementing the query execution logic. Implement ONLY"
 
     if sample_query_args_dict is not None and query_id in sample_query_args_dict:
         sample_args_str = f" Example instantiation of the query placeholders are:\n{sample_query_args_dict[query_id]}\nNULL values might appear in IN-Lists and are represented with the string '<<NULL>>'."
@@ -260,20 +286,31 @@ def base_exec_validate_for_query_prompt(
     )
 
 
-def base_check_correctness_all_prompt(run_tool_mode: RunToolMode) -> str:
+def _format_query_ids(query_ids: list[str]) -> str:
+    """Render query ids as a run-tool argument list, e.g. ['1'] -> ["1"]."""
+    return "[" + ", ".join(f'"{qid}"' for qid in query_ids) + "]"
+
+
+def base_check_correctness_all_prompt(
+    run_tool_mode: RunToolMode, query_ids: list[str]
+) -> str:
     template_str = _load_txt(_PROMPTS_DIR / "base_correctness_all.txt")
     template = Template(template_str)
-    return template.substitute(run_tool_mode=run_tool_mode.name)
+    return template.substitute(
+        run_tool_mode=run_tool_mode.name,
+        query_ids=_format_query_ids(query_ids),
+    )
 
 
 def base_run_all_and_fix_prompt(
-    query_impl_path: str, run_tool_mode: RunToolMode
+    query_impl_path: str, run_tool_mode: RunToolMode, query_ids: list[str]
 ) -> str:
     template_str = _load_txt(_PROMPTS_DIR / "base_run_all_and_fix.txt")
     template = Template(template_str)
     return template.substitute(
         run_tool_mode=run_tool_mode.name,
         query_impl_path=query_impl_path,
+        query_ids=_format_query_ids(query_ids),
     )
 
 
