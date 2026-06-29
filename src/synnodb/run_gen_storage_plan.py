@@ -14,7 +14,9 @@ from synnodb.utils.gen_common import parse_query_ids
 
 
 def _factory(ctx: FrameworkContext):
-    from synnodb.conversations.gen_storage_plan_conversation import GenStoragePlanConversation
+    from synnodb.conversations.gen_storage_plan_conversation import (
+        GenStoragePlanConversation,
+    )
 
     return GenStoragePlanConversation(
         benchmark=ctx.args.benchmark,
@@ -52,7 +54,7 @@ def main(args):
         **base_args_extract(args),
     )
 
-    run_conv_wrapper(args=None, run_config=config, spec=SPEC)
+    return run_conv_wrapper(args=None, run_config=config, spec=SPEC)
 
 
 def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:

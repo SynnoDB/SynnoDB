@@ -6,6 +6,7 @@ from synnodb.conversations.filenames import get_filenames
 from synnodb.conversations.prompts_gen import gen_storage_plan_prompt
 from synnodb.conversations.stage_config import StaticStageConfig
 from synnodb.observability.logging.debug_logger import DebugLogger
+from synnodb.utils.cli_config import Usecase
 from synnodb.utils.utils import DBStorage, storage_label
 from synnodb.workloads.workload_provider import Workload
 
@@ -41,7 +42,7 @@ class GenStoragePlanConversation(CheckpointedConversation):
             self.run_stats_collector.debug_logger = None
 
     def assemble_stages(self):
-        filenames = get_filenames("olap")
+        filenames = get_filenames(usecase=Usecase.OLAP)
         queries_filename = filenames["queries_path"]
         storage_plan_filename = filenames["plan_filename"]
 

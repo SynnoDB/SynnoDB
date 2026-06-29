@@ -6,6 +6,7 @@ from typing import Dict, Optional, Tuple
 
 import duckdb
 import pandas as pd
+import pyarrow as pa
 from tqdm import tqdm
 
 from synnodb.utils.drop_caches import drop_os_caches, is_memory_backed
@@ -70,6 +71,15 @@ class DuckDBConnectionManager:
             self._ensure_tables_loaded()
 
     def duckdb_sql(self, sql: str) -> Tuple[float, pd.DataFrame, Dict]:
+        """A DataFrame view of the result (for callers that want pandas: the UI service, plots).
+
+        The correctness check uses ``duckdb_sql_arrow`` instead, because Arrow -> pandas coerces
+        DECIMAL columns to float64 - which makes an exact bespoke decimal result compare unequal to
+        the reference. Keep Arrow end to end for the comparison; pandas only for display."""
+        exec_time_ms, table, profile_data = self.duckdb_sql_arrow(sql)
+        return exec_time_ms, table.to_pandas(), profile_data
+
+    def duckdb_sql_arrow(self, sql: str) -> Tuple[float, "pa.Table", Dict]:
         if self.db_storage in [DBStorage.LABSTORE, DBStorage.SSD]:
             assert self.duckdb_path is not None
             if not self.duckdb_path.exists():
@@ -103,7 +113,11 @@ class DuckDBConnectionManager:
                 profile_output_path = tmpfile.name
                 self.con.execute("PRAGMA enable_profiling = 'json'")
                 self.con.execute(f"PRAGMA profiling_output ='{profile_output_path}'")
-                result_df = self.con.execute(sql).fetchdf()
+                # Keep the result as exact Arrow: DECIMAL stays decimal128 (a pandas round-trip
+                # coerces it to float64), so the correctness check can compare the bespoke engine's
+                # exact decimal result bit-for-bit. Timing is the profiler latency, independent of
+                # the fetch path.
+                result_table = self.con.execute(sql).to_arrow_table()
 
                 with open(profile_output_path, "r") as f:
                     profile_data = json.load(f)
@@ -113,7 +127,7 @@ class DuckDBConnectionManager:
             if orig_affinity is not None:
                 os.sched_setaffinity(pid, orig_affinity)
 
-        return exec_time_ms, result_df, profile_data
+        return exec_time_ms, result_table, profile_data
 
     def _new_duckdb_path(self, disk_db_dir: Path) -> Path:
         self.duckdb_dir = tempfile.TemporaryDirectory(

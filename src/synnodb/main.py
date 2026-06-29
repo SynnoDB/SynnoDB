@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
 from synnodb.conversations.filenames import get_filenames, get_plan_filename
@@ -48,6 +47,7 @@ from synnodb.utils.utils import (
     DBStorage,
     ask_yes_no,
     create_dir_and_set_permissions,
+    exclude_workspace_from_enclosing_repo,
     get_disk_db_dir,
 )
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
@@ -56,22 +56,13 @@ from synnodb.workloads.workload_provider_olap import (
     OLAPWorkload,
     OLAPWorkloadProvider,
 )
+from synnodb.workloads.workload_spec import get_workload_spec
 
 logger = logging.getLogger(__name__)
 
-# load environment variables
-load_dotenv()
-
-synnodb_data_dir_tmp = os.getenv("SYNNO_DATA_DIR", default=None)
-assert synnodb_data_dir_tmp is not None, (
-    "SYNNO_DATA_DIR environment variable is not set"
-)
-synnodb_data_dir = Path(synnodb_data_dir_tmp)
-
-log_dir = synnodb_data_dir / "logs" / "logfiles"
-create_dir_and_set_permissions(log_dir)
-duckdb_drain_dir = synnodb_data_dir / "logs" / "duckdb"
-create_dir_and_set_permissions(duckdb_drain_dir)
+# Configuration (SYNNO_DATA_DIR, paths) is resolved lazily via settings so that
+# importing this module has no side effects (no assert, no directory creation).
+from synnodb import settings
 
 
 def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStorage:
@@ -86,12 +77,15 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # Assemble Paths
     #####
     # workspace
-    workspace_path = Path("./output")
-    workspace_path.mkdir(exist_ok=True)
+    workspace_path = settings.get_workspace_dir(getattr(args, "workspace_dir", None))
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    # The workspace becomes a nested git repo (the snapshotter); make sure it is never
+    # accidentally committed/pushed into an enclosing repo (e.g. the SynnoDB checkout).
+    exclude_workspace_from_enclosing_repo(workspace_path)
 
     # cache paths
 
-    cache_dir = synnodb_data_dir / "cache"
+    cache_dir = settings.get_data_dir() / "cache"
     create_dir_and_set_permissions(cache_dir)
 
     prepare_workspace_cache_dir = cache_dir / "prepare_workspace"
@@ -120,22 +114,27 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     )
 
     # conversations dir
-    conversations_dir = synnodb_data_dir / "conversations"
+    conversations_dir = settings.get_data_dir() / "conversations"
 
     usecase = args.usecase
 
     # parquet dir and workload provider
     if usecase == Usecase.OLAP:
-        dataset_name = OLAPWorkloadProvider._get_dataset_name(args.benchmark)
+        workload_spec = get_workload_spec(args.benchmark.value)
+        dataset_name = workload_spec.dataset_name
+        # Bring-your-own workloads carry their absolute parquet location; built-ins
+        # derive it from the data-dir + benchmark-name convention.
+        if workload_spec.base_parquet_dir is not None:
+            parquet_dir = Path(workload_spec.base_parquet_dir)
+        else:
+            parquet_dir = (
+                settings.get_data_dir()
+                / "workloads"
+                / args.benchmark.value
+                / f"{dataset_name}_parquet"
+            )
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
-
-    parquet_dir = (
-        synnodb_data_dir
-        / "workloads"
-        / args.benchmark.value
-        / f"{dataset_name}_parquet"
-    )
 
     #####
     # Other preparations
@@ -160,12 +159,24 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     if disk_db_dir is not None:
         create_dir_and_set_permissions(disk_db_dir)
 
+    # Requested query subset (e.g. ["1"]). Threaded into the provider so scaffolding
+    # and run/validate are confined to exactly these queries; the provider validates
+    # them against the workload's full catalog and raises on unknown ids.
+    query_list = [q.strip() for q in args.query_list.split(",")]
+
+    # num_instantiations: CLI override (None -> provider default).
+    provider_kwargs = {}
+    if getattr(args, "num_instantiations", None) is not None:
+        provider_kwargs["num_instantiations"] = args.num_instantiations
+
     if usecase == Usecase.OLAP:
         workload_provider = OLAPWorkloadProvider(
-            benchmark=OLAPWorkload(args.benchmark),
+            benchmark=args.benchmark,  # already resolved (enum for builtins, WorkloadId for BYO)
             base_parquet_dir=parquet_dir,
             db_storage=db_storage,
             bespoke_ssd_storage_dir=bespoke_ssd_storage_dir,
+            query_ids=query_list,
+            **provider_kwargs,
         )
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
@@ -225,7 +236,6 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # Prepare workspace / snapshot
     ##############################
 
-    query_list = [q.strip() for q in args.query_list.split(",")]
     plan_filename = get_plan_filename(usecase)
 
     if args.storage_plan_snapshot is not None:
@@ -301,7 +311,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             wandb_run_id=getattr(args, "wandb_run_id", None),
             system_name=socket.gethostname(),
         ),
-        DuckDBDrain(db_path=duckdb_drain_dir / f"{args.run_name}.duckdb"),
+        DuckDBDrain(db_path=settings.duckdb_drain_dir() / f"{args.run_name}.duckdb"),
     ]
     if args.log_to_wandb:
         data_drains.append(WandbDrain())
@@ -363,7 +373,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             do_not_cache=args.do_not_cache,
             only_from_cache=args.only_from_cache,
             max_snapshot_csv_size_mb=max_snapshot_csv_size_mb,
-            use_umbra=usecase in [Usecase.OLAP],
+            use_umbra=False,
         )
 
     logger.info(f"Workspace root: {workspace_path}")
@@ -561,6 +571,12 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     # the remote.
     snapshotter.maybe_push_snapshots(force=True)
 
+    # Publish the finished engine so the drop-in router auto-discovers and routes to it.
+    _publish_generated_engine(
+        workspace_path, workload_provider, query_list, parquet_dir, workload_spec,
+        getattr(args, "wandb_run_id", None),
+    )
+
     logger.debug(
         f"Model cache total saved: ${agent_sdk_wrapper.get_total_saved_by_llm_cache():0.6f}"
     )
@@ -590,6 +606,57 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
         )
 
 
+def _resolve_sf_dir(base_parquet_dir, scale_factor):
+    """The ``sf<N>`` data directory for a scale factor, tolerant of int/float formatting
+    (``sf1`` vs ``sf1.0``); falls back to the first ``sf*`` present. None if there is none."""
+    base = Path(base_parquet_dir)
+    candidates = []
+    try:
+        if float(scale_factor).is_integer():
+            candidates.append(f"sf{int(scale_factor)}")
+    except (TypeError, ValueError):
+        pass
+    candidates.append(f"sf{scale_factor}")
+    for name in candidates:
+        if (base / name).exists():
+            return base / name
+    found = sorted(base.glob("sf*"))
+    return found[0] if found else None
+
+
+def _publish_generated_engine(
+    workspace_path, workload_provider, query_list, base_parquet_dir, workload_spec, run_id
+):
+    """Publish the engine produced by this run for the drop-in router to auto-discover.
+
+    Best-effort: only base/optimized runs leave a ``db`` binary, an engines directory must be
+    configured, and the parquet the engine serves must exist. Any failure is logged and
+    swallowed so it never fails a generation run.
+    """
+    try:
+        if not (workspace_path / "db").exists():
+            return  # not an engine-producing run (e.g. storage plan)
+        from synnodb.duckdb_compat.discovery import resolve_engines_dir
+        from synnodb.workloads.engine_publish import publish_from_provider
+
+        if resolve_engines_dir(None) is None:
+            logger.info("publish: no engines dir (SYNNO_ENGINES_DIR / SYNNO_DATA_DIR); skipping")
+            return
+        sf = workload_spec.benchmark_sf
+        sf_dir = _resolve_sf_dir(base_parquet_dir, sf)
+        if sf_dir is None:
+            logger.info("publish: no parquet under %s; skipping engine publish", base_parquet_dir)
+            return
+        dest = publish_from_provider(
+            workspace_path, workload_provider, query_list,
+            parquet_dir=sf_dir, scale_factor=sf, source_run_id=run_id,
+        )
+        if dest is not None:
+            logger.info("published bespoke engine for auto-discovery -> %s", dest)
+    except Exception:
+        logger.warning("publish: could not publish the generated engine (continuing)", exc_info=True)
+
+
 def _setup() -> None:
     if not check_pkg("arrow", "parquet"):
         raise Exception("arrow and parquet are not available. See README.")
@@ -598,11 +665,27 @@ def _setup() -> None:
         set_hugepages(node=node, page_kb=2048, count=0)
 
 
+def _run_coroutine(coro):
+    """Drive a top-level coroutine to completion, whether or not an event loop is already
+    running. Plain ``asyncio.run`` raises "cannot be called from a running event loop" when
+    invoked from inside one - which is exactly the case when the API is driven from a Jupyter
+    notebook (the documented in-process usage). In that case we run it on a fresh loop in a
+    worker thread; otherwise we use ``asyncio.run`` directly."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)  # no loop running: the normal CLI path
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def run_conv_wrapper(
     args: argparse.Namespace | None,
     run_config: RunConfig | None,
     spec: ConversationSpec,
-) -> None:
+) -> str | None:
     # assemble args from run_config if main.py is started from run scripts
     if args is None and run_config is None:
         raise Exception("Either args or run_config must be provided.")
@@ -698,7 +781,7 @@ def run_conv_wrapper(
         args.wandb_run_id = None
 
     log_filename = f"{run_name}.log"
-    setup_logging(logging.DEBUG, log_dir / log_filename)
+    setup_logging(logging.DEBUG, settings.log_dir() / log_filename)
 
     if args.notify:
         logger.info(
@@ -706,7 +789,7 @@ def run_conv_wrapper(
         )
 
     try:
-        asyncio.run(main(args, spec))
+        _run_coroutine(main(args, spec))
 
         if args.notify:
             # notify about successful completion
@@ -728,6 +811,20 @@ def run_conv_wrapper(
             notify.send_notification(notify_msg, check_tmux=False)
 
         raise e
+    finally:
+        # Finish the wandb run so a subsequent stage executed in the SAME process (the documented
+        # in-process chain createStoragePlan -> createBaseImpl) starts its own fresh run instead of
+        # re-using this still-active one and failing on the locked "log_run_name" config key.
+        # args.wandb_run_id was captured above, so the returned id is unaffected.
+        if _wandb_run is not None:
+            try:
+                _wandb_run.finish()
+            except Exception:
+                logger.warning("could not finish wandb run cleanly", exc_info=True)
+
+    # The wandb run id (None unless --log_to_wandb) is how downstream stages
+    # chain off this run; return it so programmatic callers can pass it along.
+    return args.wandb_run_id
 
 
 def test_deps():

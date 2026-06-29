@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 
 import synnodb.cpp_runner as cpp_runner
-from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.observability.logging.wandb_api_helper import (
+    wandb_retrieve_metrics_for_run,
+)
 from synnodb.tools.validate.query_validator_class import format_args_string
 from synnodb.workloads.dataset.query_gen_factory import get_query_gen
 

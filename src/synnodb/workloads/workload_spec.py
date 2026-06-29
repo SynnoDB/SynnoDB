@@ -1,0 +1,142 @@
+"""A workload described as data.
+
+"What is a workload" used to be an `OLAPWorkload` enum that ~9 methods switched on
+(`if benchmark == TPCH / elif CEB / else raise`), so adding a workload meant editing all
+of them. A `WorkloadSpec` carries the per-workload values instead, and the provider reads
+from the spec; a new workload is a value passed to `register_workload(...)`.
+
+The heavy / context-dependent parts (SQL dict, schema DDL, per-query parameter
+generation) are supplied as factories, so importing a spec does not pull in the generator
+modules or require SYNNO_DATA_DIR until they are actually used.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable, Mapping
+
+from synnodb.tools.run_tool_mode import RunToolMode
+
+if TYPE_CHECKING:  # avoid an import cycle; only used for type hints
+    from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
+
+# A query generator: query_name like "Q1" + an RNG -> (name, sql, placeholders).
+QueryGenFn = Callable[..., tuple[str, str, dict]]
+# Built lazily from the provider (CEB needs its query dir + cache, etc.).
+QueryGenFactory = Callable[["OLAPWorkloadProvider"], QueryGenFn]
+# Built from the provider + a do_not_cache flag (CEB caches placeholders on disk).
+PlaceholdersFactory = Callable[["OLAPWorkloadProvider", bool], Callable[..., dict]]
+
+
+@dataclass(frozen=True)
+class WorkloadSpec:
+    """Everything the framework needs to drive an arbitrary OLAP workload."""
+
+    name: str
+    # dataset
+    tables: tuple[str, ...]
+    dataset_name: str  # parquet dir name (e.g. tpch->"tpch", ceb->"imdb")
+    # query catalog
+    all_query_ids: tuple[str, ...]
+    # scale-factor profile per run mode (BENCHMARK uses benchmark_sf)
+    benchmark_sf: float
+    fast_check_sfs: tuple[float, ...]
+    exhaustive_sfs: tuple[float, ...]
+    ingest_sfs: tuple[float, ...]
+    # planner-prompt parameterization (kept out of the prompt templates)
+    example_query: str
+    example_query_params: str
+    schema_example_table: str  # a real table name, shown in the schema-read example
+    # lazy / context-dependent providers
+    sql_dict_factory: Callable[[], dict[str, str]]
+    schema_factory: Callable[[], str]
+    query_gen_factory: QueryGenFactory
+    placeholders_factory: PlaceholdersFactory
+    # Absolute parquet location for bring-your-own workloads (holds sf<sf>/<table>.parquet).
+    # None for built-ins, which derive the path from the data-dir + benchmark-name
+    # convention. When set, the pipeline uses this directly.
+    base_parquet_dir: Path | None = None
+
+    def sql_dict(self) -> dict[str, str]:
+        return self.sql_dict_factory()
+
+    def schema(self) -> str:
+        return self.schema_factory()
+
+    def scale_factors_for(self, run_mode: RunToolMode) -> list[float]:
+        if run_mode == RunToolMode.FAST_CHECK:
+            return list(self.fast_check_sfs)
+        if run_mode == RunToolMode.EXHAUSTIVE:
+            return list(self.exhaustive_sfs)
+        if run_mode == RunToolMode.INGEST:
+            return list(self.ingest_sfs)
+        if run_mode == RunToolMode.BENCHMARK:
+            return [self.benchmark_sf]
+        raise ValueError(f"Unknown run mode: {run_mode}")
+
+
+_REGISTRY: dict[str, WorkloadSpec] = {}
+_BUILTINS_LOADED = False
+
+
+def _ensure_builtins() -> None:
+    """Register the built-in (TPC-H, CEB) specs on first registry use.
+
+    They are registered as an import side-effect of `workload_provider_olap`; importing
+    it here (lazily, function-level) means the registry is correctly populated even when
+    a caller imported only `workload_spec`. Guarded so it runs at most once and cannot
+    recurse during that module's own import.
+    """
+    global _BUILTINS_LOADED
+    if _BUILTINS_LOADED:
+        return
+    _BUILTINS_LOADED = True
+    import synnodb.workloads.workload_provider_olap  # noqa: F401  (registers builtins)
+
+
+def register_workload(spec: WorkloadSpec) -> None:
+    """Register a workload so it can be driven by name. Idempotent on identical specs."""
+    _REGISTRY[spec.name] = spec
+
+
+def get_workload_spec(name: str) -> WorkloadSpec:
+    _ensure_builtins()
+    if name not in _REGISTRY:
+        raise ValueError(
+            f"Unknown workload '{name}'. Registered workloads: {sorted(_REGISTRY)}"
+        )
+    return _REGISTRY[name]
+
+
+def is_registered(name: str) -> bool:
+    _ensure_builtins()
+    return name in _REGISTRY
+
+
+def registered_workloads() -> list[str]:
+    _ensure_builtins()
+    return sorted(_REGISTRY)
+
+
+def resolve_workload(name: str):
+    """Resolve a workload name to a Workload identity.
+
+    Built-in names resolve to their `OLAPWorkload` enum member (preserving existing
+    cache-key identity); any other registered workload resolves to a `WorkloadId`.
+    Raises for unknown names. This is the single primitive a CLI/entry point should use
+    instead of `OLAPWorkload(name)`, so registered bring-your-own workloads are accepted
+    without an enum member.
+    """
+    _ensure_builtins()
+    from synnodb.workloads.workload_provider import WorkloadId
+    from synnodb.workloads.workload_provider_olap import OLAPWorkload
+
+    try:
+        return OLAPWorkload(name)
+    except ValueError:
+        pass
+    if name in _REGISTRY:
+        return WorkloadId(name)
+    raise ValueError(
+        f"Unknown workload '{name}'. Registered workloads: {sorted(_REGISTRY)}"
+    )

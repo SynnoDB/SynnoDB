@@ -33,10 +33,12 @@ class TestRunStatsCollectorCacheStatus(unittest.TestCase):
         )
         self.assertEqual(collector.last_llm_hash, "real-request")
 
-    def test_cache_status_falls_back_to_pending_flag_without_response_id(self):
+    def test_cache_status_defaults_to_not_cached_without_response_id(self):
         collector = _collector_for_cache_status_tests()
 
-        self.assertTrue(collector._consume_llm_cache_status(_model_response(None)))
+        # No response id and no recorded status: conservatively treated as a real (uncached)
+        # call, so cost accounting never under-counts an unidentifiable turn.
+        self.assertFalse(collector._consume_llm_cache_status(_model_response(None)))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,36 @@
 SynnoDB Repository
 
 
-## CMDs at the moment:
+`SYNNO_DATA_DIR` must point at the data root (parquet, caches, logs); set it in
+the environment or `.env`.
+
+## Python API
+
+```python
+from synnodb import SynnoDB
+
+db = SynnoDB.in_memory(workload="tpch", model="anthropic/claude-sonnet-4-6")
+
+plan = db.createStoragePlan(queries="1")     # -> StoragePlan
+print(plan.text)                             # the storage_plan.txt document
+print(plan.path, plan.run_id)                # on disk + wandb provenance
+
+impl = db.createBaseImpl(storage_plan=plan)  # pass the plan object; chains on its run_id
+print(impl.files["db_loader.cpp"])           # -> BaseImplementation (generated C++)
+
+opt = db.runOptimLoop(base_impl=impl)        # -> OptimizedImplementation
+```
+
+Each stage returns a domain object (`StoragePlan`, `BaseImplementation`,
+`OptimizedImplementation`, `MultiThreadedImplementation`, `CorrectnessReport`)
+that carries the produced artifact and chains into the next stage.
+`SynnoDB(...)` takes enums or strings (`db_storage="ssd"`), alternative
+constructors (`in_memory`/`on_ssd`/`for_tpch`/`for_ceb`/`from_env`), and
+`with_(...)` for per-call overrides.
+
+## CLI
+
+Each stage is a console script (installed with the package) or `python -m`:
 
 ```
 # gen storage plan
@@ -20,6 +49,11 @@ python -m synnodb.run_check_sf_correctness --model anthropic/claude-sonnet-4-6 -
 # add multi-threading
 python -m synnodb.run_add_multi_threading --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --optim_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
 ```
+
+(equivalently `python -m synnodb.run_gen_storage_plan …`, etc.) The run output dir
+defaults to a local `./output`; override with `--workspace` or `SYNNO_WORKSPACE`.
+
+Install: `uv sync` (add extras as needed: `uv sync --extra dev --extra viz`).
 
 ## Prerequisites
 

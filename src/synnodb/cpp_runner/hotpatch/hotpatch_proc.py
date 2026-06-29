@@ -17,6 +17,14 @@ from synnodb.tools.validate.query_validator_class import QueryResult
 
 logger = logging.getLogger(__name__)
 
+# Safety-net deadline for the build/load stages of a RUN. The `timeout` argument
+# only bounds the query stage; a livelock in the build/loader (e.g. a buggy
+# parallel sort in db_loader) never reaches the query stage, so without a build
+# bound it runs unbounded. Sized generously above the one-time cold in-memory
+# load (observed ~17 min at sf20; hotpatched rebuilds are seconds) so legitimate
+# builds finish while pathological hangs are still killed.
+BUILD_STAGE_TIMEOUT_S = 40 * 60
+
 # prctl(PR_SET_PDEATHSIG, sig) asks the kernel to deliver `sig` to this process
 # when its parent dies — even when the parent is SIGKILL'd, which bypasses
 # atexit handlers. Without this, a hard-killed Python orchestrator leaves the
@@ -213,15 +221,21 @@ class HotpatchProc:
         else:
             argv = [str(self._command)]
 
+        # AddressSanitizer reserves a huge virtual address space (its shadow memory,
+        # ~20 TB), so an RLIMIT_AS cap would kill the child at startup. When the sanitize
+        # build profile is active, skip the virtual-memory cap.
+        sanitize_active = bool(os.environ.get("SYNNO_SANITIZE", "").strip())
+        as_bytes = None if sanitize_active else self._memory_limit_bytes
+
         def _preexec():
             # Applied inside the child after fork() but before exec().
             # Sets RLIMIT_AS to cap virtual memory usage, then ties the child's
             # lifetime to this Python process (PR_SET_PDEATHSIG) and starts a
             # new session so killpg() can reap the whole tree.
-            if self._memory_limit_bytes is not None:
+            if as_bytes is not None:
                 _set_rlimits(
                     cpu_seconds=None,
-                    as_bytes=self._memory_limit_bytes,
+                    as_bytes=as_bytes,
                     fsize_bytes=None,
                     nofile=None,
                     nproc=None,
@@ -375,8 +389,13 @@ class HotpatchProc:
         # timer only once that leaf exists prevents a query timeout from
         # killing a long-running/reloading builder before the query starts.
         killer = (
-            ProcTreeTimeoutKiller(self._proc.pid, timeout, min_descendant_depth=3)
-            if timeout > 0 and self._proc is not None
+            ProcTreeTimeoutKiller(
+                self._proc.pid,
+                timeout,
+                min_descendant_depth=3,
+                build_timeout=BUILD_STAGE_TIMEOUT_S,
+            )
+            if (timeout > 0 or BUILD_STAGE_TIMEOUT_S > 0) and self._proc is not None
             else None
         )
 
