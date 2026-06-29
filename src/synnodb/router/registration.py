@@ -26,7 +26,8 @@ log = logging.getLogger("synnodb.router.registration")
 
 
 # Output types the exact-egress path (cpp_helpers/column_egress.hpp) cannot reproduce. Everything
-# else - every integer width, decimal128/256, BOOLEAN, DOUBLE/REAL, VARCHAR, DATE, naive TIMESTAMP -
+# else - signed integers/HUGEINT, unsigned integers through UBIGINT, decimal128/256, BOOLEAN,
+# DOUBLE/REAL, VARCHAR, DATE, naive TIMESTAMP -
 # is emitted exactly (or the engine fails loudly), so the guard is a deny-list, not an allow-list,
 # in keeping with the "delegate to arrow::compute::Cast, do not enumerate" design. A query
 # producing one of these is refused at bind time and served by DuckDB instead of failing later.
@@ -35,7 +36,7 @@ log = logging.getLogger("synnodb.router.registration")
 # DuckDB's Arrow type for the column is reachable from an egress builder family.
 _NESTED_OUTPUT_BASES = frozenset({"LIST", "ARRAY", "STRUCT", "MAP", "UNION", "ROW"})
 _UNSUPPORTED_OUTPUT_BASES = frozenset(
-    {"INTERVAL", "BLOB", "BYTEA", "VARBINARY", "BIT", "UUID", "TIME", "ENUM", "JSON"}
+    {"INTERVAL", "BLOB", "BYTEA", "VARBINARY", "BIT", "UUID", "TIME", "ENUM", "JSON", "UHUGEINT"}
 )
 
 

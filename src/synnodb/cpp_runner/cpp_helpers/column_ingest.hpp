@@ -12,6 +12,11 @@
 // Arrow types, so there is no per-type switch to maintain; a cast it cannot do (or a value
 // that overflows the target) throws instead of returning a wrong number.
 //
+// This does NOT mean every in-memory column should be int64_t. The storage plan should still
+// choose the narrowest correct C++ representation for the hot query path, then call the matching
+// helper here. For example, use as_integer<uint8_t>(...) for a tiny status/code domain and
+// scaled_integer<int32_t>(..., scale) for a fixed-point decimal whose scaled values fit int32_t.
+//
 // NULLs. By default a null reads as the type's zero (0 / 0.0 / "" / epoch) - correct for a
 // NOT NULL column and for SUM over a nullable one (adding zero == skipping). For a query whose
 // result depends on SQL null semantics (COUNT(col), AVG, NULL-propagating arithmetic, a
@@ -21,8 +26,8 @@
 //
 // db_loader.cpp build() calls these and does not touch Arrow itself:
 //   using namespace synnodb::ingest;
-//   db->l_quantity      = scaled_int64(*tables->lineitem, "l_quantity", 2); // fixed-point
-//   db->l_orderkey      = as_int64    (*tables->lineitem, "l_orderkey");
+//   db->l_quantity      = scaled_integer<int16_t>(*tables->lineitem, "l_quantity", 2);
+//   db->l_orderkey      = as_integer<int32_t>    (*tables->lineitem, "l_orderkey");
 //   db->l_returnflag    = as_string   (*tables->lineitem, "l_returnflag");
 //   db->l_shipdate_days = as_date_days(*tables->lineitem, "l_shipdate");
 //   // nullable column: capture validity to honour SQL null semantics
@@ -37,6 +42,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <arrow/api.h>
@@ -58,6 +64,46 @@ inline void init_validity(Validity* valid_out, int64_t n) {
 inline void push_validity(Validity* valid_out, bool is_null) {
     if (valid_out) valid_out->push_back(is_null ? 0 : 1);
 }
+
+template <typename T>
+inline std::shared_ptr<arrow::DataType> arrow_integer_type() {
+    static_assert(std::is_integral_v<T> && !std::is_same_v<T, bool>,
+                  "column_ingest::as_integer<T> requires a non-bool integer T");
+    if constexpr (std::is_same_v<T, int8_t>) return arrow::int8();
+    else if constexpr (std::is_same_v<T, int16_t>) return arrow::int16();
+    else if constexpr (std::is_same_v<T, int32_t>) return arrow::int32();
+    else if constexpr (std::is_same_v<T, int64_t>) return arrow::int64();
+    else if constexpr (std::is_same_v<T, uint8_t>) return arrow::uint8();
+    else if constexpr (std::is_same_v<T, uint16_t>) return arrow::uint16();
+    else if constexpr (std::is_same_v<T, uint32_t>) return arrow::uint32();
+    else if constexpr (std::is_same_v<T, uint64_t>) return arrow::uint64();
+    else static_assert(sizeof(T) == 0, "unsupported integer width");
+}
+
+template <typename T>
+inline T decimal_to_checked_integer(const arrow::Decimal128& d, int scale) {
+    static_assert(std::is_integral_v<T> && !std::is_same_v<T, bool>,
+                  "column_ingest::scaled_integer<T> requires a non-bool integer T");
+    const __int128 value =
+        static_cast<__int128>(d.high_bits()) * (static_cast<__int128>(1) << 64) +
+        static_cast<__int128>(d.low_bits());
+
+    bool fits = false;
+    if constexpr (std::is_signed_v<T>) {
+        fits = value >= static_cast<__int128>(std::numeric_limits<T>::min()) &&
+               value <= static_cast<__int128>(std::numeric_limits<T>::max());
+    } else {
+        fits = value >= 0 &&
+               static_cast<unsigned __int128>(value) <=
+                   static_cast<unsigned __int128>(std::numeric_limits<T>::max());
+    }
+    if (!fits) {
+        throw std::runtime_error(
+            "column_ingest::scaled_integer: value does not fit requested C++ integer type at scale=" +
+            std::to_string(scale));
+    }
+    return static_cast<T>(value);
+}
 }  // namespace detail
 
 inline std::shared_ptr<arrow::ChunkedArray> column(const arrow::Table& t, const std::string& name) {
@@ -78,26 +124,53 @@ inline std::shared_ptr<arrow::ChunkedArray> canonicalize(
     return result->chunked_array();
 }
 
-// ---- as_int64: any integer/bool/date source -> int64 -------------------------
-inline std::vector<int64_t> as_int64(const std::shared_ptr<arrow::ChunkedArray>& col,
-                                     Validity* valid_out = nullptr) {
-    auto c = canonicalize(col, arrow::int64());
-    std::vector<int64_t> out;
+// ---- as_integer<T>: any integer/bool/date source -> the storage-plan C++ integer T ----------
+// Use this for persisted in-memory columns. It keeps Arrow's safe cast/range-checking while
+// allowing the Database layout to be as narrow as the workload permits (uint8_t codes, int32_t
+// keys, uint64_t ids, ...). A cast that cannot be done, or a value outside T's range, throws.
+template <typename T>
+inline std::vector<T> as_integer(const std::shared_ptr<arrow::ChunkedArray>& col,
+                                 Validity* valid_out = nullptr) {
+    static_assert(std::is_integral_v<T> && !std::is_same_v<T, bool>,
+                  "column_ingest::as_integer<T> requires a non-bool integer T");
+    auto c = canonicalize(col, detail::arrow_integer_type<T>());
+    std::vector<T> out;
     out.reserve(static_cast<size_t>(c->length()));
     detail::init_validity(valid_out, c->length());
     for (const auto& chunk : c->chunks()) {
-        const auto& a = static_cast<const arrow::Int64Array&>(*chunk);
-        for (int64_t i = 0; i < a.length(); ++i) {
-            const bool null = a.IsNull(i);
-            detail::push_validity(valid_out, null);
-            out.push_back(null ? 0 : a.Value(i));
-        }
+        const auto read_chunk = [&](const auto& a) {
+            for (int64_t i = 0; i < a.length(); ++i) {
+                const bool null = a.IsNull(i);
+                detail::push_validity(valid_out, null);
+                out.push_back(null ? T{} : static_cast<T>(a.Value(i)));
+            }
+        };
+        if constexpr (std::is_same_v<T, int8_t>) read_chunk(static_cast<const arrow::Int8Array&>(*chunk));
+        else if constexpr (std::is_same_v<T, int16_t>) read_chunk(static_cast<const arrow::Int16Array&>(*chunk));
+        else if constexpr (std::is_same_v<T, int32_t>) read_chunk(static_cast<const arrow::Int32Array&>(*chunk));
+        else if constexpr (std::is_same_v<T, int64_t>) read_chunk(static_cast<const arrow::Int64Array&>(*chunk));
+        else if constexpr (std::is_same_v<T, uint8_t>) read_chunk(static_cast<const arrow::UInt8Array&>(*chunk));
+        else if constexpr (std::is_same_v<T, uint16_t>) read_chunk(static_cast<const arrow::UInt16Array&>(*chunk));
+        else if constexpr (std::is_same_v<T, uint32_t>) read_chunk(static_cast<const arrow::UInt32Array&>(*chunk));
+        else if constexpr (std::is_same_v<T, uint64_t>) read_chunk(static_cast<const arrow::UInt64Array&>(*chunk));
     }
     return out;
 }
+template <typename T>
+inline std::vector<T> as_integer(const arrow::Table& t, const std::string& name,
+                                 Validity* valid_out = nullptr) {
+    return as_integer<T>(column(t, name), valid_out);
+}
+
+// Backward-compatible name for existing generated code. New code should prefer as_integer<T>
+// with the storage plan's narrowest correct T.
+inline std::vector<int64_t> as_int64(const std::shared_ptr<arrow::ChunkedArray>& col,
+                                     Validity* valid_out = nullptr) {
+    return as_integer<int64_t>(col, valid_out);
+}
 inline std::vector<int64_t> as_int64(const arrow::Table& t, const std::string& name,
                                      Validity* valid_out = nullptr) {
-    return as_int64(column(t, name), valid_out);
+    return as_integer<int64_t>(column(t, name), valid_out);
 }
 
 // ---- as_double: any numeric/decimal source -> double -------------------------
@@ -122,51 +195,59 @@ inline std::vector<double> as_double(const arrow::Table& t, const std::string& n
     return as_double(column(t, name), valid_out);
 }
 
-// ---- scaled_int64: numeric/decimal source -> fixed-point int64 (value*10^scale) -----
-// Read each value's unscaled integer at the requested scale. A value that does not fit int64 at
-// this scale throws rather than truncating.
+// ---- scaled_integer<T>: numeric/decimal source -> fixed-point integer T (value*10^scale) ----
+// Read each value's unscaled integer at the requested scale. A value that does not fit T at
+// this scale throws rather than truncating. This lets the storage plan keep decimal/money/
+// quantity columns narrow when their scaled value domain allows it.
 //
-// Fast path: a decimal128 source ALREADY at `scale` is read in place - its unscaled int64 is
+// Fast path: a decimal128 source ALREADY at `scale` is read in place - its unscaled integer is
 // already value*10^scale, so casting it to decimal128(38,scale) would only copy 16 bytes/row
 // (~1.9 GB per TPC-H lineitem column at SF20) without changing a single value. Skipping that cast
 // makes the helper as cheap as a hand-rolled raw read, so there is no performance reason to decode
 // Arrow by hand (and lose the overflow check, null handling, and type-universality below). Any
 // other source (different scale, integer, float, decimal256) still goes through Cast so the helper
 // stays universal and exact.
-inline std::vector<int64_t> scaled_int64(const std::shared_ptr<arrow::ChunkedArray>& col, int scale,
-                                         Validity* valid_out = nullptr) {
+template <typename T>
+inline std::vector<T> scaled_integer(const std::shared_ptr<arrow::ChunkedArray>& col, int scale,
+                                     Validity* valid_out = nullptr) {
+    static_assert(std::is_integral_v<T> && !std::is_same_v<T, bool>,
+                  "column_ingest::scaled_integer<T> requires a non-bool integer T");
     std::shared_ptr<arrow::ChunkedArray> c;
     if (col->type()->id() == arrow::Type::DECIMAL128 &&
         static_cast<const arrow::Decimal128Type&>(*col->type()).scale() == scale) {
-        c = col;  // native scale: no widening Cast, read the unscaled int64 directly
+        c = col;  // native scale: no widening Cast, read the unscaled integer directly
     } else {
         c = canonicalize(col, arrow::decimal128(38, scale));
     }
-    std::vector<int64_t> out;
+    std::vector<T> out;
     out.reserve(static_cast<size_t>(c->length()));
     detail::init_validity(valid_out, c->length());
     for (const auto& chunk : c->chunks()) {
         const auto& a = static_cast<const arrow::Decimal128Array&>(*chunk);
         for (int64_t i = 0; i < a.length(); ++i) {
-            if (a.IsNull(i)) { detail::push_validity(valid_out, true); out.push_back(0); continue; }
+            if (a.IsNull(i)) { detail::push_validity(valid_out, true); out.push_back(T{}); continue; }
             detail::push_validity(valid_out, false);
             const arrow::Decimal128 d(a.GetValue(i));   // native little-endian; the unscaled value
-            const int64_t hi = d.high_bits();
-            const int64_t v = static_cast<int64_t>(d.low_bits());
-            const bool fits = (hi == 0 && v >= 0) || (hi == -1 && v < 0);
-            if (!fits) {
-                throw std::runtime_error(
-                    "column_ingest::scaled_int64: value does not fit int64 at scale=" +
-                    std::to_string(scale) + " (use as_double, or a wider accumulator type)");
-            }
-            out.push_back(v);
+            out.push_back(detail::decimal_to_checked_integer<T>(d, scale));
         }
     }
     return out;
 }
+template <typename T>
+inline std::vector<T> scaled_integer(const arrow::Table& t, const std::string& name, int scale,
+                                     Validity* valid_out = nullptr) {
+    return scaled_integer<T>(column(t, name), scale, valid_out);
+}
+
+// Backward-compatible name for existing generated code. New code should prefer
+// scaled_integer<T> with the storage plan's narrowest correct T.
+inline std::vector<int64_t> scaled_int64(const std::shared_ptr<arrow::ChunkedArray>& col, int scale,
+                                         Validity* valid_out = nullptr) {
+    return scaled_integer<int64_t>(col, scale, valid_out);
+}
 inline std::vector<int64_t> scaled_int64(const arrow::Table& t, const std::string& name, int scale,
                                          Validity* valid_out = nullptr) {
-    return scaled_int64(column(t, name), scale, valid_out);
+    return scaled_integer<int64_t>(column(t, name), scale, valid_out);
 }
 
 // ---- as_string: any string/dictionary/etc. source -> std::string -------------
