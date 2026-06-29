@@ -3,9 +3,12 @@ from pathlib import Path
 from string import Template
 
 from synnodb.conversations.filenames import get_plan_filename
-from synnodb.cpp_runner.prepare_repo.assemble_args_parser import assemble_args_parser_file
+from synnodb.cpp_runner.prepare_repo.assemble_args_parser import (
+    assemble_args_parser_file,
+)
 from synnodb.cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from synnodb.utils.cli_config import Usecase
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
@@ -97,7 +100,7 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             result[filename] = file_content
 
         if storage_plan is not None:
-            result[get_plan_filename()] = storage_plan
+            result[get_plan_filename(Usecase.OLAP)] = storage_plan
 
         sql_template_list = [
             f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
@@ -201,7 +204,7 @@ def _gen_table_reads(tables: list[str], persistent_storage: bool) -> str:
     # (SYNNODB_SHM_INGEST set), in which case map it zero-copy from its /dev/shm Arrow
     # segment. One binary serves both planes; the choice is made at run time by env.
     shm_reads = "\n".join(
-        f'{indent}{indent}tables->{name} = '
+        f"{indent}{indent}tables->{name} = "
         f'synnodb::ReadArrowTableFromShm(synnodb::shm_ingest_path_for("{name}"));'
         for name in tables
     )

@@ -4,6 +4,7 @@ Resolution is lazy: importing the package needs no configuration. The data dir
 and derived paths are computed on first use (and cached), so a module import
 never asserts or touches the filesystem.
 """
+
 from __future__ import annotations
 
 import os

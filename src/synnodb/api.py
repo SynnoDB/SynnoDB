@@ -32,15 +32,15 @@ from synnodb.results import (
 )
 from synnodb.utils.cli_config import DEFAULT_MODEL, Usecase
 from synnodb.utils.utils import DBStorage
-from synnodb.workloads.workload_provider import Workload
+from synnodb.workloads.workload_provider import Workload, WorkloadId
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
 __all__ = ["SynnoDB", "SynnoConfig", "Stage", "StageParam", "register_stage"]
 
 
 # ----------------------------- coercion helpers -----------------------------
-def _as_workload(v: Workload | str) -> Workload:
-    if isinstance(v, Workload):
+def _as_workload(v: Workload | str) -> Workload | WorkloadId:
+    if isinstance(v, (Workload, WorkloadId)):
         return v
     # built-in name -> enum; any registered (bring-your-own) name -> WorkloadId
     from synnodb.workloads.workload_spec import resolve_workload
@@ -74,7 +74,7 @@ class SynnoConfig:
     """Immutable, enum-typed run settings shared across stages."""
 
     model: str = DEFAULT_MODEL
-    workload: Workload = OLAPWorkload.TPCH
+    workload: Workload | WorkloadId = OLAPWorkload.TPCH
     db_storage: DBStorage = DBStorage.IN_MEMORY
     usecase: Usecase = Usecase.OLAP
     queries: str = "1"
