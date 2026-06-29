@@ -12,10 +12,15 @@
 // That fd is captured by the Python runner (hotpatch_proc.py) and surfaced to the model,
 // so a crash reads as "FATAL SIGSEGV ... run_q10 ... query10.cpp:289".
 //
-// Everything the handler touches is async-signal-safe: a fixed char buffer (no malloc,
-// no std::string), direct write(2), and backtrace_symbols_fd (which writes straight to
-// the fd without allocating). backtrace() is warmed up at install time so the unwinder's
-// one-time libgcc load does not happen inside the handler.
+// The handler stays as close to async-signal-safe as a symbolizing backtrace allows: a
+// fixed char buffer (no malloc, no std::string) and direct write(2). backtrace() is warmed
+// up at install time so the unwinder's one-time libgcc load does not happen inside the
+// handler. Its one best-effort call is dladdr() (return address -> module + load-relative
+// offset, for offline addr2line); dladdr takes the dynamic-linker lock, so it is fully safe
+// only when the fault did not occur while that lock was held - which is the case for the
+// faults this exists to catch (out-of-bounds reads in generated run_qN code, not faults
+// inside dlopen). We deliberately avoid backtrace_symbols_fd, which re-runs the same
+// resolution for no extra information.
 
 #include <atomic>
 #include <csignal>
@@ -116,8 +121,9 @@ inline void handler(int sig, siginfo_t* info, void* /*ucontext*/) {
     // The module + file-relative offset is what addr2line consumes to recover file:line
     // (query_validator_class.py does that); the mangled symbol (e.g. _Z7run_q10...) is
     // demangled there for readability. dladdr is used instead of backtrace_symbols so we
-    // can emit the load-base-relative offset directly. backtrace_symbols_fd is the
-    // fallback when dladdr cannot identify the module.
+    // can emit the load-base-relative offset directly; when it cannot identify the module we
+    // emit the raw address rather than calling backtrace_symbols_fd (same resolution, but it
+    // would take the dynamic-linker lock a second time).
     for (int i = 0; i < n; ++i) {
         Dl_info dli;
         if (::dladdr(frames[i], &dli) != 0 && dli.dli_fname != nullptr) {
@@ -132,7 +138,12 @@ inline void handler(int sig, siginfo_t* info, void* /*ucontext*/) {
             safe_write(dli.dli_sname != nullptr ? dli.dli_sname : "??");
             safe_write("\n");
         } else {
-            ::backtrace_symbols_fd(&frames[i], 1, STDERR_FILENO);
+            // dladdr could not identify the module: emit the raw runtime address (fully
+            // async-signal-safe). No backtrace_symbols_fd fallback - it would just re-run the
+            // dladdr resolution that already failed.
+            safe_write("  ");
+            safe_write_hex(reinterpret_cast<unsigned long long>(frames[i]));
+            safe_write("\n");
         }
     }
     safe_write("============================================================\n");

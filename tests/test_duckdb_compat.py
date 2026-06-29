@@ -12,6 +12,7 @@ import duckdb
 import pytest
 
 import synnodb
+from synnodb.duckdb_compat.connection import SynnoError
 
 
 # --------------------------------------------------------------------------- #
@@ -162,3 +163,37 @@ def test_real_duckdb_error_propagates_unchanged():
     s = synnodb.connect()
     with pytest.raises(duckdb.CatalogException):
         s.execute("SELECT * FROM does_not_exist")
+
+
+def test_write_parquet_and_csv_on_duckdb_fallback(tmp_path):
+    """Writers serialise a DuckDB-fallback result (no engines registered), not just a routed
+    one - the open result is pulled into typed Arrow via _materialize_current()."""
+    import pyarrow.parquet as pq
+
+    con = synnodb.connect()
+    con.execute("SELECT 42 AS x, 'hi' AS y").write_parquet(str(tmp_path / "o.parquet"))
+    con.execute("SELECT 7 AS x").write_csv(str(tmp_path / "o.csv"))
+    assert pq.read_table(str(tmp_path / "o.parquet")).num_rows == 1
+    assert "7" in (tmp_path / "o.csv").read_text()
+
+
+def test_write_without_a_result_raises_clear_error(tmp_path):
+    """Calling a writer before any result-producing query gives a clear SynnoError, not
+    DuckDB's opaque 'No open result set'."""
+    con = synnodb.connect()
+    with pytest.raises(SynnoError, match="no result to write"):
+        con.write_parquet(str(tmp_path / "none.parquet"))
+
+
+def test_writer_does_not_mask_a_real_error(tmp_path, monkeypatch):
+    """A genuine failure while materialising an existing result must propagate, not be hidden
+    behind 'no result to write' (only DuckDB's no-open-result-set is rewritten)."""
+    con = synnodb.connect()
+    con.execute("SELECT 1 AS x")
+
+    def boom(self):
+        raise RuntimeError("arrow conversion blew up")
+
+    monkeypatch.setattr(type(con), "_materialize_current", boom)
+    with pytest.raises(RuntimeError, match="arrow conversion blew up"):
+        con.write_parquet(str(tmp_path / "x.parquet"))
