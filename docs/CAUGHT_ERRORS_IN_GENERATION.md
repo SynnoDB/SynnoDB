@@ -208,6 +208,34 @@ switch with delegation.
   narrowed ints, float32, timestamp, and loud overflow (tests/test_column_egress.py). This
   deletes G8 for all workloads.
 
+### G9 - Engine crash reported as an opaque signal, debugged at the target SF
+- **Symptom:** a generated `run_qN` faults (SIGSEGV/SIGABRT/OOM) and the only feedback is
+  *"no query results received ... killed by signal 11 ... exact failing query unknown."* No
+  function, no file, no line. The agent burns hours guessing (stale binary? buffering? OOM?
+  parallel crash?) and never sees the actual cause. Made far worse when the workload is
+  registered at a single large SF: every iteration pays a multi-minute target-SF load just to
+  crash again. A real run lost ~6 hours on TPC-H Q10 at SF50 to a one-line omission (the
+  loader never populated `customer.c_comment`, so the projection read an empty column out of
+  bounds) - a bug that crashes identically at SF1 in under a second.
+- **Root cause:** two framework gaps, both deterministic work left undone. (1) The engine
+  child had **no crash handler**, so an async signal bypassed the per-query try/catch and was
+  surfaced as a bare signal number; localizing it was left to the LLM, which cannot. (2) The
+  BYO registration derived every run-mode SF from one user tuple, collapsing the framework's
+  small-first validation ladder (`exhaustive_sfs`) to the target SF - so correctness was first
+  checked at the most expensive scale instead of the cheapest, where the same bug fails fast.
+- **General fix (deterministic, framework).** *Localize the crash:* `cpp_helpers/crash_handler.hpp`,
+  installed by the `query_impl.cpp` template, catches the fatal signals on an alternate stack
+  and writes the signal, the running query (`set_query_context`), and a symbolized backtrace to
+  stderr; `query_validator_class.py` runs `addr2line` over it so the agent reads
+  *"SIGSEGV ... run_q10 ... query10.cpp:289."* For the exact line + offending variable even on
+  non-crashing corruption, the opt-in `SYNNO_SANITIZE=address` build profile compiles the whole
+  engine under AddressSanitizer. *Catch it cheaply:* `byo_workload._derive_sf_ladder` always
+  validates small-SF-first (target last), deriving the cheap rungs from the data on disk and
+  warning loudly when none exist - so a bug fails at SF1 in seconds, not after a target-SF load.
+  Tests: tests/test_crash_handler.py, tests/test_byo_sf_ladder.py. (The remaining painkiller:
+  scanning for `sf*` dirs is a TPC-H-ism; the durable fix is to *materialise* a small sample of
+  any BYO dataset for the fast rung - see the `TODO(byo-sampling)` in `byo_workload.py`.)
+
 ---
 
 ## What to build (the general fixes as framework components)

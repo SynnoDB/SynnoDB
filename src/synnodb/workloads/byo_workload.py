@@ -188,6 +188,77 @@ def _sf_dir(parquet_dir: Path, sf: float) -> Path:
     return parquet_dir / f"sf{sf}"
 
 
+# Number of the smallest available scale factors to use as fast validation rungs when only a
+# target SF is supplied. Two cheap rungs (e.g. sf1, sf2) catch the vast majority of bugs in
+# seconds while still surfacing scale-sensitive ones before the expensive target-SF run.
+_FAST_RUNG_COUNT = 2
+
+
+def _discover_available_sfs(parquet_dir: Path) -> list[float]:
+    """Scale factors that actually have data on disk, ascending.
+
+    Convention is ``<parquet_dir>/sf<N>/<table>.parquet`` (see :func:`_sf_dir`); integral
+    SFs are returned as ints so they format back to ``sf50`` rather than ``sf50.0``."""
+    sfs: list[float] = []
+    if not parquet_dir.is_dir():
+        return sfs
+    for child in parquet_dir.glob("sf*"):
+        if not child.is_dir():
+            continue
+        try:
+            value = float(child.name[2:])
+        except ValueError:
+            continue
+        sfs.append(int(value) if value.is_integer() else value)
+    return sorted(set(sfs))
+
+
+def _derive_sf_ladder(
+    scale_factors: tuple[float, ...], parquet_dir: Path
+) -> tuple[tuple[float, ...], tuple[float, ...], float, tuple[float, ...]]:
+    """Derive the validation scale-factor ladder: always small-first, target last.
+
+    The target (the SF the user actually wants the engine for) is the last element of
+    ``scale_factors``. Correctness is validated cheapest-first so a bug is caught in seconds
+    at a small SF rather than after a multi-minute load at the target - the exact failure
+    that cost the SF50 Q10 run hours. When the caller passes an explicit multi-SF ladder we
+    honour it; when only the target is given we augment it with the smallest scale factors
+    that exist on disk. Returns ``(fast_check_sfs, exhaustive_sfs, benchmark_sf, ingest_sfs)``.
+
+    TODO(byo-sampling): scanning for ``sf*`` directories is a TPC-H-ism. Real BYO data does
+    not arrive in scale-factor tiers, so there is nothing small to scan for and the warning
+    below fires. The durable fix is for the framework to *materialise* a small validation
+    sample of the user's own data at registration (a deterministic row fraction) and use that
+    as the fast rung, independent of any TPC-H-style SF layout. Until then this keeps
+    TPC-H-shaped inputs fast and fails loudly otherwise.
+    """
+    target = scale_factors[-1]
+
+    if len(scale_factors) > 1:
+        # Caller gave an explicit ladder (e.g. (1, 2, 50)); honour it verbatim.
+        rungs = sorted(set(scale_factors))
+    else:
+        available_small = [
+            sf for sf in _discover_available_sfs(parquet_dir) if sf < target
+        ]
+        rungs = sorted(set(available_small[:_FAST_RUNG_COUNT] + [target]))
+
+    fast_check = tuple(sf for sf in rungs if sf < target)
+    if not fast_check:
+        logger.warning(
+            "No scale factor smaller than the target SF=%s is available under %s, so every "
+            "validation iteration must load the full target-size dataset (slow, and the "
+            "reason a one-line bug can burn hours). Provide small SFs (e.g. sf1/, sf2/) or "
+            "pass scale_factors=(1, 2, %s) so correctness is validated cheaply first.",
+            target,
+            parquet_dir,
+            target,
+        )
+        fast_check = (target,)
+
+    return fast_check, tuple(rungs), target, (target,)
+
+
 def infer_tables_from_parquet(parquet_dir: str | Path, sf: float) -> list[str]:
     base = _sf_dir(Path(parquet_dir), sf)
     if not base.is_dir():
@@ -393,15 +464,21 @@ def _register_static_workload(
 
         return gen
 
+    # Always validate small-SF-first (target last) so a crash like the SF50 Q10 segfault
+    # is caught in seconds at SF1 instead of after a six-minute load at the target SF.
+    fast_check_sfs, exhaustive_sfs, benchmark_sf, ingest_sfs = _derive_sf_ladder(
+        scale_factors, parquet_dir
+    )
+
     spec = WorkloadSpec(
         name=name,
         tables=tuple(resolved_tables),
         dataset_name=dataset_name or name,
         all_query_ids=tuple(ids),
-        benchmark_sf=scale_factors[-1],
-        fast_check_sfs=scale_factors,
-        exhaustive_sfs=scale_factors,
-        ingest_sfs=(scale_factors[-1],),
+        benchmark_sf=benchmark_sf,
+        fast_check_sfs=fast_check_sfs,
+        exhaustive_sfs=exhaustive_sfs,
+        ingest_sfs=ingest_sfs,
         example_query=f"Q{ids[0]}",
         example_query_params=ids[0],
         schema_example_table=schema_example_table or resolved_tables[0],

@@ -14,6 +14,24 @@ def _cmd_str(cmd: list[str]) -> str:
     return " ".join(shlex.quote(c) for c in cmd)
 
 
+def sanitize_flags_from_env() -> list[str]:
+    """Compiler/linker flags for the optional sanitizer build profile.
+
+    Gated by ``SYNNO_SANITIZE`` (e.g. ``address`` or ``address,undefined``). Empty / unset
+    / a falsy value means no sanitizer. The same flags must go on both the compile and the
+    link line, so callers add the result to cxxflags (objects + exe) and to ldflags (.so).
+    Used to validate correctness at small scale factors, where AddressSanitizer's ~2-3x
+    overhead is negligible but it pinpoints out-of-bounds / use-after-free with file:line.
+    """
+    val = os.environ.get("SYNNO_SANITIZE", "").strip().lower()
+    if val in ("", "0", "off", "none", "false", "no"):
+        return []
+    sanitizers = [s for s in (part.strip() for part in val.split(",")) if s]
+    if not sanitizers:
+        return []
+    return [f"-fsanitize={','.join(sanitizers)}", "-fno-omit-frame-pointer"]
+
+
 def _run(cmd: list[str]) -> str:
     logger.debug(_cmd_str(cmd))
     proc = subprocess.run(cmd, text=True, capture_output=True)
@@ -94,9 +112,18 @@ class Compiler:
             "-fmacro-prefix-map=.=.",
             "-fno-record-gcc-switches",
         ]
+        # Optional AddressSanitizer (etc.) profile. Must appear on both compile and link.
+        self.sanitize_flags = sanitize_flags_from_env()
         self.include_flags = self._normalize_include_dirs(self.include_dirs)
         self.cxxflags = self._make_cxxflags([])
-        self.ldflags = ["-shared", "-Wl,--build-id=sha1", "-Wl,--no-undefined"]
+        # --no-undefined keeps each .so self-contained; sanitize flags pull libasan into
+        # the .so link so the dlopen'd plugins match the ASan-instrumented main exe.
+        self.ldflags = [
+            "-shared",
+            "-Wl,--build-id=sha1",
+            "-Wl,--no-undefined",
+            *self.sanitize_flags,
+        ]
         self.pkg_cflags: list[str] = []
         self.pkg_libs: list[str] = []
         if self.pkgconfig_libs:
@@ -369,6 +396,7 @@ class Compiler:
             "-std=c++20",
             "-fPIC",
             *self.repro_flags,
+            *self.sanitize_flags,
             *include_flags,
             *self.extra_cxxflags,
         ]
@@ -477,6 +505,10 @@ class Compiler:
             app_cmd = [
                 self.cxx,
                 *cxxflags,
+                # Export the executable's dynamic symbols so backtrace_symbols_fd (used by
+                # crash_handler.hpp) can name frames in the main `db` binary, not just the
+                # dlopen'd query .so. Cheap, and only affects the final link.
+                "-rdynamic",
                 *self.pkg_libs,
                 "-o",
                 self._relpath(self.workdir / self.app_name),

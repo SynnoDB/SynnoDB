@@ -221,15 +221,21 @@ class HotpatchProc:
         else:
             argv = [str(self._command)]
 
+        # AddressSanitizer reserves a huge virtual address space (its shadow memory,
+        # ~20 TB), so an RLIMIT_AS cap would kill the child at startup. When the sanitize
+        # build profile is active, skip the virtual-memory cap.
+        sanitize_active = bool(os.environ.get("SYNNO_SANITIZE", "").strip())
+        as_bytes = None if sanitize_active else self._memory_limit_bytes
+
         def _preexec():
             # Applied inside the child after fork() but before exec().
             # Sets RLIMIT_AS to cap virtual memory usage, then ties the child's
             # lifetime to this Python process (PR_SET_PDEATHSIG) and starts a
             # new session so killpg() can reap the whole tree.
-            if self._memory_limit_bytes is not None:
+            if as_bytes is not None:
                 _set_rlimits(
                     cpu_seconds=None,
-                    as_bytes=self._memory_limit_bytes,
+                    as_bytes=as_bytes,
                     fsize_bytes=None,
                     nofile=None,
                     nproc=None,
