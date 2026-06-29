@@ -38,7 +38,6 @@ from synnodb.tools.run import RunTool
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils.utils import DBStorage, is_persistent_storage, storage_label
 from synnodb.workloads.workload_provider import Workload
-from synnodb.workloads.workload_provider_olap import OLAPWorkload
 from synnodb.workloads.workload_spec import get_workload_spec
 
 logger = logging.getLogger(__name__)

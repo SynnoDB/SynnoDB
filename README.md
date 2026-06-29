@@ -1,5 +1,5 @@
 # SynnoDB
-SynnoDB Repository (internal)
+SynnoDB Repository
 
 
 `SYNNO_DATA_DIR` must point at the data root (parquet, caches, logs); set it in
@@ -35,19 +35,19 @@ Each stage is a console script (installed with the package) or `python -m`:
 
 ```
 # gen storage plan
-synnodb-storage-plan --model anthropic/claude-sonnet-4-6 --queries 1-22 --benchmark tpch --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
+python -m synnodb.run_gen_storage_plan --model anthropic/claude-sonnet-4-6 --queries 1-22 --benchmark tpch --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
 
 # run gen base
-synnodb-base-impl --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --storage_plan_run_id 8xn0t04p --queries 1-22 --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
+python -m synnodb.run_gen_base_impl --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --storage_plan_run_id 8xn0t04p --queries 1-22 --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
 
 # run optim
-synnodb-optim --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --base_impl_run_id q45vm9fz --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
+python -m synnodb.run_optim_loop --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --base_impl_run_id q45vm9fz --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
 
 # test correctness at larger SF
-synnodb-check-sf --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --source_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd --target_sf 50
+python -m synnodb.run_check_sf_correctness --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --source_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd --target_sf 50
 
 # add multi-threading
-synnodb-multi-threading --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --optim_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
+python -m synnodb.run_add_multi_threading --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --optim_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
 ```
 
 (equivalently `python -m synnodb.run_gen_storage_plan …`, etc.) The run output dir
@@ -65,6 +65,14 @@ Install: `uv sync` (add extras as needed: `uv sync --extra dev --extra viz`).
 - [`cloc`](https://github.com/AlDanial/cloc) (used to track generated code size)
 
 ## Installation
+
+### Install from PyPI
+
+```bash
+pip install synnodb          # or: uv pip install synnodb
+```
+
+This installs the `synnodb` package and the `synnodb-*` console scripts listed above. The Arrow/Parquet system libraries and a C++ toolchain (see Prerequisites) are still required at runtime. For local development from a source checkout, follow the steps below.
 
 ### 1. Install uv
 

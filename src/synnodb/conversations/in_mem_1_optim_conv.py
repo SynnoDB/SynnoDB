@@ -56,7 +56,9 @@ class InMem1OptimizationConversation(OptimizationConversation):
             qids_str = ", ".join(qids)
             is_first = i == 0
 
-            def _timings_prompt(_exec_settings, _rt, *, qids_str=qids_str, is_first=is_first):
+            def _timings_prompt(
+                _exec_settings, _rt, *, qids_str=qids_str, is_first=is_first
+            ):
                 prompt = optim_prompt_add_timings_per_query(
                     qids_str=qids_str,
                     refer_to_prev_queries=not is_first,

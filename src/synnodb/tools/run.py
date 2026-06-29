@@ -608,8 +608,23 @@ def call_hotpatch_proc(
         ingest_time_ms = runner.last_ingest_time_ms  # fallback to last ingest time if not found in output (e.g. because of output truncation)
 
         if ingest_time_ms == -1:
-            # error during first ingest run
-            assert "builder start" in out.lower() or "builder start" in err.lower(), (
+            # No "Ingest ms:" line and nothing cached. That is expected when the
+            # ingest/build phase started and then failed: the failure is surfaced
+            # to the agent to fix (ingest_time_ms stays -1). We only treat it as a
+            # hard "should not happen" when there is no sign the pipeline ran at
+            # all (e.g. the binary never started) — which indicates a harness bug.
+            #
+            # Detection is usecase-independent: every pipeline prints "<stage>
+            # start" markers (OLAP "builder start"), and a stage whose plugin code throws is reported by
+            # the framework stage runner as "<so> stage threw ...".
+            combined = (out + "\n" + err).lower()
+            pipeline_ran = (
+                "builder start" in combined
+                or "writer start" in combined
+                or "loader start" in combined
+                or "stage threw" in combined
+            )
+            assert pipeline_ran, (
                 "Ingest time not found in output and no cached ingest time available. This should not happen - at least one of them should be available. Output:\n"
                 + f"STDERR:\n{err}\nSTDOUT:\n{out}\nResp:\n{resp}"
             )

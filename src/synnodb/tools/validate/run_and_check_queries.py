@@ -6,10 +6,10 @@ from typing import DefaultDict, Dict, List, Optional
 
 import pandas as pd
 import pyarrow as pa
-import wandb
 
-from synnodb.router.adapt import results_diff, results_equal
+import wandb
 from synnodb.observability.logging.wandb_plots_gen import create_wandb_speedup_plot
+from synnodb.router.adapt import results_diff, results_equal
 from synnodb.utils.utils import prefix_dict
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
 from synnodb.workloads.system_factory import System
@@ -186,7 +186,9 @@ def check_output_correctness(
             )
 
         try:
-            bespoke_table = pa.ipc.open_file(pa.memory_map(str(res_path), "r")).read_all()
+            bespoke_table = pa.ipc.open_file(
+                pa.memory_map(str(res_path), "r")
+            ).read_all()
         except Exception as e:
             return ValidationOutput(
                 result_message=f"Error: failed to read result Arrow {filename}: {e}",
@@ -250,13 +252,21 @@ def check_output_correctness(
                 order_keys = [ref_names.index(c) for c in sort_cols]
 
             if not results_equal(
-                bespoke_aligned, reference_table, ordered=ordered, order_keys=order_keys, float_tol=1e-5
+                bespoke_aligned,
+                reference_table,
+                ordered=ordered,
+                order_keys=order_keys,
+                float_tol=1e-5,
             ):
                 diffs, total = results_diff(
-                    bespoke_aligned, reference_table, ordered=ordered, order_keys=order_keys
+                    bespoke_aligned,
+                    reference_table,
+                    ordered=ordered,
+                    order_keys=order_keys,
                 )
                 diff_lines = "\n".join(
-                    f"  row {r}, column '{c}': bespoke={a!r} duckdb={b!r}" for r, c, a, b in diffs
+                    f"  row {r}, column '{c}': bespoke={a!r} duckdb={b!r}"
+                    for r, c, a, b in diffs
                 )
                 output = (
                     f"Results do not match for query {inst.query_id} "
@@ -363,7 +373,11 @@ def check_output_correctness(
         )
     ) / len(avg_duckdb_rts)
 
-    umbra_rt_str = f"{total_umbra_rt:.2f}ms (Umbra)" if total_umbra_rt is not None else "N/A (Umbra)"
+    umbra_rt_str = (
+        f"{total_umbra_rt:.2f}ms (Umbra)"
+        if total_umbra_rt is not None
+        else "N/A (Umbra)"
+    )
     logger.info(
         f"Aggregated Runtimes: {total_bespoke_rt:.2f}ms (Bespoke) vs {umbra_rt_str} vs {total_duckdb_rt:.2f}ms (DuckDB)"
     )
@@ -401,7 +415,9 @@ def check_output_correctness(
                 "bespoke_runtime_ms": [
                     avg_bespoke_rts[str(q)] for q in query_ids_executed
                 ],
-                "umbra_runtime_ms": [avg_umbra_rts.get(str(q)) for q in query_ids_executed],
+                "umbra_runtime_ms": [
+                    avg_umbra_rts.get(str(q)) for q in query_ids_executed
+                ],
             }
         )
         t = wandb.Table(dataframe=measurements_df)

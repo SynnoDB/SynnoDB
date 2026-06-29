@@ -12,12 +12,16 @@ from synnodb.utils.utils import DBStorage
 from synnodb.workloads.dataset.gen_ceb.ceb_queries import ceb_templates
 from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from synnodb.workloads.workload_provider import (
+<<<<<<< HEAD
     DEFAULT_NUM_INSTANTIATIONS,
+=======
+>>>>>>> main
     ExecSettings,
     GeneralSystemConfig,
     QueryBatch,
     QueryEntry,
     Workload,
+<<<<<<< HEAD
     WorkloadId,
     WorkloadProvider,
     format_args_element,
@@ -27,10 +31,16 @@ from synnodb.workloads.workload_spec import (
     get_workload_spec,
     register_workload,
 )
+=======
+    WorkloadProvider,
+    format_args_element,
+)
+>>>>>>> main
 
 logger = logging.getLogger(__name__)
 
 
+<<<<<<< HEAD
 # Resolved lazily: importing this module (e.g. just to read the OLAPWorkload
 # enum) must not require SYNNO_DATA_DIR to be configured. Stays None until the
 # env is set; only the CEB runtime paths below actually need it.
@@ -42,6 +52,13 @@ CEB_QUERY_DIR = (
     if SYNNO_DATA_DIR is not None
     else None
 )
+=======
+SYNNO_DATA_DIR = os.getenv("SYNNO_DATA_DIR", default=None)
+assert SYNNO_DATA_DIR is not None, "SYNNO_DATA_DIR environment variable is not set"
+SYNNO_DATA_DIR = Path(SYNNO_DATA_DIR)
+
+CEB_QUERY_DIR = SYNNO_DATA_DIR / "workloads" / "ceb" / "queries"
+>>>>>>> main
 
 # Fraction of memory_budget_mb that goes to the generated engine's paged
 # frame pool. The remainder is implicit headroom for mmap_col regions and
@@ -70,6 +87,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
         db_storage: DBStorage,
         bespoke_ssd_storage_dir: Path | None = None,
         query_cache_dir: Path | None = None,
+<<<<<<< HEAD
         query_ids: list[str] | None = None,
         num_instantiations: int = DEFAULT_NUM_INSTANTIATIONS,
         **kwargs,
@@ -116,6 +134,33 @@ class OLAPWorkloadProvider(WorkloadProvider):
             benchmark_name=self.benchmark.value,
             query_ids=scoped_query_ids,
             sql_dict=self.spec.sql_dict(),
+=======
+        **kwargs,
+    ):
+        self.benchmark = benchmark
+        self.query_cache_dir = query_cache_dir
+        self.base_parquet_dir = base_parquet_dir
+        self.db_storage = db_storage
+        self.dataset_tables = self._dataset_tables(self.benchmark)
+        self.dataset_name = self._get_dataset_name(self.benchmark)
+        self.dataset_schema = self._get_dataset_schema(self.benchmark)
+        self.bespoke_ssd_storage_dir = bespoke_ssd_storage_dir
+
+        # Scale factor used for BENCHMARK-mode runs. Conversations can override this
+        # via set_benchmark_sf to drive perf/large-scale checks off the workload
+        # provider (exec-config) rather than passing fixed scale factors around.
+        self.benchmark_sf: float = 20 if self.benchmark == OLAPWorkload.TPCH else 5
+        # Number of distinct parameter sets / repetitions emitted in BENCHMARK
+        # mode. Defaults match the historical BENCHMARK behaviour but can be
+        # overridden (e.g. by the benchmarker CLI's --instantiations/--repetitions).
+        self.benchmark_instantiations: int = 1
+        self.benchmark_repetitions: int = 3
+
+        super().__init__(
+            benchmark_name=self.benchmark.value,
+            query_ids=_get_all_query_ids(self.benchmark.value),
+            sql_dict=self._get_sql_dict(self.benchmark),
+>>>>>>> main
             **kwargs,
         )
 
@@ -123,9 +168,19 @@ class OLAPWorkloadProvider(WorkloadProvider):
         """Override the scale factor emitted for BENCHMARK-mode workloads."""
         self.benchmark_sf = sf
 
+<<<<<<< HEAD
     def set_num_instantiations(self, n: int) -> None:
         """Override the number of parameter instantiations per query in the sweep."""
         self.num_instantiations = n
+=======
+    def set_benchmark_instantiations(self, instantiations: int) -> None:
+        """Override the number of distinct parameter sets emitted in BENCHMARK mode."""
+        self.benchmark_instantiations = instantiations
+
+    def set_benchmark_repetitions(self, repetitions: int) -> None:
+        """Override the number of repetitions per query emitted in BENCHMARK mode."""
+        self.benchmark_repetitions = repetitions
+>>>>>>> main
 
     def produce_workload(
         self,
@@ -140,6 +195,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
             queries_to_generate = query_ids
 
         if run_mode == RunToolMode.FAST_CHECK:
+<<<<<<< HEAD
             instantiations = self.num_instantiations
             repetitions = 1
             scale_factors = self.spec.scale_factors_for(run_mode)
@@ -148,19 +204,55 @@ class OLAPWorkloadProvider(WorkloadProvider):
             instantiations = self.num_instantiations
             repetitions = 1
             scale_factors = self.spec.scale_factors_for(run_mode)
+=======
+            instantiations = 20
+            repetitions = 1
+
+            if self.benchmark == OLAPWorkload.TPCH:
+                scale_factors = [1, 2]
+            elif self.benchmark == OLAPWorkload.CEB:
+                scale_factors = [0.25, 0.5]
+            else:
+                raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        elif run_mode == RunToolMode.EXHAUSTIVE:
+            instantiations = 20
+            repetitions = 1
+
+            if self.benchmark == OLAPWorkload.TPCH:
+                scale_factors: list[float] = [1, 2, 20]
+            elif self.benchmark == OLAPWorkload.CEB:
+                scale_factors: list[float] = [0.25, 0.5, 5]
+            else:
+                raise ValueError(f"Unknown benchmark: {self.benchmark}")
+>>>>>>> main
 
             if scale_factors[-1] != self.benchmark_sf:
                 scale_factors.append(self.benchmark_sf)
 
         elif run_mode == RunToolMode.BENCHMARK:
+<<<<<<< HEAD
             instantiations = 1
             repetitions = 3
             # benchmark SF is configurable via set_benchmark_sf (exec-config driven)
+=======
+            # instantiations / repetitions / SF are configurable (exec-config driven)
+            instantiations = self.benchmark_instantiations
+            repetitions = self.benchmark_repetitions
+>>>>>>> main
             scale_factors = [self.benchmark_sf]
         elif run_mode == RunToolMode.INGEST:
             instantiations = 3
             repetitions = 1
+<<<<<<< HEAD
             scale_factors = self.spec.scale_factors_for(run_mode)
+=======
+
+            if self.benchmark == OLAPWorkload.TPCH:
+                scale_factors = [20]
+            elif self.benchmark == OLAPWorkload.CEB:
+                scale_factors = [5]
+>>>>>>> main
 
         else:
             raise ValueError(f"Unknown run mode: {run_mode}")
@@ -228,7 +320,11 @@ class OLAPWorkloadProvider(WorkloadProvider):
                         query_id=str(query_id),
                         sql=sql,
                         benchmark=self.benchmark,
+<<<<<<< HEAD
                         query_args=format_args_element(str(query_id), placeholders),
+=======
+                        query_args="",
+>>>>>>> main
                         placeholders=placeholders,
                         order_by_info=order_by_info,
                         num_reps=repetitions,
@@ -237,7 +333,21 @@ class OLAPWorkloadProvider(WorkloadProvider):
                     for rep in range(repetitions):
                         # distinct rep_index per repetition so each gets its own
                         # (deterministic) query-execution-cache entry / runtime
+<<<<<<< HEAD
                         query_list.append(replace(query_entry, rep_index=rep))
+=======
+                        query_list.append(
+                            replace(
+                                query_entry,
+                                query_args=format_args_element(
+                                    str(query_id),
+                                    placeholders,
+                                    request_disambiguator=rep,
+                                ),
+                                rep_index=rep,
+                            )
+                        )
+>>>>>>> main
 
             query_batch_list.append(
                 QueryBatch(
@@ -265,6 +375,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
         return query_batch_list
 
     def _get_query_gen_fn(self):
+<<<<<<< HEAD
         return self.spec.query_gen_factory(self)
 
     def get_placeholders_fn(self, do_not_cache: bool = False):
@@ -314,6 +425,188 @@ def _resolve_query_subset(
 
 def _get_all_query_ids(benchmark: str) -> list[str]:
     return list(get_workload_spec(benchmark).all_query_ids)
+=======
+        # prepare query gen
+        if self.benchmark == OLAPWorkload.TPCH:
+            from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
+
+            gen_query_fn = gen_query
+        elif self.benchmark == OLAPWorkload.CEB:
+            from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
+
+            gen_query_fn = functools.partial(
+                gen_query_single_only, ceb_dir=CEB_QUERY_DIR
+            )
+        else:
+            raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        return gen_query_fn
+
+    def get_placeholders_fn(self, do_not_cache: bool = False):
+        # prepare query gen
+        gen_fn = None
+        if self.benchmark == OLAPWorkload.TPCH:
+            from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
+
+            def gen_placeholder_tpch(**kwargs):
+                # we only need the placeholders dict
+                return gen_query(**kwargs)[2]
+
+            gen_fn = gen_placeholder_tpch
+
+        elif self.benchmark == OLAPWorkload.CEB:
+            from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
+
+            # load placeholders from disk
+
+            def gen_placeholder_ceb(**kwargs):
+                # check cache first
+                hash_payload = {
+                    "benchmark": "ceb",
+                    "query_name": kwargs["query_name"],
+                }
+                stable_payload = utils.stable_json(hash_payload)
+
+                hash = utils.sha256(stable_payload)
+
+                if self.query_cache_dir is None:
+                    cache_path = None
+                else:
+                    # create cache dir if needed
+                    utils.create_dir_and_set_permissions(self.query_cache_dir)
+                    cache_path = _cache_path_for_hash(self.query_cache_dir, hash)
+
+                # check compile cache - replay compile result from cache if available
+                if cache_path is not None and cache_path.exists():
+                    cached: PlaceholdersCacheType | None = utils.load_pickle(
+                        cache_path, PlaceholdersCacheType
+                    )
+                    assert cached is not None
+                    logger.debug(f"Loaded placeholders from cache: {cache_path}")
+
+                    return cached.placeholders
+
+                # we only need the placeholders dict
+                placeholders = gen_query_single_only(**kwargs, ceb_dir=CEB_QUERY_DIR)[2]
+
+                # store output in cache
+                if cache_path is not None and not do_not_cache:
+                    utils.dump_pickle(
+                        cache_path,
+                        PlaceholdersCacheType(
+                            placeholders=placeholders, hash_payload=stable_payload
+                        ),
+                        do_not_cache=do_not_cache,
+                    )
+
+                return placeholders
+
+            gen_fn = gen_placeholder_ceb
+
+        else:
+            raise ValueError(f"Unknown benchmark: {self.benchmark}")
+
+        return gen_fn
+
+    @staticmethod
+    def _dataset_tables(benchmark: OLAPWorkload) -> list[str]:
+        tables_lists = {
+            OLAPWorkload.TPCH: [
+                "customer",
+                "lineitem",
+                "nation",
+                "orders",
+                "part",
+                "partsupp",
+                "region",
+                "supplier",
+            ],
+            OLAPWorkload.CEB: [
+                "aka_name",
+                "aka_title",
+                "cast_info",
+                "char_name",
+                "comp_cast_type",
+                "company_name",
+                "company_type",
+                "complete_cast",
+                "info_type",
+                "keyword",
+                "kind_type",
+                "link_type",
+                "movie_companies",
+                "movie_info",
+                "movie_info_idx",
+                "movie_keyword",
+                "movie_link",
+                "name",
+                "person_info",
+                "role_type",
+                "title",
+            ],
+        }
+        if benchmark not in tables_lists:
+            raise ValueError(f"Unknown benchmark {benchmark}")
+        return tables_lists[benchmark]
+
+    @staticmethod
+    def _get_dataset_name(benchmark: OLAPWorkload) -> str:
+        if benchmark == OLAPWorkload.TPCH:
+            return "tpch"
+        elif benchmark == OLAPWorkload.CEB:
+            return "imdb"
+        else:
+            raise ValueError(f"Unknown benchmark {benchmark}")
+
+    @staticmethod
+    def _get_dataset_schema(benchmark: OLAPWorkload) -> str:
+        if benchmark == OLAPWorkload.TPCH:
+            from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
+
+            return tpc_h_schema
+        elif benchmark == OLAPWorkload.CEB:
+            from synnodb.workloads.dataset.gen_ceb.imdb_schema import imdb_schema
+
+            return imdb_schema
+        else:
+            raise ValueError(f"Unknown benchmark {benchmark}")
+
+    def _get_sql_dict(self, benchmark: OLAPWorkload):
+        if benchmark == OLAPWorkload.TPCH:
+            return tpc_h
+        elif benchmark == OLAPWorkload.CEB:
+            return ceb_templates
+        else:
+            raise ValueError(f"Unknown benchmark: {benchmark}")
+
+
+def _get_all_query_ids(benchmark: str) -> list[str]:
+    if benchmark == "tpch":
+        query_ids = [str(i) for i in range(1, 23)]
+    elif benchmark == "ceb":
+        query_ids = [
+            "1a",
+            "2a",
+            "2b",
+            "2c",
+            "3a",
+            "3b",
+            "4a",
+            "5a",
+            "6a",
+            "7a",
+            "8a",
+            "9a",
+            "9b",
+            "10a",
+            "11a",
+            "11b",
+        ]
+    else:
+        raise ValueError(f"Unknown benchmark: {benchmark}")
+
+    return query_ids
+>>>>>>> main
 
 
 def _cache_path_for_hash(cache_dir: Path, hash: str) -> Path:
@@ -326,6 +619,7 @@ class PlaceholdersCacheType:
         self.hash_payload = hash_payload
 
 
+<<<<<<< HEAD
 # ============================================================================
 # Built-in workloads (TPC-H, CEB) expressed as data. Adding a new workload means
 # building + registering a WorkloadSpec — not editing the provider. The per-query
@@ -499,6 +793,8 @@ register_workload(TPCH_SPEC)
 register_workload(CEB_SPEC)
 
 
+=======
+>>>>>>> main
 def approx_timeout_for_validation(
     scale_factor: float,
     num_executions: int,

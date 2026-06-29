@@ -3,13 +3,19 @@ import logging
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from synnodb.observability.logging.logger import setup_logging
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
+sys.path.append(Path(__file__).parent.parent.parent.as_posix())
+
+# Load SYNNO_DATA_DIR and friends from .env so the module can run standalone
+# (mirrors main.py / run_ff_base.py).
+load_dotenv()
 
 from synnodb.observability.benchmark.plot import plot_logs
 from synnodb.observability.benchmark.run import run_benchmark
-from synnodb.utils.cli_config import add_common_args
+from synnodb.utils.cli_config import Usecase, add_common_args
 
 
 def build_run_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
@@ -66,7 +72,15 @@ def build_run_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--benchmark",
         type=str,
         default="tpch",
-        help="Benchmark to run (e.g., tpch, ceb).",
+        help="Benchmark to run. OLAP: tpch, ceb. BFF: tpch, tpch_st.",
+    )
+    parser.add_argument(
+        "--usecase",
+        type=Usecase,
+        choices=list(Usecase),
+        default=Usecase.OLAP,
+        help="Which stack to benchmark: 'olap' (in-DB engine) or 'bff' "
+        "(bespoke file format engine vs duckdb-on-parquet).",
     )
     parser.add_argument(
         "--system",
@@ -85,6 +99,7 @@ def build_run_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         include_notify=True,
         include_disable_repo_sync=True,
         include_db_storage=True,
+        include_memory_budget_mb=True,
     )
     return parser
 

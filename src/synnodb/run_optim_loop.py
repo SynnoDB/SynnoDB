@@ -1,9 +1,11 @@
 import argparse
 
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
-from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_optim
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_optim
 from synnodb.main import run_conv_wrapper
-from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.observability.logging.wandb_api_helper import (
+    wandb_retrieve_metrics_for_run,
+)
 from synnodb.run_gen_base_impl import base_args, base_args_extract, validate_snapshot
 from synnodb.utils.cli_config import RunConfig, add_common_args
 from synnodb.utils.conv_name_utils import ConvMode
@@ -40,7 +42,9 @@ def _factory(ctx: FrameworkContext):
     optim_conv_args = build_optim_conv_args(ctx)
 
     if ctx.db_storage == DBStorage.IN_MEMORY:
-        from synnodb.conversations.in_mem_1_optim_conv import InMem1OptimizationConversation
+        from synnodb.conversations.in_mem_1_optim_conv import (
+            InMem1OptimizationConversation,
+        )
 
         return InMem1OptimizationConversation(
             optim_conv_args=optim_conv_args,
@@ -161,7 +165,7 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     return parser
 
 
-def cli() -> None:
+def cli():
     """Console-script entry point."""
     main(build_parser().parse_args())
 

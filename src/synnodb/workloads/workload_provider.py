@@ -8,12 +8,6 @@ from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils import utils
 
 
-# Base number of parameter instantiations generated per query for the correctness
-# sweep (and pre-inferred for templated bring-your-own queries). Override per run via
-# OLAPWorkloadProvider(num_instantiations=...) / set_num_instantiations(...).
-DEFAULT_NUM_INSTANTIATIONS = 10
-
-
 class Workload(enum.Enum):
     def __str__(self) -> str:
         return str(self.value)
@@ -164,11 +158,15 @@ def format_args_string(
     return args_list
 
 
-def format_args_element(qid_str: str, placeholders: dict) -> str:
-    # generate random req-id
-    # req_id = date_time + random int, to ensure uniqueness across different runs and queries
-    req_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
+def _gen_req_id() -> str:
+    # Execution-time-only id used to name the result file (result_<req_id>.csv).
+    # It is intentionally NOT included in the LLM-facing sample args (see
+    # format_sample_args) and is excluded from every cache key (validate / run /
+    # query-execution caches all omit query_args), so it can be non-deterministic.
+    return datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
 
+
+def _format_placeholder_values(placeholders: dict) -> str:
     # Don't add double quotes to IN lists (they start with '(')
     formatted_values = []
     for value in placeholders.values():
@@ -178,5 +176,23 @@ def format_args_element(qid_str: str, placeholders: dict) -> str:
         else:
             # Regular value - add quotes
             formatted_values.append(f'"{value}"')
+    return " ".join(formatted_values)
 
-    return f"{qid_str} {req_id} {' '.join(formatted_values)}"
+
+def format_sample_args(qid_str: str, placeholders: dict) -> str:
+    # LLM-facing rendering: the example instantiation of the query placeholders.
+    # Deliberately omits the execution-time req_id (see format_args_element) so that
+    # this non-deterministic plumbing token never enters the LLM prompt / cache key.
+    return f"{qid_str} {_format_placeholder_values(placeholders)}"
+
+
+def format_args_element(
+    qid_str: str, placeholders: dict, request_disambiguator: str | int | None = None
+) -> str:
+    # Execution wire format: includes the req_id used at runtime to name the
+    # result file (result_<req_id>.csv) so outputs can be mapped back to queries.
+    # request_disambiguator is no longer needed for uniqueness (the req_id carries
+    # a timestamp + random suffix) but is kept for call-site compatibility.
+    del request_disambiguator
+    req_id = _gen_req_id()
+    return f"{qid_str} {req_id} {_format_placeholder_values(placeholders)}"

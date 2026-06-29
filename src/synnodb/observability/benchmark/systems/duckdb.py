@@ -7,7 +7,6 @@ from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
 )
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import Workload
-from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +18,17 @@ class DuckDBRunner:
         self,
         parquet_path: Path,
         benchmark: Workload,
+        dataset_tables: list[str],
         db_storage: DBStorage,
+        run_on_parquet: bool = True,
         disk_db_dir: Optional[Path] = None,
         num_threads: int = 1,
         pin_worker: bool = True,
     ) -> None:
         self._parquet_path = parquet_path
         self._benchmark = benchmark
+        self._dataset_tables = dataset_tables
+        self._run_on_parquet = run_on_parquet
         self._num_threads = num_threads
         self._pin_worker = pin_worker and (num_threads == 1)
         self._db_storage = db_storage
@@ -39,17 +42,17 @@ class DuckDBRunner:
         args_list: list[str],
     ) -> list[float | None]:
         logger.info("Running DuckDB timings (num_threads=%d)...", self._num_threads)
-        assert isinstance(self._benchmark, OLAPWorkload)
         duckdb_con = DuckDBConnectionManager(
             pre_load_duckdb_tables=True,
             parquet_path=self._parquet_path,
             sf=scale_factor,
-            dataset_tables=OLAPWorkloadProvider._dataset_tables(self._benchmark),
+            dataset_tables=self._dataset_tables,
             pin_worker=self._pin_worker,
             benchmark=self._benchmark,
             num_threads=self._num_threads,
             db_storage=self._db_storage,
             disk_db_dir=self._disk_db_dir,
+            run_duckdb_on_parquet=self._run_on_parquet,
         )
 
         results: list[float | None] = []

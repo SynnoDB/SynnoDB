@@ -68,6 +68,7 @@ class OLAPSystemFactory(SystemFactory):
         elif system_name == System.UMBRA:
             if self.umbra_runner is None:
                 from synnodb.observability.benchmark.systems.umbra import UmbraRunner
+
                 self.umbra_runner = UmbraRunner(
                     parquet_path=exec_settings.parquet_dir.parent,
                     benchmark=benchmark,

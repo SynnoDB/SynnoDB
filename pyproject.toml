@@ -1,13 +1,25 @@
 [project]
 name = "synnodb"
-version = "0.1.0"
-description = "Agentic generation of bespoke OLAP database engines (storage plans, base implementations, optimization)."
+version = "0.1.1"
+description = "Synthesizing Databases for your Workload"
 readme = "README.md"
-requires-python = ">=3.12"
-# license = "..."   # TODO: confirm the project's license, then set (+ authors)
-# Core = the light runtime: the DuckDB drop-in (`import synnodb as duckdb`) + the
-# query router + engine-worker client. It must NOT pull in the LLM/generation stack.
-# Keep this list minimal; anything only the agent factory needs goes in [factory].
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Johannes Wehrstein", email = "johannes.wehrstein@synnodb.com" },
+]
+keywords = ["database", "llm", "agents", "code-generation", "olap", "benchmark"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "duckdb>=1.4.3",
     "pyarrow>=23.0.1",
@@ -29,7 +41,10 @@ factory = [
     "openai>=2.11.0",
     "openai-agents[litellm]>=0.15.0",
     "prompt-toolkit>=3.0.52",
+    "psycopg[binary]>=3.2",
     "psycopg2-binary>=2.9.11",
+    "sqlglot>=26.0",
+    "python-dotenv>=1.2.1",
     "requests>=2.32.5",
     "tabulate>=0.9.0",
     "urllib3>=2.6.3",
@@ -49,23 +64,31 @@ synnodb-check-sf = "synnodb.run_check_sf_correctness:cli"
 synnodb-multi-threading = "synnodb.run_add_multi_threading:cli"
 synnodb-optimize = "synnodb.optimize:cli"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/JWehrstein/SynnoDB"
+Repository = "https://github.com/JWehrstein/SynnoDB"
+
+[project.scripts]
+pgrouter = "synnodb.misc.router.pgrouter.cli:run"
+pgrouter-analyze = "synnodb.misc.router.pgrouter.analyze:main"
+pgrouter-inspect = "synnodb.misc.router.pgrouter.inspect:main"
+
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-exclude = ["*.test", "*.test.*", "*.tests", "*.tests.*"]
-
-[tool.setuptools.package-data]
-"synnodb" = ["py.typed"]
-"synnodb.conversations" = ["prompts/**/*"]
-"synnodb.cpp_runner" = [
-    "prepare_repo/templates/**/*",
-    "cpp_helpers/**/*",
-    "api/**/*",
-    "hotpatch/**/*",
+include = ["synnodb*"]
+exclude = [
+    "synnodb.cpp_runner.test*",  # test code + scratch output
 ]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+[tool.setuptools.package-data]
+"*" = ["*.cpp", "*.hpp", "*.h", "*.txt", "*.sh", "*.html", "*.css", "*.js", "*.jpeg", "*.jpg", "*.json", "*.sql"]

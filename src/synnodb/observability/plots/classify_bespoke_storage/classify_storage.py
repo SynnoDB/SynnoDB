@@ -26,6 +26,9 @@ sys.path.insert(0, str(THIS_DIR))  # for llms.py
 sys.path.append(str(REPO_ROOT))
 
 import synnodb.observability.plots.classify_bespoke_storage.llms as llms  # noqa: E402
+from synnodb.observability.logging.wandb_api_helper import (
+    wandb_retrieve_metrics_for_run,
+)
 from synnodb.observability.plots.classify_bespoke_execution.strategy_display_names import (  # noqa: E402
     STRATEGY_DISPLAY_NAMES,
 )
@@ -34,8 +37,7 @@ from synnodb.observability.plots.classify_bespoke_storage.llms import (  # noqa:
     count_tokens,
     execute,
 )
-from pipeline.git_snapshotter import GitSnapshotter
-from synnodb.utils.logging_and_reporting.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 
 # point cache to this directory so it stays with the script
 llms.CACHE_PATH = THIS_DIR / "llm_cache"

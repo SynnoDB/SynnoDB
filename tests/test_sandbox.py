@@ -45,7 +45,7 @@ def _sandbox_available_or_skip():
         f"""
         import sys
         sys.path.insert(0, {str(_REPO_ROOT)!r})
-        from pipeline.tools.sandbox import SandboxConfig, _apply_sandbox
+        from synnodb.tools.sandbox import SandboxConfig, _apply_sandbox
 
         d = sys.argv[1]
         _apply_sandbox(SandboxConfig(writable_roots=[d]).normalized())

@@ -1,9 +1,11 @@
 import argparse
 
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
-from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_mt
+from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_mt
 from synnodb.main import run_conv_wrapper
-from synnodb.observability.logging.wandb_api_helper import wandb_retrieve_metrics_for_run
+from synnodb.observability.logging.wandb_api_helper import (
+    wandb_retrieve_metrics_for_run,
+)
 from synnodb.run_gen_base_impl import base_args, base_args_extract, validate_snapshot
 from synnodb.run_optim_loop import build_optim_conv_args
 from synnodb.utils.cli_config import RunConfig, add_common_args

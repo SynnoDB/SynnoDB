@@ -27,6 +27,7 @@ import logging
 import os
 import random
 import re
+import socket
 import socketserver
 import sqlite3
 import ssl
@@ -1236,6 +1237,31 @@ class _ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     """Spawn a new thread per connection; queries are serialised inside via STATE.lock."""
 
     daemon_threads = True
+    request_queue_size = 128
+
+    ssl_context: ssl.SSLContext | None = None
+    tls_handshake_timeout: float = 10.0
+
+    def get_request(self):
+        # Return the raw accepted socket. TLS handshake is deferred to the
+        # worker thread in finish_request so a slow / non-TLS client (e.g. an
+        # internet scanner speaking plain HTTP) cannot stall the accept loop.
+        return self.socket.accept()
+
+    def finish_request(self, request, client_address):
+        if self.ssl_context is not None:
+            try:
+                request.settimeout(self.tls_handshake_timeout)
+                request = self.ssl_context.wrap_socket(request, server_side=True)
+                request.settimeout(None)
+            except (ssl.SSLError, OSError, socket.timeout) as exc:
+                logger.debug("TLS handshake failed from %s: %s", client_address, exc)
+                try:
+                    request.close()
+                except OSError:
+                    pass
+                return
+        super().finish_request(request, client_address)
 
 
 # ---------------------------------------------------------------------------
@@ -1318,7 +1344,7 @@ def main() -> None:
         if args.cert and args.key:
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(certfile=args.cert, keyfile=args.key)
-            server.socket = ctx.wrap_socket(server.socket, server_side=True)
+            server.ssl_context = ctx
             scheme = "https"
         else:
             scheme = "http"

@@ -9,7 +9,6 @@ The ``scripted`` conversation has no run script, so its spec is defined here.
 """
 
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
-from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import prepare_base
 from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
 from synnodb.run_add_multi_threading import SPEC as _MT_SPEC
 from synnodb.run_check_sf_correctness import SPEC as _CHECK_SF_SPEC

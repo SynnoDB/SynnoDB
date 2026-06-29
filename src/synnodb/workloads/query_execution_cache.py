@@ -156,9 +156,11 @@ class QueryExecutionCache:
         general_system_config: GeneralSystemConfig,
     ) -> tuple[Path, str]:
         # Create a stable hash of the query entry by converting it to a JSON string with sorted keys.
-        # query_exec_cache_hash_entries() omits the non-deterministic query_args (req_id) and
+        # query_exec_cache_hash_entries() omits query_args (including req_id) and
         # includes the repetition info so every repetition gets its own cache entry / runtime.
-        query_entry_json = utils.stable_json(query_entry.query_exec_cache_hash_entries())
+        query_entry_json = utils.stable_json(
+            query_entry.query_exec_cache_hash_entries()
+        )
 
         entry_dict = {
             "system": system,
@@ -201,8 +203,8 @@ class QueryExecutionCache:
                 try:
                     # Keep the reference as exact Arrow so the correctness check compares decimals
                     # bit-for-bit (a pandas DataFrame would coerce DECIMAL to float64).
-                    duckdb_time, duckdb_table, duckdb_plan = system_instance.duckdb_sql_arrow(
-                        query_entry.sql
+                    duckdb_time, duckdb_table, duckdb_plan = (
+                        system_instance.duckdb_sql_arrow(query_entry.sql)
                     )
                 except Exception as e:
                     logger.error(
@@ -223,6 +225,7 @@ class QueryExecutionCache:
                 )
         elif system == System.UMBRA:
             from synnodb.observability.benchmark.systems.umbra import UmbraRunner
+
             assert isinstance(system_instance, UmbraRunner)
             assert isinstance(exec_settings, OLAPExecSettings)
 

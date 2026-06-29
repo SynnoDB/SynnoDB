@@ -39,7 +39,9 @@ def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:
     )
 
 
-def _parse_ceb_fuzzy_range(start_q: str, end_q: str, ceb_query_order: list[str]) -> List[str]:
+def _parse_ceb_fuzzy_range(
+    start_q: str, end_q: str, ceb_query_order: list[str]
+) -> List[str]:
     def parse_qstr(q: str, is_start: bool) -> str:
         if len(q) == 1:
             assert q.isdigit()

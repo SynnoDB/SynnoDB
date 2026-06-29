@@ -104,8 +104,10 @@ class OptimizationConversation(CheckpointedConversation):
             f"BENCHMARK mode should emit exactly one batch, got {len(batches)}"
         )
 
-        results = self.query_validator.query_execution_cache.lookup_or_execute_query_batch(
-            batches[0], system
+        results = (
+            self.query_validator.query_execution_cache.lookup_or_execute_query_batch(
+                batches[0], system
+            )
         )
 
         # take the first result per query (BENCHMARK repeats the same query)

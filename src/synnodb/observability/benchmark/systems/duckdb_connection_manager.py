@@ -27,9 +27,16 @@ class DuckDBConnectionManager:
         pin_worker: bool = True,
         pin_core: Optional[int] = 3,
         num_threads: int = 1,
+        run_duckdb_on_parquet: bool = True,
+        drop_os_caches_before_sql: bool = True,
     ):
         self.con: duckdb.DuckDBPyConnection | None = None
         self.pre_load_duckdb_tables = pre_load_duckdb_tables
+        # If True, each dataset table is registered as a CREATE VIEW over its
+        # parquet file, so queries stream the data from parquet at query time
+        # and nothing is held in DuckDB. If False, each table is materialized
+        # into DuckDB via CREATE TABLE (data lives in memory / the .duckdb file).
+        self.run_duckdb_on_parquet = run_duckdb_on_parquet
         self.parquet_path = parquet_path
         self.sf = sf
         self.pin_worker = pin_worker
@@ -40,6 +47,7 @@ class DuckDBConnectionManager:
         self.duckdb_dir: Optional[tempfile.TemporaryDirectory] = None
         self.duckdb_path: Optional[Path] = None
         self.dataset_tables = dataset_tables
+        self.drop_os_caches_before_sql = drop_os_caches_before_sql
 
         if self.pin_worker:
             assert self.pin_core is not None
@@ -77,14 +85,20 @@ class DuckDBConnectionManager:
             if not self.duckdb_path.exists():
                 self._ensure_tables_loaded()
             self._connect(self.duckdb_path)
-            # Drop OS page caches *after* connecting so connection-setup pages
-            # don't stay warm; ensures cold-start semantics for every query.
-            drop_os_caches()
+
         elif self.db_storage == DBStorage.IN_MEMORY:
             if self.con is None:
                 self._ensure_tables_loaded()
         else:
             raise ValueError(f"Unknown db source: {self.db_storage}")
+
+        if self.drop_os_caches_before_sql or self.db_storage in [
+            DBStorage.LABSTORE,
+            DBStorage.SSD,
+        ]:
+            # Drop OS page caches *after* connecting so connection-setup pages
+            # don't stay warm; ensures cold-start semantics for every query.
+            drop_os_caches()
 
         assert self.con is not None
         pid = 0  # 0 = current process
@@ -136,15 +150,28 @@ class DuckDBConnectionManager:
         return self.con
 
     def _ensure_tables_loaded(self) -> None:
-        """Connect, load tables, and for disk sources checkpoint and close."""
+        """Connect and make each dataset table available under its real name.
+
+        Depending on ``self.run_duckdb_on_parquet`` the table name resolves
+        either to a view over the parquet file (``CREATE VIEW`` — data streamed
+        from parquet at query time) or to a materialized table (``CREATE TABLE``
+        — data loaded into DuckDB). Either way the (unchanged) SQL queries that
+        reference bare table names resolve correctly.
+        """
         self._connect(self.duckdb_path)
         assert self.con is not None
-        for table in tqdm(
-            self.dataset_tables,
-            desc=f"Loading DuckDB tables for SF{self.sf}",
-        ):
+
+        if self.run_duckdb_on_parquet:
+            object_kind = "VIEW"
+            desc = f"Registering DuckDB parquet views for SF{self.sf}"
+        else:
+            object_kind = "TABLE"
+            desc = f"Loading DuckDB tables for SF{self.sf}"
+
+        for table in tqdm(self.dataset_tables, desc=desc):
             self.con.execute(
-                f"CREATE TABLE {table} AS SELECT * FROM read_parquet('{self.parquet_path}/sf{self.sf}/{table}.parquet')"
+                f"CREATE {object_kind} {table} AS "
+                f"SELECT * FROM read_parquet('{self.parquet_path}/sf{self.sf}/{table}.parquet')"
             )
         if self.duckdb_path is not None:
             self.con.execute("CHECKPOINT")

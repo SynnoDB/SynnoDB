@@ -2,7 +2,7 @@ import random
 from collections import defaultdict
 
 from synnodb.tools.run_tool_mode import RunToolMode
-from synnodb.workloads.workload_provider import WorkloadProvider
+from synnodb.workloads.workload_provider import WorkloadProvider, format_sample_args
 
 
 def get_sample_query_args(workload_provider: WorkloadProvider, seed=42):
@@ -16,10 +16,14 @@ def get_sample_query_args(workload_provider: WorkloadProvider, seed=42):
 
     sample_arg_list_dict = defaultdict(list)
 
-    # split the batch into individual queries and pick a random arg list for each query
+    # split the batch into individual queries and pick a random arg list for each query.
+    # Render placeholder values without the execution-time req_id so the LLM prompt
+    # only ever sees a deterministic example instantiation of the query placeholders.
     for query in query_batch.query_list:
         qid_str = query.query_id
-        sample_arg_list_dict[qid_str].append(query.query_args)
+        sample_arg_list_dict[qid_str].append(
+            format_sample_args(qid_str, query.placeholders)
+        )
 
     rnd = random.Random(seed)
     final_sample_arg_dict = {}
