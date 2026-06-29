@@ -237,12 +237,19 @@ class SynnoConnection:
 
     # ---- output sinks: choose the format the result is written in ------
     def _result_to_write(self, sink: str) -> Any:
-        """The current result as an Arrow table, or a clear error when there is none. Without this
-        guard ``_fetch_target()`` falls back to the raw DuckDB connection and ``to_arrow_table()``
-        raises DuckDB's opaque "No open result set" from a method that looks like a file writer."""
-        if self._current is None:
-            raise SynnoError(f"{sink}: no result to write - call execute()/sql() first")
-        return self._current.to_arrow_table()
+        """The current result as an Arrow table, or a clear error when there is none. Works for a
+        routed bespoke result and a DuckDB fallback alike: ``_materialize_current()`` pulls an open
+        DuckDB fallback result (``_current is None``) into a ``SynnoResult``. Only a genuinely
+        empty result (no result-producing ``execute()``/``sql()`` was run) is turned into a clear
+        error here, instead of DuckDB's opaque "No open result set" from a method that looks like a
+        file writer."""
+        try:
+            result = self._materialize_current()
+        except Exception as exc:
+            raise SynnoError(
+                f"{sink}: no result to write - run execute()/sql() that returns rows first"
+            ) from exc
+        return result.to_arrow_table()
 
     def write_parquet(self, path: Any, **kwargs: Any) -> None:
         """Write the current result to a parquet file (the ETL output format). Works for a

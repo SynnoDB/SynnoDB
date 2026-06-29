@@ -63,21 +63,13 @@ synnodb-optim = "synnodb.run_optim_loop:cli"
 synnodb-check-sf = "synnodb.run_check_sf_correctness:cli"
 synnodb-multi-threading = "synnodb.run_add_multi_threading:cli"
 synnodb-optimize = "synnodb.optimize:cli"
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=9.0.2",
-    "pytest-asyncio>=1.3.0",
-]
+pgrouter = "synnodb.misc.router.pgrouter.cli:run"
+pgrouter-analyze = "synnodb.misc.router.pgrouter.analyze:main"
+pgrouter-inspect = "synnodb.misc.router.pgrouter.inspect:main"
 
 [project.urls]
 Homepage = "https://github.com/JWehrstein/SynnoDB"
 Repository = "https://github.com/JWehrstein/SynnoDB"
-
-[project.scripts]
-pgrouter = "synnodb.misc.router.pgrouter.cli:run"
-pgrouter-analyze = "synnodb.misc.router.pgrouter.analyze:main"
-pgrouter-inspect = "synnodb.misc.router.pgrouter.inspect:main"
 
 [build-system]
 requires = ["setuptools>=77.0"]

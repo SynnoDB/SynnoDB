@@ -18,12 +18,26 @@ def test_cleanup_method_deletes_workspace(tmp_path, monkeypatch):
     db.cleanup()  # idempotent
 
 
-def test_context_manager_deletes_workspace(tmp_path, monkeypatch):
+def test_context_manager_keeps_workspace_by_default(tmp_path, monkeypatch):
+    """Workspace deletion is opt-in: without cleanup_workspace the context manager must NOT
+    delete the workspace, so `with SynnoDB(...) as db:` over the default ./output never erases
+    generated artifacts."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "ws2").mkdir()
     with SynnoDB(workspace="ws2") as db:  # noqa: F841
         assert (tmp_path / "ws2").exists()
-    assert not (tmp_path / "ws2").exists()
+    assert (tmp_path / "ws2").exists()
+
+
+def test_context_manager_deletes_workspace_when_opted_in(tmp_path, monkeypatch):
+    """With cleanup_workspace=True the context manager tears the workspace down on block exit."""
+    monkeypatch.chdir(tmp_path)
+    # Isolate __exit__ cleanup from the atexit/signal hooks (covered separately below).
+    monkeypatch.setattr(SynnoDB, "_install_workspace_cleanup", lambda self: None)
+    (tmp_path / "ws2b").mkdir()
+    with SynnoDB(workspace="ws2b", cleanup_workspace=True) as db:  # noqa: F841
+        assert (tmp_path / "ws2b").exists()
+    assert not (tmp_path / "ws2b").exists()
 
 
 def test_cleanup_workspace_flag_registers_atexit(tmp_path, monkeypatch):

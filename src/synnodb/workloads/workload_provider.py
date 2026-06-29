@@ -1,11 +1,15 @@
 import enum
-import random
 from abc import abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils import utils
+
+
+# Base number of parameter instantiations generated per query for the correctness
+# sweep (and pre-inferred for templated bring-your-own queries). Override per run via
+# OLAPWorkloadProvider(num_instantiations=...) / set_num_instantiations(...).
+DEFAULT_NUM_INSTANTIATIONS = 10
 
 
 class Workload(enum.Enum):
@@ -158,12 +162,28 @@ def format_args_string(
     return args_list
 
 
-def _gen_req_id() -> str:
-    # Execution-time-only id used to name the result file (result_<req_id>.csv).
-    # It is intentionally NOT included in the LLM-facing sample args (see
-    # format_sample_args) and is excluded from every cache key (validate / run /
-    # query-execution caches all omit query_args), so it can be non-deterministic.
-    return datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{random.randint(1, 100000)}"
+def _gen_req_id(
+    qid_str: str, placeholders: dict, request_disambiguator: str | int | None
+) -> str:
+    # Id used to name the result file (result_<req_id>.csv). Derived deterministically
+    # from the query, its placeholder values, and the per-repetition disambiguator so a
+    # given (query, params, rep) always maps to the same result file - reproducible runs
+    # and stable debugging. It is kept out of the LLM-facing sample args (see
+    # format_sample_args) and out of every cache key (validate / run / query-execution
+    # caches all omit query_args); the disambiguator makes otherwise-identical
+    # repetitions distinct.
+    #
+    # Hash the already-rendered placeholder *string* (not the raw objects): placeholder
+    # values may be non-JSON types such as Decimal when bound from DuckDB, and rendering
+    # first keeps this robust to any value type while staying stable across runs.
+    payload = "|".join(
+        (
+            qid_str,
+            _format_placeholder_values(placeholders),
+            "" if request_disambiguator is None else str(request_disambiguator),
+        )
+    )
+    return f"req_{qid_str}_{utils.sha256(payload)[:12]}"
 
 
 def _format_placeholder_values(placeholders: dict) -> str:
@@ -191,8 +211,8 @@ def format_args_element(
 ) -> str:
     # Execution wire format: includes the req_id used at runtime to name the
     # result file (result_<req_id>.csv) so outputs can be mapped back to queries.
-    # request_disambiguator is no longer needed for uniqueness (the req_id carries
-    # a timestamp + random suffix) but is kept for call-site compatibility.
-    del request_disambiguator
-    req_id = _gen_req_id()
+    # The req_id is deterministic in (qid, placeholders, request_disambiguator); pass a
+    # distinct disambiguator per repetition so repeated identical queries get distinct
+    # result files.
+    req_id = _gen_req_id(qid_str, placeholders, request_disambiguator)
     return f"{qid_str} {req_id} {_format_placeholder_values(placeholders)}"

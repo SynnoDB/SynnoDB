@@ -247,6 +247,7 @@ class SynnoDB:
         # (normal finish, uncaught exception, or SIGINT/SIGTERM). Avoids the
         # accumulation of per-run engine workspaces. SIGKILL cannot be intercepted.
         self._cleanup_installed = False
+        self._cleanup_workspace = cleanup_workspace
         if cleanup_workspace:
             self._install_workspace_cleanup()
 
@@ -293,7 +294,11 @@ class SynnoDB:
         return self
 
     def __exit__(self, *_exc: Any) -> bool:
-        self.cleanup()
+        # Workspace deletion is opt-in: only an ephemeral run (cleanup_workspace=True)
+        # is torn down on block exit. The default keeps generated artifacts, so
+        # `with SynnoDB.in_memory() as db:` never erases the workspace (e.g. ./output).
+        if self._cleanup_workspace:
+            self.cleanup()
         return False
 
     # ---- alternative constructors --------------------------------------
