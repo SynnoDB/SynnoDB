@@ -91,8 +91,9 @@ def test_diverse_types_beyond_tpch(driver, tmp_path):
     assert out.returncode == 0, out.stderr
     got = _parse(out.stdout)
     assert got["dec"] == 1385          # decimal -> scaled int64 (150+225+0+1010)
-    assert got["int"] == 100           # int32 -> int64
-    assert got["bool"] == 3            # BOOLEAN -> int64 (3 true)
+    assert got["dec16"] == 1385        # same decimal -> narrow exact int16 storage
+    assert got["int"] == 100           # int32 -> narrow int16 storage
+    assert got["bool"] == 3            # BOOLEAN -> narrow uint8 storage (3 true)
     assert got["dictA"] == 2           # DICTIONARY<string> densified, "A" appears twice
     assert got["ts0"] == days          # TIMESTAMP -> days since epoch (truncated)
     assert got["date0"] == days        # DATE32 -> days
@@ -115,7 +116,7 @@ def test_overflow_is_loud_not_silent(driver, tmp_path):
     pq.write_table(table, path)
     out = subprocess.run([str(driver), "synth", str(path)], capture_output=True, text=True)
     assert out.returncode != 0
-    assert "does not fit int64" in out.stderr  # loud, explicit failure
+    assert "does not fit" in out.stderr  # loud, explicit failure
 
 
 def test_lineitem_matches_duckdb(driver):

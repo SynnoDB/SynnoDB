@@ -66,19 +66,21 @@ int main(int argc, char** argv) {
                       << " sum_okey=" << so << " rf_A=" << ca << " sd_min=" << mn << " sd_max=" << mx << "\n";
         } else {  // synth: decimal/int/bool/dictionary/timestamp/date/double
             auto dec = scaled_int64(*table, "dec_col", 2);
-            auto iv = as_int64(*table, "int_col");
-            auto bv = as_int64(*table, "bool_col");
+            auto dec16 = scaled_integer<int16_t>(*table, "dec_col", 2);
+            auto iv = as_integer<int16_t>(*table, "int_col");
+            auto bv = as_integer<uint8_t>(*table, "bool_col");
             auto sv = as_string(*table, "dict_col");
             auto tv = as_date_days(*table, "ts_col");
             auto dv = as_date_days(*table, "date_col");
             auto fv = as_double(*table, "dbl_col");
-            long long sdec = 0, siv = 0, sbv = 0, cA = 0;
+            long long sdec = 0, sdec16 = 0, siv = 0, sbv = 0, cA = 0;
             for (auto x : dec) sdec += x;
+            for (auto x : dec16) sdec16 += x;
             for (auto x : iv) siv += x;
             for (auto x : bv) sbv += x;
             for (auto& s : sv) if (s == "A") ++cA;
             double sf = 0; for (auto x : fv) sf += x;
-            std::cout << "dec=" << sdec << " int=" << siv << " bool=" << sbv << " dictA=" << cA
+            std::cout << "dec=" << sdec << " dec16=" << sdec16 << " int=" << siv << " bool=" << sbv << " dictA=" << cA
                       << " ts0=" << tv[0] << " date0=" << dv[0] << " dbl=" << sf << "\n";
         }
     } catch (const std::exception& e) { std::cerr << "ERROR: " << e.what() << "\n"; return 1; }
