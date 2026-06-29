@@ -72,14 +72,14 @@ def build_run_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--benchmark",
         type=str,
         default="tpch",
-        help="Benchmark to run. OLAP: tpch, ceb. BFF: tpch, tpch_st.",
+        help="Benchmark to run. OLAP: tpch, ceb. ",
     )
     parser.add_argument(
         "--usecase",
         type=Usecase,
         choices=list(Usecase),
         default=Usecase.OLAP,
-        help="Which stack to benchmark: 'olap' (in-DB engine) or 'bff' "
+        help="Which stack to benchmark: 'olap' (in-DB engine) "
         "(bespoke file format engine vs duckdb-on-parquet).",
     )
     parser.add_argument(
