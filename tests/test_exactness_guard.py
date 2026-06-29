@@ -1,8 +1,8 @@
 """The bind-time exactness guard: a query whose output types the engine cannot reproduce exactly
 is refused at bind (DuckDB serves it) with a verbose reason, instead of binding and failing later
-inside egress. The vocabulary is wide - every integer width, decimal128/256, BOOLEAN, DOUBLE,
-VARCHAR, DATE, TIMESTAMP - so the guard is a deny-list of the genuinely unreachable (nested, blob,
-interval, time, uuid, ...).
+inside egress. The vocabulary is wide - signed integers/HUGEINT, unsigned integers through
+UBIGINT, decimal128/256, BOOLEAN, DOUBLE, VARCHAR, DATE, TIMESTAMP - so the guard is a deny-list
+of the genuinely unreachable (nested, blob, interval, time, uuid, unsigned 128-bit, ...).
 """
 from __future__ import annotations
 
@@ -65,7 +65,9 @@ def test_reason_helper_handles_time_vs_timestamp_and_decimals():
     assert _unsupported_output_reasons([ColumnSpec("x", "TIMESTAMP")]) == []
     assert _unsupported_output_reasons([ColumnSpec("x", "DECIMAL(38,2)")]) == []
     assert _unsupported_output_reasons([ColumnSpec("x", "HUGEINT")]) == []
+    assert _unsupported_output_reasons([ColumnSpec("x", "UBIGINT")]) == []
     # Genuinely unreachable / not exactly reproducible:
+    assert _unsupported_output_reasons([ColumnSpec("x", "UHUGEINT")])
     assert _unsupported_output_reasons([ColumnSpec("x", "TIME")])
     assert _unsupported_output_reasons([ColumnSpec("x", "INTEGER[]")])
     assert _unsupported_output_reasons([ColumnSpec("x", "STRUCT(a INTEGER)")])

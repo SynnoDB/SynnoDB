@@ -11,8 +11,8 @@
 //
 // Completeness by delegation, not enumeration (docs/CAUGHT_ERRORS_IN_GENERATION.md): the cast
 // to the exact output type goes through arrow::compute::Cast, which already covers 100% of the
-// Arrow type matrix (every integer width, unsigned, float32, decimal128/decimal256, date32/64,
-// timestamp units, ...). There is no per-type switch to keep in sync with the next workload:
+// Arrow type matrix (signed integers, unsigned integers through uint64, float32,
+// decimal128/decimal256, date32/64, timestamp units, ...). There is no per-type switch to keep in sync with the next workload:
 // build the one canonical array for the family, then cast. A cast Arrow cannot do - or a value
 // that does not fit the target - THROWS, exactly the guarantee ingest gives on the way in; it
 // never silently emits a wrong column.
@@ -25,8 +25,10 @@
 //   using namespace synnodb::egress;
 //   auto table = make_table({
 //       {"l_returnflag", string_column(flags)},                  // VARCHAR
-//       {"o_custkey",    int64_column(keys, {}, arrow::int32())}, // INTEGER (narrowed via Cast)
+//       {"o_custkey",    integer_column(keys, {}, arrow::int32())}, // INTEGER from narrow/signed values
+//       {"ubig",         uint64_column(ubig_vals)},               // UBIGINT
 //       {"sum_qty",      decimal_column(sum_qty, 38, 2)},         // DECIMAL(38,2), exact int128
+//       {"huge_count",   hugeint_column(huge_vals)},              // HUGEINT as decimal128(38,0)
 //       {"wide_sum",     decimal_column(wide_sum, 50, 2)},        // DECIMAL(50,2) -> decimal256
 //       {"avg_price",    double_column(avg_price)},               // DOUBLE
 //       {"is_open",      bool_column(open_flags)},                // BOOLEAN
@@ -46,6 +48,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -146,6 +149,40 @@ inline std::shared_ptr<arrow::Array> int64_column(const std::vector<int64_t>& va
     return target ? cast_to(arr, target) : arr;
 }
 
+// ---- uint64: UBIGINT canonical, cast to any narrower unsigned/signed integer target when safe.
+//      Required for values above INT64_MAX; do not route UBIGINT through int64_column. ----------
+inline std::shared_ptr<arrow::Array> uint64_column(const std::vector<uint64_t>& values,
+                                                   const Validity& valid = {},
+                                                   std::shared_ptr<arrow::DataType> target = nullptr) {
+    check_validity(values.size(), valid, "uint64");
+    arrow::UInt64Builder b;
+    detail::append_primitive(b, values, valid, "uint64 append");
+    auto arr = detail::finish(b, "uint64 finish");
+    return target ? cast_to(arr, target) : arr;
+}
+
+// ---- integer<T>: accept the narrow C++ integer vector produced by the query/storage plan,
+//      then build the canonical signed/unsigned Arrow family and safe-cast to the exact output
+//      type. This keeps generated code from widening every result vector by hand. -------------
+template <typename T>
+inline std::shared_ptr<arrow::Array> integer_column(const std::vector<T>& values,
+                                                    const Validity& valid = {},
+                                                    std::shared_ptr<arrow::DataType> target = nullptr) {
+    static_assert(std::is_integral_v<T> && !std::is_same_v<T, bool>,
+                  "column_egress::integer_column<T> requires a non-bool integer T");
+    if constexpr (std::is_signed_v<T>) {
+        std::vector<int64_t> widened;
+        widened.reserve(values.size());
+        for (T v : values) widened.push_back(static_cast<int64_t>(v));
+        return int64_column(widened, valid, target);
+    } else {
+        std::vector<uint64_t> widened;
+        widened.reserve(values.size());
+        for (T v : values) widened.push_back(static_cast<uint64_t>(v));
+        return uint64_column(widened, valid, target);
+    }
+}
+
 // ---- double: DOUBLE canonical, cast to float32 (REAL) or any other float target. -----------
 inline std::shared_ptr<arrow::Array> double_column(const std::vector<double>& values,
                                                    const Validity& valid = {},
@@ -221,6 +258,13 @@ inline std::shared_ptr<arrow::Array> decimal_column(const std::vector<__int128>&
         check(b.Append(arrow::Decimal256(arrow::BasicDecimal256(lo))), "decimal256 append");
     }
     return detail::finish(b, "decimal256 finish");
+}
+
+// DuckDB exports HUGEINT through Arrow as decimal128(38,0). Treat it as an exact integer
+// family, not as floating point or string formatting.
+inline std::shared_ptr<arrow::Array> hugeint_column(const std::vector<__int128>& values,
+                                                    const Validity& valid = {}) {
+    return decimal_column(values, 38, 0, valid);
 }
 
 // ---- DATE built from int32 days since 1970-01-01 (matches DuckDB's DATE / Arrow date32).

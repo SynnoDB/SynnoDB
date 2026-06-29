@@ -69,11 +69,14 @@ def test_exact_arrow_types(table):
     assert schema["bigint"] == pa.int64()
     assert schema["integer"] == pa.int32()        # narrowed from canonical int64 via Cast
     assert schema["smallint"] == pa.int16()
+    assert schema["tinyint"] == pa.int8()
+    assert schema["ubigint"] == pa.uint64()
     assert schema["dbl"] == pa.float64()
     assert schema["real"] == pa.float32()          # narrowed from canonical float64 via Cast
     assert schema["flag"] == pa.bool_()
     assert schema["name"] == pa.string()
     assert schema["dec"] == pa.decimal128(38, 2)
+    assert schema["hugeint"] == pa.decimal128(38, 0)
     assert schema["wide"] == pa.decimal256(50, 2)  # precision > 38 -> decimal256, from int128
     assert schema["d"] == pa.date32()
     assert schema["ts"] == pa.timestamp("us")
@@ -86,12 +89,20 @@ def test_exact_values(table):
     assert col["bigint"] == [1, 2, -3, 4]
     assert col["integer"] == [10, 20, 30, 40]
     assert col["smallint"] == [1, 2, 3, 4]
+    assert col["tinyint"] == [1, 2, -3, 4]
+    assert col["ubigint"] == [0, 9223372036854775808, 18446744073709551615, 4]
     assert col["dbl"] == [1.5, 2.5, 3.0, 4.0]
     assert col["real"] == [1.5, 2.5, 3.0, 4.0]
     assert col["flag"] == [True, False, True, True]
     assert col["name"] == ["a", "b", "c", "d"]
     # Exact decimals, including a negative (exercises sign handling in decimal128 AND decimal256).
     assert col["dec"] == [D("1.50"), D("-2.25"), D("0.00"), D("10.10")]
+    assert col["hugeint"] == [
+        D("1267650600228229401496703205376"),
+        D("-1267650600228229401496703205376"),
+        D("0"),
+        D("42"),
+    ]
     assert col["wide"] == [D("1.50"), D("-2.25"), D("0.00"), D("10.10")]
     assert col["d"] == [datetime.date(2023, 1, 2), datetime.date(2023, 1, 3),
                         datetime.date(2023, 1, 4), datetime.date(2023, 1, 5)]
