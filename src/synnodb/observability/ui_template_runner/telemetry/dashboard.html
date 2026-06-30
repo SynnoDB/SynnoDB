@@ -188,12 +188,6 @@ function absTime(ts) {
   return new Date(ts * 1000).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
 }
 
-function fmtMs(ms) {
-  if (ms == null) return '<td class="ms ms-na">—</td>';
-  const s = ms < 1000 ? `${Math.round(ms)} ms` : `${(ms/1000).toFixed(2)} s`;
-  return `<td class="ms">${s}</td>`;
-}
-
 function speedupCell(bespoke, baseline) {
   if (bespoke == null || baseline == null) return '<td class="sx sx-na">—</td>';
   const sx = baseline / bespoke;

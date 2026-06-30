@@ -49,11 +49,88 @@ class _State:
     db_engine: RunTool = None  # type: ignore
     sf: float = None  # type: ignore
     optimize: bool = None  # type: ignore
+    trace_mode: bool = False
     workspace_dir: Path = None  # type: ignore
     lock: threading.Lock = threading.Lock()
 
 
 STATE = _State()
+
+
+def apply_trace_transform(workspace_dir: Path) -> None:
+    """Enable the built-in PROFILE_SCOPE tracing in a workspace, in place.
+
+    Mirrors prepare_repo/prepare_optim.py but matched to the served snapshot's
+    2-arg ``results.push_back({"", elapsed_ms})`` form. Idempotent so it is safe
+    to call on every startup. The workspace must be a dedicated copy (its
+    ``./db`` / ``results/`` must not be shared with a non-trace instance).
+    """
+    # Ship the current, non-stale trace.hpp (the served copy may predate the
+    # repo version and lack helpers / FILE_VERSION).
+    repo_trace_hpp = (
+        Path(__file__).parent.parent.parent
+        / "cpp_runner"
+        / "cpp_helpers"
+        / "trace.hpp"
+    )
+    (workspace_dir / "trace.hpp").write_text(repo_trace_hpp.read_text())
+
+    query_impl_path = workspace_dir / "query_impl.cpp"
+    src = query_impl_path.read_text()
+
+    if '#include "trace.hpp"' not in src:
+        pos = src.find("#include")
+        assert pos != -1, f"Could not find #include in {query_impl_path}"
+        src = src[:pos] + '#include "trace.hpp"\n' + src[pos:]
+
+    # Wire trace_get_and_clear() into the per-query result (2-arg form).
+    trace_kw = 'results.push_back({"", elapsed_ms});'
+    trace_target = "results.push_back({trace_get_and_clear(), elapsed_ms});"
+    if trace_kw in src:
+        src = src.replace(trace_kw, trace_target)
+    else:
+        assert trace_target in src, (
+            f"Could not find '{trace_kw}' (or its transformed form) in {query_impl_path}"
+        )
+
+    # Uncomment the per-run TRACE_RESET/TRACE_FLUSH hooks.
+    for kw in ("TRACE_FLUSH();", "TRACE_RESET();"):
+        src = src.replace(f"// {kw}", kw)
+
+    query_impl_path.write_text(src)
+    logger.info("Applied trace transform to %s", workspace_dir)
+
+
+def parse_profile(trace_output: str | None) -> dict:
+    """Parse the engine's trace buffer into structured profiling data.
+
+    The buffer contains two machine-parsable line types (see trace.hpp):
+      ``PROFILE <section> <nanoseconds>``  -> per-section timing
+      ``COUNT   <counter> <value>``        -> cardinality / other counters
+
+    Returns ``{"sections": {name: milliseconds}, "counts": {name: value}}``.
+    """
+    sections: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    if not trace_output:
+        return {"sections": sections, "counts": counts}
+    # run_worker joins per-query traces with ",". Section/counter names and
+    # values never contain commas, so normalising them to newlines is safe and
+    # avoids a leading "," gluing onto the next line.
+    for line in trace_output.replace(",", "\n").splitlines():
+        line = line.strip()
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        kind, name, value = parts
+        try:
+            if kind == "PROFILE":
+                sections[name] = sections.get(name, 0.0) + int(value) / 1e6
+            elif kind == "COUNT":
+                counts[name] = counts.get(name, 0) + int(value)
+        except ValueError:
+            continue
+    return {"sections": sections, "counts": counts}
 
 
 def _discover_first_query_id(benchmark: str) -> tuple[str, dict]:
@@ -71,7 +148,11 @@ def _discover_first_query_id(benchmark: str) -> tuple[str, dict]:
 def init_service(args) -> None:
     """Restore git snapshot, compile binary, warm up."""
     THIS_DIR = Path(__file__).parent
-    workspace_dir = THIS_DIR / "output"
+    workspace_dir = (
+        Path(args.workspace_dir).resolve()
+        if args.workspace_dir
+        else THIS_DIR / "output"
+    )
 
     assert workspace_dir.exists(), f"Workspace directory not found: {workspace_dir}"
     if args.wandb_snapshot is not None:
@@ -103,6 +184,11 @@ def init_service(args) -> None:
             f"Take current code in {THIS_DIR} as snapshot since no wandb_snapshot provided."
         )
 
+    # Enable built-in PROFILE_SCOPE tracing for the profiled instance. Applied
+    # after any snapshot restore so it is not overwritten.
+    if args.trace:
+        apply_trace_transform(workspace_dir)
+
     sf = args.sf
     sf = float(sf) if "." in str(sf) else int(sf)
 
@@ -126,16 +212,22 @@ def init_service(args) -> None:
     STATE.db_engine = db_engine
     STATE.sf = sf
     STATE.optimize = args.optimize
+    STATE.trace_mode = args.trace
     STATE.workspace_dir = workspace_dir
 
     # Warmup: compile binary with default placeholders of the first query.
     first_qid, placeholders = _discover_first_query_id(args.benchmark)
     warmup_args = format_args_string([first_qid], [placeholders])
-    logger.info("Warmup compile: running Q%s with default placeholders…", first_qid)
+    logger.info(
+        "Warmup compile: running Q%s with default placeholders (trace=%s)…",
+        first_qid,
+        args.trace,
+    )
     db_engine.run_worker(
         scale_factor=sf,
         optimize=args.optimize,
         stdin_args_data=warmup_args,
+        trace_mode=args.trace,
     )
     logger.info("Binary ready.")
     delete_result_files(workspace_path=workspace_dir)
@@ -193,9 +285,10 @@ class _BespokeHandler(http.server.BaseHTTPRequestHandler):
 
         args_list = format_args_string([query_id], [placeholders])
 
+        engine_label = "bespoke_profiled" if STATE.trace_mode else "bespoke"
         with STATE.lock:
             try:
-                trace_mode = False
+                trace_mode = STATE.trace_mode
                 result: RunWorkerResult = STATE.db_engine.run_worker(
                     scale_factor=sf,
                     optimize=STATE.optimize,
@@ -203,9 +296,10 @@ class _BespokeHandler(http.server.BaseHTTPRequestHandler):
                     trace_mode=trace_mode,
                 )
 
+                profile = parse_profile(result.trace_output) if trace_mode else None
                 if trace_mode:
-                    logger.warning(
-                        f"Trace output for Q{query_id}: {result.trace_output}"
+                    logger.info(
+                        "Profile for Q%s: %s", query_id, profile
                     )
                 logger.warning(result.out)
                 logger.warning(result.err)
@@ -221,8 +315,9 @@ class _BespokeHandler(http.server.BaseHTTPRequestHandler):
                     return
                 time_ms = result.metrics["run/total_rt"]
                 logger.info(
-                    "TELEMETRY run_id=%s engine=bespoke query=%s time_ms=%.1f sf=%s",
+                    "TELEMETRY run_id=%s engine=%s query=%s time_ms=%.1f sf=%s",
                     run_id,
+                    engine_label,
                     query_id,
                     time_ms,
                     sf,
@@ -242,7 +337,15 @@ class _BespokeHandler(http.server.BaseHTTPRequestHandler):
 
             csv_text = csv_path.read_text()
 
-        self._send_json(200, {"run_id": run_id, "csv": csv_text, "time_ms": time_ms})
+        self._send_json(
+            200,
+            {
+                "run_id": run_id,
+                "csv": csv_text,
+                "time_ms": time_ms,
+                "profile": profile,
+            },
+        )
 
 
 class _ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -270,6 +373,20 @@ def main() -> None:
         type=str,
         required=False,
         help="Wandb run-id whose code snapshot to load",
+    )
+    parser.add_argument(
+        "--workspace-dir",
+        default=None,
+        help="Workspace directory to serve (default: ./output). A profiled "
+        "instance MUST use a dedicated copy so its source transform / ./db / "
+        "results do not collide with the clean instance.",
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        default=False,
+        help="Profiled mode: enable PROFILE_SCOPE tracing (-DTRACE) and return "
+        "a per-section profile breakdown alongside each result.",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7657)

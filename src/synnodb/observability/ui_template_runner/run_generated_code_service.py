@@ -7,6 +7,7 @@ Starts a long-running REST API server that exposes one endpoint per query:
   GET /run/<query_id>?p1=v1...            -> run the query, return result CSV as text/csv
   GET /sql/<query_id>                     -> JSON: {template} – SQL with [PLACEHOLDER] markers
   GET /sql/<query_id>?p1=v1...           -> JSON: {template, assembled} – also fills in placeholders
+  GET /code/<query_id>                    -> JSON: {files:[{name, content}]} – generated C++ source (queryX.hpp/.cpp)
   GET /run_engine/<engine>/<query_id>?.. -> JSON: {csv, time_ms} – run assembled SQL against DuckDB, Umbra, or Bespoke
 
 The Bespoke binary is compiled and served by a separate bespoke_service.py process.
@@ -20,6 +21,7 @@ Example:
 
 import argparse
 import base64
+import datetime
 import hmac
 import http.server
 import json
@@ -67,8 +69,10 @@ from synnodb.observability.ui_template_runner.service_notify import (
 from synnodb.observability.ui_template_runner.ui_handler import handle_static
 
 MAX_PLACEHOLDER_VALUE_LEN = 128
+# Evict stale per-IP rate-limit windows once the table exceeds this many entries.
+_IP_WINDOW_MAX_ENTRIES = 10000
 
-_SAFE_STRING_RE = re.compile(r"^[A-Za-z0-9_ .:/-]+$")
+_SAFE_STRING_RE = re.compile(r"^[A-Za-z0-9_ .:/#-]+$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
@@ -95,17 +99,19 @@ class _State:
     bespoke_url: str | None = (
         None  # base URL of the running bespoke_service.py, e.g. "http://127.0.0.1:7657"
     )
-    bespoke_lock: threading.Lock = threading.Lock()
+    bespoke_profiled_url: str | None = (
+        None  # base URL of the profiled bespoke_service.py (--trace), e.g. "http://127.0.0.1:7658"
+    )
     duckdb_con: DuckDBConnectionManager | None = None  # noqa: F821
     umbra_url: str | None = (
         None  # base URL of the running umbra_service.py, e.g. "http://127.0.0.1:7655"
     )
+    # Only DuckDB runs in-process and needs a lock; the bespoke/umbra/clickhouse
+    # services each serialize requests internally.
     duckdb_lock: threading.Lock = threading.Lock()
-    umbra_lock: threading.Lock = threading.Lock()
     clickhouse_url: str | None = (
         None  # base URL of the running clickhouse_service.py, e.g. "http://127.0.0.1:7656"
     )
-    clickhouse_lock: threading.Lock = threading.Lock()
     rate_limit_rpm: int = 60
     ip_window: dict[str, tuple[int, float]] = {}
     ip_window_lock: threading.Lock = threading.Lock()
@@ -218,6 +224,16 @@ def _log_query_event(
 
 
 _GEO_CACHE_TTL_S = 86400  # 24 h
+_GEO_CACHE_MAX_ENTRIES = 10000
+
+
+def _store_geo_cache(ip: str, geo: dict) -> None:
+    """Cache *geo* for *ip* in memory, bounding the cache to avoid unbounded growth."""
+    with STATE.geo_cache_lock:
+        if ip not in STATE.geo_cache and len(STATE.geo_cache) >= _GEO_CACHE_MAX_ENTRIES:
+            # Evict the oldest insertion (dict preserves insertion order).
+            STATE.geo_cache.pop(next(iter(STATE.geo_cache)), None)
+        STATE.geo_cache[ip] = geo
 
 
 def _is_local_ip(ip: str) -> bool:
@@ -315,8 +331,7 @@ def _geolocate_ip(ip: str) -> dict:
                     "lat": row[4],
                     "lon": row[5],
                 }
-                with STATE.geo_cache_lock:
-                    STATE.geo_cache[ip] = geo
+                _store_geo_cache(ip, geo)
                 return geo
         except Exception:
             pass
@@ -357,8 +372,7 @@ def _fetch_geo_background(ip: str) -> None:
             )
             con.commit()
             con.close()
-        with STATE.geo_cache_lock:
-            STATE.geo_cache[ip] = geo
+        _store_geo_cache(ip, geo)
     except Exception as exc:
         logger.debug("Geo lookup failed for %s: %s", ip, exc)
 
@@ -401,6 +415,16 @@ def _validate_placeholder_value(name: str, raw_value: str, sample_value: object)
     if inferred == "date":
         if not _DATE_RE.fullmatch(raw_value):
             raise ValueError(f"Placeholder '{name}' must match YYYY-MM-DD.")
+        # Format alone is not enough: reject well-formed but non-existent dates
+        # (e.g. 1993-01-35, 1993-02-29) up front, so every engine sees valid
+        # input. Without this, DuckDB/Umbra raise their own errors while the
+        # bespoke engine silently rolls the date over and returns a bogus result.
+        try:
+            datetime.date.fromisoformat(raw_value)
+        except ValueError:
+            raise ValueError(
+                f"Placeholder '{name}' is not a valid calendar date: '{raw_value}'."
+            ) from None
         return raw_value
 
     # Strict allowlist for free-form string placeholders to reduce SQL injection risk.
@@ -498,6 +522,28 @@ def init_service(args) -> None:
                 sf,
             )
 
+    if args.bespoke_profiled:
+        STATE.bespoke_profiled_url = args.bespoke_profiled.rstrip("/")
+        try:
+            with urllib.request.urlopen(
+                f"{STATE.bespoke_profiled_url}/health", timeout=5
+            ) as resp:
+                health = json.loads(resp.read())
+            assert health.get("status") == "ok"
+            logger.info(
+                "Connected to profiled Bespoke service at %s",
+                STATE.bespoke_profiled_url,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Profiled Bespoke service not reachable at %s (%s) – will retry on each request. "
+                "Start it with: python bespoke_service.py %s --sf %s --trace --workspace-dir <copy>",
+                STATE.bespoke_profiled_url,
+                exc,
+                args.benchmark,
+                sf,
+            )
+
     parquet_path = (
         Path(args.base_parquet_dir) / f"{get_dataset_name(args.benchmark)}_parquet"
     )
@@ -562,10 +608,31 @@ _RETRY_ATTEMPTS = 3
 _RETRY_DELAY_S = 2.0
 
 
+class EngineQueryError(Exception):
+    """Raised when a baseline engine rejects a query (e.g. invalid date / SQL).
+
+    Carries the engine's own error message. This reflects bad *input*, not a
+    server fault, so it is surfaced to the client as a 400 rather than a generic
+    500 "Internal server error".
+    """
+
+
 def _post_with_retry(
     url: str, payload: bytes, engine: str, query_id: str
 ) -> dict | None:
-    """POST JSON payload to url, retrying on network errors. Returns parsed JSON or None."""
+    """POST JSON payload to url and return the parsed JSON response.
+
+    Two failure modes are distinguished:
+
+    * The service *responded* with an HTTP error status (e.g. a 500 from a bad
+      query). The response body is parsed and returned as-is so the caller can
+      surface the engine's own error message. This is NOT retried — the service
+      is up. (``HTTPError`` must be caught before ``URLError``, as it subclasses
+      it; otherwise a clean 500 looks identical to the service being down.)
+    * The service is genuinely unreachable (connection refused, timeout, DNS).
+      These are retried up to ``_RETRY_ATTEMPTS`` times; ``None`` is returned if
+      every attempt fails.
+    """
     for attempt in range(1, _RETRY_ATTEMPTS + 1):
         try:
             req = urllib.request.Request(
@@ -576,6 +643,19 @@ def _post_with_retry(
             )
             with urllib.request.urlopen(req, timeout=120) as resp:
                 return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            # The service answered with an error status — it is reachable, so do
+            # not retry. Return its body verbatim when it carries an ``error``
+            # field, otherwise synthesise one from the status line.
+            try:
+                data = json.loads(exc.read())
+                if isinstance(data, dict) and "error" in data:
+                    return data
+                return {"error": f"{engine} service returned HTTP {exc.code}: {data}"}
+            except Exception:
+                return {
+                    "error": f"{engine} service returned HTTP {exc.code} ({exc.reason})"
+                }
         except (urllib.error.URLError, OSError) as exc:
             if attempt < _RETRY_ATTEMPTS:
                 logger.warning(
@@ -635,8 +715,19 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
 
     def _rate_limit_ok(self) -> bool:
         now = time.time()
+        # Key on the raw socket peer rather than X-Forwarded-For (used for
+        # telemetry): XFF is client-spoofable and must not be trusted for rate
+        # limiting. Behind a trusted reverse proxy this would need revisiting.
         ip = self.client_address[0] if self.client_address else "unknown"
         with STATE.ip_window_lock:
+            # Opportunistically drop stale windows so this table can't grow
+            # without bound on a public endpoint.
+            if len(STATE.ip_window) > _IP_WINDOW_MAX_ENTRIES:
+                cutoff = now - 60
+                for stale_ip in [
+                    k for k, (_, ws) in STATE.ip_window.items() if ws < cutoff
+                ]:
+                    del STATE.ip_window[stale_ip]
             count, window_start = STATE.ip_window.get(ip, (0, now))
             if now - window_start >= 60:
                 count = 0
@@ -691,12 +782,18 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(
                     404, {"error": "Expected /run_engine/<engine>/<query_id>"}
                 )
+        elif path.startswith("/run_profiled/"):
+            query_id = path[len("/run_profiled/") :]
+            self._handle_run(query_id, params, profiled=True)
         elif path.startswith("/run/"):
             query_id = path[len("/run/") :]
             self._handle_run(query_id, params)
         elif path.startswith("/sql/"):
             query_id = path[len("/sql/") :]
             self._handle_sql(query_id, params)
+        elif path.startswith("/code/"):
+            query_id = path[len("/code/") :]
+            self._handle_code(query_id)
         else:
             self._send_json(404, {"error": f"Unknown endpoint: {path}"})
 
@@ -811,6 +908,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                     "sf": STATE.sf,
                     "engines_enabled": {
                         "bespoke": STATE.bespoke_url is not None,
+                        "bespoke_profiled": STATE.bespoke_profiled_url is not None,
                         "duckdb": STATE.duckdb_con is not None,
                         "umbra": STATE.umbra_url is not None,
                         "clickhouse": STATE.clickhouse_url is not None,
@@ -819,7 +917,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
             },
         )
 
-    _LOG_SERVICES = ("ui", "bespoke", "umbra", "telemetry", "clickhouse")
+    _LOG_SERVICES = ("ui", "bespoke", "bespoke_profiled", "umbra", "telemetry", "clickhouse")
     _LOG_TAIL_BYTES = 256 * 1024  # cap response size at 256 KB
 
     def _handle_api_logs(self, params: dict) -> None:
@@ -885,6 +983,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                 "queries": queries,
                 "engines": {
                     "bespoke": STATE.bespoke_url is not None,
+                    "bespoke_profiled": STATE.bespoke_profiled_url is not None,
                     "duckdb": STATE.duckdb_con is not None,
                     "umbra": STATE.umbra_url is not None,
                     "clickhouse": STATE.clickhouse_url is not None,
@@ -915,7 +1014,39 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
             response["assembled"] = assembled
         self._send_json(200, response)
 
-    def _handle_run(self, query_id: str, params: dict):
+    def _handle_code(self, query_id: str):
+        """Return the generated C++ source (queryX.cpp + queryX.hpp) for a query.
+
+        query_id is validated against the allowlist before building any path,
+        so it cannot be used for directory traversal.
+        """
+        if query_id not in STATE.query_ids:
+            self._send_json(404, {"error": f"Unknown query_id: '{query_id}'"})
+            return
+        out_dir = Path(__file__).parent / "output"
+        files = []
+        # Implementation (.cpp) first – it is the interesting one; the .hpp is
+        # just the function signature.
+        for suffix in (".cpp", ".hpp"):
+            fpath = out_dir / f"query{query_id}{suffix}"
+            if not fpath.exists():
+                continue
+            try:
+                files.append({"name": fpath.name, "content": fpath.read_text()})
+            except Exception as exc:
+                logger.warning("Could not read source file %s: %s", fpath, exc)
+        if not files:
+            self._send_json(
+                404, {"error": f"No source files found for query '{query_id}'"}
+            )
+            return
+        self._send_json(200, {"query_id": query_id, "files": files})
+
+    def _handle_run(self, query_id: str, params: dict, profiled: bool = False):
+        # The profiled variant targets the separate --trace bespoke instance and
+        # additionally returns a per-section profile breakdown.
+        engine_url = STATE.bespoke_profiled_url if profiled else STATE.bespoke_url
+        engine_name = "bespoke_profiled" if profiled else "bespoke"
         run_id = _normalise_run_id(params.get("run_id"))
         log_params = dict(params)
         log_params.pop("run_id", None)
@@ -941,7 +1072,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                 ip,
                 query_id,
                 log_params,
-                "bespoke",
+                engine_name,
                 0.0,
                 STATE.sf,
                 error=validation_error,
@@ -960,7 +1091,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                 ip,
                 query_id,
                 log_params,
-                "bespoke",
+                engine_name,
                 0.0,
                 STATE.sf,
                 error=f"Missing placeholder(s): {missing}",
@@ -977,11 +1108,12 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
             )
             return
 
-        if STATE.bespoke_url is None:
+        if engine_url is None:
+            flag = "--bespoke_profiled" if profiled else "--bespoke"
             self._send_json(
                 503,
                 {
-                    "error": "Bespoke service not configured. Start service with --bespoke <url>."
+                    "error": f"Bespoke service not configured. Start service with {flag} <url>."
                 },
             )
             return
@@ -995,7 +1127,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
             }
         ).encode()
         result = _post_with_retry(
-            f"{STATE.bespoke_url}/query", payload, "bespoke", query_id
+            f"{engine_url}/query", payload, engine_name, query_id
         )
         if result is None:
             _log_query_event(
@@ -1003,7 +1135,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                 ip,
                 query_id,
                 placeholders,
-                "bespoke",
+                engine_name,
                 0.0,
                 STATE.sf,
                 error="Bespoke service not responding after retries",
@@ -1021,7 +1153,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                 ip,
                 query_id,
                 placeholders,
-                "bespoke",
+                engine_name,
                 0.0,
                 STATE.sf,
                 error=str(result["error"]),
@@ -1031,8 +1163,9 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
             return
 
         logger.info(
-            "TELEMETRY run_id=%s engine=bespoke query=%s time_ms=%.1f sf=%s",
+            "TELEMETRY run_id=%s engine=%s query=%s time_ms=%.1f sf=%s",
             run_id,
+            engine_name,
             query_id,
             result["time_ms"],
             STATE.sf,
@@ -1042,14 +1175,19 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
             ip,
             query_id,
             placeholders,
-            "bespoke",
+            engine_name,
             result["time_ms"],
             STATE.sf,
             user_agent=ua,
         )
         self._send_json(
             200,
-            {"run_id": run_id, "csv": result["csv"], "time_ms": result["time_ms"]},
+            {
+                "run_id": run_id,
+                "csv": result["csv"],
+                "time_ms": result["time_ms"],
+                "profile": result.get("profile"),
+            },
         )
 
     def _handle_run_engine(self, engine: str, query_id: str, params: dict):
@@ -1135,7 +1273,12 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
             if engine == "duckdb":
                 with STATE.duckdb_lock:
                     assert STATE.duckdb_con is not None
-                    time_ms, df, _ = STATE.duckdb_con.duckdb_sql(sql)
+                    try:
+                        time_ms, df, _ = STATE.duckdb_con.duckdb_sql(sql)
+                    except Exception as exc:
+                        # DuckDB rejected the query (e.g. invalid date / SQL) —
+                        # surface its message rather than a generic 500.
+                        raise EngineQueryError(str(exc)) from exc
                     csv_text = df.to_csv(index=False)
             elif engine == "umbra":
                 assert STATE.umbra_url is not None
@@ -1162,7 +1305,7 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                     )
                     return
                 if "error" in result:
-                    raise RuntimeError(result["error"])
+                    raise EngineQueryError(result["error"])
                 csv_text = result["csv"]
                 time_ms = result["time_ms"]
             else:  # clickhouse
@@ -1191,9 +1334,21 @@ class _QueryHandler(http.server.BaseHTTPRequestHandler):
                     )
                     return
                 if "error" in result:
-                    raise RuntimeError(result["error"])
+                    raise EngineQueryError(result["error"])
                 csv_text = result["csv"]
                 time_ms = result["time_ms"]
+        except EngineQueryError as exc:
+            # The engine rejected the query (bad input, not a server fault):
+            # report its own message as a 400 so the UI can show what was wrong.
+            logger.info(
+                "run_engine(%s) query error for Q%s: %s", engine, query_id, exc
+            )
+            _log_query_event(
+                run_id, ip, query_id, placeholders, engine, 0.0, STATE.sf,
+                error=str(exc), user_agent=ua,
+            )
+            self._send_json(400, {"error": str(exc)})
+            return
         except Exception as exc:
             request_id = f"eng-{int(time.time() * 1000)}"
             logger.exception("run_engine(%s) failed for Q%s", engine, query_id)
@@ -1286,6 +1441,14 @@ def main() -> None:
         default=None,
         metavar="URL",
         help="URL of running bespoke_service.py (e.g. http://127.0.0.1:7657)",
+    )
+    parser.add_argument(
+        "--bespoke_profiled",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="URL of a second bespoke_service.py started with --trace, used to "
+        "show the per-section profiling breakdown (e.g. http://127.0.0.1:7658)",
     )
     parser.add_argument(
         "--duckdb",

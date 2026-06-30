@@ -33,6 +33,7 @@
   try { t = norm(new URLSearchParams(location.search).get('theme')); } catch (e) {}
   if (!t) { try { t = norm(localStorage.getItem(KEY)); } catch (e) {} }
   if (!t) t = 'light';
+  try { localStorage.setItem(KEY, t); } catch (e) {}
   document.body.setAttribute('data-theme', t);
 })();
 </script>

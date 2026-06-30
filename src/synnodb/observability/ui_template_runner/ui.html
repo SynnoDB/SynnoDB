@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BespokeOLAP Demo Runner</title>
+<title>SynnoDB(BespokeOLAP) Demo Runner</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -27,7 +27,7 @@
 })();
 </script>
 <header class="site-header">
-  <span class="site-logo">BespokeOLAP</span>
+  <span class="site-logo">SynnoDB(BespokeOLAP)</span>
   <span class="site-badge">Generated CPP Runner</span>
   <div id="header-meta" class="header-meta"></div>
 </header>
@@ -37,6 +37,7 @@
       <label for="qsel">Query</label>
       <select id="qsel"></select>
       <div id="placeholders"></div>
+      <button id="code-btn" class="secondary" onclick="openCodeModal()">View source code</button>
     </div>
     <div id="col-right">
       <div class="sql-label">SQL</div>
@@ -55,11 +56,30 @@
       <!-- <button id="show-btn" class="secondary" onclick="showQuery()">Assemble query / curl</button> -->
     </div>
     <div id="status"></div>
+    <div id="run-error" role="alert"></div>
   </div>
 </div>
 <div id="progress"></div>
 <div id="chart"></div>
 <div id="output"></div>
+<div id="code-modal" class="modal-overlay" onclick="onCodeModalBackdrop(event)">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="code-modal-title">
+    <div class="modal-header">
+      <span id="code-modal-title" class="modal-title">Source code</span>
+      <button id="code-modal-close" class="modal-close" onclick="closeCodeModal()" aria-label="Close">&times;</button>
+    </div>
+    <div id="code-modal-body" class="modal-body"></div>
+  </div>
+</div>
+<div id="profile-modal" class="modal-overlay" onclick="onProfileModalBackdrop(event)">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
+    <div class="modal-header">
+      <span id="profile-modal-title" class="modal-title">Profiling details</span>
+      <button id="profile-modal-close" class="modal-close" onclick="closeProfileModal()" aria-label="Close">&times;</button>
+    </div>
+    <div id="profile-modal-body" class="modal-body" style="overflow:auto"></div>
+  </div>
+</div>
 <script src="/ui.js"></script>
 </body>
 </html>
