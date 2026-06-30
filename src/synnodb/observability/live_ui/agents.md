@@ -33,7 +33,8 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 | `js/cards.js` | Header meta, KPI cards, turn timer, prompts list, correctness strip, cost-mode toggle |
 | `js/source.js` | Standalone source selector (W&B / DuckDB / remote API), URL-param sync, cluster auto-discovery |
 | `js/controls.js` | Wiring for prompt-list hover, distribution modal, panel collapse, chart-mode toggles, `Esc` shortcut |
-| `js/code-inspector.js` | "Generated code" modal — fetches `/api/files`, renders a collapsible workspace tree, loads file contents from `/api/file` |
+| `js/highlight.js` | Dependency-free syntax highlighter for the code inspector — tokenizes C/C++ and Markdown source into `tok-*` spans (`highlightCode`), plain-text fallback otherwise |
+| `js/code-inspector.js` | "Generated code" modal — fetches `/api/files`, renders a collapsible workspace tree, loads file contents from `/api/file`, syntax-highlights via `highlightCode` |
 | `js/main.js` | Boot — initial reload-time stamp, `poll()` loop, default modes, `setInterval` for poll + timer |
 
 ## `/api/stats` response shape

@@ -558,3 +558,22 @@ details.log-entry[open] .log-chevron{transform:rotate(90deg);}
 .code-view-pre{margin:0;padding:14px 16px;overflow:visible;
                font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;
                color:var(--text);white-space:pre;tab-size:4;}
+
+/* Syntax highlighting tokens (see js/highlight.js) */
+.code-view-pre .tok-comment{color:var(--muted);font-style:italic;}
+.code-view-pre .tok-pre    {color:#e5c07b;}
+.code-view-pre .tok-str,
+.code-view-pre .tok-char   {color:#98c379;}
+.code-view-pre .tok-num    {color:#d19a66;}
+.code-view-pre .tok-lit    {color:var(--orange);}
+.code-view-pre .tok-kw     {color:#c792ea;}
+.code-view-pre .tok-type   {color:#7fd8f8;}
+.code-view-pre .tok-fn     {color:#61afef;}
+.code-view-pre .tok-md-heading{color:#61afef;font-weight:600;}
+.code-view-pre .tok-md-fence  {color:var(--muted);}
+.code-view-pre .tok-md-code   {color:#98c379;}
+.code-view-pre .tok-md-bold   {color:#e5c07b;font-weight:600;}
+.code-view-pre .tok-md-italic {color:#c792ea;font-style:italic;}
+.code-view-pre .tok-md-link   {color:var(--accent);}
+.code-view-pre .tok-md-quote  {color:var(--muted);}
+.code-view-pre .tok-md-list   {color:var(--red);}

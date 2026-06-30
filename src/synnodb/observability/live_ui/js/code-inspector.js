@@ -4,6 +4,8 @@
 // The header "Generated code" button fetches /api/files (a flat list of
 // workspace-relative paths), renders it as a collapsible tree, and loads a
 // file's contents from /api/file?path=... into the viewer pane on click.
+// File contents are run through highlightCode (js/highlight.js) for syntax
+// colouring of C/C++ and Markdown.
 
 const codeModal      = document.getElementById('code-modal');
 const codeBtn        = document.getElementById('code-btn');
@@ -106,7 +108,7 @@ async function loadCodeFile(relPath, el) {
   codeView.innerHTML =
     `<div class="code-view-path">${esc(data.path)}</div>` +
     note +
-    `<pre class="code-view-pre"><code>${esc(data.content)}</code></pre>`;
+    `<pre class="code-view-pre"><code>${highlightCode(data.path, data.content)}</code></pre>`;
   codeView.scrollTop = 0;
   codeModalCopy.hidden = false;
   codeModalCopy.textContent = 'Copy';
