@@ -134,9 +134,16 @@ def main() -> None:
                 zf.write(file, file.relative_to(OUTPUT_DIR))
     logger.info("Code zipped to %s", zip_path)
 
+    run_date = None
+    if "_timestamp" in hist.columns and turn_number is not None and turn_number in hist.index:
+        ts = hist.loc[turn_number, "_timestamp"]
+        if pd.notna(ts):
+            run_date = pd.to_datetime(ts, unit="s").strftime("%Y-%m-%d")
+
     metadata = {
         "wandb_run": args.wandb_id,
         "turn": turn_number,
+        "date": run_date,
         "git_snapshot_hash": git_snapshot,
         "model": config.get("model", "unknown") if config else "unknown",  # type: ignore[union-attr]
     }
