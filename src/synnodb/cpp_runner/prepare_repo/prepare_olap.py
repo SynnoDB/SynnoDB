@@ -1,7 +1,7 @@
 import logging
 
 from synnodb.conversations.filenames import get_filenames
-from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext, PrepareFn
+from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext
 
 logger = logging.getLogger(__name__)
 
@@ -95,34 +95,16 @@ def prepare_mt(ctx: PrepareContext) -> str:
     return artifacts
 
 
-_PREPARE_FNS: dict[str, PrepareFn] = {
-    "storage_plan": prepare_storage_plan,
-    "base": prepare_base,
-    "optim": prepare_optim,
-    "mt": prepare_mt,
-}
-
-
-def get_prepare_fn(prepare_mode: str) -> PrepareFn:
-    """Resolve a prepare function from a legacy prepare-mode string.
-
-    Used by the dynamic CHECK_SF prepare, which only learns the source run's
-    prepare mode at runtime.
-    """
-    if prepare_mode not in _PREPARE_FNS:
-        raise ValueError(
-            f"Invalid prepare mode: {prepare_mode!r}. Known modes: {sorted(_PREPARE_FNS)}"
-        )
-    return _PREPARE_FNS[prepare_mode]
-
-
 def prepare_replay_source_run(ctx: PrepareContext) -> str:
     """Dynamic prepare for CHECK_SF: replay the prepare steps of the source run.
 
-    The source run's prepare mode is not known until runtime; it is supplied via
-    ``ctx.source_run_prepare_mode`` (originating from ``args.prepare_mode``).
+    The source run's stage is not known until runtime; its name is supplied via
+    ``ctx.source_stage_name`` and resolved against the stage registry to reuse
+    that stage's own ``prepare`` step.
     """
-    assert ctx.source_run_prepare_mode is not None, (
-        "CHECK_SF prepare requires source_run_prepare_mode to be set"
+    from synnodb.api import get_stage
+
+    assert ctx.source_stage_name is not None, (
+        "CHECK_SF prepare requires source_stage_name to be set"
     )
-    return get_prepare_fn(ctx.source_run_prepare_mode)(ctx)
+    return get_stage(ctx.source_stage_name).prepare(ctx)
