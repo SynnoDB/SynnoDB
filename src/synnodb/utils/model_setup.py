@@ -7,6 +7,35 @@ from openai import AsyncOpenAI
 logger = logging.getLogger(__name__)
 
 
+def _model_is_anthropic(model_name: str) -> bool:
+    """Whether the model is served by Anthropic (and thus needs ANTHROPIC_API_KEY).
+
+    Mirrors the check in ClaudeCompactionHelper: a LiteLLM ``anthropic/...`` model
+    or a bare ``claude-...`` model. These are the cases where both the main model
+    call and Claude compaction read ANTHROPIC_API_KEY.
+    """
+    return model_name.startswith("anthropic/") or model_name.startswith("claude-")
+
+
+def validate_model_credentials(model_name: str) -> None:
+    """Fail fast — and with an actionable message — when the API key the model
+    needs is missing.
+
+    Called early (at SynnoDB construction) so the user learns about a missing key
+    up front, not several stages later when compaction first fires. The previous
+    behaviour raised only inside the compaction helper with a message that both
+    blamed "compaction" (misleading — the key is needed for every model call) and
+    omitted how to fix it.
+    """
+    if _model_is_anthropic(model_name) and not os.environ.get("ANTHROPIC_API_KEY"):
+        raise ValueError(
+            f"ANTHROPIC_API_KEY is not set, but the model {model_name!r} needs it. "
+            "Add it to a .env file in your project root "
+            "(a line `ANTHROPIC_API_KEY=sk-ant-...`) or export it in your shell "
+            "before running."
+        )
+
+
 def setup_model_config(
     model_arg: str,
     api_base_override: str | None = None,
