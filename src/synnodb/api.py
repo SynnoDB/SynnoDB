@@ -12,10 +12,9 @@ plus the wandb run id used to chain stages.
 from __future__ import annotations
 
 import dataclasses
-import importlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from synnodb import settings
 
@@ -35,7 +34,13 @@ from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import Workload, WorkloadId
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
-__all__ = ["SynnoDB", "SynnoConfig", "Stage", "StageParam", "register_stage"]
+if TYPE_CHECKING:
+    from synnodb.conversations.conversation_spec import FrameworkContext
+    from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext
+    from synnodb.conversations.conversation import AbstractConversation
+    from synnodb.utils.cli_config import RunConfig
+
+__all__ = ["SynnoDB", "SynnoConfig", "Stage", "register_stage"]
 
 
 # ----------------------------- coercion helpers -----------------------------
@@ -76,7 +81,7 @@ def _resolve_chain(stage: str, source: Any, source_wandb_id: Any) -> tuple[str |
       - ``source_wandb_id`` -> its ``.run_id`` (or a raw id str): W&B path.
     """
     snap = source.snapshot_hash if isinstance(source, StageArtifact) else source
-    wid = source_wandb_id.run_id if isinstance(source_wandb_id, StageArtifact) else source_wandb_id
+    wid = _as_arg(source_wandb_id) if source_wandb_id is not None else None
     if (snap is None) == (wid is None):
         raise ValueError(
             f"{stage} requires exactly one of `source` (an artifact or git snapshot "
@@ -110,38 +115,14 @@ class SynnoConfig:
     do_not_cache: bool = False
     verbose: bool = False              # stream DEBUG logs to the console (logfile is always DEBUG)
     workspace: str | None = None       # run output dir; None -> local ./output
-    extra_flags: tuple[str, ...] = ()  # escape hatch for any unmodelled CLI flag
+    # escape hatch for any unmodelled RunConfig field: applied (dataclasses.replace)
+    # onto the RunConfig a stage's build_config produces, just before execution.
+    extra_config: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "workload", _as_workload(self.workload))
         object.__setattr__(self, "db_storage", _as_storage(self.db_storage))
         object.__setattr__(self, "usecase", _as_usecase(self.usecase))
-
-    def to_argv(self) -> list[str]:
-        argv = [
-            "--model", self.model,
-            "--benchmark", self.workload.value,
-            "--db_storage", self.db_storage.value,
-            "--queries", self.queries,
-        ]
-        if self.workspace:
-            argv += ["--workspace", self.workspace]
-        if self.wandb_entity:
-            argv += ["--wandb_entity", self.wandb_entity]
-        if self.wandb_project:
-            argv += ["--wandb_project", self.wandb_project]
-        for name, on in (
-            ("auto_u", self.auto_confirm),
-            ("auto_finish", self.auto_finish),
-            ("disable_openai_tracing", self.disable_openai_tracing),
-            ("log_to_wandb", self.wandb_enabled),
-            ("disable_repo_sync", self.disable_repo_sync),
-            ("notify", self.notify),
-            ("do_not_cache", self.do_not_cache),
-        ):
-            if on:
-                argv.append(f"--{name}")
-        return argv + list(self.extra_flags)
 
     @property
     def wandb_enabled(self) -> bool:
@@ -196,21 +177,21 @@ def _build_correctness(run_id, snapshot_hash, workspace, config, inputs) -> Corr
 
 
 # --------------------------------- stages -----------------------------------
-@dataclass(frozen=True)
-class StageParam:
-    kw: str                  # python kwarg, e.g. "storage_plan"
-    flag: str                # CLI flag, e.g. "--storage_plan_run_id"
-    required: bool = True
-
-
+# One descriptor per pipeline stage, end to end. ``build_config`` assembles the
+# RunConfig directly from the typed SynnoConfig + per-call inputs (no argv); the
+# remaining fields are the execution-backend contract main.py consumes (prepare /
+# parallelism / factory) plus the result builder. The concrete instances live in
+# synnodb/stages.py, imported lazily by run() so plain ``import synnodb`` stays light.
 @dataclass(frozen=True)
 class Stage:
-    name: str                            # "createStoragePlan"
-    module: str                          # "synnodb.run_gen_storage_plan"
+    name: str                                  # "createStoragePlan" — the run-type identity
     usecases: frozenset[Usecase]
-    result: ResultBuilder = _build_artifact   # builds the typed domain object
-    params: tuple[StageParam, ...] = ()
-    flags: tuple[str, ...] = ()          # always-appended, e.g. ("--bespoke_storage",)
+    build_config: "Callable[[SynnoConfig, dict[str, Any]], RunConfig]"
+    prepare: "Callable[[PrepareContext], str]"
+    needs_parallelism: bool
+    be_relaxed_supervision: bool
+    factory: "Callable[[FrameworkContext], AbstractConversation]"
+    result: ResultBuilder = _build_artifact    # builds the typed domain object
 
 
 _REGISTRY: dict[str, Stage] = {}
@@ -222,57 +203,30 @@ def register_stage(stage: Stage) -> None:
     _REGISTRY[stage.name] = stage
 
 
-def _register_olap_stages() -> None:
-    olap = frozenset({Usecase.OLAP})
-    bespoke = ("--bespoke_storage",)
-    register_stage(Stage(
-        "createStoragePlan", "synnodb.run_gen_storage_plan", olap,
-        result=_build_storage_plan,
-    ))
-    register_stage(Stage(
-        "createBaseImpl", "synnodb.run_gen_base_impl", olap,
-        result=_build_base_impl,
-        params=(
-            StageParam("storage_plan_text", "--storage_plan_text", required=False),
-            StageParam("storage_plan_wandb_id", "--storage_plan_run_id", required=False),
-        ),
-        flags=bespoke,
-    ))
-    register_stage(Stage(
-        "runOptimLoop", "synnodb.run_optim_loop", olap,
-        result=_build_optimized,
-        params=(StageParam("base_impl", "--base_impl_run_id", required=False),
-                StageParam("base_impl_snapshot", "--base_impl_snapshot", required=False)),
-        flags=bespoke,
-    ))
-    register_stage(Stage(
-        "addMultiThreading", "synnodb.run_add_multi_threading", olap,
-        result=_build_multithreaded,
-        params=(StageParam("optimized", "--optim_run_id", required=False),
-                StageParam("optim_snapshot", "--optim_snapshot", required=False)),
-        flags=bespoke,
-    ))
-    register_stage(Stage(
-        "checkSfCorrectness", "synnodb.run_check_sf_correctness", olap,
-        result=_build_correctness,
-        params=(StageParam("source", "--source_run_id", required=False),
-                StageParam("source_snapshot", "--source_snapshot", required=False),
-                StageParam("source_prepare_mode", "--source_prepare_mode", required=False),
-                StageParam("target_sf", "--target_sf")),
-        flags=bespoke,
-    ))
+_stages_loaded = False
 
 
-# Source artifact type -> the conv_mode CHECK_SF must replay its prepare from,
-# for the W&B-free path (the W&B path reads it from the source run's config).
-_SOURCE_PREPARE_MODE = {
-    "BaseImplementation": "base",
-    "OptimizedImplementation": "optim",
-    "MultiThreadedImplementation": "mt",
-}
+def _load_stages() -> None:
+    """Import the stage catalog once, populating ``_REGISTRY`` as a side effect."""
+    global _stages_loaded
+    if not _stages_loaded:
+        import synnodb.stages  # noqa: F401  (registers stages on import)
+
+        _stages_loaded = True
 
 
-_register_olap_stages()
+def all_stages() -> tuple[Stage, ...]:
+    """Every registered stage (loads the catalog on first call)."""
+    _load_stages()
+    return tuple(_REGISTRY.values())
+
+
+def get_stage(name: str) -> Stage:
+    """Look up a registered stage by name (loads the catalog on first call)."""
+    _load_stages()
+    if name not in _REGISTRY:
+        raise ValueError(f"Unknown stage {name!r}. Known stages: {sorted(_REGISTRY)}")
+    return _REGISTRY[name]
 
 
 # --------------------------------- facade -----------------------------------
@@ -433,6 +387,7 @@ class SynnoDB:
     def run(
         self, stage: str | Stage, /, *, verbose: bool | None = None, **inputs: Any
     ) -> StageArtifact:
+        _load_stages()
         st = stage if isinstance(stage, Stage) else _REGISTRY[stage]
         cfg = self.config
         if cfg.usecase not in st.usecases:
@@ -440,24 +395,27 @@ class SynnoDB:
             raise ValueError(
                 f"stage {st.name!r} serves usecases {allowed}, not {cfg.usecase.value!r}"
             )
-        argv = cfg.to_argv() + list(st.flags)
-        # Per-call verbose overrides the driver default; either streams DEBUG logs
-        # to the console (the logfile is always DEBUG regardless).
-        if verbose if verbose is not None else cfg.verbose:
-            argv.append("--verbose")
-        for p in st.params:
-            if inputs.get(p.kw) is not None:
-                argv += [p.flag, _as_arg(inputs[p.kw])]
-            elif p.required:
-                raise TypeError(f"stage {st.name!r} requires {p.kw!r}")
-        module = importlib.import_module(st.module)         # heavy import, lazy
-        result = module.main(module.build_parser().parse_args(argv))
-        # main() returns a RunResult(run_id, snapshot_hash); tolerate a bare run id
-        # string from any stage not yet migrated.
-        run_id = getattr(result, "run_id", result)
-        snapshot_hash = getattr(result, "snapshot_hash", None)
+        # Assemble the RunConfig straight from the typed config + inputs — no argv,
+        # no argparse round-trip. extra_config is the escape hatch for any field the
+        # typed SynnoConfig does not model.
+        run_config = st.build_config(cfg, inputs)
+        # Per-call verbose overrides the driver default (cfg.verbose, already baked
+        # into run_config by build_config); either streams DEBUG logs to the console
+        # (the logfile is always DEBUG regardless).
+        if verbose is not None:
+            run_config = dataclasses.replace(run_config, verbose=verbose)
+        if cfg.extra_config:
+            run_config = dataclasses.replace(run_config, **cfg.extra_config)
+
+        from synnodb.main import run_conv_wrapper  # heavy import, lazy
+
+        result = run_conv_wrapper(args=None, run_config=run_config, spec=st)
         workspace = settings.get_workspace_dir(cfg.workspace)
-        return st.result(run_id, snapshot_hash, workspace, cfg, inputs)
+        artifact = st.result(result.run_id, result.snapshot_hash, workspace, cfg, inputs)
+        # Stamp the producing stage onto the artifact so a downstream consumer (e.g.
+        # checkSfCorrectness) can recover which stage's prepare to replay without a
+        # hardcoded artifact-class -> stage-name map.
+        return dataclasses.replace(artifact, source_stage_name=st.name)
 
     # ---- ergonomic named methods (OLAP) --------------------------------
     def createStoragePlan(
@@ -483,11 +441,7 @@ class SynnoDB:
             whose ``.run_id`` is used). The plan is recovered from W&B.
         """
         text = storage_plan.text if isinstance(storage_plan, StoragePlan) else storage_plan
-        wandb_id = (
-            storage_plan_wandb_id.run_id
-            if isinstance(storage_plan_wandb_id, StageArtifact)
-            else storage_plan_wandb_id
-        )
+        wandb_id = _as_arg(storage_plan_wandb_id) if storage_plan_wandb_id is not None else None
         if (text is None) == (wandb_id is None):
             raise ValueError(
                 "createBaseImpl requires exactly one of `storage_plan` (the plan "
@@ -532,25 +486,26 @@ class SynnoDB:
         *,
         target_sf: float,
         source_wandb_id: Any = None,
-        source_prepare_mode: str | None = None,
+        source_stage: str | None = None,
         **inputs: Any,
     ) -> CorrectnessReport:
         """Validate an engine at a larger scale factor. Provide exactly one of
         ``source`` (any engine artifact / raw snapshot hash, W&B-free) or
         ``source_wandb_id`` (the producing run's W&B id).
 
-        On the W&B-free path the source run's ``conv_mode`` is needed to replay
-        its prepare steps: it is inferred from the ``source`` artifact's type, or
-        pass ``source_prepare_mode`` explicitly ('base' / 'optim' / 'mt') when
-        ``source`` is a raw snapshot hash."""
+        On the W&B-free path the source run's stage is needed to replay its
+        prepare steps: it is read from the ``source`` artifact's stamped
+        ``source_stage_name``, or pass ``source_stage`` explicitly (e.g.
+        'createBaseImpl', 'runOptimLoop', 'addMultiThreading') when ``source`` is
+        a raw snapshot hash."""
         snap, wid = _resolve_chain("checkSfCorrectness", source, source_wandb_id)
-        if snap is not None and source_prepare_mode is None and isinstance(source, StageArtifact):
-            source_prepare_mode = _SOURCE_PREPARE_MODE.get(type(source).__name__)
+        if snap is not None and source_stage is None and isinstance(source, StageArtifact):
+            source_stage = source.source_stage_name
         return self.run(  # type: ignore[return-value]
             "checkSfCorrectness",
             source_snapshot=snap,
             source=wid,
-            source_prepare_mode=source_prepare_mode,
+            source_stage=source_stage,
             target_sf=target_sf,
             **inputs,
         )

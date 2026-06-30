@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PrepareContext:
-    """Inputs handed to a prepare function (``ConversationSpec.prepare``).
+    """Inputs handed to a prepare function (``Stage.prepare``).
 
     A prepare function brings the workspace into the state a given conversation
     expects by invoking the relevant ``prepare_workspace_provider`` steps.
@@ -30,9 +30,9 @@ class PrepareContext:
     only_from_cache: bool = False
     add_sample_trace: bool = False
     # Only set for the dynamic CHECK_SF prepare, which replays the prepare steps
-    # of the source run identified by this mode string (see
+    # of the source run identified by this stage name (see
     # :func:`prepare_replay_source_run`).
-    source_run_prepare_mode: str | None = None
+    source_stage_name: str | None = None
 
 
 PrepareFn = Callable[[PrepareContext], str]
@@ -48,7 +48,7 @@ def prepare_repo_and_load_snapshot(
     conv_name: str | None = None,
     only_from_cache: bool = False,
     add_sample_trace: bool = False,
-    source_run_prepare_mode: str | None = None,
+    source_stage_name: str | None = None,
 ) -> str:
     """Bring the workspace into a known state and run the requested prepare steps.
 
@@ -93,6 +93,6 @@ def prepare_repo_and_load_snapshot(
         do_not_cache=do_not_cache,
         only_from_cache=only_from_cache,
         add_sample_trace=add_sample_trace,
-        source_run_prepare_mode=source_run_prepare_mode,
+        source_stage_name=source_stage_name,
     )
     return prepare_fn(ctx)

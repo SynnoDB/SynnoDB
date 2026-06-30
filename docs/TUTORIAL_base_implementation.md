@@ -185,7 +185,7 @@ db = SynnoDB.for_tpch(
     queries="1-5",                          # covers Q1 and Q5
     # No endpoint needed on the lab network (defaults to dgx02). To override, either set
     # LLM_API_BASE in the environment, or pass it through here since SynnoConfig has no
-    # api_base field of its own:  extra_flags=("--api_base", "http://your-host:13505/v1")
+    # api_base field of its own:  extra_config={"api_base": "http://your-host:13505/v1"}
 )
 
 plan = db.createStoragePlan()               # -> StoragePlan; the agent writes storage_plan.txt
@@ -205,28 +205,33 @@ print("files:", sorted(impl.files))         # e.g. db_loader.cpp, parquet_reader
 This runs **single-threaded** generation (the base-impl stage sets `needs_parallelism=False`); we
 deliberately stop here and do **not** call `addMultiThreading`.
 
-### Option B - CLI (two console scripts; copy the run id between them)
+### Option B - separate runs (chain via the W&B run id)
 
-```bash
-# 1) storage plan  (add --api_base http://your-host:13505/v1 only if NOT on the default endpoint)
-synnodb-storage-plan \
-  --model openai/unsloth/MiniMax-M3 \
-  --benchmark tpch --queries 1-5 --db_storage in_memory \
-  --auto_u --auto_finish --log_to_wandb --disable_openai_tracing
-# -> note the printed W&B run id, call it PLAN_ID
+When the two stages run in different processes (or you want each logged to W&B),
+chain them by run id instead of by passing the in-memory artifact. Enabling W&B
+(set `wandb_entity`/`wandb_project`) makes each stage return a `run_id`:
 
-# 2) base implementation (reads the storage plan via its run id)
-synnodb-base-impl \
-  --model openai/unsloth/MiniMax-M3 \
-  --benchmark tpch --bespoke_storage --storage_plan_run_id PLAN_ID \
-  --queries 1-5 --db_storage in_memory \
-  --auto_u --auto_finish --log_to_wandb --disable_openai_tracing
+```python
+from synnodb import SynnoDB
+
+db = SynnoDB.for_tpch(
+    model="openai/unsloth/MiniMax-M3", db_storage="in_memory", queries="1-5",
+    wandb_entity="my-entity",            # presence of entity/project enables W&B logging
+)
+
+# 1) storage plan -> note its run id (e.g. persist plan.run_id, call it PLAN_ID)
+plan = db.createStoragePlan()
+print("storage plan run:", plan.run_id)
+
+# 2) base implementation, recovering the plan from that run
+impl = db.createBaseImpl(storage_plan_wandb_id=plan.run_id)   # or a literal "PLAN_ID"
 ```
 
-(`--auto_u --auto_finish` run the agent unattended; drop them to confirm each step interactively.)
+(`auto_confirm`/`auto_finish` default to `True`, running the agent unattended; set
+them `False` to confirm each step interactively.)
 
-To run the base-impl stage **without W&B**, drop `--storage_plan_run_id` and `--log_to_wandb` and
-pass the plan text instead: `--storage_plan_text "$(cat output/storage_plan.txt)"`.
+To run the base-impl stage **without W&B**, pass the plan text directly instead:
+`db.createBaseImpl(storage_plan=plan.text)` (the Option A path).
 
 ### Auto-publish
 
@@ -358,8 +363,7 @@ built.
 
 ## 7. Where to go next
 
-Beyond the base implementation, the same `SynnoDB` object (or the matching console scripts) carries
-each query further:
+Beyond the base implementation, the same `SynnoDB` object carries each query further:
 
 ```python
 opt   = db.runOptimLoop(base_impl=impl)            # optimize the single-threaded engine
@@ -367,8 +371,8 @@ multi = db.addMultiThreading(optimized=opt)        # NOW it becomes multi-thread
 rep   = db.checkSfCorrectness(source=multi, target_sf=50)   # prove correctness at a larger SF
 ```
 
-Each is a separate stage with its own `synnodb-optim`, `synnodb-multi-threading`,
-`synnodb-check-sf` CLI (see the [README](../README.md#cli)). For the runtime internals - the two
+Each is a separate stage method (see [Running stages](../README.md#running-stages)); they chain
+in-process by passing the artifact, or across runs via the W&B run id. For the runtime internals - the two
 data planes, cross-check, and quarantine - see
 [DESIGN_router_dataplane.md](DESIGN_router_dataplane.md) and
 [production_hardening_plan.md](production_hardening_plan.md).

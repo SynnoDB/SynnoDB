@@ -23,9 +23,10 @@ class RunConfig:
     query_list: str
     queries_str: str
     notify: bool
-    conv_mode: str  # scripted, optimization, ...
+    # The source run's stage name, only set for checkSfCorrectness (it replays
+    # that stage's prepare).
+    source_stage_name: str | None = None
     verbose: bool = False  # stream DEBUG logs to the console (logfile is always DEBUG)
-    prepare_mode: str | None = None  # only necessary for check_sf conv mode
     start_snapshot: str | None = None
     storage_plan_snapshot: str | None = None
     storage_plan_text: str | None = None  # storage plan content supplied directly (W&B-free path)
@@ -106,7 +107,7 @@ def add_common_args(
     include_auto_finish: bool = False,
     include_keep_csv: bool = False,
     include_disable_valtool: bool = False,
-    include_conv_mode: bool = False,
+    include_stage: bool = False,
     include_run_tool_offer_trace_option: bool = False,
     include_bespoke_storage: bool = False,
     include_storage_plan_snapshot: bool = False,
@@ -298,12 +299,12 @@ def add_common_args(
             help="Disable validate tool if set",
         )
 
-    if include_conv_mode:
+    if include_stage:
         parser.add_argument(
-            "--conv_mode",
+            "--stage",
             type=str,
-            default="scripted",  # options: scripted, optimization, ...
-            help="Conversation mode to use for the agent. E.g. 'scripted', 'optimization', ...",
+            default="scripted",  # any registered stage name, or 'scripted'
+            help="Stage to run (e.g. 'createBaseImpl', 'runOptimLoop', 'scripted').",
         )
 
     if include_run_tool_offer_trace_option:

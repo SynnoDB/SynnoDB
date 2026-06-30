@@ -4,29 +4,14 @@ from datetime import datetime
 from synnodb.utils.utils import DBStorage
 
 
-# conv modes enum
-class ConvMode:
-    STORAGE_PLAN = "storageplan"
-    SCRIPTED = "scripted"
-    BASE = "base"
-    OPTIM = "optim"
-    MAKE_MT = "mt"
-    CHECK_SF = "checksf"
-
-
 def generate_conv_name(
-    conv_type: str,
+    stage_name: str,
     benchmark: str,
     queries_str: str,
     model: str,
     bespoke_storage: bool,
     db_storage: DBStorage,
 ) -> tuple[str, str]:
-
-    # assemble conversation name
-    assert conv_type in ConvMode.__dict__.values(), (
-        f"Unknown conversation type {conv_type}"
-    )
 
     # shorten model name for better readability in conversation name
     if "claude" in model:
@@ -44,10 +29,10 @@ def generate_conv_name(
     assert db_storage is not None, "db_storage must be provided to generate_conv_name"
     suffix = f"_{db_storage.value.lower()}"
 
-    if bespoke_storage and conv_type != ConvMode.STORAGE_PLAN:
+    if bespoke_storage and stage_name != "createStoragePlan":
         suffix += "_bstorage"
 
     rnd_nr = random.randint(1000, 9999)
-    conv_name = f"{benchmark}_{conv_type}_q{queries_str}_{model_name}{suffix}"
+    conv_name = f"{benchmark}_{stage_name}_q{queries_str}_{model_name}{suffix}"
     conv_name_withdatetime = conv_name + f"_{date_time_str}_{rnd_nr}"
     return conv_name, conv_name_withdatetime

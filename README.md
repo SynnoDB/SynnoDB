@@ -29,29 +29,34 @@ that carries the produced artifact and chains into the next stage.
 constructors (`in_memory`/`on_ssd`/`for_tpch`/`for_ceb`/`from_env`), and
 `with_(...)` for per-call overrides.
 
-## CLI
+## Running stages
 
-Each stage is a console script (installed with the package) or `python -m`:
+Every stage is a method on `SynnoDB`; there are no per-stage scripts. Each call
+runs one stage to completion and returns an artifact that chains into the next.
+Stages chain in-process (pass the artifact) or across runs via the W&B run id
+(`*_wandb_id=`, requires `wandb_entity`/`wandb_project` on the producing run):
 
+```python
+from synnodb import SynnoDB
+
+db = SynnoDB.on_ssd(
+    workload="tpch", queries="1-22", model="anthropic/claude-sonnet-4-6",
+    notify=True, wandb_entity="my-entity",   # presence of entity/project enables W&B
+)
+
+plan = db.createStoragePlan()                          # -> StoragePlan
+impl = db.createBaseImpl(storage_plan_wandb_id="8xn0t04p")   # or storage_plan=plan
+opt  = db.runOptimLoop(base_impl_wandb_id="q45vm9fz")        # or base_impl=impl
+mt   = db.addMultiThreading(optimized_wandb_id="0br4bjqb")   # or optimized=opt
+rep  = db.checkSfCorrectness(source_wandb_id="0br4bjqb", target_sf=50)
 ```
-# gen storage plan
-python -m synnodb.run_gen_storage_plan --model anthropic/claude-sonnet-4-6 --queries 1-22 --benchmark tpch --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
 
-# run gen base
-python -m synnodb.run_gen_base_impl --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --storage_plan_run_id 8xn0t04p --queries 1-22 --auto_finish --disable_openai_tracing --notify --db_storage ssd --auto_u
+The run output dir defaults to a local `./output`; set `workspace=` (or
+`SYNNO_WORKSPACE`). Any `RunConfig` setting the typed config does not model can be
+forced through the `extra_config={...}` escape hatch.
 
-# run optim
-python -m synnodb.run_optim_loop --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --base_impl_run_id q45vm9fz --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
-
-# test correctness at larger SF
-python -m synnodb.run_check_sf_correctness --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --source_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd --target_sf 50
-
-# add multi-threading
-python -m synnodb.run_add_multi_threading --model anthropic/claude-sonnet-4-6 --benchmark tpch --bespoke_storage --optim_run_id 0br4bjqb --queries 1-22 --disable_openai_tracing --auto_u --auto_finish --notify --db_storage ssd
-```
-
-(equivalently `python -m synnodb.run_gen_storage_plan …`, etc.) The run output dir
-defaults to a local `./output`; override with `--workspace` or `SYNNO_WORKSPACE`.
+For low-level debugging there is still `python -m synnodb.main manual
+--conv_mode <mode> …` (explicit args; not the supported entry point).
 
 Install: `uv sync` (add extras as needed: `uv sync --extra dev --extra viz`).
 
@@ -72,7 +77,7 @@ Install: `uv sync` (add extras as needed: `uv sync --extra dev --extra viz`).
 pip install synnodb          # or: uv pip install synnodb
 ```
 
-This installs the `synnodb` package and the `synnodb-*` console scripts listed above. The Arrow/Parquet system libraries and a C++ toolchain (see Prerequisites) are still required at runtime. For local development from a source checkout, follow the steps below.
+This installs the `synnodb` package (the pipeline is driven through the `SynnoDB` Python API; see [Running stages](#running-stages)). The Arrow/Parquet system libraries and a C++ toolchain (see Prerequisites) are still required at runtime. For local development from a source checkout, follow the steps below.
 
 ### 1. Install uv
 

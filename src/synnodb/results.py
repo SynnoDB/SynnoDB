@@ -39,6 +39,11 @@ class StageArtifact:
     # stage can restore it directly from the local workspace repo. kw_only so the
     # existing positional constructors (and their subclass fields) are unaffected.
     snapshot_hash: str | None = field(default=None, kw_only=True)
+    # Name of the Stage that produced this artifact, stamped by SynnoDB.run() from
+    # spec.name. Lets a consumer (e.g. checkSfCorrectness) recover which stage's
+    # prepare to replay without a hardcoded artifact-class -> stage-name map. kw_only
+    # so the positional subclass constructors are unaffected.
+    source_stage_name: str | None = field(default=None, kw_only=True)
 
     def __bool__(self) -> bool:
         """Truthy when there is a wandb run id to chain off."""

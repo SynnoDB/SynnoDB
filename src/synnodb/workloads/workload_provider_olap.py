@@ -8,6 +8,7 @@ from pathlib import Path
 from synnodb import settings
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils import utils
+from synnodb.utils.gen_common import _parse_ceb_fuzzy_range
 from synnodb.utils.sql_utils import extract_order_by_columns
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.dataset.gen_ceb.ceb_queries import ceb_templates
@@ -151,12 +152,12 @@ class OLAPWorkloadProvider(WorkloadProvider):
 
         if run_mode == RunToolMode.FAST_CHECK:
             instantiations = self.num_instantiations
-            repetitions = 1
+            repetitions = 1  # each parameter instantiation runs once (only BENCHMARK repeats)
             scale_factors = self.spec.scale_factors_for(run_mode)
 
         elif run_mode == RunToolMode.EXHAUSTIVE:
             instantiations = self.num_instantiations
-            repetitions = 1
+            repetitions = 1  # each parameter instantiation runs once (only BENCHMARK repeats)
             scale_factors = self.spec.scale_factors_for(run_mode)
 
             if scale_factors[-1] != self.benchmark_sf:
@@ -168,8 +169,8 @@ class OLAPWorkloadProvider(WorkloadProvider):
             repetitions = self.benchmark_repetitions
             scale_factors = [self.benchmark_sf]
         elif run_mode == RunToolMode.INGEST:
-            instantiations = 3
-            repetitions = 1
+            instantiations = self.spec.ingest_instantiations
+            repetitions = 1  # each parameter instantiation runs once (only BENCHMARK repeats)
             scale_factors = self.spec.scale_factors_for(run_mode)
 
         else:
@@ -479,6 +480,7 @@ TPCH_SPEC = WorkloadSpec(
     query_gen_factory=_tpch_query_gen_factory,
     placeholders_factory=_tpch_placeholders_factory,
     param_space_factory=_tpch_param_space_factory,
+    large_check_sf=100,
 )
 
 CEB_SPEC = WorkloadSpec(
@@ -536,6 +538,12 @@ CEB_SPEC = WorkloadSpec(
     schema_factory=_ceb_schema,
     query_gen_factory=_ceb_query_gen_factory,
     placeholders_factory=_ceb_placeholders_factory,
+    # CEB's dataset was regenerated; bump to invalidate stale cache entries. (Previously
+    # a dead `if args.benchmark == "ceb"` branch in main.py that never fired because the
+    # benchmark is an enum, not a str — folding it onto the spec also fixes that bug.)
+    dataset_version="3",
+    large_check_sf=10,
+    query_range_expander=_parse_ceb_fuzzy_range,
 )
 
 register_workload(TPCH_SPEC)

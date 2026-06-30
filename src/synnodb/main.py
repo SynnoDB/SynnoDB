@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 
-from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.api import Stage
+from synnodb.conversations.conversation_spec import FrameworkContext
 from synnodb.conversations.filenames import get_filenames, get_plan_filename
 from synnodb.conversations.prompts_gen import gen_incorrect_output_prompt
 from synnodb.conversations.supervision_agent import SupervisionAgent
@@ -52,6 +53,7 @@ from synnodb.utils.utils import (
     get_disk_db_dir,
 )
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
+from synnodb.workloads.system_factory import System
 from synnodb.workloads.system_factory_olap import OLAPSystemFactory
 from synnodb.workloads.workload_provider_olap import (
     OLAPWorkload,
@@ -70,7 +72,7 @@ def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStora
     return db_storage
 
 
-async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
+async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     # check all dependencies exist
     test_deps()
 
@@ -204,10 +206,6 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
         # in gen_code mode, we want to keep them around in case of major issues with ensuring correctness while generating the base implementation.
         extra_gitignore.append("*.csv")
 
-    # add versioning for the table dataset (dataset got regenerated, scale-up/down code was changed, query args input syntax was changed, etc. - in these cases we want to make sure that old cache entries are not used for the new dataset version)
-    dataset_version = None
-    if args.benchmark == "ceb":
-        dataset_version = "3"
 
     snapshotter = GitSnapshotter(
         cache_repo=snapshotter_cache_repo,
@@ -265,10 +263,10 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
 
     framework_code_content = get_framework_version_artifacts_str()
 
-    # Dynamic prepare mode of the source run, only set for CHECK_SF (where the
-    # prepare steps and parallelism are replayed from the source run via
-    # args.prepare_mode). None for every other conv mode.
-    source_run_prepare_mode = getattr(args, "prepare_mode", None)
+    # Stage name of the source run, only set for CHECK_SF (where the prepare
+    # steps and parallelism are replayed from the source run's stage). None for
+    # every other stage.
+    source_stage_name = getattr(args, "source_stage_name", None)
 
     if usecase == Usecase.OLAP:
         prepare_ws = OLAPPrepareWorkspace(
@@ -297,7 +295,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
             snapshotter=snapshotter,
             snapshot=args.start_snapshot,
             prepare_fn=spec.prepare,
-            source_run_prepare_mode=source_run_prepare_mode,
+            source_stage_name=source_stage_name,
             usecase_prepare_args=usecase_prepare_args,
             do_not_cache=args.do_not_cache,
             conv_name=args.conv_name,
@@ -337,18 +335,15 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
         runtime_tracker=runtime_tracker,
         do_not_cache=args.do_not_cache,
         drains=data_drains,
+        # Stage identity, so every metric row is stage-tagged generically.
+        stage_name=spec.name,
     )
     run_stats_collector = RunStatsCollector(**collector_args)
 
     # run tool parallelism setup (must be determined before QueryValidator so the
-    # num_threads value is included in the query-cache key)
-    # For CHECK_SF the need for parallelism is derived from the dynamic prepare
-    # mode replayed from the source run; every other mode uses spec.needs_parallelism.
-    if source_run_prepare_mode is not None:
-        effective_needs_parallelism = source_run_prepare_mode == "mt"
-    else:
-        effective_needs_parallelism = spec.needs_parallelism
-    if effective_needs_parallelism:
+    # num_threads value is included in the query-cache key). Computed (and logged
+    # to W&B) in run_conv_wrapper; for CHECK_SF it reflects the source run's stage.
+    if args.needs_parallelism:
         parallelism = True
         _, core_ids = get_cores_for_current_machine(
             leave_core_0_out=True,
@@ -377,6 +372,11 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
 
     query_validator: QueryValidator | None = None
     if not args.disable_valtool:
+        # Reference oracle systems travel with the workload. DuckDB is always the
+        # ground-truth comparator; Umbra is an optional secondary reference a workload
+        # can opt into via WorkloadSpec.reference_systems (default None -> DuckDB only).
+        reference_systems = workload_spec.reference_systems
+        use_umbra = reference_systems is not None and System.UMBRA in reference_systems
         query_validator = QueryValidator(
             validate_cache_dir=validate_cache_dir,
             workspace_path=workspace_path,
@@ -387,7 +387,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
             do_not_cache=args.do_not_cache,
             only_from_cache=args.only_from_cache,
             max_snapshot_csv_size_mb=max_snapshot_csv_size_mb,
-            use_umbra=False,
+            use_umbra=use_umbra,
         )
 
     logger.info(f"Workspace root: {workspace_path}")
@@ -473,8 +473,8 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
         # include start snapshot in hash - makes cache specific to this code base
         config_kwargs["start_snapshot"] = args.start_snapshot
 
-    if dataset_version is not None:
-        config_kwargs["dataset_version"] = dataset_version
+    if workload_spec.dataset_version is not None:
+        config_kwargs["dataset_version"] = workload_spec.dataset_version
 
     supervisor_agent_intruction = "You are a supervisor agent that oversees the execution of a task by another agent. Your role is to monitor the progress, provide feedback, and ensure that the task is completed successfully. You will receive updates on the task execution and can intervene if necessary to guide the process towards a successful outcome."
 
@@ -702,7 +702,7 @@ def _run_coroutine(coro):
 def run_conv_wrapper(
     args: argparse.Namespace | None,
     run_config: RunConfig | None,
-    spec: ConversationSpec,
+    spec: Stage,
 ) -> RunResult:
     # assemble args from run_config if main.py is started from run scripts
     if args is None and run_config is None:
@@ -715,6 +715,21 @@ def run_conv_wrapper(
 
     args.db_storage = get_effective_db_storage(args.usecase, args.db_storage)
     args.log_to_wandb = getattr(args, "log_to_wandb", False)
+    # The stage identity drives run naming and is logged to W&B (CHECK_SF reads it
+    # back off a source run to replay that stage's prepare).
+    args.stage_name = spec.name
+
+    # Whether this run executes queries with parallelism. Logged to W&B as a stable,
+    # stage-name-independent property so downstream consumers (e.g. benchmark replay)
+    # can tell multi-threaded runs apart without matching on the user-defined stage
+    # name. For CHECK_SF it is the source run's stage that determines this.
+    source_stage_name = getattr(args, "source_stage_name", None)
+    if source_stage_name is not None:
+        from synnodb.api import get_stage
+
+        args.needs_parallelism = get_stage(source_stage_name).needs_parallelism
+    else:
+        args.needs_parallelism = spec.needs_parallelism
 
     _setup()
     if args.continue_run:
@@ -724,7 +739,7 @@ def run_conv_wrapper(
 
     # assemble conv name
     conv_name, conv_name_withdatetime = generate_conv_name(
-        conv_type=args.conv_mode,
+        stage_name=spec.name,
         benchmark=args.benchmark,
         queries_str=args.queries_str,
         model=args.model,
@@ -906,7 +921,7 @@ if __name__ == "__main__":
         include_auto_finish=True,
         include_keep_csv=True,
         include_disable_valtool=True,
-        include_conv_mode=True,
+        include_stage=True,
         include_run_tool_offer_trace_option=True,
         include_bespoke_storage=True,
         include_only_from_llm_cache=True,
@@ -925,11 +940,11 @@ if __name__ == "__main__":
     args.write_query_and_args_files = True
 
     if args.command == "manual":
-        # the manual debug entry point is the only consumer that resolves a spec
-        # by name; the run_*.py scripts pass their own spec directly.
+        # the manual debug entry point resolves a stage by name; the SynnoDB API
+        # passes its stage directly.
         from synnodb.conversations.manual_specs import get_spec
 
-        spec = get_spec(args.conv_mode)
+        spec = get_spec(args.stage)
         run_conv_wrapper(args, run_config=None, spec=spec)
     else:
         raise Exception(f"Unknown {args.command}")

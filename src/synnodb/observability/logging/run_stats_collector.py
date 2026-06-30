@@ -49,10 +49,15 @@ class RunStatsCollector(RunHooks):
         runtime_tracker: Optional[RuntimeTracker] = None,
         do_not_cache: bool = False,
         drains: list[DataDrain] | None = None,
+        stage_name: str | None = None,
     ):
         self.model = model
         self.git_snapshotter = git_snapshotter
         self.drains: list[DataDrain] = drains if drains is not None else []
+        # Name of the Stage this collector is tracking (sourced from Stage.name).
+        # Stamped onto every metric row so downstream consumers can segment by stage
+        # generically instead of reverse-engineering stage boundaries from prompts.
+        self.current_stage_name: Optional[str] = stage_name
         self.prompt_idx = prompt_idx  # will be externally set by conversation loop
         self.runtime_tracker = runtime_tracker
         self.current_prompt: Optional[str] = (
@@ -160,6 +165,9 @@ class RunStatsCollector(RunHooks):
         self.last_turn += 1
 
         metrics["turn"] = turn
+        # Tag every metric row with the active stage so downstream analytics can
+        # group by stage generically (instead of matching OLAP prompt substrings).
+        metrics["stage"] = self.current_stage_name
 
         # Track total counts per type
         self.total_type_counts[metrics["type"]] += 1

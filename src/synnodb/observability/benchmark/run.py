@@ -157,7 +157,7 @@ def _resolve_snapshots(
             f"Could not resolve a snapshot hash from wandb run {wandb_id}: {snapshot_hash}"
         )
         run_snapshots.append(snapshot_hash)
-        is_mt.append(config.get("conv_mode") == "mt")
+        is_mt.append(bool(config.get("needs_parallelism", False)))
     return run_snapshots, is_mt
 
 

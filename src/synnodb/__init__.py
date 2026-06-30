@@ -22,7 +22,7 @@ from synnodb.duckdb_compat import *  # noqa: F401,F403  (re-export DuckDB + drop
 from synnodb.router import RouterMode, enable_debug_logging
 
 if TYPE_CHECKING:  # for type-checkers/IDEs only; runtime resolves these lazily.
-    from synnodb.api import Stage, StageParam, SynnoConfig, SynnoDB, register_stage
+    from synnodb.api import Stage, SynnoConfig, SynnoDB, register_stage
     from synnodb.results import (
         BaseImplementation,
         CorrectnessReport,
@@ -39,7 +39,6 @@ _LAZY_FACTORY = {
     "SynnoDB": "synnodb.api",
     "SynnoConfig": "synnodb.api",
     "Stage": "synnodb.api",
-    "StageParam": "synnodb.api",
     "register_stage": "synnodb.api",
     "StageArtifact": "synnodb.results",
     "StoragePlan": "synnodb.results",
