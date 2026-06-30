@@ -129,10 +129,16 @@ def resolve_source_snapshot(
     query_ids,
     db_storage,
     model,
+    wandb_entity=None,
+    wandb_project=None,
 ) -> tuple[str, dict | None]:
     """Resolve the git snapshot hash of a previous stage's output. Provide exactly
     one of ``snapshot`` (the git hash directly, W&B-free) or ``wandb_id`` (a W&B run
     id resolved to its logged snapshot and validated against this run's config).
+
+    ``wandb_entity``/``wandb_project`` are the coordinates the producer run was
+    logged to (from the driver config), so the lookup reads the same project the
+    chain wrote to rather than the env/default fallback.
 
     Returns ``(commit_hash, source_config)`` where ``source_config`` is the source
     run's W&B config dict (W&B path) or ``None`` (W&B-free path)."""
@@ -147,7 +153,11 @@ def resolve_source_snapshot(
         return snapshot, None
 
     statistics, config, _ = wandb_retrieve_metrics_for_run(
-        benchmark, wandb_id, fetch_latest_runtimes=False
+        benchmark,
+        wandb_id,
+        entity=wandb_entity,
+        project=wandb_project,
+        fetch_latest_runtimes=False,
     )
     validate_snapshot(config, benchmark, queries_str, query_ids, db_storage=db_storage, model=model)
     commit_hash = statistics["code/snapshot_hash"]
@@ -203,7 +213,12 @@ def _config_base_impl(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
 
     storage_plan_snapshot = None
     if storage_plan_text is None:
-        statistics, config, _ = wandb_retrieve_metrics_for_run(cfg.workload, storage_plan_run_id)
+        statistics, config, _ = wandb_retrieve_metrics_for_run(
+            cfg.workload,
+            storage_plan_run_id,
+            entity=cfg.wandb_entity,
+            project=cfg.wandb_project,
+        )
         validate_snapshot(
             config, cfg.workload, cfg.queries, query_ids, db_storage=cfg.db_storage, model=cfg.model
         )
@@ -248,6 +263,8 @@ def _config_optim(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
         query_ids=query_ids,
         db_storage=cfg.db_storage,
         model=cfg.model,
+        wandb_entity=cfg.wandb_entity,
+        wandb_project=cfg.wandb_project,
     )
 
     return RunConfig(
@@ -281,6 +298,8 @@ def _config_make_mt(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
         query_ids=query_ids,
         db_storage=cfg.db_storage,
         model=cfg.model,
+        wandb_entity=cfg.wandb_entity,
+        wandb_project=cfg.wandb_project,
     )
 
     return RunConfig(
@@ -315,6 +334,8 @@ def _config_check_sf(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
         query_ids=query_ids,
         db_storage=cfg.db_storage,
         model=cfg.model,
+        wandb_entity=cfg.wandb_entity,
+        wandb_project=cfg.wandb_project,
     )
 
     # CHECK_SF replays the source run's prepare steps, so it needs that run's
