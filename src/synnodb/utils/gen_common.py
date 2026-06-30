@@ -17,7 +17,8 @@ def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:
 
     start_q, end_q = qnums[0], qnums[1]
     bench_value = benchmark.value if isinstance(benchmark, Workload) else str(benchmark)
-    catalog = list(get_workload_spec(bench_value).all_query_ids)
+    spec = get_workload_spec(bench_value)
+    catalog = list(spec.all_query_ids)
 
     # Generic + workload-agnostic: when both endpoints are exact ids in the workload's
     # ordered query catalog, return the slice between them. Handles TPC-H ("1"-"22"),
@@ -28,10 +29,11 @@ def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:
             i, j = j, i
         return catalog[i : j + 1]
 
-    # Legacy CEB-only convenience: fuzzy ranges whose endpoints are not exact ids
-    # (e.g. "2-9" meaning 2a..9b). Preserved for that workload; not needed for new ones.
-    if bench_value == "ceb":
-        return _parse_ceb_fuzzy_range(start_q, end_q, catalog)
+    # Fuzzy ranges whose endpoints are not exact ids (e.g. CEB's "2-9" meaning 2a..9b).
+    # The expansion is workload-specific and travels on the spec; a workload without one
+    # (the default) only supports exact-catalog slicing.
+    if spec.query_range_expander is not None:
+        return spec.query_range_expander(start_q, end_q, catalog)
 
     raise ValueError(
         f"Cannot parse query range '{short_name}' for workload '{bench_value}': "

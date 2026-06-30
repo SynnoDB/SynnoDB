@@ -1,21 +1,15 @@
-"""Conversation-spec catalog for the ``manual`` debug entry point in main.py.
+"""Stage catalog for the ``manual`` debug entry point in main.py.
 
-The normal entry points (``run_*.py``) each construct their own
-:class:`ConversationSpec` and pass it straight to ``run_conv_wrapper``; they do
-NOT depend on this module. It exists solely so ``python main.py manual
---conv_mode X`` can resolve a spec by name.
-
-The ``scripted`` conversation has no run script, so its spec is defined here.
+The normal entry point is the importable :class:`~synnodb.api.SynnoDB` API, whose
+stages register themselves in ``synnodb.api``'s registry. This module maps a
+stage name onto the corresponding stage so ``python main.py manual --stage X``
+can resolve one. The ``scripted`` conversation has no API stage, so its
+descriptor is defined here.
 """
 
-from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.api import Stage, all_stages
+from synnodb.conversations.conversation_spec import FrameworkContext
 from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
-from synnodb.run_add_multi_threading import SPEC as _MT_SPEC
-from synnodb.run_check_sf_correctness import SPEC as _CHECK_SF_SPEC
-from synnodb.run_gen_base_impl import SPEC as _BASE_SPEC
-from synnodb.run_gen_storage_plan import SPEC as _STORAGE_PLAN_SPEC
-from synnodb.run_optim_loop import SPEC as _OPTIM_SPEC
-from synnodb.utils.conv_name_utils import ConvMode
 
 
 def _scripted_factory(ctx: FrameworkContext):
@@ -24,7 +18,19 @@ def _scripted_factory(ctx: FrameworkContext):
     return ScriptedConversation(**ctx.conv_args)
 
 
-_SCRIPTED_SPEC = ConversationSpec(
+def _scripted_build_config(cfg, inputs):
+    raise NotImplementedError(
+        "the 'scripted' conversation has no API build_config; it is only reachable "
+        "via the `manual` debug entry point (which supplies args directly)."
+    )
+
+
+# Not a registered API stage: scripted runs only through the manual entry point,
+# so build_config/result/usecases are never exercised for it.
+_SCRIPTED_SPEC = Stage(
+    name="scripted",
+    usecases=frozenset(),
+    build_config=_scripted_build_config,
     prepare=prepare_base,
     needs_parallelism=False,
     be_relaxed_supervision=False,
@@ -32,19 +38,11 @@ _SCRIPTED_SPEC = ConversationSpec(
 )
 
 
-_CATALOG: dict[str, ConversationSpec] = {
-    ConvMode.STORAGE_PLAN: _STORAGE_PLAN_SPEC,
-    ConvMode.BASE: _BASE_SPEC,
-    ConvMode.OPTIM: _OPTIM_SPEC,
-    ConvMode.MAKE_MT: _MT_SPEC,
-    ConvMode.CHECK_SF: _CHECK_SF_SPEC,
-    ConvMode.SCRIPTED: _SCRIPTED_SPEC,
-}
-
-
-def get_spec(conv_mode: str) -> ConversationSpec:
-    if conv_mode not in _CATALOG:
+def get_spec(stage_name: str) -> Stage:
+    catalog: dict = {st.name: st for st in all_stages()}
+    catalog[_SCRIPTED_SPEC.name] = _SCRIPTED_SPEC
+    if stage_name not in catalog:
         raise ValueError(
-            f"Unknown conv_mode '{conv_mode}'. Known modes: {sorted(_CATALOG)}"
+            f"Unknown stage '{stage_name}'. Known stages: {sorted(catalog)}"
         )
-    return _CATALOG[conv_mode]
+    return catalog[stage_name]

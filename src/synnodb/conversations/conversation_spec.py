@@ -3,14 +3,12 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from synnodb.conversations.conversation import AbstractConversation
-    from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext
+    from synnodb.api import Stage
     from synnodb.observability.logging.run_stats_collector import RunStatsCollector
     from synnodb.synth_framework.git_snapshotter import GitSnapshotter
-    from synnodb.synth_framework.runtime_tracker import RuntimeTracker
     from synnodb.tools.run import RunTool
     from synnodb.tools.compile import CompileTool
     from synnodb.tools.validate.query_validator_class import QueryValidator
@@ -21,7 +19,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class FrameworkContext:
-    """Everything main() has assembled, passed to the conversation factory."""
+    """Everything main() has assembled, passed to a stage's conversation factory."""
 
     args: argparse.Namespace
     workload_provider: object
@@ -37,24 +35,4 @@ class FrameworkContext:
     query_validator: "QueryValidator | None"
     conv_args: dict
     auto_conversation_args: dict
-    spec: "ConversationSpec"
-
-
-@dataclass
-class ConversationSpec:
-    # Prepare function that brings the workspace into the state this conversation
-    # expects. Receives a PrepareContext (assembled by
-    # prepare_repo_and_load_snapshot once the start snapshot, if any, has been
-    # restored) and returns the prepared-artifacts string. The concrete prepare
-    # steps (e.g. prepare_base / prepare_mt) live next to that function, not here.
-    prepare: Callable[["PrepareContext"], str]
-
-    # Whether the RunTool should be built with parallelism=True.
-    needs_parallelism: bool
-
-    # Whether SupervisionAgent should be constructed with be_relaxed_if_runtime_goal_not_reached=True.
-    be_relaxed_supervision: bool
-
-    # Receives a fully-assembled FrameworkContext and returns an AbstractConversation.
-    # Concrete conversation class imports live inside this callable, not in main.py.
-    factory: Callable[["FrameworkContext"], "AbstractConversation"]
+    spec: "Stage"
