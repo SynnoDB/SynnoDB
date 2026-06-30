@@ -156,7 +156,9 @@ distModal.addEventListener('click', e => { if (e.target === distModal) distModal
 // Esc closes the topmost modal first, then drops out of time-travel mode.
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    if (!promptModal.hidden) promptModal.hidden = true;
+    const codeModal = document.getElementById('code-modal');
+    if (codeModal && !codeModal.hidden) codeModal.hidden = true;
+    else if (!promptModal.hidden) promptModal.hidden = true;
     else if (!distModal.hidden) distModal.hidden = true;
     else if (timeTravelStep != null) setTimeTravelStep(null);
   }
