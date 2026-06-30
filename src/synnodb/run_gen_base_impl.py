@@ -97,6 +97,74 @@ def validate_snapshot(
             sys.exit(0)
 
 
+def resolve_source_snapshot(
+    *,
+    snapshot: str | None,
+    wandb_id: str | None,
+    source_kind: str,
+    snapshot_flag: str,
+    wandb_flag: str,
+    benchmark,
+    queries_str,
+    query_ids,
+    db_storage: DBStorage | None,
+    model: str | None,
+    wandb_entity: str | None = None,
+    wandb_project: str | None = None,
+) -> tuple[str, dict | None]:
+    """Resolve the git snapshot hash of a previous stage's output, for the
+    chained stages (optim / make-mt / check-sf). Provide exactly one of:
+      - ``snapshot``: the git snapshot hash directly (W&B-free). The caller owns
+        benchmark/queries/db_storage/model consistency (there is no run to
+        validate against); the hash is verified to exist in the local workspace
+        repo downstream by ``prepare_repo_and_load_snapshot``.
+      - ``wandb_id``: a W&B run id, resolved to its logged snapshot hash and
+        validated against this run's config.
+
+    ``wandb_entity``/``wandb_project`` must be the coordinates the source run was
+    logged to — the same values this stage logs to — so the lookup reads back
+    from where the producer wrote. They are forwarded straight to
+    ``wandb_retrieve_metrics_for_run``, which resolves ``None`` through
+    ``get_wandb_entity_project`` (env/default); passing them here keeps a
+    CLI/``SynnoConfig``-configured project from silently falling back to the
+    default and missing the run.
+
+    Returns ``(commit_hash, source_config)`` where ``source_config`` is the
+    source run's W&B config dict (W&B path) or ``None`` (W&B-free path).
+    """
+    if (snapshot is None) == (wandb_id is None):
+        raise ValueError(
+            f"Provide exactly one of {snapshot_flag} (git snapshot hash, W&B-free) "
+            f"or {wandb_flag} (W&B run id) to load the {source_kind} snapshot — got "
+            + ("both" if snapshot is not None else "neither")
+            + "."
+        )
+    if snapshot is not None:
+        return snapshot, None
+
+    statistics, config, _ = wandb_retrieve_metrics_for_run(
+        benchmark,
+        wandb_id,
+        entity=wandb_entity,
+        project=wandb_project,
+        fetch_latest_runtimes=False,
+    )
+    validate_snapshot(
+        config,
+        benchmark,
+        queries_str,
+        query_ids,
+        db_storage=db_storage,
+        model=model,
+    )
+    commit_hash = statistics["code/snapshot_hash"]
+    assert commit_hash != "N/A", (
+        f"Could not retrieve a valid commit hash from wandb for run {wandb_id} in "
+        f"benchmark {benchmark}. Got {commit_hash}."
+    )
+    return commit_hash, config
+
+
 def main(args):
     # extract parameters
     bespoke_storage = args.bespoke_storage
@@ -129,6 +197,8 @@ def main(args):
             statistics, config, _ = wandb_retrieve_metrics_for_run(
                 benchmark,
                 storage_plan_run_id,
+                entity=getattr(args, "wandb_entity", None),
+                project=getattr(args, "wandb_project", None),
             )
 
             validate_snapshot(
@@ -210,6 +280,7 @@ def base_args() -> dict:
         include_replay_cache=True,
         include_benchmark=True,
         include_log_to_wandb=True,
+        include_wandb_entity_project=True,
         include_disable_openai_tracing=True,
         include_auto_u=True,
         include_auto_finish=True,
@@ -232,6 +303,8 @@ class BaseArgs(TypedDict):
     replay_cache: bool
     benchmark: Workload
     log_to_wandb: bool
+    wandb_entity: str | None
+    wandb_project: str | None
     disable_openai_tracing: bool
     auto_u: bool
     auto_finish: bool
@@ -255,6 +328,8 @@ def base_args_extract(args) -> BaseArgs:
         "replay_cache": args.replay_cache,
         "benchmark": args.benchmark,
         "log_to_wandb": args.log_to_wandb,
+        "wandb_entity": getattr(args, "wandb_entity", None),
+        "wandb_project": getattr(args, "wandb_project", None),
         "disable_openai_tracing": args.disable_openai_tracing,
         "auto_u": args.auto_u,
         "auto_finish": args.auto_finish,

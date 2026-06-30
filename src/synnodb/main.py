@@ -28,6 +28,7 @@ from synnodb.observability.logging.logger import setup_logging
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 from synnodb.observability.logging.run_stats_drain import DataDrain, DuckDBDrain, WandbDrain
 from synnodb.observability.logging.weave_cache import configure_weave_cache_dirs
+from synnodb.results import RunResult
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.handle_prompt import handle_prompt
 from synnodb.synth_framework.runtime_tracker import RuntimeTracker
@@ -69,7 +70,7 @@ def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStora
     return db_storage
 
 
-async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
+async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
     # check all dependencies exist
     test_deps()
 
@@ -618,6 +619,10 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             }
         )
 
+    # The final git snapshot of the produced code — the W&B-free token a later
+    # stage can restore directly from this (same) local workspace repo.
+    return snapshotter.current_hash
+
 
 def _resolve_sf_dir(base_parquet_dir, scale_factor):
     """The ``sf<N>`` data directory for a scale factor, tolerant of int/float formatting
@@ -698,7 +703,7 @@ def run_conv_wrapper(
     args: argparse.Namespace | None,
     run_config: RunConfig | None,
     spec: ConversationSpec,
-) -> str | None:
+) -> RunResult:
     # assemble args from run_config if main.py is started from run scripts
     if args is None and run_config is None:
         raise Exception("Either args or run_config must be provided.")
@@ -747,7 +752,9 @@ def run_conv_wrapper(
 
         from synnodb.settings import get_wandb_entity_project
 
-        entity, project = get_wandb_entity_project()
+        entity, project = get_wandb_entity_project(
+            getattr(args, "wandb_entity", None), getattr(args, "wandb_project", None)
+        )
 
         # With no entity, pass a bare project name so weave/wandb log to the
         # caller's own default entity rather than a hardcoded one.
@@ -804,8 +811,9 @@ def run_conv_wrapper(
             "This run will send notifications about errors to the configured Zulip channel."
         )
 
+    snapshot_hash: str | None = None
     try:
-        _run_coroutine(main(args, spec))
+        snapshot_hash = _run_coroutine(main(args, spec))
 
         if args.notify:
             # notify about successful completion
@@ -838,9 +846,9 @@ def run_conv_wrapper(
             except Exception:
                 logger.warning("could not finish wandb run cleanly", exc_info=True)
 
-    # The wandb run id (None unless --log_to_wandb) is how downstream stages
-    # chain off this run; return it so programmatic callers can pass it along.
-    return args.wandb_run_id
+    # Downstream stages chain off this run either via the wandb run id (None
+    # unless --log_to_wandb) or, W&B-free, via the final git snapshot hash.
+    return RunResult(run_id=args.wandb_run_id, snapshot_hash=snapshot_hash)
 
 
 def test_deps():

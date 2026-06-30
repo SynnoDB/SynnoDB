@@ -3,10 +3,11 @@ import argparse
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
 from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_replay_source_run
 from synnodb.main import run_conv_wrapper
-from synnodb.observability.logging.wandb_api_helper import (
-    wandb_retrieve_metrics_for_run,
+from synnodb.run_gen_base_impl import (
+    base_args,
+    base_args_extract,
+    resolve_source_snapshot,
 )
-from synnodb.run_gen_base_impl import base_args, base_args_extract, validate_snapshot
 from synnodb.utils.cli_config import RunConfig, add_common_args
 from synnodb.utils.conv_name_utils import ConvMode
 from synnodb.utils.gen_common import parse_query_ids
@@ -55,27 +56,36 @@ def main(args):
         f"Could not parse query ids from queries str {queries_str}"
     )
 
-    wandb_id = args.source_run_id
-    assert wandb_id is not None, (
-        "source_run_id must be provided to fetch the git snapshot of the "
-        "implementation to validate from wandb"
-    )
-    statistics, config, _ = wandb_retrieve_metrics_for_run(
-        benchmark, wandb_id, fetch_latest_runtimes=False
-    )
-    validate_snapshot(
-        config,
-        benchmark,
-        queries_str,
-        query_ids,
+    # The source implementation reaches us either as a git snapshot hash directly
+    # (W&B-free) or via a W&B run id we resolve to that snapshot hash.
+    snapshot = getattr(args, "source_snapshot", None)
+    commit_hash, source_config = resolve_source_snapshot(
+        snapshot=snapshot,
+        wandb_id=args.source_run_id,
+        source_kind="implementation to validate",
+        snapshot_flag="--source_snapshot",
+        wandb_flag="--source_run_id",
+        benchmark=benchmark,
+        queries_str=queries_str,
+        query_ids=query_ids,
         db_storage=args.db_storage,
         model=args.model,
+        wandb_entity=getattr(args, "wandb_entity", None),
+        wandb_project=getattr(args, "wandb_project", None),
     )
 
-    commit_hash = statistics["code/snapshot_hash"]
-    assert commit_hash != "N/A", (
-        f"Could not retrieve a valid commit hash from wandb for run {wandb_id} in benchmark {benchmark}. Got {commit_hash}."
-    )
+    # CHECK_SF replays the source run's prepare steps, so it needs that run's
+    # conv_mode. The W&B path reads it from the source run config; the W&B-free
+    # path must be told it explicitly via --source_prepare_mode (the API derives
+    # it from the source artifact's type).
+    if source_config is not None:
+        prepare_mode = source_config["conv_mode"]
+    else:
+        prepare_mode = getattr(args, "source_prepare_mode", None)
+        assert prepare_mode is not None, (
+            "--source_prepare_mode is required with --source_snapshot (the source "
+            "run's conv_mode, e.g. 'base', 'optim', or 'mt')."
+        )
 
     # convert target_sf to int if it's a whole number for better prompt formatting (e.g. 100.0 -> 100)
     if target_sf.is_integer():
@@ -84,7 +94,7 @@ def main(args):
     config = RunConfig(
         **base_args_extract(args),
         conv_mode=ConvMode.CHECK_SF,
-        prepare_mode=config["conv_mode"],
+        prepare_mode=prepare_mode,
         query_list=",".join(map(str, query_ids)),
         start_snapshot=commit_hash,
         storage_plan_snapshot=None,
@@ -107,7 +117,23 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--source_run_id",
         type=str,
         default=None,
-        help="Wandb run id to read the implementation snapshot from",
+        help="Wandb run id to read the implementation snapshot from. Provide "
+        "exactly one of this or --source_snapshot.",
+    )
+    parser.add_argument(
+        "--source_snapshot",
+        type=str,
+        default=None,
+        help="Git snapshot hash of the implementation to validate, supplied "
+        "directly (W&B-free). Requires --source_prepare_mode. Provide exactly one "
+        "of this or --source_run_id.",
+    )
+    parser.add_argument(
+        "--source_prepare_mode",
+        type=str,
+        default=None,
+        help="conv_mode of the source run (e.g. 'base', 'optim', 'mt'); required "
+        "with --source_snapshot to replay its prepare steps.",
     )
     parser.add_argument(
         "--target_sf",

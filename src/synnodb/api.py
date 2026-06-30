@@ -61,11 +61,30 @@ def _as_arg(v: Any) -> str:
     if isinstance(v, StageArtifact):
         if v.run_id is None:
             raise ValueError(
-                f"cannot chain from a {type(v).__name__} with no run_id — run the "
-                "producing stage with log_to_wandb=True."
+                f"cannot chain from a {type(v).__name__} with no run_id — either "
+                "chain W&B-free via its snapshot hash, or run the producing stage "
+                "with W&B logging enabled (set wandb_entity/wandb_project)."
             )
         return v.run_id
     return str(v)
+
+
+def _resolve_chain(stage: str, source: Any, source_wandb_id: Any) -> tuple[str | None, str | None]:
+    """Resolve the chaining tokens for a stage that consumes a previous stage's
+    output. Returns ``(snapshot_hash, wandb_run_id)`` with exactly one set:
+      - ``source`` -> its ``.snapshot_hash`` (or a raw hash str): W&B-free path.
+      - ``source_wandb_id`` -> its ``.run_id`` (or a raw id str): W&B path.
+    """
+    snap = source.snapshot_hash if isinstance(source, StageArtifact) else source
+    wid = source_wandb_id.run_id if isinstance(source_wandb_id, StageArtifact) else source_wandb_id
+    if (snap is None) == (wid is None):
+        raise ValueError(
+            f"{stage} requires exactly one of `source` (an artifact or git snapshot "
+            "hash, W&B-free) or `source_wandb_id` (a W&B run id) — got "
+            + ("both" if snap is not None else "neither")
+            + "."
+        )
+    return snap, wid
 
 
 # --------------------------------- config -----------------------------------
@@ -78,7 +97,11 @@ class SynnoConfig:
     db_storage: DBStorage = DBStorage.IN_MEMORY
     usecase: Usecase = Usecase.OLAP
     queries: str = "1"
-    log_to_wandb: bool = True          # required to chain stages
+    # wandb is opt-in and has no separate on/off flag: it is enabled iff a
+    # ``wandb_entity`` or ``wandb_project`` is set. With neither set nothing
+    # wandb-related runs — no login, init, or logging.
+    wandb_entity: str | None = None    # None -> the user's own default W&B entity
+    wandb_project: str | None = None   # None -> the default "SynnoDB" project
     auto_confirm: bool = True          # --auto_u
     auto_finish: bool = True
     disable_openai_tracing: bool = True
@@ -102,11 +125,15 @@ class SynnoConfig:
         ]
         if self.workspace:
             argv += ["--workspace", self.workspace]
+        if self.wandb_entity:
+            argv += ["--wandb_entity", self.wandb_entity]
+        if self.wandb_project:
+            argv += ["--wandb_project", self.wandb_project]
         for name, on in (
             ("auto_u", self.auto_confirm),
             ("auto_finish", self.auto_finish),
             ("disable_openai_tracing", self.disable_openai_tracing),
-            ("log_to_wandb", self.log_to_wandb),
+            ("log_to_wandb", self.wandb_enabled),
             ("disable_repo_sync", self.disable_repo_sync),
             ("notify", self.notify),
             ("do_not_cache", self.do_not_cache),
@@ -115,13 +142,20 @@ class SynnoConfig:
                 argv.append(f"--{name}")
         return argv + list(self.extra_flags)
 
+    @property
+    def wandb_enabled(self) -> bool:
+        """wandb is on iff an entity or project is set."""
+        return self.wandb_entity is not None or self.wandb_project is not None
+
 
 # ---------------------- result builders (workspace -> artifact) -------------
 # Each reads the stage's produced artifact out of the run's workspace and wraps
-# it with provenance (run_id, workspace, config). Signature is uniform so the
-# generic run() can dispatch on the Stage.
+# it with provenance (run_id, snapshot_hash, workspace, config). Signature is
+# uniform so the generic run() can dispatch on the Stage.
 
-ResultBuilder = Callable[["str | None", Path, "SynnoConfig", "dict[str, Any]"], StageArtifact]
+ResultBuilder = Callable[
+    ["str | None", "str | None", Path, "SynnoConfig", "dict[str, Any]"], StageArtifact
+]
 
 
 def _engine_files(workspace: Path) -> dict[str, str]:
@@ -134,30 +168,30 @@ def _engine_files(workspace: Path) -> dict[str, str]:
     return files
 
 
-def _build_artifact(run_id, workspace, config, inputs) -> StageArtifact:
-    return StageArtifact(run_id, workspace, config)
+def _build_artifact(run_id, snapshot_hash, workspace, config, inputs) -> StageArtifact:
+    return StageArtifact(run_id, workspace, config, snapshot_hash=snapshot_hash)
 
 
-def _build_storage_plan(run_id, workspace, config, inputs) -> StoragePlan:
+def _build_storage_plan(run_id, snapshot_hash, workspace, config, inputs) -> StoragePlan:
     path = workspace / "storage_plan.txt"
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    return StoragePlan(run_id, workspace, config, path, text)
+    return StoragePlan(run_id, workspace, config, path, text, snapshot_hash=snapshot_hash)
 
 
-def _build_base_impl(run_id, workspace, config, inputs) -> BaseImplementation:
-    return BaseImplementation(run_id, workspace, config, _engine_files(workspace))
+def _build_base_impl(run_id, snapshot_hash, workspace, config, inputs) -> BaseImplementation:
+    return BaseImplementation(run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash)
 
 
-def _build_optimized(run_id, workspace, config, inputs) -> OptimizedImplementation:
-    return OptimizedImplementation(run_id, workspace, config, _engine_files(workspace))
+def _build_optimized(run_id, snapshot_hash, workspace, config, inputs) -> OptimizedImplementation:
+    return OptimizedImplementation(run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash)
 
 
-def _build_multithreaded(run_id, workspace, config, inputs) -> MultiThreadedImplementation:
-    return MultiThreadedImplementation(run_id, workspace, config, _engine_files(workspace))
+def _build_multithreaded(run_id, snapshot_hash, workspace, config, inputs) -> MultiThreadedImplementation:
+    return MultiThreadedImplementation(run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash)
 
 
-def _build_correctness(run_id, workspace, config, inputs) -> CorrectnessReport:
-    return CorrectnessReport(run_id, workspace, config, float(inputs["target_sf"]))
+def _build_correctness(run_id, snapshot_hash, workspace, config, inputs) -> CorrectnessReport:
+    return CorrectnessReport(run_id, workspace, config, float(inputs["target_sf"]), snapshot_hash=snapshot_hash)
 
 
 # --------------------------------- stages -----------------------------------
@@ -206,22 +240,35 @@ def _register_olap_stages() -> None:
     register_stage(Stage(
         "runOptimLoop", "synnodb.run_optim_loop", olap,
         result=_build_optimized,
-        params=(StageParam("base_impl", "--base_impl_run_id"),),
+        params=(StageParam("base_impl", "--base_impl_run_id", required=False),
+                StageParam("base_impl_snapshot", "--base_impl_snapshot", required=False)),
         flags=bespoke,
     ))
     register_stage(Stage(
         "addMultiThreading", "synnodb.run_add_multi_threading", olap,
         result=_build_multithreaded,
-        params=(StageParam("optimized", "--optim_run_id"),),
+        params=(StageParam("optimized", "--optim_run_id", required=False),
+                StageParam("optim_snapshot", "--optim_snapshot", required=False)),
         flags=bespoke,
     ))
     register_stage(Stage(
         "checkSfCorrectness", "synnodb.run_check_sf_correctness", olap,
         result=_build_correctness,
-        params=(StageParam("source", "--source_run_id"),
+        params=(StageParam("source", "--source_run_id", required=False),
+                StageParam("source_snapshot", "--source_snapshot", required=False),
+                StageParam("source_prepare_mode", "--source_prepare_mode", required=False),
                 StageParam("target_sf", "--target_sf")),
         flags=bespoke,
     ))
+
+
+# Source artifact type -> the conv_mode CHECK_SF must replay its prepare from,
+# for the W&B-free path (the W&B path reads it from the source run's config).
+_SOURCE_PREPARE_MODE = {
+    "BaseImplementation": "base",
+    "OptimizedImplementation": "optim",
+    "MultiThreadedImplementation": "mt",
+}
 
 
 _register_olap_stages()
@@ -397,9 +444,13 @@ class SynnoDB:
             elif p.required:
                 raise TypeError(f"stage {st.name!r} requires {p.kw!r}")
         module = importlib.import_module(st.module)         # heavy import, lazy
-        run_id = module.main(module.build_parser().parse_args(argv))
+        result = module.main(module.build_parser().parse_args(argv))
+        # main() returns a RunResult(run_id, snapshot_hash); tolerate a bare run id
+        # string from any stage not yet migrated.
+        run_id = getattr(result, "run_id", result)
+        snapshot_hash = getattr(result, "snapshot_hash", None)
         workspace = settings.get_workspace_dir(cfg.workspace)
-        return st.result(run_id, workspace, cfg, inputs)
+        return st.result(run_id, snapshot_hash, workspace, cfg, inputs)
 
     # ---- ergonomic named methods (OLAP) --------------------------------
     def createStoragePlan(self, **inputs: Any) -> StoragePlan:
@@ -442,13 +493,55 @@ class SynnoDB:
             **inputs,
         )
 
-    def runOptimLoop(self, base_impl: Any, **inputs: Any) -> OptimizedImplementation:
-        return self.run("runOptimLoop", base_impl=base_impl, **inputs)  # type: ignore[return-value]
-
-    def addMultiThreading(self, optimized: Any, **inputs: Any) -> MultiThreadedImplementation:
-        return self.run("addMultiThreading", optimized=optimized, **inputs)  # type: ignore[return-value]
-
-    def checkSfCorrectness(self, source: Any, target_sf: float, **inputs: Any) -> CorrectnessReport:
+    def runOptimLoop(
+        self, base_impl: Any = None, *, base_impl_wandb_id: Any = None, **inputs: Any
+    ) -> OptimizedImplementation:
+        """Optimize a base implementation. Provide exactly one of:
+          - ``base_impl``: a ``BaseImplementation`` artifact (or raw git snapshot
+            hash) — W&B-free; the snapshot is restored from the local repo.
+          - ``base_impl_wandb_id``: the W&B run id of the base-impl run (or an
+            artifact whose ``.run_id`` is used)."""
+        snap, wid = _resolve_chain("runOptimLoop", base_impl, base_impl_wandb_id)
         return self.run(  # type: ignore[return-value]
-            "checkSfCorrectness", source=source, target_sf=target_sf, **inputs
+            "runOptimLoop", base_impl_snapshot=snap, base_impl=wid, **inputs
+        )
+
+    def addMultiThreading(
+        self, optimized: Any = None, *, optimized_wandb_id: Any = None, **inputs: Any
+    ) -> MultiThreadedImplementation:
+        """Add multi-threading to an optimized implementation. Provide exactly one
+        of ``optimized`` (an ``OptimizedImplementation`` artifact / raw snapshot
+        hash, W&B-free) or ``optimized_wandb_id`` (the optim run's W&B id)."""
+        snap, wid = _resolve_chain("addMultiThreading", optimized, optimized_wandb_id)
+        return self.run(  # type: ignore[return-value]
+            "addMultiThreading", optim_snapshot=snap, optimized=wid, **inputs
+        )
+
+    def checkSfCorrectness(
+        self,
+        source: Any = None,
+        *,
+        target_sf: float,
+        source_wandb_id: Any = None,
+        source_prepare_mode: str | None = None,
+        **inputs: Any,
+    ) -> CorrectnessReport:
+        """Validate an engine at a larger scale factor. Provide exactly one of
+        ``source`` (any engine artifact / raw snapshot hash, W&B-free) or
+        ``source_wandb_id`` (the producing run's W&B id).
+
+        On the W&B-free path the source run's ``conv_mode`` is needed to replay
+        its prepare steps: it is inferred from the ``source`` artifact's type, or
+        pass ``source_prepare_mode`` explicitly ('base' / 'optim' / 'mt') when
+        ``source`` is a raw snapshot hash."""
+        snap, wid = _resolve_chain("checkSfCorrectness", source, source_wandb_id)
+        if snap is not None and source_prepare_mode is None and isinstance(source, StageArtifact):
+            source_prepare_mode = _SOURCE_PREPARE_MODE.get(type(source).__name__)
+        return self.run(  # type: ignore[return-value]
+            "checkSfCorrectness",
+            source_snapshot=snap,
+            source=wid,
+            source_prepare_mode=source_prepare_mode,
+            target_sf=target_sf,
+            **inputs,
         )
