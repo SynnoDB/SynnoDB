@@ -28,6 +28,8 @@ import threading
 import time
 from pathlib import Path
 
+import psycopg2
+
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.workloads.dataset.dataset_tables_dict import get_dataset_name
 
@@ -75,6 +77,34 @@ class _UmbraHandler(http.server.BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"error": "Use POST /query"})
 
+    @staticmethod
+    def _execute(sql: str, sf, reconnect: bool = False):
+        """Run a query against the SF connection, returning (cols, rows, time_ms).
+
+        When ``reconnect`` is set, the per-SF connection is rebuilt first to
+        recover from a dropped/closed Umbra connection.
+        """
+        runner = STATE.runner
+        assert runner is not None, "Runner not initialized"
+        if reconnect:
+            runner.reconnect_sf(sf)
+        else:
+            runner._switch_sf(sf)
+        assert runner._con is not None, "Umbra connection not initialized"
+        cur = runner._con.cursor()
+        try:
+            t0 = time.perf_counter()
+            cur.execute(sql)
+            rows = cur.fetchall()
+            time_ms = (time.perf_counter() - t0) * 1000.0
+            cols = [d[0] for d in cur.description] if cur.description else []
+            return cols, rows, time_ms
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
     def do_POST(self):
         if self.path != "/query":
             self._send_json(404, {"error": "Unknown endpoint"})
@@ -100,32 +130,42 @@ class _UmbraHandler(http.server.BaseHTTPRequestHandler):
 
         with STATE.lock:
             try:
-                runner = STATE.runner
-                assert runner is not None, "Runner not initialized"
-                runner._switch_sf(sf)
-                assert runner._con is not None, "Umbra connection not initialized"
-                cur = runner._con.cursor()
-                t0 = time.perf_counter()
-                cur.execute(sql)
-                rows = cur.fetchall()
-                time_ms = (time.perf_counter() - t0) * 1000.0
-                logger.info(
-                    "TELEMETRY run_id=%s engine=umbra time_ms=%.1f sf=%s",
-                    run_id,
-                    time_ms,
-                    sf,
+                cols, rows, time_ms = self._execute(sql, sf)
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
+                # The server dropped the connection (crash/restart, OOM-killed
+                # query, or a stale cached connection). Reconnect and retry once.
+                logger.warning(
+                    "Umbra connection lost (%s); reconnecting and retrying.", exc
                 )
-                cols = [d[0] for d in cur.description] if cur.description else []
-                buf = io.StringIO()
-                writer = csv_module.writer(buf)
-                writer.writerow(cols)
-                writer.writerows(rows)
-                csv_text = buf.getvalue()
+                try:
+                    cols, rows, time_ms = self._execute(sql, sf, reconnect=True)
+                except Exception as exc2:
+                    logger.exception("Umbra query failed after reconnect")
+                    self._send_json(500, {"error": str(exc2)})
+                    return
+            except psycopg2.Error as exc:
+                # Malformed SQL from the client (e.g. invalid date literal). This
+                # is a client error, not a service failure — return 400 so it
+                # does not raise a spurious 5xx crash alert.
+                logger.info("Umbra query rejected: %s", str(exc).strip())
+                self._send_json(400, {"error": str(exc).strip()})
+                return
             except Exception as exc:
                 logger.exception("Umbra query failed")
                 self._send_json(500, {"error": str(exc)})
                 return
 
+        logger.info(
+            "TELEMETRY run_id=%s engine=umbra time_ms=%.1f sf=%s",
+            run_id,
+            time_ms,
+            sf,
+        )
+        buf = io.StringIO()
+        writer = csv_module.writer(buf)
+        writer.writerow(cols)
+        writer.writerows(rows)
+        csv_text = buf.getvalue()
         self._send_json(200, {"run_id": run_id, "csv": csv_text, "time_ms": time_ms})
 
 
