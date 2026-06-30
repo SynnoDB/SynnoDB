@@ -266,10 +266,10 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
 
     framework_code_content = get_framework_version_artifacts_str()
 
-    # Dynamic prepare mode of the source run, only set for CHECK_SF (where the
-    # prepare steps and parallelism are replayed from the source run via
-    # args.prepare_mode). None for every other conv mode.
-    source_run_prepare_mode = getattr(args, "prepare_mode", None)
+    # Stage name of the source run, only set for CHECK_SF (where the prepare
+    # steps and parallelism are replayed from the source run's stage). None for
+    # every other stage.
+    source_stage_name = getattr(args, "source_stage_name", None)
 
     if usecase == Usecase.OLAP:
         prepare_ws = OLAPPrepareWorkspace(
@@ -298,7 +298,7 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
             snapshotter=snapshotter,
             snapshot=args.start_snapshot,
             prepare_fn=spec.prepare,
-            source_run_prepare_mode=source_run_prepare_mode,
+            source_stage_name=source_stage_name,
             usecase_prepare_args=usecase_prepare_args,
             do_not_cache=args.do_not_cache,
             conv_name=args.conv_name,
@@ -342,14 +342,9 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     run_stats_collector = RunStatsCollector(**collector_args)
 
     # run tool parallelism setup (must be determined before QueryValidator so the
-    # num_threads value is included in the query-cache key)
-    # For CHECK_SF the need for parallelism is derived from the dynamic prepare
-    # mode replayed from the source run; every other mode uses spec.needs_parallelism.
-    if source_run_prepare_mode is not None:
-        effective_needs_parallelism = source_run_prepare_mode == "mt"
-    else:
-        effective_needs_parallelism = spec.needs_parallelism
-    if effective_needs_parallelism:
+    # num_threads value is included in the query-cache key). Computed (and logged
+    # to W&B) in run_conv_wrapper; for CHECK_SF it reflects the source run's stage.
+    if args.needs_parallelism:
         parallelism = True
         _, core_ids = get_cores_for_current_machine(
             leave_core_0_out=True,
@@ -716,6 +711,21 @@ def run_conv_wrapper(
 
     args.db_storage = get_effective_db_storage(args.usecase, args.db_storage)
     args.log_to_wandb = getattr(args, "log_to_wandb", False)
+    # The stage identity drives run naming and is logged to W&B (CHECK_SF reads it
+    # back off a source run to replay that stage's prepare).
+    args.stage_name = spec.name
+
+    # Whether this run executes queries with parallelism. Logged to W&B as a stable,
+    # stage-name-independent property so downstream consumers (e.g. benchmark replay)
+    # can tell multi-threaded runs apart without matching on the user-defined stage
+    # name. For CHECK_SF it is the source run's stage that determines this.
+    source_stage_name = getattr(args, "source_stage_name", None)
+    if source_stage_name is not None:
+        from synnodb.api import get_stage
+
+        args.needs_parallelism = get_stage(source_stage_name).needs_parallelism
+    else:
+        args.needs_parallelism = spec.needs_parallelism
 
     _setup()
     if args.continue_run:
@@ -725,7 +735,7 @@ def run_conv_wrapper(
 
     # assemble conv name
     conv_name, conv_name_withdatetime = generate_conv_name(
-        conv_type=args.conv_mode,
+        stage_name=spec.name,
         benchmark=args.benchmark,
         queries_str=args.queries_str,
         model=args.model,
@@ -900,7 +910,7 @@ if __name__ == "__main__":
         include_auto_finish=True,
         include_keep_csv=True,
         include_disable_valtool=True,
-        include_conv_mode=True,
+        include_stage=True,
         include_run_tool_offer_trace_option=True,
         include_bespoke_storage=True,
         include_only_from_llm_cache=True,
@@ -919,11 +929,11 @@ if __name__ == "__main__":
     args.write_query_and_args_files = True
 
     if args.command == "manual":
-        # the manual debug entry point is the only consumer that resolves a spec
-        # by name; the run_*.py scripts pass their own spec directly.
+        # the manual debug entry point resolves a stage by name; the SynnoDB API
+        # passes its stage directly.
         from synnodb.conversations.manual_specs import get_spec
 
-        spec = get_spec(args.conv_mode)
+        spec = get_spec(args.stage)
         run_conv_wrapper(args, run_config=None, spec=spec)
     else:
         raise Exception(f"Unknown {args.command}")

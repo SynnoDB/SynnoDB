@@ -34,7 +34,6 @@ from synnodb.observability.logging.wandb_api_helper import (
 )
 from synnodb.utils.cli_config import RunConfig, Usecase
 from synnodb.utils.confirm_dialog import await_user_confirmation
-from synnodb.utils.conv_name_utils import ConvMode
 from synnodb.utils.gen_common import parse_query_ids
 from synnodb.utils.utils import DBStorage
 
@@ -185,7 +184,6 @@ def _config_storage_plan(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfi
     return RunConfig(
         **_base_run_config(cfg),
         query_list=",".join(map(str, _parse_queries(cfg))),
-        conv_mode=ConvMode.STORAGE_PLAN,
         bespoke_storage=True,
     )
 
@@ -216,7 +214,6 @@ def _config_base_impl(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
 
     return RunConfig(
         **_base_run_config(cfg),
-        conv_mode=ConvMode.BASE,  # autonomous conversation, not scripted
         query_list=",".join(map(str, query_ids)),
         keep_csv=False,
         bespoke_storage=True,
@@ -254,7 +251,6 @@ def _config_optim(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
 
     return RunConfig(
         **_base_run_config(cfg),
-        conv_mode=ConvMode.OPTIM,  # delegate the optimization loop to the conversation
         query_list=",".join(map(str, query_ids)),
         start_snapshot=commit_hash,
         storage_plan_snapshot=None,
@@ -288,7 +284,6 @@ def _config_make_mt(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
 
     return RunConfig(
         **_base_run_config(cfg),
-        conv_mode=ConvMode.MAKE_MT,  # delegate the optimization loop to the conversation
         query_list=",".join(map(str, query_ids)),
         start_snapshot=commit_hash,
         storage_plan_snapshot=None,
@@ -322,16 +317,16 @@ def _config_check_sf(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
     )
 
     # CHECK_SF replays the source run's prepare steps, so it needs that run's
-    # conv_mode. The W&B path reads it from the source run config; the W&B-free
-    # path is told it explicitly via source_prepare_mode (the API derives it from
-    # the source artifact's type).
+    # stage. The W&B path reads it from the source run config; the W&B-free path
+    # is told it explicitly via source_stage (the API derives it from the source
+    # artifact's type).
     if source_config is not None:
-        prepare_mode = source_config["conv_mode"]
+        source_stage_name = source_config["stage_name"]
     else:
-        prepare_mode = inputs.get("source_prepare_mode")
-        assert prepare_mode is not None, (
-            "source_prepare_mode is required with a raw source snapshot (the source "
-            "run's conv_mode, e.g. 'base', 'optim', or 'mt')."
+        source_stage_name = inputs.get("source_stage")
+        assert source_stage_name is not None, (
+            "source_stage is required with a raw source snapshot (the source run's "
+            "stage, e.g. 'createBaseImpl', 'runOptimLoop', or 'addMultiThreading')."
         )
 
     # whole numbers format nicer in prompts (100.0 -> 100)
@@ -340,8 +335,7 @@ def _config_check_sf(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
 
     return RunConfig(
         **_base_run_config(cfg),
-        conv_mode=ConvMode.CHECK_SF,
-        prepare_mode=prepare_mode,
+        source_stage_name=source_stage_name,
         query_list=",".join(map(str, query_ids)),
         start_snapshot=commit_hash,
         storage_plan_snapshot=None,
@@ -465,7 +459,6 @@ def _factory_check_sf(ctx: "FrameworkContext"):
 # ------------------------------- registration -------------------------------
 register_stage(Stage(
     name="createStoragePlan",
-    conv_mode=ConvMode.STORAGE_PLAN,
     usecases=_OLAP,
     build_config=_config_storage_plan,
     prepare=prepare_storage_plan,
@@ -477,7 +470,6 @@ register_stage(Stage(
 
 register_stage(Stage(
     name="createBaseImpl",
-    conv_mode=ConvMode.BASE,
     usecases=_OLAP,
     build_config=_config_base_impl,
     prepare=prepare_base,
@@ -489,7 +481,6 @@ register_stage(Stage(
 
 register_stage(Stage(
     name="runOptimLoop",
-    conv_mode=ConvMode.OPTIM,
     usecases=_OLAP,
     build_config=_config_optim,
     prepare=prepare_optim,
@@ -501,7 +492,6 @@ register_stage(Stage(
 
 register_stage(Stage(
     name="addMultiThreading",
-    conv_mode=ConvMode.MAKE_MT,
     usecases=_OLAP,
     build_config=_config_make_mt,
     prepare=prepare_mt,
@@ -511,12 +501,11 @@ register_stage(Stage(
     result=_build_multithreaded,
 ))
 
-# Dynamic prepare: CHECK_SF replays the source run's prepare from prepare_mode,
-# which prepare_replay_source_run reads off the RunConfig; main.py resolves
-# parallelism from it too.
+# Dynamic prepare: CHECK_SF replays the source run's prepare. The source stage
+# name is on the RunConfig; prepare_replay_source_run resolves that stage and
+# runs its prepare, and main.py resolves parallelism from it too.
 register_stage(Stage(
     name="checkSfCorrectness",
-    conv_mode=ConvMode.CHECK_SF,
     usecases=_OLAP,
     build_config=_config_check_sf,
     prepare=prepare_replay_source_run,

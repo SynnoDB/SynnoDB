@@ -183,8 +183,7 @@ def _build_correctness(run_id, snapshot_hash, workspace, config, inputs) -> Corr
 # synnodb/stages.py, imported lazily by run() so plain ``import synnodb`` stays light.
 @dataclass(frozen=True)
 class Stage:
-    name: str                                  # "createStoragePlan"
-    conv_mode: str                             # ConvMode this stage produces
+    name: str                                  # "createStoragePlan" — the run-type identity
     usecases: frozenset[Usecase]
     build_config: "Callable[[SynnoConfig, dict[str, Any]], RunConfig]"
     prepare: "Callable[[PrepareContext], str]"
@@ -221,12 +220,20 @@ def all_stages() -> tuple[Stage, ...]:
     return tuple(_REGISTRY.values())
 
 
-# Source artifact type -> the conv_mode CHECK_SF must replay its prepare from,
+def get_stage(name: str) -> Stage:
+    """Look up a registered stage by name (loads the catalog on first call)."""
+    _load_stages()
+    if name not in _REGISTRY:
+        raise ValueError(f"Unknown stage {name!r}. Known stages: {sorted(_REGISTRY)}")
+    return _REGISTRY[name]
+
+
+# Source artifact type -> the stage name CHECK_SF must replay its prepare from,
 # for the W&B-free path (the W&B path reads it from the source run's config).
-_SOURCE_PREPARE_MODE = {
-    "BaseImplementation": "base",
-    "OptimizedImplementation": "optim",
-    "MultiThreadedImplementation": "mt",
+_SOURCE_STAGE_NAME = {
+    "BaseImplementation": "createBaseImpl",
+    "OptimizedImplementation": "runOptimLoop",
+    "MultiThreadedImplementation": "addMultiThreading",
 }
 
 
@@ -474,25 +481,25 @@ class SynnoDB:
         *,
         target_sf: float,
         source_wandb_id: Any = None,
-        source_prepare_mode: str | None = None,
+        source_stage: str | None = None,
         **inputs: Any,
     ) -> CorrectnessReport:
         """Validate an engine at a larger scale factor. Provide exactly one of
         ``source`` (any engine artifact / raw snapshot hash, W&B-free) or
         ``source_wandb_id`` (the producing run's W&B id).
 
-        On the W&B-free path the source run's ``conv_mode`` is needed to replay
-        its prepare steps: it is inferred from the ``source`` artifact's type, or
-        pass ``source_prepare_mode`` explicitly ('base' / 'optim' / 'mt') when
-        ``source`` is a raw snapshot hash."""
+        On the W&B-free path the source run's stage is needed to replay its
+        prepare steps: it is inferred from the ``source`` artifact's type, or
+        pass ``source_stage`` explicitly (e.g. 'createBaseImpl', 'runOptimLoop',
+        'addMultiThreading') when ``source`` is a raw snapshot hash."""
         snap, wid = _resolve_chain("checkSfCorrectness", source, source_wandb_id)
-        if snap is not None and source_prepare_mode is None and isinstance(source, StageArtifact):
-            source_prepare_mode = _SOURCE_PREPARE_MODE.get(type(source).__name__)
+        if snap is not None and source_stage is None and isinstance(source, StageArtifact):
+            source_stage = _SOURCE_STAGE_NAME.get(type(source).__name__)
         return self.run(  # type: ignore[return-value]
             "checkSfCorrectness",
             source_snapshot=snap,
             source=wid,
-            source_prepare_mode=source_prepare_mode,
+            source_stage=source_stage,
             target_sf=target_sf,
             **inputs,
         )
