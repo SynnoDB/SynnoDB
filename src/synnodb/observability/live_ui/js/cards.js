@@ -44,6 +44,20 @@ function updateHeaderMeta(meta = {}) {
   }
   badge.textContent = modeLabel;
   badge.className = 'mode-badge ' + (isStandalone ? 'mode-standalone' : 'mode-live');
+
+  // The code inspector only has a workspace to serve when a live dashboard drain
+  // backs the source: the in-process live run (no _source_type) or a proxied
+  // remote live dashboard. DuckDB / W&B sources have no live workspace, so hide
+  // the button (and close the modal if it is open) for them.
+  const codeBtn = document.getElementById('code-btn');
+  if (codeBtn) {
+    const codeAvailable = !meta._source_type || meta._source_type === 'remote';
+    codeBtn.hidden = !codeAvailable;
+    if (!codeAvailable) {
+      const codeModal = document.getElementById('code-modal');
+      if (codeModal && !codeModal.hidden) codeModal.hidden = true;
+    }
+  }
 }
 
 // ── Cost mode toggle (calculatorial vs after-cache) ──────────────────────
