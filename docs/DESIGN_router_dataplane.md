@@ -251,7 +251,7 @@ it match a template?" by comparing the logged `normalized` keys.
 | C++ `ReadArrowTableFromShm` / `WriteArrowTableToShm` (zero-copy ingest+egress) | `cpp_helpers/shm_arrow_{loader,writer}.hpp` | **done - compiled & round-tripped vs Python (libarrow 23.0.1)** ✓ |
 | Typed, exact Arrow egress (decimal128/256, int widths, float, bool, date, timestamp, NULLs) via `Cast` | `cpp_helpers/column_egress.hpp` | **done - compiled & egresses exact typed Arrow vs DuckDB** ✓ |
 | Wire shm headers + egress into the live engine build (compiler + templates) | `compiler_factory_olap.py`, `parquet_reader.cpp`, `query_impl.cpp`, `db_olap.cpp` | **integration step** - precise instructions in the header banners; needs the full engine build+data to validate |
-| Factory *calls* `write_manifest_for_engine` at finalization + chain-on-artifact | factory stages (`run_gen_base_impl`, `api.py`) | one-line drop-in (documented in `manifest.py`); needs factory env |
+| Factory *calls* `write_manifest_for_engine` at finalization + chain-on-artifact | factory stages (`stages.py`, `api.py`) | one-line drop-in (documented in `manifest.py`); needs factory env |
 
 **Test coverage: 101 new tests green (222 repo total, zero regressions).** Python:
 `test_duckdb_compat.py` (drop-in conformance), `test_router.py`

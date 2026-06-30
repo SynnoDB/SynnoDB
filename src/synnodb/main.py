@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 
-from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
+from synnodb.api import Stage
+from synnodb.conversations.conversation_spec import FrameworkContext
 from synnodb.conversations.filenames import get_filenames, get_plan_filename
 from synnodb.conversations.prompts_gen import gen_incorrect_output_prompt
 from synnodb.conversations.supervision_agent import SupervisionAgent
@@ -70,7 +71,7 @@ def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStora
     return db_storage
 
 
-async def main(args: argparse.Namespace, spec: ConversationSpec) -> str | None:
+async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     # check all dependencies exist
     test_deps()
 
@@ -702,7 +703,7 @@ def _run_coroutine(coro):
 def run_conv_wrapper(
     args: argparse.Namespace | None,
     run_config: RunConfig | None,
-    spec: ConversationSpec,
+    spec: Stage,
 ) -> RunResult:
     # assemble args from run_config if main.py is started from run scripts
     if args is None and run_config is None:

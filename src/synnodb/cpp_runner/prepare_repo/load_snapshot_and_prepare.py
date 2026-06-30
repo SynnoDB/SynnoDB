@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PrepareContext:
-    """Inputs handed to a prepare function (``ConversationSpec.prepare``).
+    """Inputs handed to a prepare function (``Stage.prepare``).
 
     A prepare function brings the workspace into the state a given conversation
     expects by invoking the relevant ``prepare_workspace_provider`` steps.
