@@ -139,12 +139,13 @@ def _duckdb_snapshot(db_path: Path) -> str:
     return json.dumps({"meta": meta, "steps": steps, "data": data})
 
 
-def _wandb_snapshot(run_id: str, entity: str, project: str) -> str:
+def _wandb_snapshot(run_id: str, entity: str | None, project: str | None) -> str:
     """Fetch W&B run history and return a /api/stats JSON string."""
-    import wandb
+    from synnodb.observability.plots.utils.wandb_utils import get_wandb_run
 
-    api = wandb.Api()
-    run = api.run(f"{entity}/{project}/{run_id}")
+    # Delegate path construction so a missing entity falls back to the caller's
+    # own default entity instead of a literal "None/<project>/<run_id>" path.
+    run = get_wandb_run(run_id=run_id, entity=entity, project=project)
 
     meta = {
         "run_name": run.name,
