@@ -282,6 +282,37 @@ def _require(cond: bool, msg: str) -> None:
         raise ValueError(msg)
 
 
+def _is_simple_scalar(v) -> bool:
+    """A single placeholder value the engine can read: a string or a number.
+
+    Bools/None/dicts/lists are not simple scalars - placeholder values must render to the
+    quoted string the generated C++ arg-parser reads into a ``std::string`` field. (A *list*
+    is an IN-list, handled separately by :func:`_value_wire_shape`.)"""
+    return isinstance(v, (str, int, float)) and not isinstance(v, bool)
+
+
+def _value_wire_shape(label: str, v) -> str:
+    """Classify one candidate placeholder value as ``"scalar"`` or ``"in_list"``.
+
+    The shape fixes the generated C++ field type (``std::string`` vs
+    ``std::vector<std::string>``), which is frozen from a single representative sample at
+    code-gen time. A placeholder must therefore never be able to draw *both* shapes, so callers
+    require one shape across a spec's whole value set. A list/tuple is an IN-list and must hold
+    only simple scalars (no nesting); everything else must itself be a simple scalar."""
+    if isinstance(v, (list, tuple)):
+        _require(
+            len(v) > 0 and all(_is_simple_scalar(e) for e in v),
+            f"{label}: IN-list value {v!r} must be a non-empty list of simple scalars "
+            f"(strings or numbers).",
+        )
+        return "in_list"
+    _require(
+        _is_simple_scalar(v),
+        f"{label}: value {v!r} must be a string or number (simple datatypes only).",
+    )
+    return "scalar"
+
+
 def _parse_number(ph: str, raw: dict, key: str, kind: str):
     _require(key in raw, f"'{ph}' ({kind} spec): missing required field '{key}'.")
     v = raw[key]
@@ -331,6 +362,12 @@ def _parse_scalar_spec(ph: str, raw: object):
             isinstance(vals, list) and len(vals) > 0,
             f"'{ph}' (categorical spec): 'values' must be a non-empty list.",
         )
+        shapes = {_value_wire_shape(f"'{ph}' (categorical spec)", v) for v in vals}
+        _require(
+            len(shapes) == 1,
+            f"'{ph}' (categorical spec): all values must share one shape - either all scalars "
+            f"or all IN-lists, not a mix (one wire type is frozen per placeholder at code-gen).",
+        )
         return CategoricalSpec(tuple(vals))
     raise ValueError(
         f"'{ph}': unknown parameter spec type {t!r}. Expected one of int/float/date/categorical."
@@ -373,6 +410,12 @@ def _parse_group_spec(idx: int, raw: object):
                 f"{label} (tuples): each row must be a list of {len(phs_t)} value(s) "
                 f"matching {phs_t}, got {r!r}.",
             )
+            for cell in r:
+                _require(
+                    _is_simple_scalar(cell),
+                    f"{label} (tuples): row value {cell!r} must be a simple scalar (string or "
+                    f"number); each correlated column binds one scalar placeholder.",
+                )
             out_rows.append(tuple(r))
         return TupleGroupSpec(phs_t, tuple(out_rows))
     if t == "sample":
@@ -381,13 +424,23 @@ def _parse_group_spec(idx: int, raw: object):
             isinstance(domain, list) and len(domain) > 0,
             f"{label} (sample): 'domain' must be a non-empty list.",
         )
+        for d in domain:
+            _require(
+                _is_simple_scalar(d),
+                f"{label} (sample): domain value {d!r} must be a simple scalar (string or "
+                f"number).",
+            )
         distinct = raw.get("distinct", True)
         _require(isinstance(distinct, bool), f"{label} (sample): 'distinct' must be a boolean.")
         if distinct:
+            # "distinct" means distinct *values*: dedupe by value (random.sample draws by
+            # position, so a domain like ["A","A","B"] could otherwise hand two placeholders
+            # the same value). Order-preserving so sampling stays deterministic.
+            domain = list(dict.fromkeys(domain))
             _require(
                 len(domain) >= len(phs_t),
                 f"{label} (sample): distinct draw of {len(phs_t)} needs a domain of at least "
-                f"{len(phs_t)} values, got {len(domain)}.",
+                f"{len(phs_t)} distinct values, got {len(domain)}.",
             )
         return SampleGroupSpec(phs_t, tuple(domain), distinct)
     raise ValueError(f"{label}: unknown group spec type {t!r}. Expected 'tuples' or 'sample'.")

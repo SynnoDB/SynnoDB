@@ -154,6 +154,23 @@ def test_categorical_sample_and_empty_raises():
         qp.parse_param_space({"R": {"type": "categorical", "values": []}}, None, "r=[R]")
 
 
+def test_categorical_all_in_lists_renders_as_in_list():
+    # A categorical whose values are all lists is a stable single-placeholder IN-list.
+    space = qp.parse_param_space(
+        {"SEGS": {"type": "categorical", "values": [["A", "B"], ["C"]]}}, None, "x in [SEGS]"
+    )
+    assert {space.sample(random.Random(s))["SEGS"] for s in range(20)} <= {"('A', 'B')", "('C')"}
+
+
+def test_categorical_mixed_scalar_and_in_list_raises():
+    # Mixing a scalar and an IN-list for one placeholder would make its wire type
+    # (std::string vs std::vector<std::string>) depend on which value the code-gen sample drew.
+    with pytest.raises(ValueError, match="must share one shape"):
+        qp.parse_param_space(
+            {"R": {"type": "categorical", "values": ["A", ["B", "C"]]}}, None, "r=[R]"
+        )
+
+
 # --- group specs -------------------------------------------------------------
 
 
@@ -178,6 +195,15 @@ def test_tuples_row_arity_mismatch_raises():
         )
 
 
+def test_tuples_rejects_non_scalar_cell():
+    with pytest.raises(ValueError, match="must be a simple scalar"):
+        qp.parse_param_space(
+            None,
+            [{"type": "tuples", "placeholders": ["A", "B"], "values": [["X", ["Y", "Z"]]]}],
+            "[A] [B]",
+        )
+
+
 def test_sample_group_distinct():
     space = qp.parse_param_space(
         None,
@@ -194,6 +220,38 @@ def test_sample_group_distinct_domain_too_small_raises():
             None,
             [{"type": "sample", "placeholders": ["I1", "I2", "I3"], "domain": ["a", "b"]}],
             "[I1] [I2] [I3]",
+        )
+
+
+def test_sample_group_distinct_dedupes_duplicate_domain():
+    # Duplicate values in the domain must not let a distinct draw repeat a value: dedupe by
+    # value so every placeholder still gets a distinct one.
+    space = qp.parse_param_space(
+        None,
+        [{"type": "sample", "placeholders": ["I1", "I2"], "domain": ["A", "A", "B", "C"]}],
+        "[I1] [I2]",
+    )
+    for s in range(50):
+        assign = space.sample(random.Random(s))
+        assert len(set(assign.values())) == 2  # never two A's
+
+
+def test_sample_group_distinct_insufficient_distinct_values_raises():
+    # Three placeholders but only two *distinct* domain values -> impossible distinct draw.
+    with pytest.raises(ValueError, match="needs a domain of at least"):
+        qp.parse_param_space(
+            None,
+            [{"type": "sample", "placeholders": ["I1", "I2", "I3"], "domain": ["A", "A", "B"]}],
+            "[I1] [I2] [I3]",
+        )
+
+
+def test_sample_group_rejects_non_scalar_domain_value():
+    with pytest.raises(ValueError, match="must be a simple scalar"):
+        qp.parse_param_space(
+            None,
+            [{"type": "sample", "placeholders": ["A", "B"], "domain": ["x", ["y", "z"]]}],
+            "[A] [B]",
         )
 
 
