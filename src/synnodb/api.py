@@ -108,6 +108,7 @@ class SynnoConfig:
     disable_repo_sync: bool = False
     notify: bool = False
     do_not_cache: bool = False
+    verbose: bool = False              # stream DEBUG logs to the console (logfile is always DEBUG)
     workspace: str | None = None       # run output dir; None -> local ./output
     extra_flags: tuple[str, ...] = ()  # escape hatch for any unmodelled CLI flag
 
@@ -429,7 +430,9 @@ class SynnoDB:
         return SynnoDB(dataclasses.replace(self.config, **overrides))
 
     # ---- generic engine -------------------------------------------------
-    def run(self, stage: str | Stage, /, **inputs: Any) -> StageArtifact:
+    def run(
+        self, stage: str | Stage, /, *, verbose: bool | None = None, **inputs: Any
+    ) -> StageArtifact:
         st = stage if isinstance(stage, Stage) else _REGISTRY[stage]
         cfg = self.config
         if cfg.usecase not in st.usecases:
@@ -438,6 +441,10 @@ class SynnoDB:
                 f"stage {st.name!r} serves usecases {allowed}, not {cfg.usecase.value!r}"
             )
         argv = cfg.to_argv() + list(st.flags)
+        # Per-call verbose overrides the driver default; either streams DEBUG logs
+        # to the console (the logfile is always DEBUG regardless).
+        if verbose if verbose is not None else cfg.verbose:
+            argv.append("--verbose")
         for p in st.params:
             if inputs.get(p.kw) is not None:
                 argv += [p.flag, _as_arg(inputs[p.kw])]
@@ -453,8 +460,10 @@ class SynnoDB:
         return st.result(run_id, snapshot_hash, workspace, cfg, inputs)
 
     # ---- ergonomic named methods (OLAP) --------------------------------
-    def createStoragePlan(self, **inputs: Any) -> StoragePlan:
-        return self.run("createStoragePlan", **inputs)  # type: ignore[return-value]
+    def createStoragePlan(
+        self, *, verbose: bool | None = None, **inputs: Any
+    ) -> StoragePlan:
+        return self.run("createStoragePlan", verbose=verbose, **inputs)  # type: ignore[return-value]
 
     def createBaseImpl(
         self,

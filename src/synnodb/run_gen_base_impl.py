@@ -314,6 +314,7 @@ class BaseArgs(TypedDict):
     only_from_cache: bool
     tool_search_tool: bool
     notify: bool
+    verbose: bool
     queries_str: str
     api_base: str | None
     glm_thinking: bool
@@ -324,6 +325,7 @@ def base_args_extract(args) -> BaseArgs:
     args_dict: BaseArgs = {
         "model": args.model,
         "notify": args.notify,
+        "verbose": getattr(args, "verbose", False),
         "disable_repo_sync": args.disable_repo_sync,
         "replay_cache": args.replay_cache,
         "benchmark": args.benchmark,
