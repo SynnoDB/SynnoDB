@@ -3,10 +3,11 @@ import argparse
 from synnodb.conversations.conversation_spec import ConversationSpec, FrameworkContext
 from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_optim
 from synnodb.main import run_conv_wrapper
-from synnodb.observability.logging.wandb_api_helper import (
-    wandb_retrieve_metrics_for_run,
+from synnodb.run_gen_base_impl import (
+    base_args,
+    base_args_extract,
+    resolve_source_snapshot,
 )
-from synnodb.run_gen_base_impl import base_args, base_args_extract, validate_snapshot
 from synnodb.utils.cli_config import RunConfig, add_common_args
 from synnodb.utils.conv_name_utils import ConvMode
 from synnodb.utils.gen_common import parse_query_ids
@@ -96,26 +97,20 @@ def main(args):
         )
         model_provider = args.model.split("/")[0]
 
-    # lookup git snapshot from wandb
-    wandb_id = args.base_impl_run_id
-    assert wandb_id is not None, (
-        "base_impl_run_id must be provided to fetch the git snapshot of the base implementation from wandb"
-    )
-    statistics, config, _ = wandb_retrieve_metrics_for_run(
-        benchmark, wandb_id, fetch_latest_runtimes=False
-    )
-    validate_snapshot(
-        config,
-        benchmark,
-        queries_str,
-        query_ids,
+    # The base implementation reaches us either as a git snapshot hash directly
+    # (W&B-free; restored from the local workspace repo) or via a W&B run id we
+    # resolve to that snapshot hash.
+    commit_hash, _ = resolve_source_snapshot(
+        snapshot=getattr(args, "base_impl_snapshot", None),
+        wandb_id=args.base_impl_run_id,
+        source_kind="base implementation",
+        snapshot_flag="--base_impl_snapshot",
+        wandb_flag="--base_impl_run_id",
+        benchmark=benchmark,
+        queries_str=queries_str,
+        query_ids=query_ids,
         db_storage=args.db_storage,
         model=args.model,
-    )
-
-    commit_hash = statistics["code/snapshot_hash"]
-    assert commit_hash != "N/A", (
-        f"Could not retrieve a valid commit hash from wandb for run {wandb_id} in benchmark {benchmark}. Got {commit_hash}."
     )
 
     # CLI --memory_budget_mb overrides the default; otherwise pick a RAM budget
@@ -153,7 +148,15 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--base_impl_run_id",
         type=str,
         default=None,
-        help="Wandb run id to read the base_impl from",
+        help="Wandb run id to read the base_impl snapshot from. Provide exactly "
+        "one of this or --base_impl_snapshot.",
+    )
+    parser.add_argument(
+        "--base_impl_snapshot",
+        type=str,
+        default=None,
+        help="Git snapshot hash of the base_impl supplied directly (W&B-free). "
+        "Provide exactly one of this or --base_impl_run_id.",
     )
 
     add_common_args(
