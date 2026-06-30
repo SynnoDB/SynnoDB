@@ -27,6 +27,7 @@ dependencies = [
     "pandas>=2.3.3",     # DuckDB .df() egress; common in user code
     "python-dotenv>=1.2.1",
     "ipykernel>=7.2.0",
+    "matplotlib>=3.10.9",
 ]
 
 [project.optional-dependencies]

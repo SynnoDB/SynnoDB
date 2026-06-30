@@ -2889,6 +2889,7 @@ source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
     { name = "ipykernel" },
+    { name = "matplotlib" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "python-dotenv" },
@@ -2944,6 +2945,7 @@ requires-dist = [
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.1.8" },
     { name = "landlock", marker = "extra == 'factory'", specifier = ">=1.0.0.dev5" },
     { name = "litellm", marker = "extra == 'factory'", specifier = ">=1.82.0" },
+    { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10.8" },
     { name = "nbformat", marker = "extra == 'notebook'", specifier = ">=5.10.4" },
     { name = "openai", marker = "extra == 'factory'", specifier = ">=2.11.0" },
