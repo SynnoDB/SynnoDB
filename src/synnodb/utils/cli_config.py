@@ -24,6 +24,7 @@ class RunConfig:
     queries_str: str
     notify: bool
     conv_mode: str  # scripted, optimization, ...
+    verbose: bool = False  # stream DEBUG logs to the console (logfile is always DEBUG)
     prepare_mode: str | None = None  # only necessary for check_sf conv mode
     start_snapshot: str | None = None
     storage_plan_snapshot: str | None = None
@@ -131,6 +132,15 @@ def add_common_args(
         dest="workspace_dir",
         default=None,
         help="Output/workspace directory (default: local ./output).",
+    )
+
+    # Always available: stream DEBUG-level logs to the console. Off by default —
+    # the full DEBUG log is always written to the logfile regardless.
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Stream verbose (DEBUG) logs to the console.",
     )
 
     # Number of parameter instantiations per query for the correctness sweep. None ->

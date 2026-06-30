@@ -1,5 +1,6 @@
 import logging
 import re
+import sys
 from pathlib import Path
 
 PLAIN = 25
@@ -41,11 +42,22 @@ class SuppressMessageFilter(logging.Filter):
 def setup_logging(
     level: int = logging.INFO,
     logfile: Path | None = None,
+    console_level: int | None = None,
 ) -> None:
+    # ``level`` is the root/file verbosity (kept high so the logfile captures
+    # everything). ``console_level`` independently throttles what reaches the
+    # terminal; default it to the quieter of INFO and ``level`` so a DEBUG file
+    # log doesn't flood the console. Pass console_level=DEBUG for verbose mode.
+    if console_level is None:
+        console_level = max(level, logging.INFO)
     handlers = []
 
-    # Console handler (colored)
-    console_handler = logging.StreamHandler()
+    # Console handler (colored). Route to stdout (not the default stderr) so that
+    # log lines and ordinary ``print`` output share one stream — otherwise tools
+    # like Jupyter/VSCode render stderr logs and stdout prints as two separate
+    # output blocks for the same cell.
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(console_level)
     console_handler.setFormatter(
         ColorFormatter(
             "%(asctime)s %(levelname)s:%(name)s:%(message)s",
@@ -56,7 +68,7 @@ def setup_logging(
     handlers.append(console_handler)
 
     # "Print-like" logs (custom level only)
-    plain_console_handler = logging.StreamHandler()
+    plain_console_handler = logging.StreamHandler(sys.stdout)
     plain_console_handler.setLevel(PLAIN)
     plain_console_handler.setFormatter(PlainFormatter())
     plain_console_handler.addFilter(lambda r: r.levelno == PLAIN)
@@ -109,6 +121,8 @@ def setup_logging(
             "Processing output item",
             "No conversation_id available for request",
             "Received model response",
+            "Tracing is diabled. Not creating trace",
+            "Setting current trace:",
         ],
     )
     logging.getLogger("openai.agents").addFilter(suppress)
@@ -125,3 +139,4 @@ def setup_logging(
         logging.getLogger("weave").setLevel(logging.WARNING)
         logging.getLogger("matplotlib").setLevel(logging.WARNING)
         logging.getLogger("anthropic").setLevel(logging.INFO)
+        logging.getLogger("asyncio").setLevel(logging.WARNING)
