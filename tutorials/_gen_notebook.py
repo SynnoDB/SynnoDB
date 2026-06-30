@@ -73,20 +73,32 @@ cells.append(md("""
 ### Register the BYO workload
 
 The workload is described by a single self-describing JSON file. Each entry carries its SQL
-template **and** the values for its `[PLACEHOLDER]` slots - one key per placeholder mapping
-to the list of values it should take across the sweep:
+template **and** a typed **spec** for each `[PLACEHOLDER]` slot - declaring its value *space*,
+which is sampled at run time. A scalar placeholder is an `int`/`float`/`date`/`categorical`
+spec; correlated or distinct placeholders share a `param_groups` spec:
 
 ```json
+"6": {
+  "sql": "... l_discount between [DISCOUNT] - 0.01 ... l_quantity < [QUANTITY] ...",
+  "params": {
+    "DATE":     { "type": "date",  "min": "1993-01-01", "max": "1997-01-01", "granularity": "year" },
+    "DISCOUNT": { "type": "float", "min": 0.02, "max": 0.09, "step": 0.01 },
+    "QUANTITY": { "type": "int",   "min": 24, "max": 25 }
+  }
+},
 "7": {
   "sql": "... n1.n_name = '[NATION1]' ... n2.n_name = '[NATION2]' ...",
-  "params": { "NATION1": ["GERMANY", "CHINA"], "NATION2": ["ROMANIA", "UNITED STATES"] }
+  "param_groups": [
+    { "type": "sample", "placeholders": ["NATION1", "NATION2"], "domain": ["GERMANY", "CHINA", ...], "distinct": true }
+  ]
 }
 ```
 
 `register_workload_from_json` reads it and derives the schema from the parquet via DuckDB.
-Per-placeholder lists are index-zipped into instantiations (so correlated placeholders stay
-aligned); a length-1 list broadcasts across the sweep. This is the shape a BI dashboard would
-fill - a slider per placeholder predefining its values.
+Each placeholder's spec is sampled with the run's seeded RNG (a range → a uniform draw, a
+`categorical` → a choice, a group → one joint row), so correlated placeholders stay aligned.
+The typed spec is exactly what a BI dashboard renders as a slider (`int`/`float`), a dropdown
+(`categorical`), or a date-picker (`date`).
 """))
 
 cells.append(code("""
@@ -109,8 +121,8 @@ print("Queries  :", spec.all_query_ids)
 """))
 
 cells.append(md("""
-Here is what the queries look like - SQL templates with `[PLACEHOLDER]` slots, plus the
-values supplied for them:
+Here is what the queries look like - SQL templates with `[PLACEHOLDER]` slots, plus the typed
+specs that define each slot's value space:
 """))
 
 cells.append(code("""
@@ -118,15 +130,16 @@ queries = json.loads(QUERIES_JSON.read_text())
 for qid, entry in queries.items():
     print(f"=== Q{qid} ===")
     print(entry["sql"][:240], "...")
-    print("params:", entry.get("params", {}))
+    print("params      :", entry.get("params", {}))
+    print("param_groups:", entry.get("param_groups", []))
     print()
 """))
 
 cells.append(md("""
 ### Draw parameter instantiations
 
-`query_gen_factory` fills the templates from the supplied value lists. We draw with a fixed
-seed so the instantiations are **identical** for the DuckDB and SynnoDB runs.
+`query_gen_factory` fills the templates by sampling each placeholder's spec. We draw with a
+fixed seed so the instantiations are **identical** for the DuckDB and SynnoDB runs.
 """))
 
 cells.append(code("""

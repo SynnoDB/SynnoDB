@@ -1,9 +1,10 @@
-"""Unit tests for template filling + explicit parameter expansion
+"""Unit tests for template filling + typed parameter specs
 (synnodb.workloads.query_params)."""
 from __future__ import annotations
 
 import datetime
 import decimal
+import random
 
 import pytest
 
@@ -40,60 +41,240 @@ def test_substitute_fills_template():
     assert "[DELTA]" not in sql and "interval '90' day" in sql
 
 
-def test_expand_no_placeholders():
-    assert qp.expand_param_grid("select count(*) from t", {}) == [{}]
+# --- parse_param_space: coverage / validation -------------------------------
 
 
-def test_expand_zips_into_instantiations():
-    out = qp.expand_param_grid("a=[X] and b=[Y]", {"X": [1, 2, 3], "Y": ["p", "q", "r"]})
-    assert out == [{"X": "1", "Y": "p"}, {"X": "2", "Y": "q"}, {"X": "3", "Y": "r"}]
+def test_no_placeholders_empty_space():
+    space = qp.parse_param_space(None, None, "select count(*) from t")
+    assert space.is_empty()
+    assert space.sample(random.Random(0)) == {}
 
 
-def test_expand_preserves_correlation():
-    # Distinct-nation pair: index i must keep (NATION1[i], NATION2[i]) aligned.
-    out = qp.expand_param_grid(
-        "n1='[NATION1]' or n2='[NATION2]'",
-        {"NATION1": ["FRANCE", "GERMANY"], "NATION2": ["GERMANY", "FRANCE"]},
-    )
-    assert out == [
-        {"NATION1": "FRANCE", "NATION2": "GERMANY"},
-        {"NATION1": "GERMANY", "NATION2": "FRANCE"},
-    ]
-
-
-def test_expand_length_one_broadcasts():
-    out = qp.expand_param_grid("a=[X] and b=[Y]", {"X": ["fixed"], "Y": [1, 2, 3]})
-    assert [a["X"] for a in out] == ["fixed", "fixed", "fixed"]
-    assert [a["Y"] for a in out] == ["1", "2", "3"]
-
-
-def test_expand_scalar_normalized_to_single():
-    out = qp.expand_param_grid("a=[X]", {"X": "FRANCE"})
-    assert out == [{"X": "FRANCE"}]
-
-
-def test_expand_in_list_nested():
-    out = qp.expand_param_grid("s in [SIZES]", {"SIZES": [["1", "3", "5"]]})
-    assert out == [{"SIZES": "('1', '3', '5')"}]
-
-
-def test_expand_inconsistent_lengths_raise():
-    with pytest.raises(ValueError, match="inconsistent number of values"):
-        qp.expand_param_grid("a=[X] and b=[Y]", {"X": [1, 2], "Y": [1, 2, 3]})
-
-
-def test_expand_missing_and_extra_keys_raise():
-    with pytest.raises(ValueError, match="missing="):
-        qp.expand_param_grid("a=[X] and b=[Y]", {"X": [1]})
-    with pytest.raises(ValueError, match="extra="):
-        qp.expand_param_grid("a=[X]", {"X": [1], "Z": [2]})
-
-
-def test_expand_empty_value_list_raises():
-    with pytest.raises(ValueError, match="empty"):
-        qp.expand_param_grid("a=[X]", {"X": []})
-
-
-def test_expand_params_for_static_query_raises():
+def test_no_placeholders_but_params_raises():
     with pytest.raises(ValueError, match="no placeholders"):
-        qp.expand_param_grid("select 1", {"X": [1]})
+        qp.parse_param_space({"X": {"type": "int", "min": 1, "max": 2}}, None, "select 1")
+
+
+def test_missing_and_extra_placeholders_raise():
+    with pytest.raises(ValueError, match="missing="):
+        qp.parse_param_space({"X": {"type": "int", "min": 1, "max": 2}}, None, "a=[X] b=[Y]")
+    with pytest.raises(ValueError, match="extra="):
+        qp.parse_param_space(
+            {"X": {"type": "int", "min": 1, "max": 2}, "Z": {"type": "int", "min": 1, "max": 2}},
+            None,
+            "a=[X]",
+        )
+
+
+def test_double_cover_raises():
+    with pytest.raises(ValueError, match="more than one spec"):
+        qp.parse_param_space(
+            {"A": {"type": "categorical", "values": ["x"]}},
+            [{"type": "sample", "placeholders": ["A", "B"], "domain": ["x", "y"]}],
+            "a=[A] b=[B]",
+        )
+
+
+def test_unknown_type_raises():
+    with pytest.raises(ValueError, match="unknown parameter spec type"):
+        qp.parse_param_space({"X": {"type": "wat"}}, None, "a=[X]")
+
+
+# --- scalar specs: sampling ---------------------------------------------------
+
+
+def test_int_spec_samples_on_grid():
+    space = qp.parse_param_space({"X": {"type": "int", "min": 60, "max": 120}}, None, "v=[X]")
+    rnd = random.Random(0)
+    vals = {int(space.sample(rnd)["X"]) for _ in range(200)}
+    assert vals and all(60 <= v <= 120 for v in vals)
+
+
+def test_int_spec_step():
+    space = qp.parse_param_space(
+        {"X": {"type": "int", "min": 0, "max": 10, "step": 5}}, None, "v=[X]"
+    )
+    rnd = random.Random(1)
+    assert {space.sample(rnd)["X"] for _ in range(50)} <= {"0", "5", "10"}
+
+
+def test_int_spec_min_gt_max_raises():
+    with pytest.raises(ValueError, match="min .* <= max"):
+        qp.parse_param_space({"X": {"type": "int", "min": 5, "max": 1}}, None, "v=[X]")
+
+
+def test_int_spec_bad_step_raises():
+    with pytest.raises(ValueError, match="step must be > 0"):
+        qp.parse_param_space({"X": {"type": "int", "min": 1, "max": 5, "step": 0}}, None, "v=[X]")
+
+
+def test_float_spec_exact_decimal_text():
+    space = qp.parse_param_space(
+        {"D": {"type": "float", "min": 0.02, "max": 0.09, "step": 0.01}}, None, "d=[D]"
+    )
+    rnd = random.Random(3)
+    vals = {space.sample(rnd)["D"] for _ in range(200)}
+    assert vals <= {"0.02", "0.03", "0.04", "0.05", "0.06", "0.07", "0.08", "0.09"}
+
+
+def test_date_spec_day_in_range():
+    space = qp.parse_param_space(
+        {"DT": {"type": "date", "min": "1995-03-01", "max": "1995-03-31", "granularity": "day"}},
+        None,
+        "d=[DT]",
+    )
+    rnd = random.Random(4)
+    for _ in range(50):
+        d = datetime.date.fromisoformat(space.sample(rnd)["DT"])
+        assert datetime.date(1995, 3, 1) <= d <= datetime.date(1995, 3, 31)
+
+
+def test_date_spec_month_snaps_to_first():
+    space = qp.parse_param_space(
+        {"DT": {"type": "date", "min": "1993-01-01", "max": "1997-10-01", "granularity": "month"}},
+        None,
+        "d=[DT]",
+    )
+    rnd = random.Random(5)
+    for _ in range(50):
+        d = datetime.date.fromisoformat(space.sample(rnd)["DT"])
+        assert d.day == 1 and 1993 <= d.year <= 1997
+
+
+def test_date_spec_year_snaps_to_jan_first():
+    space = qp.parse_param_space(
+        {"DT": {"type": "date", "min": "1993-01-01", "max": "1997-01-01", "granularity": "year"}},
+        None,
+        "d=[DT]",
+    )
+    rnd = random.Random(6)
+    for _ in range(50):
+        d = datetime.date.fromisoformat(space.sample(rnd)["DT"])
+        assert (d.month, d.day) == (1, 1) and 1993 <= d.year <= 1997
+
+
+def test_date_spec_bad_granularity_raises():
+    with pytest.raises(ValueError, match="granularity must be one of"):
+        qp.parse_param_space(
+            {"DT": {"type": "date", "min": "1993-01-01", "max": "1994-01-01", "granularity": "qtr"}},
+            None,
+            "d=[DT]",
+        )
+
+
+def test_date_spec_bad_iso_raises():
+    with pytest.raises(ValueError, match="not a valid ISO date"):
+        qp.parse_param_space(
+            {"DT": {"type": "date", "min": "1993-13-99", "max": "1994-01-01"}}, None, "d=[DT]"
+        )
+
+
+def test_categorical_sample_and_empty_raises():
+    space = qp.parse_param_space(
+        {"R": {"type": "categorical", "values": ["ASIA", "EUROPE"]}}, None, "r=[R]"
+    )
+    assert {space.sample(random.Random(7))["R"] for _ in range(20)} <= {"ASIA", "EUROPE"}
+    with pytest.raises(ValueError, match="non-empty list"):
+        qp.parse_param_space({"R": {"type": "categorical", "values": []}}, None, "r=[R]")
+
+
+# --- group specs -------------------------------------------------------------
+
+
+def test_tuples_group_stays_aligned():
+    space = qp.parse_param_space(
+        None,
+        [{"type": "tuples", "placeholders": ["A", "B"],
+          "values": [["FRANCE", "GERMANY"], ["CHINA", "JAPAN"]]}],
+        "a='[A]' b='[B]'",
+    )
+    pairs = {(space.sample(random.Random(s))["A"], space.sample(random.Random(s))["B"])
+             for s in range(20)}
+    assert pairs <= {("FRANCE", "GERMANY"), ("CHINA", "JAPAN")}  # never crossed
+
+
+def test_tuples_row_arity_mismatch_raises():
+    with pytest.raises(ValueError, match="row must be a list"):
+        qp.parse_param_space(
+            None,
+            [{"type": "tuples", "placeholders": ["A", "B"], "values": [["only-one"]]}],
+            "a=[A] b=[B]",
+        )
+
+
+def test_sample_group_distinct():
+    space = qp.parse_param_space(
+        None,
+        [{"type": "sample", "placeholders": ["I1", "I2", "I3"], "domain": ["a", "b", "c", "d"]}],
+        "[I1] [I2] [I3]",
+    )
+    assign = space.sample(random.Random(8))
+    assert len(set(assign.values())) == 3  # distinct draw
+
+
+def test_sample_group_distinct_domain_too_small_raises():
+    with pytest.raises(ValueError, match="needs a domain of at least"):
+        qp.parse_param_space(
+            None,
+            [{"type": "sample", "placeholders": ["I1", "I2", "I3"], "domain": ["a", "b"]}],
+            "[I1] [I2] [I3]",
+        )
+
+
+def test_sample_group_non_distinct_allows_repeats():
+    space = qp.parse_param_space(
+        None,
+        [{"type": "sample", "placeholders": ["A", "B"], "domain": ["x"], "distinct": False}],
+        "[A] [B]",
+    )
+    assert space.sample(random.Random(9)) == {"A": "x", "B": "x"}
+
+
+# --- ordering / determinism / metadata --------------------------------------
+
+
+def test_sample_is_in_template_order():
+    space = qp.parse_param_space(
+        {"Y": {"type": "int", "min": 1, "max": 1}, "X": {"type": "int", "min": 2, "max": 2}},
+        None,
+        "first=[X] second=[Y]",  # template order is X, then Y
+    )
+    assert list(space.sample(random.Random(0))) == ["X", "Y"]
+
+
+def test_sampling_is_deterministic_per_seed():
+    space = qp.parse_param_space(
+        {"X": {"type": "int", "min": 1, "max": 100}, "R": {"type": "categorical", "values": list("abcdef")}},
+        None,
+        "v=[X] r=[R]",
+    )
+    seq1 = [space.sample(random.Random(42)) for _ in range(5)]
+    seq2 = [space.sample(random.Random(42)) for _ in range(5)]
+    assert seq1 == seq2
+
+
+def test_metadata_shapes_for_widgets():
+    space = qp.parse_param_space(
+        {
+            "N": {"type": "int", "min": 60, "max": 120},
+            "R": {"type": "categorical", "values": ["ASIA", "EUROPE"]},
+            "D": {"type": "date", "min": "1993-01-01", "max": "1997-01-01", "granularity": "year"},
+        },
+        None,
+        "n=[N] r=[R] d=[D]",
+    )
+    meta = space.metadata()
+    assert meta["N"] == {"type": "int", "min": 60, "max": 120, "step": 1}
+    assert meta["R"] == {"type": "categorical", "values": ["ASIA", "EUROPE"]}
+    assert meta["D"]["type"] == "date" and meta["D"]["granularity"] == "year"
+
+
+def test_group_metadata_is_per_column_categorical():
+    space = qp.parse_param_space(
+        None,
+        [{"type": "sample", "placeholders": ["I1", "I2"], "domain": ["13", "31", "23"]}],
+        "[I1] [I2]",
+    )
+    meta = space.metadata()
+    assert meta["I1"] == {"type": "categorical", "values": ["13", "31", "23"]}
+    assert meta["I2"]["values"] == ["13", "31", "23"]
