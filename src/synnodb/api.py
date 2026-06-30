@@ -233,7 +233,7 @@ class SynnoDB:
         config: SynnoConfig | None = None,
         /,
         *,
-        data_dir: str | None = None,
+        data_dir: str | Path | None = None,
         env_file: str | None = None,
         cleanup_workspace: bool = False,
         **overrides: Any,
@@ -243,6 +243,11 @@ class SynnoDB:
         settings.configure(data_dir=data_dir, env_file=env_file)
         base = config or SynnoConfig()
         self.config = dataclasses.replace(base, **overrides) if overrides else base
+        # Fail fast on a missing API key: .env is loaded by now, so check up front
+        # rather than several stages later when the SDK session is first built.
+        from synnodb.utils.model_setup import validate_model_credentials
+
+        validate_model_credentials(self.config.model)
         # Ephemeral runs: delete the workspace directory when this process exits
         # (normal finish, uncaught exception, or SIGINT/SIGTERM). Avoids the
         # accumulation of per-run engine workspaces. SIGKILL cannot be intercepted.

@@ -18,7 +18,9 @@ from dotenv import load_dotenv
 _our_data_dir: str | None = None
 
 
-def configure(*, data_dir: str | None = None, env_file: str | None = None) -> None:
+def configure(
+    *, data_dir: str | os.PathLike[str] | None = None, env_file: str | None = None
+) -> None:
     """Explicit, idempotent process configuration.
 
     An explicit ``data_dir`` wins over a value from ``.env``/the environment. A
@@ -28,6 +30,7 @@ def configure(*, data_dir: str | None = None, env_file: str | None = None) -> No
     global _our_data_dir
     load_dotenv(env_file)
     if data_dir is not None:
+        data_dir = os.fspath(data_dir)  # accept Path/PathLike, store as str
         if _our_data_dir is not None and _our_data_dir != data_dir:
             raise RuntimeError(
                 f"SynnoDB already configured with data_dir={_our_data_dir!r}; "

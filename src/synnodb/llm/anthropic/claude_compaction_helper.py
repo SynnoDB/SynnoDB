@@ -64,7 +64,10 @@ class ClaudeCompactionHelper:
             anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
             if not anthropic_api_key:
                 raise ValueError(
-                    "ANTHROPIC_API_KEY must be set in environment for Claude compaction"
+                    f"ANTHROPIC_API_KEY is not set, but the model "
+                    f"{claude_compaction_model!r} needs it. Add it to a .env file "
+                    "in your project root (a line `ANTHROPIC_API_KEY=sk-ant-...`) "
+                    "or export it in your shell before running."
                 )
             self.claude_client = AsyncAnthropic(api_key=anthropic_api_key)
         else:
