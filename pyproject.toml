@@ -26,6 +26,8 @@ dependencies = [
     "sqlglot>=25.0.0",   # query normalization / template matching
     "pandas>=2.3.3",     # DuckDB .df() egress; common in user code
     "python-dotenv>=1.2.1",
+    "ipykernel>=7.2.0",
+    "matplotlib>=3.10.9",
 ]
 
 [project.optional-dependencies]
@@ -54,7 +56,11 @@ factory = [
 dev = ["pytest>=9.0.2", "pytest-asyncio>=1.3.0"]
 viz = ["matplotlib>=3.10.8", "seaborn>=0.13.2"]
 benchmark = ["clickhouse-connect>=0.14.0"]
-notebook = ["ipykernel>=7.1.0", "ipywidgets>=8.1.8"]
+notebook = [
+    "ipykernel>=7.1.0",
+    "ipywidgets>=8.1.8",
+    "nbformat>=5.10.4",
+]
 
 [project.scripts]
 synnodb-storage-plan = "synnodb.run_gen_storage_plan:cli"

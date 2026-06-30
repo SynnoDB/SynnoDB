@@ -86,7 +86,7 @@ def main() -> None:
 
         log("===== BASE IMPL (all queries on the one plan) START =====")
         t0 = time.time()
-        impl = db.createBaseImpl(storage_plan=plan)
+        impl = db.createBaseImpl(storage_plan=plan.text)
         log(f"===== BASE IMPL DONE in {time.time() - t0:.0f}s  workspace={impl.workspace} =====")
 
         log(f"ALL DONE in {(time.time() - t_start) / 3600:.1f}h")
