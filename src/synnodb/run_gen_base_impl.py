@@ -109,6 +109,8 @@ def resolve_source_snapshot(
     query_ids,
     db_storage: DBStorage | None,
     model: str | None,
+    wandb_entity: str | None = None,
+    wandb_project: str | None = None,
 ) -> tuple[str, dict | None]:
     """Resolve the git snapshot hash of a previous stage's output, for the
     chained stages (optim / make-mt / check-sf). Provide exactly one of:
@@ -118,6 +120,14 @@ def resolve_source_snapshot(
         repo downstream by ``prepare_repo_and_load_snapshot``.
       - ``wandb_id``: a W&B run id, resolved to its logged snapshot hash and
         validated against this run's config.
+
+    ``wandb_entity``/``wandb_project`` must be the coordinates the source run was
+    logged to — the same values this stage logs to — so the lookup reads back
+    from where the producer wrote. They are forwarded straight to
+    ``wandb_retrieve_metrics_for_run``, which resolves ``None`` through
+    ``get_wandb_entity_project`` (env/default); passing them here keeps a
+    CLI/``SynnoConfig``-configured project from silently falling back to the
+    default and missing the run.
 
     Returns ``(commit_hash, source_config)`` where ``source_config`` is the
     source run's W&B config dict (W&B path) or ``None`` (W&B-free path).
@@ -133,7 +143,11 @@ def resolve_source_snapshot(
         return snapshot, None
 
     statistics, config, _ = wandb_retrieve_metrics_for_run(
-        benchmark, wandb_id, fetch_latest_runtimes=False
+        benchmark,
+        wandb_id,
+        entity=wandb_entity,
+        project=wandb_project,
+        fetch_latest_runtimes=False,
     )
     validate_snapshot(
         config,
@@ -183,6 +197,8 @@ def main(args):
             statistics, config, _ = wandb_retrieve_metrics_for_run(
                 benchmark,
                 storage_plan_run_id,
+                entity=getattr(args, "wandb_entity", None),
+                project=getattr(args, "wandb_project", None),
             )
 
             validate_snapshot(

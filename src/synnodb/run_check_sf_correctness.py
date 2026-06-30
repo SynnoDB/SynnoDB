@@ -70,6 +70,8 @@ def main(args):
         query_ids=query_ids,
         db_storage=args.db_storage,
         model=args.model,
+        wandb_entity=getattr(args, "wandb_entity", None),
+        wandb_project=getattr(args, "wandb_project", None),
     )
 
     # CHECK_SF replays the source run's prepare steps, so it needs that run's
