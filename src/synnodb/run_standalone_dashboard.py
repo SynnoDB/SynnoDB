@@ -25,6 +25,7 @@ import sys
 from urllib.parse import urlencode
 
 from synnodb.observability.live_ui.live_dashboard import StandaloneDashboard
+from synnodb.settings import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -37,9 +38,9 @@ def _dashboard_url(port: int, args: argparse.Namespace) -> str:
         params["db"] = args.db
     elif args.wandb_run_id:
         params["wandb_run_id"] = args.wandb_run_id
-        if args.wandb_entity != "learneddb":
+        if args.wandb_entity != DEFAULT_WANDB_ENTITY:
             params["wandb_entity"] = args.wandb_entity
-        if args.wandb_project != "bespoke-olap-internal":
+        if args.wandb_project != DEFAULT_WANDB_PROJECT:
             params["wandb_project"] = args.wandb_project
 
     query = f"?{urlencode(params)}" if params else ""
@@ -70,15 +71,15 @@ def main() -> None:
 
     parser.add_argument(
         "--wandb_entity",
-        default="learneddb",
+        default=DEFAULT_WANDB_ENTITY,
         metavar="ENTITY",
-        help="W&B entity (default: learneddb).",
+        help="W&B entity (default: your W&B default entity).",
     )
     parser.add_argument(
         "--wandb_project",
-        default="bespoke-olap-internal",
+        default=DEFAULT_WANDB_PROJECT,
         metavar="PROJECT",
-        help="W&B project (default: bespoke-olap-internal).",
+        help="W&B project (default: %(default)s).",
     )
     parser.add_argument(
         "--host",

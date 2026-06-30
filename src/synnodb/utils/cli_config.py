@@ -27,6 +27,7 @@ class RunConfig:
     prepare_mode: str | None = None  # only necessary for check_sf conv mode
     start_snapshot: str | None = None
     storage_plan_snapshot: str | None = None
+    storage_plan_text: str | None = None  # storage plan content supplied directly (W&B-free path)
     max_scale_factor: int | None = None
     continue_run: bool = False
     replay: bool = False

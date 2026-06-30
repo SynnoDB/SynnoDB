@@ -16,7 +16,7 @@ plan = db.createStoragePlan(queries="1")     # -> StoragePlan
 print(plan.text)                             # the storage_plan.txt document
 print(plan.path, plan.run_id)                # on disk + wandb provenance
 
-impl = db.createBaseImpl(storage_plan=plan)  # pass the plan object; chains on its run_id
+impl = db.createBaseImpl(storage_plan=plan.text)  # pass the plan content (W&B-free)
 print(impl.files["db_loader.cpp"])           # -> BaseImplementation (generated C++)
 
 opt = db.runOptimLoop(base_impl=impl)        # -> OptimizedImplementation

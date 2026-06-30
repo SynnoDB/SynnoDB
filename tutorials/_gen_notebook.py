@@ -207,10 +207,15 @@ print()
 print(plan.text[:600], "...")
 """))
 
-cells.append(md("### Base implementation"))
+cells.append(md(
+    "### Base implementation\n\n"
+    "We feed the plan **content** straight in via `storage_plan=plan.text`, so this step needs\n"
+    "no W&B. If you instead chain off a logged storage-plan run, pass its run id with\n"
+    "`db.createBaseImpl(storage_plan_wandb_id=plan.run_id)`. Provide exactly one of the two."
+))
 
 cells.append(code("""
-impl = db.createBaseImpl(storage_plan=plan)
+impl = db.createBaseImpl(storage_plan=plan.text)  # pass the plan content directly (W&B-free)
 
 print("Workspace :", impl.workspace)
 print("Files     :", sorted(impl.files))

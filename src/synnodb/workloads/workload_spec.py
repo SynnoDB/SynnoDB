@@ -23,7 +23,7 @@ if TYPE_CHECKING:  # avoid an import cycle; only used for type hints
 # A query generator: query_name like "Q1" + an RNG -> (name, sql, placeholders).
 QueryGenFn = Callable[..., tuple[str, str, dict]]
 # Built lazily from the provider (CEB needs its query dir + cache, etc.).
-QueryGenFactory = Callable[["OLAPWorkloadProvider"], QueryGenFn]
+QueryGenFactory = Callable[["OLAPWorkloadProvider | None"], QueryGenFn]
 # Built from the provider + a do_not_cache flag (CEB caches placeholders on disk).
 PlaceholdersFactory = Callable[["OLAPWorkloadProvider", bool], Callable[..., dict]]
 

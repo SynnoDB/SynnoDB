@@ -1,5 +1,4 @@
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -27,9 +26,9 @@ def wandb_retrieve_metrics_for_run(
     run = None
 
     if entity is None or project is None:
-        # lookup from .evn file
-        entity = os.getenv("WANDB_ENTITY", "learneddb")
-        project = os.getenv("WANDB_PROJECT", "SynnoDB")
+        from synnodb.settings import get_wandb_entity_project
+
+        entity, project = get_wandb_entity_project(entity, project)
 
     summary, history, config = get_wandb_stats(
         run_id=run_id,

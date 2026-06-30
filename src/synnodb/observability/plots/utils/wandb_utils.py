@@ -1,11 +1,9 @@
-import os
 import pickle
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import pandas as pd
-from dotenv import load_dotenv
 
 from synnodb.utils.utils import (
     create_dir_and_set_permissions,
@@ -19,13 +17,9 @@ from synnodb.utils.utils import (
 def _resolve_wandb_entity_project(
     entity: str | None, project: str | None
 ) -> tuple[str, str]:
-    if entity is None or project is None:
-        load_dotenv()
-        if entity is None:
-            entity = os.environ["WANDB_ENTITY"]
-        if project is None:
-            project = os.environ["WANDB_PROJECT"]
-    return entity, project
+    from synnodb.settings import get_wandb_entity_project
+
+    return get_wandb_entity_project(entity, project)
 
 
 def get_wandb_run(
@@ -37,7 +31,10 @@ def get_wandb_run(
 
     entity, project = _resolve_wandb_entity_project(entity, project)
     api = wandb.Api()
-    return api.run(f"{entity}/{project}/{run_id}")
+    # With no entity, use the 2-part "project/run_id" form so wandb resolves the
+    # caller's own default entity instead of a hardcoded one.
+    path = f"{entity}/{project}/{run_id}" if entity else f"{project}/{run_id}"
+    return api.run(path)
 
 
 def get_wandb_snapshot_hash(summary: dict) -> str:

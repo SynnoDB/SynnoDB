@@ -444,7 +444,7 @@ def _register_static_workload(
     def _bare(query_name: str) -> str:
         return query_name[1:] if query_name.startswith("Q") else query_name
 
-    def query_gen_factory(provider: "OLAPWorkloadProvider"):
+    def query_gen_factory(provider: "OLAPWorkloadProvider|None"):
         def gen(query_name: str, rnd=None):
             qid = _bare(query_name)
             template = sql_dict[query_name]
