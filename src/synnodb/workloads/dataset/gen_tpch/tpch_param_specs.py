@@ -50,8 +50,8 @@ def _float(lo: float, hi: float, step: float) -> dict:
     return {"type": "float", "min": lo, "max": hi, "step": step}
 
 
-def _date(lo: str, hi: str, granularity: str) -> dict:
-    return {"type": "date", "min": lo, "max": hi, "granularity": granularity}
+def _date(lo: str, hi: str) -> dict:
+    return {"type": "date", "min": lo, "max": hi}
 
 
 def _cat(values) -> dict:
@@ -82,19 +82,19 @@ TPCH_PARAM_SPECS: dict[str, dict] = {
     "3": {
         "params": {
             "SEGMENT": _cat(SEGMENTS),
-            "DATE": _date("1995-03-01", "1995-03-31", "day"),
+            "DATE": _date("1995-03-01", "1995-03-31"),
         }
     },
-    "4": {"params": {"DATE": _date("1993-01-01", "1997-10-01", "month")}},
+    "4": {"params": {"DATE": _date("1993-01-01", "1997-10-01")}},
     "5": {
         "params": {
             "REGION": _cat(REGIONS),
-            "DATE": _date("1993-01-01", "1997-01-01", "year"),
+            "DATE": _date("1993-01-01", "1997-01-01"),
         }
     },
     "6": {
         "params": {
-            "DATE": _date("1993-01-01", "1997-01-01", "year"),
+            "DATE": _date("1993-01-01", "1997-01-01"),
             "DISCOUNT": _float(0.02, 0.09, 0.01),
             "QUANTITY": _int(24, 25),
         }
@@ -108,15 +108,15 @@ TPCH_PARAM_SPECS: dict[str, dict] = {
         }
     },
     "9": {"params": {"COLOR": _cat(COLORS)}},
-    "10": {"params": {"DATE": _date("1993-02-01", "1995-01-01", "month")}},
+    "10": {"params": {"DATE": _date("1993-02-01", "1995-01-01")}},
     "11": {"params": {"NATION": _cat(NATIONS), "FRACTION": _cat(["0.0001"])}},
     "12": {
-        "params": {"DATE": _date("1993-01-01", "1997-01-01", "year")},
+        "params": {"DATE": _date("1993-01-01", "1997-01-01")},
         "param_groups": [_sample(["SHIPMODE1", "SHIPMODE2"], SHIP_MODES)],
     },
     "13": {"params": {"WORD1": _cat(WORD1_OPTIONS), "WORD2": _cat(WORD2_OPTIONS)}},
-    "14": {"params": {"DATE": _date("1993-01-01", "1997-12-01", "month")}},
-    "15": {"params": {"DATE": _date("1993-01-01", "1997-12-01", "month")}},
+    "14": {"params": {"DATE": _date("1993-01-01", "1997-12-01")}},
+    "15": {"params": {"DATE": _date("1993-01-01", "1997-12-01")}},
     "16": {
         "params": {"BRAND": _cat(BRANDS), "TYPE": _cat(TYPES_PREFIX)},
         "param_groups": [_sample([f"SIZE{i}" for i in range(1, 9)], list(range(1, 51)))],
@@ -136,7 +136,7 @@ TPCH_PARAM_SPECS: dict[str, dict] = {
     "20": {
         "params": {
             "COLOR": _cat(COLORS),
-            "DATE": _date("1993-01-01", "1997-01-01", "year"),
+            "DATE": _date("1993-01-01", "1997-01-01"),
             "NATION": _cat(NATIONS),
         }
     },

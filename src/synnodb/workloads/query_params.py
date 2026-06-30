@@ -10,8 +10,8 @@ A placeholder's spec is a discriminated union on ``type``:
   * ``{"type": "int",   "min": 60, "max": 120, "step": 1}`` - uniform int on the step grid;
   * ``{"type": "float", "min": 0.02, "max": 0.09, "step": 0.01}`` - uniform on the step grid
     (``step`` also fixes the rendered precision);
-  * ``{"type": "date",  "min": "1993-01-01", "max": "1997-10-01", "granularity": "month"}`` -
-    a date snapped to ``day``/``month``/``year``;
+  * ``{"type": "date",  "min": "1993-01-01", "max": "1997-10-01"}`` -
+    a uniform ISO date in the closed range;
   * ``{"type": "categorical", "values": ["ASIA", "EUROPE", ...]}`` - a uniform choice.
 
 Correlated / distinct placeholders (a nation pair, a brand/quantity triple, a k-distinct
@@ -139,9 +139,6 @@ def substitute(template: str, assignment: dict[str, object]) -> str:
 # how to (a) sample one value/row with an RNG and (b) describe itself as UI metadata (so a
 # live dashboard can render a slider / dropdown / date-picker without re-deriving ranges).
 
-GRANULARITIES = ("day", "month", "year")
-
-
 @dataclass(frozen=True)
 class IntSpec:
     min: int
@@ -178,26 +175,16 @@ class FloatSpec:
 class DateSpec:
     min: datetime.date
     max: datetime.date
-    granularity: str = "day"
 
     def sample(self, rnd: random.Random) -> datetime.date:
-        if self.granularity == "day":
-            days = (self.max - self.min).days
-            return self.min + datetime.timedelta(days=rnd.randint(0, days))
-        if self.granularity == "month":
-            lo = self.min.year * 12 + (self.min.month - 1)
-            hi = self.max.year * 12 + (self.max.month - 1)
-            m = rnd.randint(lo, hi)
-            return datetime.date(m // 12, m % 12 + 1, 1)
-        # year
-        return datetime.date(rnd.randint(self.min.year, self.max.year), 1, 1)
+        days = (self.max - self.min).days
+        return self.min + datetime.timedelta(days=rnd.randint(0, days))
 
     def metadata(self) -> dict:
         return {
             "type": "date",
             "min": self.min.isoformat(),
             "max": self.max.isoformat(),
-            "granularity": self.granularity,
         }
 
 
@@ -330,15 +317,14 @@ def _parse_scalar_spec(ph: str, raw: object):
         _require(lo <= hi, f"'{ph}' (float spec): min ({lo}) must be <= max ({hi}).")
         return FloatSpec(float(lo), float(hi), float(step))
     if t == "date":
+        _require(
+            "granularity" not in raw,
+            f"'{ph}' (date spec): 'granularity' is no longer supported; use min/max only.",
+        )
         lo = _parse_date(ph, raw, "min")
         hi = _parse_date(ph, raw, "max")
-        gran = raw.get("granularity", "day")
-        _require(
-            gran in GRANULARITIES,
-            f"'{ph}' (date spec): granularity must be one of {GRANULARITIES}, got {gran!r}.",
-        )
         _require(lo <= hi, f"'{ph}' (date spec): min ({lo}) must be <= max ({hi}).")
-        return DateSpec(lo, hi, gran)
+        return DateSpec(lo, hi)
     if t == "categorical":
         vals = raw.get("values")
         _require(

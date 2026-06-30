@@ -57,8 +57,7 @@
       "DATE": {
         "type": "date",
         "min": "1995-03-01",
-        "max": "1995-03-31",
-        "granularity": "day"
+        "max": "1995-03-31"
       }
     }
   },
@@ -68,8 +67,7 @@
       "DATE": {
         "type": "date",
         "min": "1993-01-01",
-        "max": "1997-10-01",
-        "granularity": "month"
+        "max": "1997-10-01"
       }
     }
   },
@@ -89,8 +87,7 @@
       "DATE": {
         "type": "date",
         "min": "1993-01-01",
-        "max": "1997-01-01",
-        "granularity": "year"
+        "max": "1997-01-01"
       }
     }
   },
@@ -100,8 +97,7 @@
       "DATE": {
         "type": "date",
         "min": "1993-01-01",
-        "max": "1997-01-01",
-        "granularity": "year"
+        "max": "1997-01-01"
       },
       "DISCOUNT": {
         "type": "float",
@@ -465,8 +461,7 @@
       "DATE": {
         "type": "date",
         "min": "1993-02-01",
-        "max": "1995-01-01",
-        "granularity": "month"
+        "max": "1995-01-01"
       }
     }
   },
@@ -517,8 +512,7 @@
       "DATE": {
         "type": "date",
         "min": "1993-01-01",
-        "max": "1997-01-01",
-        "granularity": "year"
+        "max": "1997-01-01"
       }
     },
     "param_groups": [
@@ -570,8 +564,7 @@
       "DATE": {
         "type": "date",
         "min": "1993-01-01",
-        "max": "1997-12-01",
-        "granularity": "month"
+        "max": "1997-12-01"
       }
     }
   },
@@ -581,8 +574,7 @@
       "DATE": {
         "type": "date",
         "min": "1993-01-01",
-        "max": "1997-12-01",
-        "granularity": "month"
+        "max": "1997-12-01"
       }
     }
   },
@@ -1003,8 +995,7 @@
       "DATE": {
         "type": "date",
         "min": "1993-01-01",
-        "max": "1997-01-01",
-        "granularity": "year"
+        "max": "1997-01-01"
       },
       "NATION": {
         "type": "categorical",

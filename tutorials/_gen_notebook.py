@@ -81,7 +81,7 @@ spec; correlated or distinct placeholders share a `param_groups` spec:
 "6": {
   "sql": "... l_discount between [DISCOUNT] - 0.01 ... l_quantity < [QUANTITY] ...",
   "params": {
-    "DATE":     { "type": "date",  "min": "1993-01-01", "max": "1997-01-01", "granularity": "year" },
+    "DATE":     { "type": "date",  "min": "1993-01-01", "max": "1997-01-01" },
     "DISCOUNT": { "type": "float", "min": 0.02, "max": 0.09, "step": 0.01 },
     "QUANTITY": { "type": "int",   "min": 24, "max": 25 }
   }

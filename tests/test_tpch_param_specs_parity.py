@@ -1,11 +1,12 @@
 """Parity guard: the declarative TPC-H value-space table (``TPCH_PARAM_SPECS``, which seeds
 the tutorial ``queries.json``) must mimic the authoritative imperative generator
-(``gen_tpch.gen_tpch_query.gen_query``) - same per-placeholder reachable values *and* the same
-joint distinctness/correlation. These two encode the same ranges in different forms, so this
-test fails loudly if they ever drift.
+(``gen_tpch.gen_tpch_query.gen_query``) for non-date placeholders - same per-placeholder
+reachable values *and* the same joint distinctness/correlation. Date specs intentionally expose
+only an input constraint (closed ISO min/max range), not the generator's month/year snapping.
 """
 from __future__ import annotations
 
+import datetime
 import random
 from collections import defaultdict
 
@@ -23,6 +24,16 @@ N = 20000
 def _space(qid: str):
     section = TPCH_PARAM_SPECS[qid]
     return parse_param_space(section.get("params"), section.get("param_groups"), tpc_h[f"Q{qid}"])
+
+
+def _date_bounds(qid: str, placeholder: str):
+    spec = TPCH_PARAM_SPECS[qid].get("params", {}).get(placeholder)
+    if spec and spec.get("type") == "date":
+        return (
+            datetime.date.fromisoformat(spec["min"]),
+            datetime.date.fromisoformat(spec["max"]),
+        )
+    return None
 
 
 @pytest.mark.parametrize("k", range(1, 23))
@@ -46,6 +57,11 @@ def test_reachable_values_match_generator(k):
             my_sets[p].add(a[p])
 
     for p in phs:
+        bounds = _date_bounds(str(k), p)
+        if bounds:
+            lo, hi = bounds
+            assert all(lo <= datetime.date.fromisoformat(v) <= hi for v in my_sets[p])
+            continue
         assert my_sets[p] == gen_sets[p], (
             f"{qn} placeholder {p}: spec/generator value sets differ "
             f"(generator-only={sorted(gen_sets[p] - my_sets[p])[:5]}, "

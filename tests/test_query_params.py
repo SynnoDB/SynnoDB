@@ -119,7 +119,7 @@ def test_float_spec_exact_decimal_text():
 
 def test_date_spec_day_in_range():
     space = qp.parse_param_space(
-        {"DT": {"type": "date", "min": "1995-03-01", "max": "1995-03-31", "granularity": "day"}},
+        {"DT": {"type": "date", "min": "1995-03-01", "max": "1995-03-31"}},
         None,
         "d=[DT]",
     )
@@ -129,34 +129,10 @@ def test_date_spec_day_in_range():
         assert datetime.date(1995, 3, 1) <= d <= datetime.date(1995, 3, 31)
 
 
-def test_date_spec_month_snaps_to_first():
-    space = qp.parse_param_space(
-        {"DT": {"type": "date", "min": "1993-01-01", "max": "1997-10-01", "granularity": "month"}},
-        None,
-        "d=[DT]",
-    )
-    rnd = random.Random(5)
-    for _ in range(50):
-        d = datetime.date.fromisoformat(space.sample(rnd)["DT"])
-        assert d.day == 1 and 1993 <= d.year <= 1997
-
-
-def test_date_spec_year_snaps_to_jan_first():
-    space = qp.parse_param_space(
-        {"DT": {"type": "date", "min": "1993-01-01", "max": "1997-01-01", "granularity": "year"}},
-        None,
-        "d=[DT]",
-    )
-    rnd = random.Random(6)
-    for _ in range(50):
-        d = datetime.date.fromisoformat(space.sample(rnd)["DT"])
-        assert (d.month, d.day) == (1, 1) and 1993 <= d.year <= 1997
-
-
-def test_date_spec_bad_granularity_raises():
-    with pytest.raises(ValueError, match="granularity must be one of"):
+def test_date_spec_granularity_rejected():
+    with pytest.raises(ValueError, match="granularity.*no longer supported"):
         qp.parse_param_space(
-            {"DT": {"type": "date", "min": "1993-01-01", "max": "1994-01-01", "granularity": "qtr"}},
+            {"DT": {"type": "date", "min": "1993-01-01", "max": "1994-01-01", "granularity": "month"}},
             None,
             "d=[DT]",
         )
@@ -258,7 +234,7 @@ def test_metadata_shapes_for_widgets():
         {
             "N": {"type": "int", "min": 60, "max": 120},
             "R": {"type": "categorical", "values": ["ASIA", "EUROPE"]},
-            "D": {"type": "date", "min": "1993-01-01", "max": "1997-01-01", "granularity": "year"},
+            "D": {"type": "date", "min": "1993-01-01", "max": "1997-01-01"},
         },
         None,
         "n=[N] r=[R] d=[D]",
@@ -266,7 +242,7 @@ def test_metadata_shapes_for_widgets():
     meta = space.metadata()
     assert meta["N"] == {"type": "int", "min": 60, "max": 120, "step": 1}
     assert meta["R"] == {"type": "categorical", "values": ["ASIA", "EUROPE"]}
-    assert meta["D"]["type"] == "date" and meta["D"]["granularity"] == "year"
+    assert meta["D"] == {"type": "date", "min": "1993-01-01", "max": "1997-01-01"}
 
 
 def test_group_metadata_is_per_column_categorical():
