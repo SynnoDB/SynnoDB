@@ -379,6 +379,27 @@ def _tpch_placeholders_factory(
     return gen_placeholder_tpch
 
 
+def _tpch_param_space_factory(provider: "OLAPWorkloadProvider | None"):
+    """Per-query typed value-space for built-in TPC-H, from the declarative spec table.
+
+    Used for live-UI widget metadata (slider/dropdown/date-picker). The run-time sampler
+    stays ``gen_query`` (see ``_tpch_query_gen_factory``), so TPC-H run behavior is unchanged.
+    """
+    from synnodb.workloads.dataset.gen_tpch.tpch_param_specs import TPCH_PARAM_SPECS
+    from synnodb.workloads.query_params import parse_param_space
+
+    def get(query_name: str):
+        qid = query_name[1:] if query_name.startswith("Q") else query_name
+        section = TPCH_PARAM_SPECS.get(qid)
+        if section is None:
+            return None
+        return parse_param_space(
+            section.get("params"), section.get("param_groups"), tpc_h[f"Q{qid}"]
+        )
+
+    return get
+
+
 def _ceb_schema() -> str:
     from synnodb.workloads.dataset.gen_ceb.imdb_schema import imdb_schema
 
@@ -457,6 +478,7 @@ TPCH_SPEC = WorkloadSpec(
     schema_factory=_tpch_schema,
     query_gen_factory=_tpch_query_gen_factory,
     placeholders_factory=_tpch_placeholders_factory,
+    param_space_factory=_tpch_param_space_factory,
 )
 
 CEB_SPEC = WorkloadSpec(
