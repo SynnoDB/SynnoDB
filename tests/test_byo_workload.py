@@ -170,31 +170,24 @@ def test_unparseable_key_raises(tmp_path):
         register_workload_from_json("bad", qjson, parquet)
 
 
-def test_preflight_catches_nonstring_placeholder():
-    """Registration-time self-check rejects a non-string placeholder value (which would
-    otherwise fail deep in a run with 'failed to parse <name>')."""
+def test_preflight_samples_spec_to_strings():
+    """Registration-time self-check samples each templated query's ParamSpace and confirms
+    every value renders to a string (the args-line / C++ parser invariant)."""
     from synnodb.workloads.byo_workload import _preflight_workload
+    from synnodb.workloads.query_params import parse_param_space
 
-    with pytest.raises(ValueError, match="failed to parse|must be strings"):
-        _preflight_workload(
-            "w",
-            {"Q1": "select * from lineitem where x = [DELTA]"},
-            ["1"],
-            ["lineitem"],
-            {"1": [{"DELTA": 2520}]},  # int, not str -> would be quoted in args but parsed unquoted
-        )
-
-
-def test_preflight_passes_for_string_placeholders():
-    from synnodb.workloads.byo_workload import _preflight_workload
-
-    # strings (the correct convention) pass
+    space = parse_param_space(
+        {"DELTA": {"type": "int", "min": 60, "max": 120}},
+        None,
+        "select * from lineitem where x = [DELTA]",
+    )
+    # an int-range spec samples ints, but ParamSpace coerces to strings -> preflight passes
     _preflight_workload(
         "w",
         {"Q1": "select * from lineitem where x = [DELTA]"},
         ["1"],
         ["lineitem"],
-        {"1": [{"DELTA": "2520"}]},
+        {"1": space},
     )
 
 
@@ -244,10 +237,10 @@ def _register(tmp_path, queries, name="byo"):
 
 
 def test_templated_inline_params(tmp_path):
-    """A templated query carries its values inline; an int is coerced to a string."""
+    """A templated query declares an int-range spec; samples are coerced to strings."""
     spec = _register(tmp_path, {
         "1": {"sql": "SELECT * FROM orders WHERE o_amt > [MINAMT]",
-              "params": {"MINAMT": [10, 20, 30]}},
+              "params": {"MINAMT": {"type": "int", "min": 10, "max": 30, "step": 10}}},
     })
     gen = spec.query_gen_factory(None)
     import random as _random
@@ -256,34 +249,38 @@ def test_templated_inline_params(tmp_path):
     assert params["MINAMT"] in {"10", "20", "30"}
 
 
-def test_templated_correlated_zip(tmp_path):
-    """Per-placeholder lists are index-zipped, so a correlated pair stays aligned."""
+def test_templated_correlated_group_stays_aligned(tmp_path):
+    """A joint 'tuples' group keeps a correlated pair aligned (never crossed)."""
     spec = _register(tmp_path, {
         "7": {"sql": "SELECT * FROM orders WHERE o_seg = '[A]' OR o_seg = '[B]'",
-              "params": {"A": ["BUILDING", "MACHINERY"], "B": ["MACHINERY", "BUILDING"]}},
+              "param_groups": [{"type": "tuples", "placeholders": ["A", "B"],
+                                "values": [["BUILDING", "MACHINERY"], ["MACHINERY", "BUILDING"]]}]},
     })
     ph = spec.placeholders_factory(None)
-    first = ph("Q7")
-    assert (first["A"], first["B"]) == ("BUILDING", "MACHINERY")  # index 0 stays paired
+    for _ in range(20):
+        a, b = ph("Q7")["A"], ph("Q7")["B"]
+        assert (a, b) in {("BUILDING", "MACHINERY"), ("MACHINERY", "BUILDING")}
 
 
-def test_templated_length_one_broadcast(tmp_path):
+def test_templated_categorical_single_value(tmp_path):
     spec = _register(tmp_path, {
         "1": {"sql": "SELECT * FROM orders WHERE o_seg = '[SEG]' AND o_amt > [MIN]",
-              "params": {"SEG": ["BUILDING"], "MIN": [5, 15]}},
+              "params": {"SEG": {"type": "categorical", "values": ["BUILDING"]},
+                         "MIN": {"type": "int", "min": 5, "max": 15}}},
     })
-    # broadcast SEG across both instantiations of MIN
     gen = spec.query_gen_factory(None)
     seen = {gen("Q1")[2]["SEG"] for _ in range(5)}
     assert seen == {"BUILDING"}
 
 
 def test_templated_in_list_roundtrips_unquoted(tmp_path):
+    """A categorical whose values are lists renders as a SQL IN-list for one placeholder."""
     from synnodb.workloads.workload_provider import format_args_element
 
     spec = _register(tmp_path, {
         "9": {"sql": "SELECT * FROM orders WHERE o_seg IN [SEGS]",
-              "params": {"SEGS": [["BUILDING", "AUTOMOBILE"]]}},
+              "params": {"SEGS": {"type": "categorical",
+                                  "values": [["BUILDING", "AUTOMOBILE"]]}}},
     })
     ph = spec.placeholders_factory(None)
     val = ph("Q9")["SEGS"]
@@ -311,7 +308,7 @@ def test_plain_string_entry_with_placeholder_raises(tmp_path):
 def test_mixed_templated_and_static(tmp_path):
     spec = _register(tmp_path, {
         "1": {"sql": "SELECT * FROM orders WHERE o_amt > [MINAMT]",
-              "params": {"MINAMT": ["10"]}},
+              "params": {"MINAMT": {"type": "categorical", "values": ["10"]}}},
         "2": "SELECT count(*) FROM orders",
     })
     _, _, p1 = spec.query_gen_factory(None)("Q1")
@@ -319,16 +316,16 @@ def test_mixed_templated_and_static(tmp_path):
     assert p1 == {"MINAMT": "10"} and p2 == {}
 
 
-def test_inconsistent_param_lengths_raise(tmp_path):
-    with pytest.raises(ValueError, match="inconsistent number of values"):
+def test_placeholder_coverage_mismatch_raises(tmp_path):
+    with pytest.raises(ValueError, match="missing="):
         _register(tmp_path, {
             "1": {"sql": "SELECT * FROM orders WHERE o_seg='[A]' AND o_amt>[B]",
-                  "params": {"A": ["BUILDING", "MACHINERY"], "B": [1, 2, 3]}},
+                  "params": {"A": {"type": "categorical", "values": ["BUILDING"]}}},
         })
 
 
 def test_dir_sidecar_params(tmp_path):
-    """register_workload_from_dir reads SQL files + a sidecar params.json."""
+    """register_workload_from_dir reads SQL files + a sidecar params.json (spec sections)."""
     import json as _json
 
     from synnodb.workloads.byo_workload import register_workload_from_dir
@@ -337,7 +334,9 @@ def test_dir_sidecar_params(tmp_path):
     sql_dir = tmp_path / "sql"
     sql_dir.mkdir()
     (sql_dir / "1.sql").write_text("SELECT * FROM orders WHERE o_amt > [MINAMT]")
-    (sql_dir / "params.json").write_text(_json.dumps({"1": {"MINAMT": ["10", "20"]}}))
+    (sql_dir / "params.json").write_text(_json.dumps(
+        {"1": {"params": {"MINAMT": {"type": "categorical", "values": ["10", "20"]}}}}
+    ))
 
     spec = register_workload_from_dir("dirp", sql_dir, parquet)
     gen = spec.query_gen_factory(None)

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Callable, Mapping
 from synnodb.tools.run_tool_mode import RunToolMode
 
 if TYPE_CHECKING:  # avoid an import cycle; only used for type hints
+    from synnodb.workloads.query_params import ParamSpace
     from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 # A query generator: query_name like "Q1" + an RNG -> (name, sql, placeholders).
@@ -26,6 +27,11 @@ QueryGenFn = Callable[..., tuple[str, str, dict]]
 QueryGenFactory = Callable[["OLAPWorkloadProvider | None"], QueryGenFn]
 # Built from the provider + a do_not_cache flag (CEB caches placeholders on disk).
 PlaceholdersFactory = Callable[["OLAPWorkloadProvider", bool], Callable[..., dict]]
+# Built lazily from the provider: query_name -> the typed ParamSpace (or None if the query is
+# static / the workload exposes no spec). Drives live-UI input widgets from declared types.
+ParamSpaceFactory = Callable[
+    ["OLAPWorkloadProvider | None"], Callable[..., "ParamSpace | None"]
+]
 
 
 @dataclass(frozen=True)
@@ -52,6 +58,9 @@ class WorkloadSpec:
     schema_factory: Callable[[], str]
     query_gen_factory: QueryGenFactory
     placeholders_factory: PlaceholdersFactory
+    # Per-query typed value-space accessor (live-UI widget metadata + run-time sampling). None
+    # for workloads that don't expose declarative specs (e.g. CEB, whose params come from disk).
+    param_space_factory: ParamSpaceFactory | None = None
     # Absolute parquet location for bring-your-own workloads (holds sf<sf>/<table>.parquet).
     # None for built-ins, which derive the path from the data-dir + benchmark-name
     # convention. When set, the pipeline uses this directly.
