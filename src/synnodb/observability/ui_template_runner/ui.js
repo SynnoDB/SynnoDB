@@ -129,6 +129,7 @@ function renderMetadata(meta) {
   const chips = [];
   if (meta.wandb_run) chips.push({ label: 'wandb-run', value: meta.wandb_run });
   if (meta.turn != null) chips.push({ label: 'turn', value: String(meta.turn) });
+  if (meta.date) chips.push({ label: 'date', value: String(meta.date) });
   if (meta.git_snapshot_hash) chips.push({ label: 'git hash', value: meta.git_snapshot_hash.slice(0, 8) });
   if (meta.model) chips.push({ label: 'model', value: meta.model.replace(/^.*\//, '') });
   el.innerHTML = chips.map(c =>
