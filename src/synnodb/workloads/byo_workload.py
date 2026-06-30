@@ -1,16 +1,19 @@
 """Register a workload from data: queries plus existing parquet, with no source edits.
 
-Two input forms, both bringing their parameter values explicitly (no inference):
+Two input forms, both declaring their parameter value *spaces* as typed specs (see
+:mod:`synnodb.workloads.query_params`):
 
-  * a single ``queries.json`` mapping each query id to ``{"sql": ..., "params": {PH: [v,...]}}``
+  * a single ``queries.json`` mapping each query id to
+    ``{"sql": ..., "params": {PH: <spec>}, "param_groups": [<group spec>, ...]}``
     (a plain SQL string is shorthand for a static query with no params);
   * a directory of ``*.sql`` files (filename stem = query id) plus an optional sidecar
-    ``params.json`` of the form ``{id: {PH: [values]}}``.
+    ``params.json`` of the form ``{id: {"params": {...}, "param_groups": [...]}}``.
 
 The schema shown to the planner is derived from the parquet via DuckDB DESCRIBE; table names
-are inferred from the parquet directory. A templated query's per-placeholder value lists are
-expanded into instantiations by :func:`query_params.expand_param_grid`; static (parameterless)
-queries get an identity generator.
+are inferred from the parquet directory. A templated query's specs are parsed into a
+:class:`~synnodb.workloads.query_params.ParamSpace` and sampled symbolically at run time (with
+the run's seeded RNG), exactly as the built-in TPC-H generator draws its values; static
+(parameterless) queries get an identity generator.
 """
 from __future__ import annotations
 
@@ -22,8 +25,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from synnodb.workloads.query_params import (
-    expand_param_grid,
+    ParamSpace,
     find_placeholders,
+    parse_param_space,
     substitute,
 )
 from synnodb.workloads.workload_spec import WorkloadSpec, register_workload
@@ -86,46 +90,46 @@ def _preflight_workload(
     sql_dict: dict[str, str],
     ids: list[str],
     resolved_tables: list[str],
-    assignments: dict[str, list[dict]],
+    spaces: dict[str, ParamSpace],
 ) -> None:
     """Registration-time self-check, plus a debug dump under SYNNODB_BYO_DEBUG=1.
 
-    Catches the args/parser quoting mismatch ('failed to parse <PH>') at registration
-    rather than mid-run, and logs what each query's engine will receive (sample SQL +
-    args line).
+    Samples one representative assignment per templated query and confirms every value is a
+    string (or an IN-list) - the shape the args line + generated C++ parser require - and
+    logs the SQL + args line the engine will receive.
     """
     from synnodb.workloads.workload_provider import format_args_element
 
     logger.debug("BYO workload %r: tables=%s queries=%s", name, resolved_tables, ids)
     for qid in ids:
         qn = f"Q{qid}"
-        if qid not in assignments:
+        if qid not in spaces:
             logger.debug("  %s: static query (no placeholders)", qn)
             continue
-        sample = assignments[qid][0]
-        # Every placeholder value must be a string (or an IN-list). The args line quotes
-        # all values and the generated parser reads std::quoted into a std::string field,
-        # so a non-string value fails at runtime with "Q<id>: failed to parse <name>".
+        sample = spaces[qid].sample(random.Random(0))
+        # Every placeholder value must be a string (or an IN-list). The args line quotes all
+        # values and the generated parser reads std::quoted into a std::string field. Sampling
+        # already coerces to strings; this guards the invariant defensively.
         for pname, pval in sample.items():
             is_in_list = isinstance(pval, str) and pval.startswith("(")
             if not is_in_list and not isinstance(pval, str):
                 raise ValueError(
                     f"{qn} placeholder '{pname}'={pval!r} is {type(pval).__name__}; "
-                    f"placeholder values must be strings (the args line is quoted and the "
-                    f"generated C++ parser reads std::quoted into a std::string field). "
+                    f"placeholder values must render to strings (the args line is quoted and "
+                    f"the generated C++ parser reads std::quoted into a std::string field). "
                     f"Otherwise the engine fails with 'failed to parse {pname}'."
                 )
         inst_sql = " ".join(substitute(sql_dict[qn], sample).split())
         args_line = format_args_element(qid, sample)
-        logger.debug("  %s: %d instantiations, sample params=%s", qn, len(assignments[qid]), sample)
+        logger.debug("  %s: sample params=%s", qn, sample)
         logger.debug("  %s: engine args line -> %s", qn, args_line)
         logger.debug("  %s: instantiated SQL -> %s", qn, inst_sql)
 
 
 def _normalize_params(raw: dict, source: str) -> dict[str, dict]:
-    """Normalize the keys of a params mapping (``{qid: {PH: [values]}}``) to the canonical
-    bare query ids, reusing the same key parsing as the queries so ``19``/``q19``/``Q19`` all
-    resolve."""
+    """Normalize the keys of a params mapping (``{qid: {"params": {...}, "param_groups":
+    [...]}}``) to the canonical bare query ids, reusing the same key parsing as the queries so
+    ``19``/``q19``/``Q19`` all resolve."""
     if not isinstance(raw, dict):
         raise ValueError(
             f"{source} must be a JSON object mapping query-id -> {{placeholder: [values]}}."
@@ -142,15 +146,16 @@ def _normalize_params(raw: dict, source: str) -> dict[str, dict]:
     return out
 
 
-def _load_template_assignments(
+def _build_param_spaces(
     sql_by_id: dict[str, str],
     params_by_id: dict[str, dict],
     params_source: str = "params",
-) -> dict[str, list[dict]]:
-    """Expand each templated query's per-placeholder value lists into instantiations.
+) -> dict[str, ParamSpace]:
+    """Parse each templated query's typed specs into a :class:`ParamSpace`.
 
-    Every query with ``[PLACEHOLDER]`` holes must have a matching ``params`` entry; one that
-    does not is an error (we do not invent values). Static queries are skipped (no entry).
+    Every query with ``[PLACEHOLDER]`` holes must have a matching parameter section (``params``
+    and/or ``param_groups``); one that does not is an error (we do not invent values). Static
+    queries are skipped (no entry).
     """
     templated = {qid: sql for qid, sql in sql_by_id.items() if find_placeholders(sql)}
     unknown = set(params_by_id) - set(templated)
@@ -164,12 +169,15 @@ def _load_template_assignments(
         raise ValueError(
             f"Templated queries {missing} have no parameter values. Provide them in "
             f'{params_source}, e.g. "{missing[0]}": {{"params": {{"<PLACEHOLDER>": '
-            f'["<value>", ...]}}}}.'
+            f'{{"type": "int", "min": 1, "max": 50}}}}}}.'
         )
-    out: dict[str, list[dict]] = {}
+    out: dict[str, ParamSpace] = {}
     for qid, tmpl in templated.items():
+        section = params_by_id[qid] or {}
         try:
-            out[qid] = expand_param_grid(tmpl, params_by_id[qid])
+            out[qid] = parse_param_space(
+                section.get("params"), section.get("param_groups"), tmpl
+            )
         except ValueError as e:
             raise ValueError(f"Q{qid}: {e}") from e
     return out
@@ -315,8 +323,8 @@ def register_workload_from_dir(
         scale_factors: the scale factors that exist on disk (defaults to (1,)).
         schema_example_table: table shown in the planner's schema-read example.
 
-    Templated queries take their values from a sidecar ``<sql_dir>/params.json`` of the form
-    ``{id: {PLACEHOLDER: [values]}}``.
+    Templated queries take their value spaces from a sidecar ``<sql_dir>/params.json`` of the
+    form ``{id: {"params": {PLACEHOLDER: <spec>}, "param_groups": [<group spec>, ...]}}``.
     """
     sql_dir = Path(sql_dir)
     sql_files = sorted(sql_dir.glob("*.sql"))
@@ -359,14 +367,14 @@ def register_workload_from_json(
 
     Each entry is keyed by query id and is either:
 
-      * an object ``{"sql": <str>, "params": {PLACEHOLDER: [values, ...]}}`` - the per-
-        placeholder value lists are expanded (index-zipped, length-1 broadcast) into the
-        query's instantiations; ``params`` may be omitted for a static query; or
+      * an object ``{"sql": <str>, "params": {PLACEHOLDER: <spec>}, "param_groups": [...]}``
+        - the typed specs declare each placeholder's value space and are sampled at run time;
+        ``params``/``param_groups`` may be omitted for a static query; or
       * a plain SQL string - shorthand for a static query with no params (an error if it
         actually contains ``[PLACEHOLDER]`` holes).
 
-    One self-contained input artifact: SQL and parameter values live together, the shape a
-    dashboard would populate.
+    One self-contained input artifact: SQL and parameter value spaces live together, the shape
+    a dashboard would populate.
     """
     queries_json = Path(queries_json)
     raw = json.loads(queries_json.read_text())
@@ -389,8 +397,13 @@ def register_workload_from_json(
                 f'"sql" key, got {type(entry).__name__}.'
             )
         sql_by_id[qid] = str(entry["sql"])
+        section: dict = {}
         if entry.get("params"):
-            params_by_id[qid] = entry["params"]
+            section["params"] = entry["params"]
+        if entry.get("param_groups"):
+            section["param_groups"] = entry["param_groups"]
+        if section:
+            params_by_id[qid] = section
 
     return _register_static_workload(
         name=name,
@@ -419,7 +432,7 @@ def _register_static_workload(
 ) -> WorkloadSpec:
     """Shared builder: turn an ``{id: sql}`` map + parquet into a registered workload.
     Schema is derived from the parquet; tables inferred if not given. Templated queries are
-    filled from ``params_by_id`` (per-placeholder value lists); static queries get an
+    filled by sampling their typed :class:`ParamSpace` at run time; static queries get an
     identity generator."""
     parquet_dir = Path(parquet_dir)
     # Normalize keys (q1/Q1/query1/1/2b) to canonical bare ids, reliably + reported.
@@ -433,13 +446,13 @@ def _register_static_workload(
     def schema_factory() -> str:
         return schema_ddl_from_parquet(parquet_dir, resolved_tables, scale_factors[0])
 
-    # Templated queries (those with [PLACEHOLDER] holes) are filled from the user-supplied
-    # per-placeholder value lists; static queries use an identity generator. Params keys were
-    # already normalized to bare ids (same _QID_RE) by the callers.
-    assignments = _load_template_assignments(sql_by_norm, params_by_id or {}, params_source)
-    # Validate the placeholder values and, under SYNNODB_BYO_DEBUG, log the SQL + args
+    # Templated queries (those with [PLACEHOLDER] holes) carry a typed ParamSpace sampled at
+    # run time; static queries use an identity generator. Params keys were already normalized
+    # to bare ids (same _QID_RE) by the callers.
+    spaces = _build_param_spaces(sql_by_norm, params_by_id or {}, params_source)
+    # Validate a representative sample and, under SYNNODB_BYO_DEBUG, log the SQL + args
     # line per query.
-    _preflight_workload(name, sql_dict, ids, resolved_tables, assignments)
+    _preflight_workload(name, sql_dict, ids, resolved_tables, spaces)
 
     def _bare(query_name: str) -> str:
         return query_name[1:] if query_name.startswith("Q") else query_name
@@ -448,9 +461,9 @@ def _register_static_workload(
         def gen(query_name: str, rnd=None):
             qid = _bare(query_name)
             template = sql_dict[query_name]
-            if qid in assignments:
+            if qid in spaces:
                 r = rnd or random.Random(0)
-                assign = r.choice(assignments[qid])
+                assign = spaces[qid].sample(r)
                 return (query_name, substitute(template, assign), assign)
             return (query_name, template, {})
 
@@ -460,9 +473,15 @@ def _register_static_workload(
         def gen(query_name: str, **_):
             qid = _bare(query_name)
             # representative placeholder set for arg-parser / engine generation
-            return assignments[qid][0] if qid in assignments else {}
+            return spaces[qid].sample(random.Random(0)) if qid in spaces else {}
 
         return gen
+
+    def param_space_factory(provider: "OLAPWorkloadProvider|None"):
+        def get(query_name: str) -> ParamSpace | None:
+            return spaces.get(_bare(query_name))
+
+        return get
 
     # Always validate small-SF-first (target last) so a crash like the SF50 Q10 segfault
     # is caught in seconds at SF1 instead of after a six-minute load at the target SF.
@@ -486,6 +505,7 @@ def _register_static_workload(
         schema_factory=schema_factory,
         query_gen_factory=query_gen_factory,
         placeholders_factory=placeholders_factory,
+        param_space_factory=param_space_factory,
         base_parquet_dir=parquet_dir,
     )
     register_workload(spec)

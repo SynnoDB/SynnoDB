@@ -26,6 +26,7 @@ class RunConfig:
     # The source run's stage name, only set for checkSfCorrectness (it replays
     # that stage's prepare).
     source_stage_name: str | None = None
+    verbose: bool = False  # stream DEBUG logs to the console (logfile is always DEBUG)
     start_snapshot: str | None = None
     storage_plan_snapshot: str | None = None
     storage_plan_text: str | None = None  # storage plan content supplied directly (W&B-free path)
@@ -132,6 +133,15 @@ def add_common_args(
         dest="workspace_dir",
         default=None,
         help="Output/workspace directory (default: local ./output).",
+    )
+
+    # Always available: stream DEBUG-level logs to the console. Off by default —
+    # the full DEBUG log is always written to the logfile regardless.
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Stream verbose (DEBUG) logs to the console.",
     )
 
     # Number of parameter instantiations per query for the correctness sweep. None ->

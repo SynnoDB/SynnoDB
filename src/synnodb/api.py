@@ -113,6 +113,7 @@ class SynnoConfig:
     disable_repo_sync: bool = False
     notify: bool = False
     do_not_cache: bool = False
+    verbose: bool = False              # stream DEBUG logs to the console (logfile is always DEBUG)
     workspace: str | None = None       # run output dir; None -> local ./output
     # escape hatch for any unmodelled RunConfig field: applied (dataclasses.replace)
     # onto the RunConfig a stage's build_config produces, just before execution.
@@ -392,7 +393,9 @@ class SynnoDB:
         return SynnoDB(dataclasses.replace(self.config, **overrides))
 
     # ---- generic engine -------------------------------------------------
-    def run(self, stage: str | Stage, /, **inputs: Any) -> StageArtifact:
+    def run(
+        self, stage: str | Stage, /, *, verbose: bool | None = None, **inputs: Any
+    ) -> StageArtifact:
         _load_stages()
         st = stage if isinstance(stage, Stage) else _REGISTRY[stage]
         cfg = self.config
@@ -405,6 +408,11 @@ class SynnoDB:
         # no argparse round-trip. extra_config is the escape hatch for any field the
         # typed SynnoConfig does not model.
         run_config = st.build_config(cfg, inputs)
+        # Per-call verbose overrides the driver default (cfg.verbose, already baked
+        # into run_config by build_config); either streams DEBUG logs to the console
+        # (the logfile is always DEBUG regardless).
+        if verbose is not None:
+            run_config = dataclasses.replace(run_config, verbose=verbose)
         if cfg.extra_config:
             run_config = dataclasses.replace(run_config, **cfg.extra_config)
 
@@ -415,8 +423,10 @@ class SynnoDB:
         return st.result(result.run_id, result.snapshot_hash, workspace, cfg, inputs)
 
     # ---- ergonomic named methods (OLAP) --------------------------------
-    def createStoragePlan(self, **inputs: Any) -> StoragePlan:
-        return self.run("createStoragePlan", **inputs)  # type: ignore[return-value]
+    def createStoragePlan(
+        self, *, verbose: bool | None = None, **inputs: Any
+    ) -> StoragePlan:
+        return self.run("createStoragePlan", verbose=verbose, **inputs)  # type: ignore[return-value]
 
     def createBaseImpl(
         self,

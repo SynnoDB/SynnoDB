@@ -815,7 +815,14 @@ def run_conv_wrapper(
         args.wandb_run_id = None
 
     log_filename = f"{run_name}.log"
-    setup_logging(logging.DEBUG, settings.log_dir() / log_filename)
+    # Full DEBUG always goes to the logfile; the console stays at INFO unless the
+    # caller opted into verbose output (e.g. db.createStoragePlan(verbose=True)).
+    verbose = getattr(args, "verbose", False)
+    setup_logging(
+        logging.DEBUG,
+        settings.log_dir() / log_filename,
+        console_level=logging.DEBUG if verbose else logging.INFO,
+    )
 
     if args.notify:
         logger.info(
