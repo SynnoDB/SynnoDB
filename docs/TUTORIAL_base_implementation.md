@@ -73,11 +73,13 @@ WANDB_PROJECT=synnodb-tutorial
 GIT_SNAPSHOTTER_SERVER="git://c01/bespoke_cache.git"
 ```
 
-> **Why W&B is needed here.** Each stage returns a `run_id`; the next stage is told
-> `--storage_plan_run_id <that id>`. With the Python API the chaining is automatic (you pass the
-> plan object), but it still needs `log_to_wandb=True` (the default) so the plan has a `run_id` to
-> chain from. If you genuinely cannot use W&B, you can still generate a single stage and inspect its
-> output, but the clean storage-plan -> base-impl chain in this tutorial assumes it.
+> **Chaining without W&B.** The base-impl stage only needs the storage plan's **text**. The
+> simplest, W&B-free path is to pass that text directly: `db.createBaseImpl(storage_plan=plan.text)`
+> (CLI: `--storage_plan_text "$(cat storage_plan.txt)"`). Alternatively, if the storage-plan run was
+> logged (`log_to_wandb=True`, the default), you can chain off its `run_id` with
+> `db.createBaseImpl(storage_plan_wandb_id=plan.run_id)` (CLI: `--storage_plan_run_id <id>`), in which
+> case the plan is recovered from W&B and its config is validated against the current run. Provide
+> exactly one of the two.
 
 Point SynnoDB at a data root. Everything (parquet, caches, logs, the published engines) lives under
 it:
@@ -190,7 +192,7 @@ plan = db.createStoragePlan()               # -> StoragePlan; the agent writes s
 print("storage plan run:", plan.run_id)
 print(plan.text[:800], "...")
 
-impl = db.createBaseImpl(storage_plan=plan) # chains on plan.run_id; writes + compiles the C++ engine
+impl = db.createBaseImpl(storage_plan=plan.text) # pass the plan content (W&B-free); writes + compiles the C++ engine
 print("base impl run:", impl.run_id)
 print("workspace:", impl.workspace)         # generated sources + the compiled `db` binary
 print("files:", sorted(impl.files))         # e.g. db_loader.cpp, parquet_reader.cpp, query1.cpp, query_impl.cpp, ...
@@ -222,6 +224,9 @@ synnodb-base-impl \
 ```
 
 (`--auto_u --auto_finish` run the agent unattended; drop them to confirm each step interactively.)
+
+To run the base-impl stage **without W&B**, drop `--storage_plan_run_id` and `--log_to_wandb` and
+pass the plan text instead: `--storage_plan_text "$(cat output/storage_plan.txt)"`.
 
 ### Auto-publish
 

@@ -2,8 +2,8 @@
 
     from synnodb import SynnoDB
     db = SynnoDB.in_memory(workload="tpch")
-    plan = db.createStoragePlan(queries="1")   # -> StoragePlan; plan.text is the doc
-    impl = db.createBaseImpl(storage_plan=plan) # -> BaseImplementation; impl.files
+    plan = db.createStoragePlan(queries="1")        # -> StoragePlan; plan.text is the doc
+    impl = db.createBaseImpl(storage_plan=plan.text) # -> BaseImplementation; impl.files
 
 Each call runs one stage to completion (blocking) and returns the stage's domain
 artifact (StoragePlan, BaseImplementation, ...) — carrying the produced content
@@ -197,7 +197,10 @@ def _register_olap_stages() -> None:
     register_stage(Stage(
         "createBaseImpl", "synnodb.run_gen_base_impl", olap,
         result=_build_base_impl,
-        params=(StageParam("storage_plan", "--storage_plan_run_id"),),
+        params=(
+            StageParam("storage_plan_text", "--storage_plan_text", required=False),
+            StageParam("storage_plan_wandb_id", "--storage_plan_run_id", required=False),
+        ),
         flags=bespoke,
     ))
     register_stage(Stage(
@@ -233,7 +236,7 @@ class SynnoDB:
         config: SynnoConfig | None = None,
         /,
         *,
-        data_dir: str | None = None,
+        data_dir: str | Path | None = None,
         env_file: str | None = None,
         cleanup_workspace: bool = False,
         **overrides: Any,
@@ -248,6 +251,12 @@ class SynnoDB:
         # begins a clean pipeline (prior accumulated timeline is reset); every stage
         # chained on this driver then streams onto this one continuous dashboard.
         self._start_live_dashboard()
+        
+        # Fail fast on a missing API key: .env is loaded by now, so check up front
+        # rather than several stages later when the SDK session is first built.
+        from synnodb.utils.model_setup import validate_model_credentials
+
+        validate_model_credentials(self.config.model)
         # Ephemeral runs: delete the workspace directory when this process exits
         # (normal finish, uncaught exception, or SIGINT/SIGTERM). Avoids the
         # accumulation of per-run engine workspaces. SIGKILL cannot be intercepted.
@@ -393,8 +402,42 @@ class SynnoDB:
     def createStoragePlan(self, **inputs: Any) -> StoragePlan:
         return self.run("createStoragePlan", **inputs)  # type: ignore[return-value]
 
-    def createBaseImpl(self, storage_plan: Any, **inputs: Any) -> BaseImplementation:
-        return self.run("createBaseImpl", storage_plan=storage_plan, **inputs)  # type: ignore[return-value]
+    def createBaseImpl(
+        self,
+        storage_plan: Any = None,
+        *,
+        storage_plan_wandb_id: Any = None,
+        **inputs: Any,
+    ) -> BaseImplementation:
+        """Build a base implementation from a storage plan.
+
+        Provide exactly one of:
+          - ``storage_plan``: the plan *content* itself (a ``str``, or a
+            ``StoragePlan`` artifact whose ``.text`` is used). This path is
+            W&B-free — the text is injected straight into the workspace.
+          - ``storage_plan_wandb_id``: the W&B run id of a logged
+            ``createStoragePlan`` run (a ``str``, or a ``StoragePlan`` artifact
+            whose ``.run_id`` is used). The plan is recovered from W&B.
+        """
+        text = storage_plan.text if isinstance(storage_plan, StoragePlan) else storage_plan
+        wandb_id = (
+            storage_plan_wandb_id.run_id
+            if isinstance(storage_plan_wandb_id, StageArtifact)
+            else storage_plan_wandb_id
+        )
+        if (text is None) == (wandb_id is None):
+            raise ValueError(
+                "createBaseImpl requires exactly one of `storage_plan` (the plan "
+                "content) or `storage_plan_wandb_id` (a W&B run id) — got "
+                + ("both" if text is not None else "neither")
+                + "."
+            )
+        return self.run(  # type: ignore[return-value]
+            "createBaseImpl",
+            storage_plan_text=text,
+            storage_plan_wandb_id=wandb_id,
+            **inputs,
+        )
 
     def runOptimLoop(self, base_impl: Any, **inputs: Any) -> OptimizedImplementation:
         return self.run("runOptimLoop", base_impl=base_impl, **inputs)  # type: ignore[return-value]
