@@ -4,12 +4,12 @@
 const SECT_KEY_ORDER = ['storage','plan','pin','trace','implement','impl',
                          'base','gen','optim','make_mt','add_mt','mt'];
 const SECT_HEX = {
-  storage:'#4C72B0', plan:'#4C72B0',
-  implement:'#55A868', impl:'#55A868', base:'#55A868', gen:'#55A868',
-  pin:'#DA8BC3', trace:'#DA8BC3',
-  optim:'#DD8452',
-  make_mt:'#8172B3', add_mt:'#8172B3', mt:'#8172B3',
-  _:'#8C8C8C',
+  storage:'#3b6ef5', plan:'#3b6ef5',
+  implement:'#22c55e', impl:'#22c55e', base:'#22c55e', gen:'#22c55e',
+  pin:'#c084fc', trace:'#c084fc',
+  optim:'#fb923c',
+  make_mt:'#6d3bf0', add_mt:'#6d3bf0', mt:'#6d3bf0',
+  _:'#64748b',
 };
 
 function sectKey(desc) {

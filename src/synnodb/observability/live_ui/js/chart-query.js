@@ -16,7 +16,7 @@ const querySpeedupReferencePlugin = {
     if (!Number.isFinite(y) || y < chartArea.top || y > chartArea.bottom) return;
 
     ctx.save();
-    ctx.strokeStyle = '#E4572E';
+    ctx.strokeStyle = '#f97316';
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 5]);
     ctx.beginPath();
@@ -48,7 +48,7 @@ const queryInlineLegendPlugin = {
       });
     });
     if (chart.options.plugins?.querySpeedupReference?.enabled) {
-      items.push({text: 'Speedup = 1', fill: 'rgba(0,0,0,0)', stroke: '#E4572E', dash: [8, 5]});
+      items.push({text: 'Speedup = 1', fill: 'rgba(0,0,0,0)', stroke: '#f97316', dash: [8, 5]});
     }
     if (!items.length) return;
     ctx.save();
@@ -74,7 +74,7 @@ const queryInlineLegendPlugin = {
         ctx.lineWidth = 1;
         ctx.strokeRect(x, yBase - H, BOX, H);
       }
-      ctx.fillStyle = '#cdd5e0';
+      ctx.fillStyle = '#e5eefc';
       ctx.fillText(item.text, x + BOX + GAP, yBase);
       x += BOX + GAP + tw + SEP;
     }
@@ -95,23 +95,23 @@ function initQueryChart() {
         {
           label: 'Speedup ×DuckDB',
           data: [],
-          backgroundColor: 'rgba(57,140,175,0.65)',
-          borderColor: '#398caf',
+          backgroundColor: 'rgba(59,110,245,0.65)',
+          borderColor: '#3b6ef5',
           borderWidth: 1,
         },
         {
           label: 'Bespoke (ms)',
           data: [],
-          backgroundColor: 'rgba(85,168,104,0.65)',
-          borderColor: '#55A868',
+          backgroundColor: 'rgba(34,197,94,0.65)',
+          borderColor: '#22c55e',
           borderWidth: 1,
           hidden: true,
         },
         {
           label: 'DuckDB baseline (ms)',
           data: [],
-          backgroundColor: 'rgba(218,139,195,0.55)',
-          borderColor: '#DA8BC3',
+          backgroundColor: 'rgba(192,132,252,0.55)',
+          borderColor: '#c084fc',
           borderWidth: 1,
           hidden: true,
         },
@@ -125,8 +125,8 @@ function initQueryChart() {
       plugins: {
         legend: {display: false},
         tooltip: {
-          backgroundColor:'#1c2333', titleColor:'#cdd5e0',
-          bodyColor:'#9090b0', borderColor:'#30374a', borderWidth:1,
+          backgroundColor:'#101e34', titleColor:'#e5eefc',
+          bodyColor:'#93a9c8', borderColor:'#233149', borderWidth:1,
           callbacks: {
             label: item => {
               const v = item.parsed.y;
@@ -141,18 +141,18 @@ function initQueryChart() {
       },
       scales: {
         x: {
-          ticks: {color:'#7280a0', font:{size:10}},
-          grid:  {color:'rgba(48,55,74,0.8)'},
-          title: {display:false, text:'Query', color:'#7280a0', font:{size:10}},
+          ticks: {color:'#93a9c8', font:{size:10}},
+          grid:  {color:'rgba(36,49,73,0.8)'},
+          title: {display:false, text:'Query', color:'#93a9c8', font:{size:10}},
         },
         y: {
           min: 0,
           beginAtZero: true,
           grace: '12%',
           afterDataLimits: axis => { addAxisHeadroom(axis); },
-          ticks: {color:'#7280a0', font:{size:10}},
-          grid:  {color:'rgba(48,55,74,0.8)'},
-          title: {display:true, text:'Speedup ×', color:'#7280a0', font:{size:10}},
+          ticks: {color:'#93a9c8', font:{size:10}},
+          grid:  {color:'rgba(36,49,73,0.8)'},
+          title: {display:true, text:'Speedup ×', color:'#93a9c8', font:{size:10}},
         },
       },
     },

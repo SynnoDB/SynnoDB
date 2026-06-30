@@ -12,9 +12,9 @@ const PIE_TYPE_ORDER  = ['llm','compile','shell','validate','apply_patch','compa
 const PIE_TYPE_LABELS = {llm:'LLM', compile:'Compile', shell:'Shell',
                          validate:'Validate', apply_patch:'Patch',
                          compaction:'Compaction', other:'Other'};
-const PIE_TYPE_COLORS = {llm:'#5bc4ef', compile:'#b0a5e8', shell:'#5cd68a',
-                         validate:'#e0d870', apply_patch:'#ff9940',
-                         compaction:'#aaaaaa', other:'#666e82'};
+const PIE_TYPE_COLORS = {llm:'#6fa8ff', compile:'#a78bfa', shell:'#4ade80',
+                         validate:'#e6d96a', apply_patch:'#fb923c',
+                         compaction:'#94a3b8', other:'#64748b'};
 
 // ── Pie chart ────────────────────────────────────────────────────────────
 function computeTimePieData(steps, data) {
@@ -53,11 +53,11 @@ function initPieChart() {
       plugins: {
         legend: {
           position: 'right',
-          labels: {color:'#cdd5e0', boxWidth:14, padding:14, font:{size:12}},
+          labels: {color:'#e5eefc', boxWidth:14, padding:14, font:{size:12}},
         },
         tooltip: {
-          backgroundColor:'#1c2333', titleColor:'#cdd5e0',
-          bodyColor:'#9090b0', borderColor:'#30374a', borderWidth:1,
+          backgroundColor:'#101e34', titleColor:'#e5eefc',
+          bodyColor:'#93a9c8', borderColor:'#233149', borderWidth:1,
           callbacks: {
             label: item => {
               const total = item.dataset.data.reduce((a,b) => a+b, 0);
@@ -126,11 +126,11 @@ function initTimelineDistChart() {
       plugins: {
         legend: {
           position: 'top', align: 'end',
-          labels: {color: '#cdd5e0', boxWidth: 12, padding: 8, font: {size: 10}},
+          labels: {color: '#e5eefc', boxWidth: 12, padding: 8, font: {size: 10}},
         },
         tooltip: {
-          backgroundColor: '#1c2333', titleColor: '#cdd5e0',
-          bodyColor: '#9090b0', borderColor: '#30374a', borderWidth: 1,
+          backgroundColor: '#101e34', titleColor: '#e5eefc',
+          bodyColor: '#93a9c8', borderColor: '#233149', borderWidth: 1,
           callbacks: {
             title: items => 'Turn ' + items[0].label,
             label: item => {
@@ -143,15 +143,15 @@ function initTimelineDistChart() {
       },
       scales: {
         x: {
-          ticks: {color: '#7280a0', font: {size: 10}, maxTicksLimit: 20},
-          grid:  {color: 'rgba(48,55,74,0.8)'},
-          title: {display: true, text: 'Turn', color: '#7280a0', font: {size: 10}},
+          ticks: {color: '#93a9c8', font: {size: 10}, maxTicksLimit: 20},
+          grid:  {color: 'rgba(36,49,73,0.8)'},
+          title: {display: true, text: 'Turn', color: '#93a9c8', font: {size: 10}},
         },
         y: {
           stacked: true, beginAtZero: true,
-          ticks: {color: '#7280a0', font: {size: 10}},
-          grid:  {color: 'rgba(48,55,74,0.8)'},
-          title: {display: true, text: '', color: '#7280a0', font: {size: 10}},
+          ticks: {color: '#93a9c8', font: {size: 10}},
+          grid:  {color: 'rgba(36,49,73,0.8)'},
+          title: {display: true, text: '', color: '#93a9c8', font: {size: 10}},
         },
       },
     },
@@ -218,19 +218,19 @@ function initBarChart() {
       plugins: {
         legend: {display: false},
         tooltip: {
-          backgroundColor:'#1c2333', titleColor:'#cdd5e0',
-          bodyColor:'#9090b0', borderColor:'#30374a', borderWidth:1,
+          backgroundColor:'#101e34', titleColor:'#e5eefc',
+          bodyColor:'#93a9c8', borderColor:'#233149', borderWidth:1,
           callbacks: {label: item => '  ' + item.parsed.y + ' calls'},
         },
       },
       scales: {
-        x: {ticks:{color:'#7280a0', font:{size:11}}, grid:{color:'rgba(48,55,74,0.8)'}},
+        x: {ticks:{color:'#93a9c8', font:{size:11}}, grid:{color:'rgba(36,49,73,0.8)'}},
         y: {
           beginAtZero: true,
-          ticks:{color:'#7280a0', font:{size:10}, stepSize: 1,
+          ticks:{color:'#93a9c8', font:{size:10}, stepSize: 1,
                  callback: v => Number.isInteger(v) ? v : ''},
-          grid:{color:'rgba(48,55,74,0.8)'},
-          title:{display:true, text:'# calls', color:'#7280a0', font:{size:10}},
+          grid:{color:'rgba(36,49,73,0.8)'},
+          title:{display:true, text:'# calls', color:'#93a9c8', font:{size:10}},
         },
       },
     },
