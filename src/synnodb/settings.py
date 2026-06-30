@@ -17,6 +17,39 @@ from dotenv import load_dotenv
 # reconfigure (two SynnoDB instances pointed at different dirs in one process).
 _our_data_dir: str | None = None
 
+# Default W&B coordinates, used when WANDB_ENTITY/WANDB_PROJECT are not set in
+# the environment/.env. Kept here so writer (wandb.init) and all readers resolve
+# the same destination — a mismatch silently sends runs somewhere they can't be
+# read back from.
+#
+# The entity default is intentionally None: a hardcoded entity (e.g. one user's
+# personal team) is unreadable by everyone else. Leaving it unset lets W&B map
+# to *each user's own* default entity — wandb.init(entity=None), weave.init with
+# a bare project name, and api.run("project/run_id") all resolve the caller's
+# default entity server-side. Users who want a specific team set WANDB_ENTITY.
+DEFAULT_WANDB_ENTITY: str | None = None
+DEFAULT_WANDB_PROJECT = "SynnoDB"
+
+
+def get_wandb_entity_project(
+    entity: str | None = None, project: str | None = None
+) -> tuple[str | None, str]:
+    """Resolve the W&B ``(entity, project)`` once, from args → env → defaults.
+
+    Explicit arguments win; otherwise fall back to ``WANDB_ENTITY`` /
+    ``WANDB_PROJECT`` from the environment (or ``.env``), then the project
+    defaults above. This is the single source of truth — every wandb write and
+    read should resolve through here so they always agree.
+
+    ``entity`` may be ``None`` (the default): callers must treat that as "let
+    W&B pick the user's default entity" rather than substituting a literal.
+    """
+    if entity is None or project is None:
+        load_dotenv()  # harmless if already loaded; lets .env work without configure()
+        entity = entity or os.getenv("WANDB_ENTITY", DEFAULT_WANDB_ENTITY)
+        project = project or os.getenv("WANDB_PROJECT", DEFAULT_WANDB_PROJECT)
+    return entity, project
+
 
 def configure(
     *, data_dir: str | os.PathLike[str] | None = None, env_file: str | None = None

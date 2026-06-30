@@ -15,7 +15,7 @@ This script resolves that value for a given wandb run id by:
 Usage:
     python -m demo_and_analysis.get_mem_budget_setting_from_run <run_id>
     python -m demo_and_analysis.get_mem_budget_setting_from_run <run_id> \\
-        --entity learneddb --project bespoke-olap-internal
+        --entity learneddb --project SynnoDB
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from synnodb.observability.plots.utils.wandb_utils import get_wandb_run
+from synnodb.settings import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT
 from synnodb.utils.cli_config import DEFAULT_ARTIFACTS_DIR
 
 MEM_LIMIT_RE = re.compile(r"mem_limit=(\d+)")
@@ -48,8 +49,8 @@ def _extract_from_logfile(log_path: Path) -> int | None:
 
 def get_mem_budget_from_wandb_run(
     run_id: str,
-    entity: str = "learneddb",
-    project: str = "bespoke-olap-internal",
+    entity: str | None = DEFAULT_WANDB_ENTITY,
+    project: str = DEFAULT_WANDB_PROJECT,
     artifacts_dir: str = DEFAULT_ARTIFACTS_DIR,
 ) -> int:
     run = get_wandb_run(run_id=run_id, entity=entity, project=project)
@@ -80,8 +81,8 @@ def get_mem_budget_from_wandb_run(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_id", help="wandb run id (e.g. a8oim49a)")
-    parser.add_argument("--entity", default="learneddb")
-    parser.add_argument("--project", default="bespoke-olap-internal")
+    parser.add_argument("--entity", default=DEFAULT_WANDB_ENTITY)
+    parser.add_argument("--project", default=DEFAULT_WANDB_PROJECT)
     parser.add_argument(
         "--artifacts_dir",
         default=DEFAULT_ARTIFACTS_DIR,

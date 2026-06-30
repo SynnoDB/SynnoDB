@@ -741,11 +741,14 @@ def run_conv_wrapper(
         import wandb
         import weave
 
-        entity = os.getenv("WANDB_ENTITY", "learneddb")
-        project = os.getenv("WANDB_PROJECT", "bespoke-olap-internal")
+        from synnodb.settings import get_wandb_entity_project
 
+        entity, project = get_wandb_entity_project()
+
+        # With no entity, pass a bare project name so weave/wandb log to the
+        # caller's own default entity rather than a hardcoded one.
         weave.init(
-            f"{entity}/{project}",
+            f"{entity}/{project}" if entity else project,
             # weave_log_level="info",
             settings={"log_level": "INFO", "print_call_link": False},
         )
