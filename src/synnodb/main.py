@@ -238,7 +238,16 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
 
     plan_filename = get_plan_filename(usecase)
 
-    if args.storage_plan_snapshot is not None:
+    # Plan extraction is decoupled from the workspace prepare below: it only
+    # produces the plan *text* (from one of two sources), which prepare then
+    # writes into the clean workspace via usecase_prepare_args["storage_plan"].
+    if getattr(args, "storage_plan_text", None) is not None:
+        # Direct text (W&B-free): no run to look up, no snapshot to restore.
+        storage_plan = args.storage_plan_text
+        assert args.storage_plan_snapshot is None, (
+            "storage_plan_text and storage_plan_snapshot are mutually exclusive"
+        )
+    elif args.storage_plan_snapshot is not None:
         # load storage plan snapshot and read storage plan form it.
         # afterwards a clean or other snapshot will be loaded
         storage_plan = load_storage_plan_from_snapshot(

@@ -109,32 +109,42 @@ def main(args):
         f"Could not parse query ids from short name {query_ids}"
     )
 
+    # The storage plan reaches the base-impl run either as raw text (W&B-free) or
+    # via a W&B run id we resolve to a git snapshot to recover the plan text from.
+    storage_plan_text = getattr(args, "storage_plan_text", None)
+    storage_plan_snapshot = None
     if bespoke_storage:
-        assert args.storage_plan_run_id is not None, (
-            "storage_plan_run_id must be provided when bespoke_storage is True"
-        )
-        storage_plan_run_id = args.storage_plan_run_id
-        statistics, config, _ = wandb_retrieve_metrics_for_run(
-            benchmark,
-            storage_plan_run_id,
+        assert (storage_plan_text is None) != (args.storage_plan_run_id is None), (
+            "createBaseImpl requires exactly one of storage_plan_text or "
+            "storage_plan_run_id when bespoke_storage is True"
         )
 
-        validate_snapshot(
-            config,
-            benchmark,
-            queries_str,
-            query_ids,
-            db_storage=args.db_storage,
-            model=args.model,
-        )
+        if storage_plan_text is not None:
+            # Direct text: skip W&B retrieval, snapshot extraction, and the
+            # snapshot-config validation (there is no run to validate against —
+            # the caller owns benchmark/queries/db_storage/model consistency).
+            pass
+        else:
+            storage_plan_run_id = args.storage_plan_run_id
+            statistics, config, _ = wandb_retrieve_metrics_for_run(
+                benchmark,
+                storage_plan_run_id,
+            )
 
-        # extract git snapshot
-        storage_plan_snapshot = statistics["code/snapshot_hash"]  # type: ignore
-        assert storage_plan_snapshot != "N/A", (
-            f"Could not retrieve a valid commit hash from wandb for run {storage_plan_snapshot} in benchmark {benchmark}. Got {storage_plan_snapshot}."
-        )
-    else:
-        storage_plan_snapshot = None
+            validate_snapshot(
+                config,
+                benchmark,
+                queries_str,
+                query_ids,
+                db_storage=args.db_storage,
+                model=args.model,
+            )
+
+            # extract git snapshot
+            storage_plan_snapshot = statistics["code/snapshot_hash"]  # type: ignore
+            assert storage_plan_snapshot != "N/A", (
+                f"Could not retrieve a valid commit hash from wandb for run {storage_plan_snapshot} in benchmark {benchmark}. Got {storage_plan_snapshot}."
+            )
 
     # CLI --memory_budget_mb overrides the default; otherwise pick a RAM budget
     # only for persistent storage runs (in-memory uses the full available RAM).
@@ -154,6 +164,7 @@ def main(args):
         keep_csv=False,  # keep .csv files around instead of git-ignoring them (maybe to backtrack correctness issues)
         bespoke_storage=bespoke_storage,
         storage_plan_snapshot=storage_plan_snapshot,
+        storage_plan_text=storage_plan_text,
         use_supervision_agent=True,
         use_autonomy_master_prompt=False,
         memory_budget_mb=memory_budget_mb,
@@ -170,7 +181,15 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--storage_plan_run_id",
         type=str,
         default=None,
-        help="Wandb run id to read the storage plan from (required if --bespoke_storage is set)",
+        help="Wandb run id to read the storage plan from. Provide exactly one of "
+        "this or --storage_plan_text when --bespoke_storage is set.",
+    )
+    parser.add_argument(
+        "--storage_plan_text",
+        type=str,
+        default=None,
+        help="Storage plan content supplied directly (W&B-free). Provide exactly "
+        "one of this or --storage_plan_run_id when --bespoke_storage is set.",
     )
 
     add_common_args(
