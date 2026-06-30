@@ -22,7 +22,7 @@ from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
 )
 from synnodb.llm.sdk.agents_sdk.openai_sdk import OpenAIAgentsSDKWrapper
-from synnodb.observability.live_ui.live_dashboard import LiveDashboardDrain
+from synnodb.observability.live_ui.live_dashboard import get_or_create_live_drain
 from synnodb.observability.logging import notify
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
@@ -315,7 +315,10 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
     import socket
 
     data_drains: list[DataDrain] = [
-        LiveDashboardDrain(
+        # Reuses the one process-wide live drain so chained stages (e.g. the
+        # SynnoDB notebook pipeline) accumulate onto a single continuous timeline
+        # instead of resetting the dashboard every stage.
+        get_or_create_live_drain(
             run_name=args.run_name,
             wandb_run_id=getattr(args, "wandb_run_id", None),
             system_name=socket.gethostname(),

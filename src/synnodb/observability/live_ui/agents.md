@@ -10,6 +10,19 @@ An in-process HTTP server + single-page dashboard that streams run statistics in
 
 The browser polls `/api/stats` every 3 seconds and updates the UI without a page reload.
 
+## Chained stages — one continuous timeline
+
+A chained pipeline (the `SynnoDB` notebook flow: `createStoragePlan → createBaseImpl → runOptimLoop → addMultiThreading → checkSfCorrectness`) runs every stage in **one process**, each via its own `RunStatsCollector` whose turn counter restarts at 0 and whose cumulative `total/*` / `tool/*_count` metrics restart at ~0. To avoid the dashboard resetting every stage, all stages share **one** drain instance:
+
+- `start_live_dashboard(...)` binds the server **without** opening a stage. `SynnoDB.__init__` calls it so the dashboard is up — and its URL printed — at driver construction, before any stage runs (`db.dashboard_url` exposes the same URL).
+- `get_or_create_live_drain(...)` returns that drain (creating it if a non-driver caller got here first) and calls `begin_stage(...)` to open a stage. `main.py` constructs its live drain through this factory, so each stage opens a stage on the already-running dashboard.
+- `begin_stage` offsets the new stage's steps past the last stored step (`_stage_base = max(step) + 1`) so the timeline stays monotonic, and snapshots the current cumulative totals as the carry baseline. A trailing stage that never emitted data is replaced rather than left as an empty marker.
+- `emit` translates `step → _stage_base + step` and, for cumulative metrics (`total/*` and `tool/*_count`), adds the carry baseline so cost / runtime / token / tool-count totals keep climbing across stages. Point-in-time metrics (`input_tokens`, `code/loc`, `validation/*`) are stored as-is.
+- `reset_live_dashboard()` wipes the accumulated data (server stays bound) so a new pipeline starts clean. `SynnoDB.__init__` calls it before `start_live_dashboard`, so constructing a new `SynnoDB(...)` begins a fresh dashboard on the same port.
+- `meta.stages` in the `/api/stats` payload lists each stage as `{run_name, wandb_run_id, base_step}` — the step at which it begins on the shared timeline.
+
+Per-stage durable storage is unaffected: `DuckDBDrain` still writes one `<run_name>.duckdb` file per stage. Only the in-memory live view accumulates.
+
 ## Files
 
 | File | Purpose |
