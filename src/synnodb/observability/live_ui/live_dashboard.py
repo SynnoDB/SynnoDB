@@ -11,15 +11,28 @@ from synnodb.observability.logging.run_stats_drain import DataDrain, _duckdb_col
 
 _UI_DIR = Path(__file__).parent
 
-# A single live-dashboard HTTP server is shared by every stage that runs in ONE process, so the
-# dashboard URL keeps following the active stage. Without this, each stage's LiveDashboardDrain
-# started its own server and, because the previous stage's server still held the port, hopped to
-# the next one (8765 -> 8766 -> ...) - stranding the dashboard on the first stage (the storage
-# plan) while later stages (base impl) served on a port nobody was watching. The first drain binds
-# the server; later drains reuse it and retarget ``_ACTIVE_SNAPSHOT["fn"]`` at their own data.
+# A single live-dashboard HTTP server is bound once per process and shared by every
+# stage, so the dashboard URL stays put (no 8765 -> 8766 -> ... hopping that would
+# strand the dashboard on the first stage while later stages serve on a port nobody
+# watches). The shared drain (below) binds it on the first stage; ``_ACTIVE_SNAPSHOT``
+# is the indirection the serve thread reads per request so the bound server always
+# renders the current in-memory store.
 _SHARED_SERVER: "tuple[socketserver.TCPServer, int] | None" = None
 _SHARED_SERVER_LOCK = threading.Lock()
 _ACTIVE_SNAPSHOT: dict = {"fn": lambda: json.dumps({"meta": {}, "steps": [], "data": {}})}
+
+# A single LiveDashboardDrain instance is shared by every stage that runs in ONE
+# process (e.g. the chained SynnoDB notebook pipeline: createStoragePlan ->
+# createBaseImpl -> runOptimLoop -> ...). Each stage's RunStatsCollector restarts
+# its turn counter at 0 and its cumulative ``total/*`` / ``tool/*_count`` metrics at
+# ~0, so naively pointing the dashboard at a fresh per-stage store would reset the
+# timeline every stage. Instead all stages emit into this one drain: incoming steps
+# are offset past the previous stage's last step, and cumulative metrics carry over,
+# producing one continuous journey. ``get_or_create_live_drain`` creates it on the
+# first stage and opens a new stage on every later one; ``reset_live_dashboard``
+# wipes the accumulated data so a new pipeline starts clean (server stays bound).
+_SHARED_DRAIN: "LiveDashboardDrain | None" = None
+_SHARED_DRAIN_LOCK = threading.Lock()
 
 
 def _make_http_server(
@@ -363,6 +376,12 @@ class LiveDashboardDrain(DataDrain):
 
     Starts a background daemon thread on construction; bind address is
     0.0.0.0 so the UI is reachable from any host on the network.
+
+    A single instance accumulates across every stage of a chained pipeline that
+    runs in one process (see ``get_or_create_live_drain``). ``emit`` offsets each
+    stage's steps past the previous stage and carries cumulative metrics forward,
+    so the whole journey appears on one continuous timeline rather than resetting
+    per stage.
     """
 
     def __init__(
@@ -378,33 +397,111 @@ class LiveDashboardDrain(DataDrain):
         import threading
 
         self._data: dict[int, dict] = {}
+        self._lock = threading.Lock()
+        # Per-stage accumulation bookkeeping.
+        self._stage_base = 0                      # global-step offset for the active stage
+        self._carry: dict[str, float] = {}        # cumulative-metric baseline for the active stage
+        self._last_global: dict[str, float] = {}  # latest global value of each cumulative metric
+        self._stages: list[dict] = []             # one entry per stage, with its base step
         self._meta = {
             "run_name": run_name,
             "wandb_run_id": wandb_run_id,
             "system_name": system_name,
             "start_time": datetime.now().isoformat(timespec="seconds"),
+            "stages": self._stages,
         }
-        self._lock = threading.Lock()
+        # Construction starts the server but opens no stage yet — the first stage to
+        # emit calls begin_stage(). This lets the driver start the dashboard eagerly
+        # (so the URL can be shown up front) before any run_name exists.
         self._port = self._start_server(host, port)
         logging.getLogger(__name__).info(
             "\033[1;32m[LiveDashboard] http://localhost:%d\033[0m", self._port
         )
 
+    @property
+    def port(self) -> int:
+        return self._port
+
+    # ----------------------------------------------------------- stage hooks --
+
+    @staticmethod
+    def _is_cumulative(key: str) -> bool:
+        """True for metrics that accumulate within a stage and so must carry over
+        across stages to stay monotonic (token/cost/runtime totals, tool counts)."""
+        return key.startswith("total/") or (
+            key.startswith("tool/") and key.endswith("_count")
+        )
+
+    def begin_stage(
+        self,
+        *,
+        run_name: str | None = None,
+        wandb_run_id: str | None = None,
+        system_name: str | None = None,
+    ) -> None:
+        """Open a new stage on the shared timeline: offset its steps past the last
+        one already stored and snapshot current cumulative totals as the baseline
+        that this stage's ``total/*`` / ``tool/*_count`` values are added onto."""
+        with self._lock:
+            self._stage_base = (max(self._data) + 1) if self._data else 0
+            self._carry = dict(self._last_global)
+            self._meta["run_name"] = run_name
+            if wandb_run_id is not None:
+                self._meta["wandb_run_id"] = wandb_run_id
+            if system_name is not None:
+                self._meta["system_name"] = system_name
+            entry = {
+                "run_name": run_name,
+                "wandb_run_id": wandb_run_id,
+                "base_step": self._stage_base,
+            }
+            # Replace a trailing stage that never emitted data (its base hasn't been
+            # passed) rather than leaving an empty stage marker on the timeline.
+            if self._stages and self._stages[-1]["base_step"] == self._stage_base:
+                self._stages[-1] = entry
+            else:
+                self._stages.append(entry)
+
+    def _reset(self) -> None:
+        """Wipe accumulated data so the next stage starts a fresh pipeline. The
+        HTTP server (and its bound port) is left running."""
+        with self._lock:
+            self._data.clear()
+            self._stage_base = 0
+            self._carry.clear()
+            self._last_global.clear()
+            self._stages.clear()
+            self._meta["run_name"] = None
+            self._meta["wandb_run_id"] = None
+            self._meta["start_time"] = datetime.now().isoformat(timespec="seconds")
+
     # ------------------------------------------------------------------ emit --
 
     def emit(self, metrics: dict, step: int) -> None:
         with self._lock:
-            row = self._data.setdefault(step, {})
+            gstep = self._stage_base + step
+            row = self._data.setdefault(gstep, {})
             for k, v in metrics.items():
                 coerced = _duckdb_col_value(v)
-                if coerced is not None:
-                    row[k] = coerced
+                if coerced is None:
+                    continue
+                if (
+                    self._is_cumulative(k)
+                    and isinstance(coerced, (int, float))
+                    and not isinstance(coerced, bool)
+                ):
+                    # int default keeps integer counters (tool/*_count) integral.
+                    coerced = coerced + self._carry.get(k, 0)
+                    self._last_global[k] = coerced
+                row[k] = coerced
 
     # -------------------------------------------------------------- internals --
 
     def _snapshot(self) -> str:
         with self._lock:
             snapshot = {k: dict(v) for k, v in sorted(self._data.items())}
+            meta = dict(self._meta)
+            meta["stages"] = [dict(s) for s in self._stages]
 
         def _clean(v):
             if isinstance(v, float) and not math.isfinite(v):
@@ -413,7 +510,7 @@ class LiveDashboardDrain(DataDrain):
 
         return json.dumps(
             {
-                "meta": self._meta,
+                "meta": meta,
                 "steps": list(snapshot.keys()),
                 "data": {
                     str(k): {ck: _clean(cv) for ck, cv in v.items()}
@@ -436,3 +533,55 @@ class LiveDashboardDrain(DataDrain):
             t.start()
             _SHARED_SERVER = (server, port)
             return port
+
+
+def start_live_dashboard(
+    *, system_name: str | None = None
+) -> "LiveDashboardDrain":
+    """Eagerly bind the shared live-dashboard server without opening a stage.
+
+    Lets a driver start the dashboard (and surface its URL) at construction time,
+    before any stage / run_name exists. Idempotent — returns the existing drain if
+    one is already running.
+    """
+    global _SHARED_DRAIN
+    with _SHARED_DRAIN_LOCK:
+        if _SHARED_DRAIN is None:
+            _SHARED_DRAIN = LiveDashboardDrain(system_name=system_name)
+        return _SHARED_DRAIN
+
+
+def get_or_create_live_drain(
+    *,
+    run_name: str | None = None,
+    wandb_run_id: str | None = None,
+    system_name: str | None = None,
+) -> "LiveDashboardDrain":
+    """Return the process-wide live drain (creating it and its HTTP server if the
+    driver did not already start it) and open a new stage on it, so every stage of a
+    chained pipeline accumulates onto one continuous timeline.
+    """
+    global _SHARED_DRAIN
+    with _SHARED_DRAIN_LOCK:
+        if _SHARED_DRAIN is None:
+            _SHARED_DRAIN = LiveDashboardDrain(system_name=system_name)
+        _SHARED_DRAIN.begin_stage(
+            run_name=run_name,
+            wandb_run_id=wandb_run_id,
+            system_name=system_name,
+        )
+        return _SHARED_DRAIN
+
+
+def reset_live_dashboard() -> None:
+    """Clear any accumulated live-dashboard data so the next stage starts a fresh
+    pipeline. No-op if no drain has been created yet. Keeps the server running."""
+    with _SHARED_DRAIN_LOCK:
+        if _SHARED_DRAIN is not None:
+            _SHARED_DRAIN._reset()
+
+
+def live_dashboard_url() -> "str | None":
+    """URL of the running live dashboard, or None if no stage has started one yet."""
+    drain = _SHARED_DRAIN
+    return f"http://localhost:{drain.port}" if drain is not None else None

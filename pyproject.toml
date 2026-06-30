@@ -26,6 +26,7 @@ dependencies = [
     "sqlglot>=25.0.0",   # query normalization / template matching
     "pandas>=2.3.3",     # DuckDB .df() egress; common in user code
     "python-dotenv>=1.2.1",
+    "ipykernel>=7.2.0",
 ]
 
 [project.optional-dependencies]

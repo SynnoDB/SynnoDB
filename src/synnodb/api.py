@@ -243,6 +243,11 @@ class SynnoDB:
         settings.configure(data_dir=data_dir, env_file=env_file)
         base = config or SynnoConfig()
         self.config = dataclasses.replace(base, **overrides) if overrides else base
+        # Start the live dashboard now, at driver construction, and show its URL so
+        # the user can open it before the first stage runs. A fresh SynnoDB(...)
+        # begins a clean pipeline (prior accumulated timeline is reset); every stage
+        # chained on this driver then streams onto this one continuous dashboard.
+        self._start_live_dashboard()
         # Ephemeral runs: delete the workspace directory when this process exits
         # (normal finish, uncaught exception, or SIGINT/SIGTERM). Avoids the
         # accumulation of per-run engine workspaces. SIGKILL cannot be intercepted.
@@ -289,6 +294,40 @@ class SynnoDB:
         import shutil
 
         shutil.rmtree(Path(settings.get_workspace_dir(self.config.workspace)).resolve(), ignore_errors=True)
+
+    def _start_live_dashboard(self) -> None:
+        """Start the shared live dashboard and print its URL so the user can open it
+        right away. Best-effort: a dashboard failure must never block constructing or
+        using the driver."""
+        try:
+            import socket
+
+            from synnodb.observability.live_ui.live_dashboard import (
+                live_dashboard_url,
+                reset_live_dashboard,
+                start_live_dashboard,
+            )
+
+            reset_live_dashboard()  # fresh, clean timeline for this pipeline
+            start_live_dashboard(system_name=socket.gethostname())
+            url = live_dashboard_url()
+            if url:
+                print(f"\033[1;32m📊 SynnoDB live dashboard: {url}\033[0m")
+        except Exception as exc:  # dashboard is non-essential — never fail the driver
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Live dashboard could not be started: %s", exc
+            )
+
+    @property
+    def dashboard_url(self) -> str | None:
+        """URL of the live dashboard for this pipeline, or None if it isn't running.
+        Started at construction; all stages chained on this driver stream to it."""
+        import sys
+
+        _ld = sys.modules.get("synnodb.observability.live_ui.live_dashboard")
+        return _ld.live_dashboard_url() if _ld is not None else None
 
     def __enter__(self) -> "SynnoDB":
         return self

@@ -2864,6 +2864,7 @@ version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
+    { name = "ipykernel" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "python-dotenv" },
@@ -2913,6 +2914,7 @@ requires-dist = [
     { name = "charset-normalizer", marker = "extra == 'factory'", specifier = ">=3.4.5" },
     { name = "clickhouse-connect", marker = "extra == 'benchmark'", specifier = ">=0.14.0" },
     { name = "duckdb", specifier = ">=1.4.3" },
+    { name = "ipykernel", specifier = ">=7.2.0" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=7.1.0" },
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.1.8" },
     { name = "landlock", marker = "extra == 'factory'", specifier = ">=1.0.0.dev5" },
