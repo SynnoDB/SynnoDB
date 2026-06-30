@@ -58,7 +58,7 @@ The "Generated code" header button browses the run's generated-code workspace, s
 | Endpoint | Returns |
 |---|---|
 | `GET /api/files` | `{"available": bool, "root": str, "files": [<workspace-relative path>, ...]}` — a flat, sorted file list (`.git`/caches/`node_modules` pruned before descent; symlinks ignored). `available` is `false` when the source has no live workspace. |
-| `GET /api/file?path=<rel>` | `{"path", "content", "size", "truncated"}` for text files, or `{"path", "binary": true, "size"}` for binaries. Reads are bounded to `_WORKSPACE_MAX_BYTES`; path-traversal or symlink escape outside the workspace returns `404`. |
+| `GET /api/file?path=<rel>` | `{"path", "content", "size", "truncated"}` for text files, or `{"path", "binary": true, "size"}` for binaries. Reads are bounded to `_WORKSPACE_MAX_BYTES`; path-traversal or symlink escape outside the workspace, or any path descending through a `_WORKSPACE_SKIP_DIRS` entry (`.git`/caches/`node_modules`), returns `404`. |
 
 The workspace is whatever the backend genuinely operates in — it is never passed to the dashboard out of band:
 

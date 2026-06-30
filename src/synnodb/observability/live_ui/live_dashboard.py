@@ -47,12 +47,17 @@ def _read_workspace_file(root: Path, rel: str) -> dict | None:
     """Read one workspace file. Returns None if the path escapes root or is missing.
 
     ``resolve()`` collapses any symlinks/``..`` before the containment check, so
-    a request can never read outside the workspace. At most ``_WORKSPACE_MAX_BYTES``
-    (+1 sentinel) is read into memory regardless of the real file size.
+    a request can never read outside the workspace. Paths that descend through a
+    skip-dir (``.git``, caches, ``node_modules``) are rejected too — those are
+    pruned from ``/api/files`` and must not be reachable by guessing a rel. At
+    most ``_WORKSPACE_MAX_BYTES`` (+1 sentinel) is read into memory regardless of
+    the real file size.
     """
     root = root.resolve()
     target = (root / rel).resolve()
     if not target.is_relative_to(root) or not target.is_file():
+        return None
+    if _WORKSPACE_SKIP_DIRS.intersection(target.relative_to(root).parts):
         return None
     size = target.stat().st_size
     with target.open("rb") as fh:
