@@ -195,10 +195,6 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
             model_settings=model_settings,
         )
 
-        logger.info(
-            f"Using model: {self.model} {'(via litellm wrapper)' if use_litellm else ''}"
-        )
-
         # ================
         # SUPERVISOR AGENT
         # ================
