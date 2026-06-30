@@ -229,15 +229,6 @@ def get_stage(name: str) -> Stage:
     return _REGISTRY[name]
 
 
-# Source artifact type -> the stage name CHECK_SF must replay its prepare from,
-# for the W&B-free path (the W&B path reads it from the source run's config).
-_SOURCE_STAGE_NAME = {
-    "BaseImplementation": "createBaseImpl",
-    "OptimizedImplementation": "runOptimLoop",
-    "MultiThreadedImplementation": "addMultiThreading",
-}
-
-
 # --------------------------------- facade -----------------------------------
 class SynnoDB:
     """Programmatic pipeline driver. Each call runs one stage to completion."""
@@ -420,7 +411,11 @@ class SynnoDB:
 
         result = run_conv_wrapper(args=None, run_config=run_config, spec=st)
         workspace = settings.get_workspace_dir(cfg.workspace)
-        return st.result(result.run_id, result.snapshot_hash, workspace, cfg, inputs)
+        artifact = st.result(result.run_id, result.snapshot_hash, workspace, cfg, inputs)
+        # Stamp the producing stage onto the artifact so a downstream consumer (e.g.
+        # checkSfCorrectness) can recover which stage's prepare to replay without a
+        # hardcoded artifact-class -> stage-name map.
+        return dataclasses.replace(artifact, source_stage_name=st.name)
 
     # ---- ergonomic named methods (OLAP) --------------------------------
     def createStoragePlan(
@@ -499,12 +494,13 @@ class SynnoDB:
         ``source_wandb_id`` (the producing run's W&B id).
 
         On the W&B-free path the source run's stage is needed to replay its
-        prepare steps: it is inferred from the ``source`` artifact's type, or
-        pass ``source_stage`` explicitly (e.g. 'createBaseImpl', 'runOptimLoop',
-        'addMultiThreading') when ``source`` is a raw snapshot hash."""
+        prepare steps: it is read from the ``source`` artifact's stamped
+        ``source_stage_name``, or pass ``source_stage`` explicitly (e.g.
+        'createBaseImpl', 'runOptimLoop', 'addMultiThreading') when ``source`` is
+        a raw snapshot hash."""
         snap, wid = _resolve_chain("checkSfCorrectness", source, source_wandb_id)
         if snap is not None and source_stage is None and isinstance(source, StageArtifact):
-            source_stage = _SOURCE_STAGE_NAME.get(type(source).__name__)
+            source_stage = source.source_stage_name
         return self.run(  # type: ignore[return-value]
             "checkSfCorrectness",
             source_snapshot=snap,

@@ -53,6 +53,7 @@ from synnodb.utils.utils import (
     get_disk_db_dir,
 )
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
+from synnodb.workloads.system_factory import System
 from synnodb.workloads.system_factory_olap import OLAPSystemFactory
 from synnodb.workloads.workload_provider_olap import (
     OLAPWorkload,
@@ -205,10 +206,6 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
         # in gen_code mode, we want to keep them around in case of major issues with ensuring correctness while generating the base implementation.
         extra_gitignore.append("*.csv")
 
-    # add versioning for the table dataset (dataset got regenerated, scale-up/down code was changed, query args input syntax was changed, etc. - in these cases we want to make sure that old cache entries are not used for the new dataset version)
-    dataset_version = None
-    if args.benchmark == "ceb":
-        dataset_version = "3"
 
     snapshotter = GitSnapshotter(
         cache_repo=snapshotter_cache_repo,
@@ -338,6 +335,8 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
         runtime_tracker=runtime_tracker,
         do_not_cache=args.do_not_cache,
         drains=data_drains,
+        # Stage identity, so every metric row is stage-tagged generically.
+        stage_name=spec.name,
     )
     run_stats_collector = RunStatsCollector(**collector_args)
 
@@ -373,6 +372,11 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
 
     query_validator: QueryValidator | None = None
     if not args.disable_valtool:
+        # Reference oracle systems travel with the workload. DuckDB is always the
+        # ground-truth comparator; Umbra is an optional secondary reference a workload
+        # can opt into via WorkloadSpec.reference_systems (default None -> DuckDB only).
+        reference_systems = workload_spec.reference_systems
+        use_umbra = reference_systems is not None and System.UMBRA in reference_systems
         query_validator = QueryValidator(
             validate_cache_dir=validate_cache_dir,
             workspace_path=workspace_path,
@@ -383,7 +387,7 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
             do_not_cache=args.do_not_cache,
             only_from_cache=args.only_from_cache,
             max_snapshot_csv_size_mb=max_snapshot_csv_size_mb,
-            use_umbra=False,
+            use_umbra=use_umbra,
         )
 
     logger.info(f"Workspace root: {workspace_path}")
@@ -469,8 +473,8 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
         # include start snapshot in hash - makes cache specific to this code base
         config_kwargs["start_snapshot"] = args.start_snapshot
 
-    if dataset_version is not None:
-        config_kwargs["dataset_version"] = dataset_version
+    if workload_spec.dataset_version is not None:
+        config_kwargs["dataset_version"] = workload_spec.dataset_version
 
     supervisor_agent_intruction = "You are a supervisor agent that oversees the execution of a task by another agent. Your role is to monitor the progress, provide feedback, and ensure that the task is completed successfully. You will receive updates on the task execution and can intervene if necessary to guide the process towards a successful outcome."
 

@@ -210,9 +210,15 @@ class InMem2MTConversation(OptimizationConversation):
         # implementation is correct and performant beyond the default benchmark
         # scale. We drive this off the workload provider: temporarily raise its
         # BENCHMARK scale factor, run the check, then restore the default.
-        large_sf = 100 if self.benchmark == "tpch" else 10
         assert isinstance(self._olap_provider, OLAPWorkloadProvider)
         default_benchmark_sf = self._olap_provider.benchmark_sf
+        # Large-scale check SF travels with the workload (TPC-H: 100, CEB: 10), read off
+        # the provider's spec. Previously `100 if self.benchmark == "tpch" else 10`, which
+        # always yielded 10 because self.benchmark is a Workload enum, not a str. Fall back
+        # to the configured benchmark SF for a workload that declares no large_check_sf.
+        large_sf = self._olap_provider.spec.large_check_sf
+        if large_sf is None:
+            large_sf = default_benchmark_sf
         self._olap_provider.set_benchmark_sf(large_sf)
 
         await self._run_stages(
