@@ -9,12 +9,23 @@ stage finishes, so a later stage reusing the same workspace cannot mutate them.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 if TYPE_CHECKING:
     from synnodb.api import SynnoConfig
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """What a stage's ``main()`` returns: the wandb run id (None unless wandb
+    logging was enabled) and the final git snapshot hash of the produced code.
+    Either is a valid token to chain the next stage off of — the run id via
+    wandb, the snapshot hash directly (same local repo)."""
+
+    run_id: str | None
+    snapshot_hash: str | None
 
 
 @dataclass(frozen=True)
@@ -24,6 +35,10 @@ class StageArtifact:
     run_id: str | None          # wandb run id: chaining token + provenance
     workspace: Path             # directory the run wrote its output to
     config: "SynnoConfig"       # the settings the stage ran with
+    # Final git snapshot of the produced code. W&B-free chaining token: the next
+    # stage can restore it directly from the local workspace repo. kw_only so the
+    # existing positional constructors (and their subclass fields) are unaffected.
+    snapshot_hash: str | None = field(default=None, kw_only=True)
 
     def __bool__(self) -> bool:
         """Truthy when there is a wandb run id to chain off."""

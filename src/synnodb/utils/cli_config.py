@@ -33,6 +33,8 @@ class RunConfig:
     replay: bool = False
     disable_openai_tracing: bool = False
     log_to_wandb: bool = False
+    wandb_entity: str | None = None  # None -> the user's own default W&B entity
+    wandb_project: str | None = None  # presence enables wandb logging
     model: str = DEFAULT_MODEL
     no_preload: bool = False
     disable_repo_sync: bool = False
@@ -89,6 +91,7 @@ def add_common_args(
     include_replay: bool = False,
     include_disable_openai_tracing: bool = False,
     include_log_to_wandb: bool = False,
+    include_wandb_entity_project: bool = False,
     include_query_list: bool = False,
     include_queries_str: bool = False,
     include_continue_run: bool = False,
@@ -183,6 +186,19 @@ def add_common_args(
             action="store_true",
             default=False,
             help="Log run metrics and traces to Weights & Biases if set.",
+        )
+    if include_wandb_entity_project:
+        parser.add_argument(
+            "--wandb_entity",
+            type=str,
+            default=None,
+            help="W&B entity to log to (default: the user's own default entity).",
+        )
+        parser.add_argument(
+            "--wandb_project",
+            type=str,
+            default=None,
+            help="W&B project to log to (default: 'SynnoDB' when wandb is enabled).",
         )
     if include_queries_str:
         parser.add_argument(
