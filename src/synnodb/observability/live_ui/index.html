@@ -24,6 +24,7 @@
     </div>
     <button id="source-switch-btn" title="Switch to this source">Switch</button>
   </div>
+  <button id="code-btn" title="Browse the generated code from the run workspace">&#128196; Generated code</button>
   <span id="hdr-ts">
     <button id="reload-btn" title="Reload data from source" aria-label="Reload">&#x21BB;</button>
     <span class="dot"></span><span id="ts-txt">Connecting&#8230;</span>
@@ -137,6 +138,23 @@
     </div>
   </div>
 </div>
+<div id="code-modal" class="modal-overlay" hidden>
+  <div class="modal-box code-modal-box">
+    <div class="modal-hdr">
+      <span class="modal-title">Generated Code</span>
+      <div class="modal-hdr-actions">
+        <span id="code-modal-root" class="code-modal-root"></span>
+        <button class="modal-copy" id="code-modal-copy" title="Copy file contents" hidden>Copy</button>
+        <button class="modal-close" id="code-modal-close" aria-label="Close">&#10005;</button>
+      </div>
+    </div>
+    <div class="code-modal-layout">
+      <div id="code-tree" class="code-tree"><div class="code-tree-msg">Loading&#8230;</div></div>
+      <div id="code-view" class="code-view"><div class="code-view-empty">Select a file to view its contents.</div></div>
+    </div>
+  </div>
+</div>
+
 <script src="js/state.js"></script>
 <script src="js/util.js"></script>
 <script src="js/sections.js"></script>
@@ -148,6 +166,7 @@
 <script src="js/cards.js"></script>
 <script src="js/source.js"></script>
 <script src="js/controls.js"></script>
+<script src="js/code-inspector.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

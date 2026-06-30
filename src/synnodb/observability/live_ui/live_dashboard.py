@@ -1,15 +1,83 @@
 import json
 import math
 import mimetypes
+import os
 import socketserver
 import threading
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from synnodb.observability.logging.run_stats_drain import DataDrain, _duckdb_col_value
 
 _UI_DIR = Path(__file__).parent
+
+# Directories never surfaced by the code inspector — VCS metadata, caches and
+# dependency trees would only bury the generated code in noise.
+_WORKSPACE_SKIP_DIRS = frozenset(
+    {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
+)
+# Cap a single file's served content so a stray multi-MB artifact can't stall the browser.
+_WORKSPACE_MAX_BYTES = 2_000_000
+
+
+def _list_workspace_files(root: Path) -> list[str]:
+    """Return sorted workspace-relative paths of every regular file under root.
+
+    Skip-dirs are pruned before descent (so ``.git``/caches are never walked),
+    and symlinks are ignored entirely so the listing can only ever name files
+    that physically live inside the workspace.
+    """
+    root = root.resolve()
+    files: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [d for d in dirnames if d not in _WORKSPACE_SKIP_DIRS]
+        base = Path(dirpath)
+        for name in filenames:
+            path = base / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            files.append(path.relative_to(root).as_posix())
+    files.sort()
+    return files
+
+
+def _read_workspace_file(root: Path, rel: str) -> dict | None:
+    """Read one workspace file. Returns None if the path escapes root or is missing.
+
+    ``resolve()`` collapses any symlinks/``..`` before the containment check, so
+    a request can never read outside the workspace. At most ``_WORKSPACE_MAX_BYTES``
+    (+1 sentinel) is read into memory regardless of the real file size.
+    """
+    root = root.resolve()
+    target = (root / rel).resolve()
+    if not target.is_relative_to(root) or not target.is_file():
+        return None
+    size = target.stat().st_size
+    with target.open("rb") as fh:
+        head = fh.read(_WORKSPACE_MAX_BYTES + 1)
+    if b"\x00" in head[:8192]:
+        return {"path": rel, "binary": True, "size": size}
+    truncated = len(head) > _WORKSPACE_MAX_BYTES
+    text = head[:_WORKSPACE_MAX_BYTES].decode("utf-8", errors="replace")
+    return {"path": rel, "content": text, "size": size, "truncated": truncated}
+
+
+def _local_files_payload(root: "Path | None") -> bytes:
+    """JSON body for /api/files backed by a local workspace directory."""
+    if root is None or not root.is_dir():
+        return json.dumps({"available": False, "files": []}).encode()
+    return json.dumps(
+        {"available": True, "root": str(root), "files": _list_workspace_files(root)}
+    ).encode()
+
+
+def _local_file_payload(root: "Path | None", rel: str) -> "bytes | None":
+    """JSON body for /api/file backed by a local workspace directory (None → 404)."""
+    if root is None or not root.is_dir() or not rel:
+        return None
+    result = _read_workspace_file(root, rel)
+    return json.dumps(result).encode() if result is not None else None
 
 # A single live-dashboard HTTP server is shared by every stage that runs in ONE process, so the
 # dashboard URL keeps following the active stage. Without this, each stage's LiveDashboardDrain
@@ -19,15 +87,27 @@ _UI_DIR = Path(__file__).parent
 # the server; later drains reuse it and retarget ``_ACTIVE_SNAPSHOT["fn"]`` at their own data.
 _SHARED_SERVER: "tuple[socketserver.TCPServer, int] | None" = None
 _SHARED_SERVER_LOCK = threading.Lock()
-_ACTIVE_SNAPSHOT: dict = {"fn": lambda: json.dumps({"meta": {}, "steps": [], "data": {}})}
+_ACTIVE_SNAPSHOT: dict = {
+    "fn": lambda: json.dumps({"meta": {}, "steps": [], "data": {}}),
+    "workspace": lambda: None,
+}
 
 
 def _make_http_server(
-    host: str, start_port: int, snapshot_fn, post_handlers: dict | None = None
+    host: str,
+    start_port: int,
+    snapshot_fn,
+    post_handlers: dict | None = None,
+    file_list_fn=None,
+    file_read_fn=None,
 ) -> tuple[int, "socketserver.TCPServer"]:
     """Bind an HTTP server that calls snapshot_fn() for /api/stats.
 
     post_handlers maps path → callable(body: bytes) → bytes for POST endpoints.
+    file_list_fn, if given, is a callable returning the JSON body (bytes) for
+    /api/files; file_read_fn(rel) returns the JSON body (bytes) for /api/file or
+    None for 404. Together they back the code inspector. When file_list_fn is
+    None the inspector endpoints report the workspace as unavailable.
     Returns (port, server) — caller is responsible for starting the serve thread.
     """
     import http.server
@@ -41,6 +121,22 @@ def _make_http_server(
             path = urlparse(self.path).path
             if path == "/api/stats":
                 self._reply(snapshot_fn().encode(), "application/json")
+                return
+            if path == "/api/files":
+                body = (
+                    file_list_fn()
+                    if file_list_fn is not None
+                    else json.dumps({"available": False, "files": []}).encode()
+                )
+                self._reply(body, "application/json")
+                return
+            if path == "/api/file":
+                rel = (parse_qs(urlparse(self.path).query).get("path") or [""])[0]
+                body = file_read_fn(rel) if file_read_fn is not None else None
+                if body is None:
+                    self.send_error(404)
+                    return
+                self._reply(body, "application/json")
                 return
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
             file = _UI_DIR / rel
@@ -216,6 +312,42 @@ def _remote_api_snapshot(api_url: str) -> str:
     return json.dumps(payload)
 
 
+def _remote_base_url(api_url: str) -> str:
+    """Return the remote dashboard's base URL (without the /api/stats suffix)."""
+    return _normalize_stats_url(api_url)[: -len("/api/stats")]
+
+
+def _remote_files_payload(api_url: str) -> bytes:
+    """Proxy /api/files from a remote live dashboard so its workspace shows here."""
+    from urllib.error import URLError
+    from urllib.request import urlopen
+
+    try:
+        with urlopen(  # noqa: S310
+            _remote_base_url(api_url) + "/api/files", timeout=10
+        ) as response:
+            return response.read()
+    except URLError:
+        return json.dumps({"available": False, "files": []}).encode()
+
+
+def _remote_file_payload(api_url: str, rel: str) -> "bytes | None":
+    """Proxy /api/file from a remote live dashboard (None → 404)."""
+    if not rel:
+        return None
+    from urllib.error import URLError
+    from urllib.parse import quote
+    from urllib.request import urlopen
+
+    try:
+        with urlopen(  # noqa: S310
+            _remote_base_url(api_url) + "/api/file?path=" + quote(rel), timeout=10
+        ) as response:
+            return response.read()
+    except URLError:  # includes HTTPError (e.g. remote 404)
+        return None
+
+
 class StandaloneDashboard:
     """HTTP dashboard server that reads from DuckDB, W&B, or a remote live API.
 
@@ -261,6 +393,8 @@ class StandaloneDashboard:
                 "/api/reload": self._handle_reload,
                 "/api/switch": self._handle_switch,
             },
+            file_list_fn=self._files_payload,
+            file_read_fn=self._file_payload,
         )
         self._port = port
         t = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -272,6 +406,26 @@ class StandaloneDashboard:
     @property
     def port(self) -> int:
         return self._port
+
+    def _files_payload(self) -> bytes:
+        """Code inspector is only available when proxying a live dashboard (api_url).
+
+        DuckDB / W&B sources have no live workspace on this host, so the feature
+        is deactivated for them — surfacing this machine's local ``./output``
+        would mislead by attributing unrelated files to the selected source.
+        """
+        with self._lock:
+            api_url = self._api_url
+        if api_url:
+            return _remote_files_payload(api_url)
+        return json.dumps({"available": False, "files": []}).encode()
+
+    def _file_payload(self, rel: str) -> "bytes | None":
+        with self._lock:
+            api_url = self._api_url
+        if api_url:
+            return _remote_file_payload(api_url, rel)
+        return None
 
     def serve_forever(self) -> None:
         import time
@@ -373,10 +527,15 @@ class LiveDashboardDrain(DataDrain):
         run_name: str | None = None,
         wandb_run_id: str | None = None,
         system_name: str | None = None,
+        workspace_dir: str | Path,
     ) -> None:
         import logging
         import threading
 
+        # The run process knows its own workspace and passes it in; the dashboard
+        # is never told paths out of band. The code inspector serves only files
+        # physically under this directory.
+        self._workspace_dir = Path(workspace_dir).resolve()
         self._data: dict[int, dict] = {}
         self._meta = {
             "run_name": run_name,
@@ -401,6 +560,10 @@ class LiveDashboardDrain(DataDrain):
                     row[k] = coerced
 
     # -------------------------------------------------------------- internals --
+
+    def _workspace_root(self) -> "Path | None":
+        """The generated-code workspace this run operates in (passed in by main)."""
+        return self._workspace_dir
 
     def _snapshot(self) -> str:
         with self._lock:
@@ -428,10 +591,19 @@ class LiveDashboardDrain(DataDrain):
         # data appears on the same URL with no port change, so the dashboard follows the run.
         global _SHARED_SERVER
         _ACTIVE_SNAPSHOT["fn"] = self._snapshot
+        _ACTIVE_SNAPSHOT["workspace"] = self._workspace_root
         with _SHARED_SERVER_LOCK:
             if _SHARED_SERVER is not None:
                 return _SHARED_SERVER[1]
-            port, server = _make_http_server(host, start_port, lambda: _ACTIVE_SNAPSHOT["fn"]())
+            port, server = _make_http_server(
+                host,
+                start_port,
+                lambda: _ACTIVE_SNAPSHOT["fn"](),
+                file_list_fn=lambda: _local_files_payload(_ACTIVE_SNAPSHOT["workspace"]()),
+                file_read_fn=lambda rel: _local_file_payload(
+                    _ACTIVE_SNAPSHOT["workspace"](), rel
+                ),
+            )
             t = threading.Thread(target=server.serve_forever, daemon=True)
             t.start()
             _SHARED_SERVER = (server, port)
