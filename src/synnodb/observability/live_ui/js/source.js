@@ -209,10 +209,19 @@ sourceInput.addEventListener('keydown', e => { if (e.key === 'Enter') switchSour
 reloadBtn.addEventListener('click', reloadData);
 
 // ── Endpoint auto-discovery (cluster hosts) ──────────────────────────────
+// Don't probe ourselves: when the standalone dashboard is served from one of
+// the cluster hosts (e.g. opened at http://c03.lab.tuda.systems:8765), that
+// host's /api/stats *is* this server. Probing it would list the dashboard as a
+// remote source and, if selected, make it proxy itself. Drop any discovery URL
+// whose host:port matches the page we're served from.
+function _isSelfUrl(url) {
+  try { return new URL(url).host === window.location.host; }
+  catch { return false; }
+}
 const _DISC_HOSTS = [
   ...Array.from({length: 9}, (_, i) => `http://c${String(i+1).padStart(2,'0')}.lab.tuda.systems:8765`),
   ...Array.from({length: 6}, (_, i) => `http://fn${String(i+1).padStart(2,'0')}.lab.tuda.systems:8765`),
-];
+].filter(url => !_isSelfUrl(url));
 const _DISC_GROUPS = [{label: 'Cluster Autodiscovery', urls: _DISC_HOSTS}];
 const _discCache   = new Map();
 const _sourceDropdown = document.getElementById('source-dropdown');

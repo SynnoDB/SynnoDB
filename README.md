@@ -103,6 +103,13 @@ sudo apt install -y cloc
 uv sync
 ```
 
+Add extras as needed. The engine factory and observability stack (including
+`wandb`, required by the standalone dashboard) live in the `factory` extra:
+
+```bash
+uv sync --extra factory --extra dev
+```
+
 ### 5. Configure environment
 
 Create a `.env` file with your API keys:
