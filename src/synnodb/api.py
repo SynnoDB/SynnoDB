@@ -318,7 +318,10 @@ class SynnoDB:
             )
 
             reset_live_dashboard()  # fresh, clean timeline for this pipeline
-            start_live_dashboard(system_name=socket.gethostname())
+            workspace_dir = Path(settings.get_workspace_dir(self.config.workspace)).resolve()
+            start_live_dashboard(
+                system_name=socket.gethostname(), workspace_dir=workspace_dir
+            )
             url = live_dashboard_url()
             if url:
                 print(f"\033[1;32m📊 SynnoDB live dashboard: {url}\033[0m")

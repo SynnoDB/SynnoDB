@@ -46,6 +46,8 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 | `js/cards.js` | Header meta, KPI cards, turn timer, prompts list, correctness strip, cost-mode toggle |
 | `js/source.js` | Standalone source selector (W&B / DuckDB / remote API), URL-param sync, cluster auto-discovery |
 | `js/controls.js` | Wiring for prompt-list hover, distribution modal, panel collapse, chart-mode toggles, `Esc` shortcut |
+| `js/highlight.js` | Dependency-free syntax highlighter for the code inspector — tokenizes C/C++ and Markdown source into `tok-*` spans (`highlightCode`), plain-text fallback otherwise |
+| `js/code-inspector.js` | "Generated code" modal — fetches `/api/files`, renders a collapsible workspace tree, loads file contents from `/api/file`, syntax-highlights via `highlightCode` |
 | `js/main.js` | Boot — initial reload-time stamp, `poll()` loop, default modes, `setInterval` for poll + timer |
 
 ## `/api/stats` response shape
@@ -61,6 +63,22 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 ```
 
 `steps` is a sorted list of integer turn indices. `data` keys are step numbers as strings.
+
+## Code inspector endpoints
+
+The "Generated code" header button browses the run's generated-code workspace, served by the same dashboard server:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/files` | `{"available": bool, "root": str, "files": [<workspace-relative path>, ...]}` — a flat, sorted file list (`.git`/caches/`node_modules` pruned before descent; symlinks ignored). `available` is `false` when the source has no live workspace. |
+| `GET /api/file?path=<rel>` | `{"path", "content", "size", "truncated"}` for text files, or `{"path", "binary": true, "size"}` for binaries. Reads are bounded to `_WORKSPACE_MAX_BYTES`; path-traversal or symlink escape outside the workspace, or any path descending through a `_WORKSPACE_SKIP_DIRS` entry (`.git`/caches/`node_modules`), returns `404`. |
+
+The workspace is whatever the backend genuinely operates in — it is never passed to the dashboard out of band:
+
+- **`LiveDashboardDrain`** (in-process live run) is given its `workspace_dir` by `main.py`, which resolved it from `--workspace_dir` / `SYNNO_WORKSPACE` (`./output`). It serves files from there directly.
+- **`StandaloneDashboard`** only enables the inspector when its source is a **remote live dashboard** (`api_url`), in which case it proxies `/api/files` and `/api/file` to that remote drain. For DuckDB and W&B sources there is no live workspace, so the endpoints report `available: false`.
+
+The frontend mirrors this: the "Generated code" header button is shown only for the in-process live run and remote sources, and hidden for DuckDB / W&B (see `updateHeaderMeta` in `js/cards.js`).
 
 ## Key metric keys consumed by the UI
 

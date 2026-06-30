@@ -322,6 +322,7 @@ async def main(args: argparse.Namespace, spec: ConversationSpec) -> None:
             run_name=args.run_name,
             wandb_run_id=getattr(args, "wandb_run_id", None),
             system_name=socket.gethostname(),
+            workspace_dir=workspace_path,
         ),
         DuckDBDrain(db_path=settings.duckdb_drain_dir() / f"{args.run_name}.duckdb"),
     ]
