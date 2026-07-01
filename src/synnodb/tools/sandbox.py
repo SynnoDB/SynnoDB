@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import ctypes
 import json
+import logging
 import os
 import resource
 import subprocess
@@ -11,6 +12,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Iterator, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 # ----- Linux hardening helpers -----
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -205,8 +208,15 @@ def _readonly_ctx(paths: Sequence[Path]) -> contextlib.AbstractContextManager[No
         try:
             yield
         finally:
+            # Restore every path independently: if one chmod fails (e.g. the
+            # file was deleted/renamed during the run) the remaining files must
+            # still get their write bits back, and the restore error must not
+            # mask the original exception propagating out of the `yield`.
             for p, mode in saved.items():
-                os.chmod(p, mode)
+                try:
+                    os.chmod(p, mode)
+                except OSError:
+                    logger.warning("Failed to restore permissions on %s", p, exc_info=True)
 
     return _ctx()
 
