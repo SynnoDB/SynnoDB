@@ -31,7 +31,7 @@ function updateHeaderMeta(meta = {}) {
   const isStandalone = meta._source_type === 'db' || meta._source_type === 'wandb' ||
                        meta._source_type === 'remote' || meta._source_type === 'standalone';
   const modeLabel = isStandalone ? 'Standalone' : 'Live';
-  document.title = '[' + modeLabel + '] Bespoke OLAP — Live Dashboard';
+  document.title = '[' + modeLabel + '] SynnoDB — Live Dashboard';
 
   document.getElementById('hdr').classList.toggle('standalone', isStandalone);
 

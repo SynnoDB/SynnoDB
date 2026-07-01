@@ -200,6 +200,7 @@ function initChart() {
           },
         },
         sectionBg: {sections:[]},
+        stageBand: {spans:[]},
       },
       scales: {
         x: {
@@ -305,6 +306,7 @@ function updateChart(steps, data) {
   const loc      = steps.map(s => (data[s] || {})['code/loc']     ?? null);
   const speedup  = computeSpeedupSeries(steps, data);
   const sections = getSections(steps, data);
+  const stageSpans = getStageSpans(steps, data);
   const hasSpeedup = speedup.some(s => s.value != null);
 
   chart._timelinePoints = points;
@@ -317,6 +319,8 @@ function updateChart(steps, data) {
   }));
   chart.options.plugins.sectionBg.sections = sections;
   chart.options.plugins.sectionBg.points   = points;
+  chart.options.plugins.stageBand.spans    = stageSpans;
+  chart.options.plugins.stageBand.points   = points;
   chart.options.scales.yR2.display         = hasSpeedup;
   chart.options.scales.yR2.min             = 0;
   chart.options.scales.x.title.text        = timelineChartMode === 'time' ? 'Elapsed Time' : 'Turn';
