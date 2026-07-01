@@ -1,14 +1,27 @@
-Optimize `${builder_path_hpp}` and `${builder_path_cpp}` load time. Aim for 10s load time. To speedup loading optimize the implementation and e.g. add multithreading.
-To retrieve the ingest time, call the run tool with mode: "${run_tool_mode}". 
+Optimize `${builder_path_hpp}` and `${builder_path_cpp}` build (ingest) time. The current build time is ${current_ingest_time_ms} (${config_str}).
+Hardware: ${hardware_context}.
 
-First inspect those files and directly included headers only, then produce a short plan with the top 3 bottlenecks and the optimizations you will implement to address them. Then implement those optimizations in a batch and validate correctness and performance improvement.
-If you are unable to identify bottlenecks, you can add lightweight timing instrumentation to `${builder_path_hpp}/.cpp`. 
-The run tool output (when called with mode: "${run_tool_mode}") will provide the stdout/stderr output.
+Note: the reported build time includes ALL work inside your `build()` function — Arrow column decoding via `column_ingest.hpp` helpers (`as_integer`, `as_string`, `scaled_integer`, `as_date_days`), sorting, index construction, and gather passes. There is no separate Parquet-read phase before `build()` is called. When adding timing instrumentation, place the first timestamp at the very first line of `build()` to capture the full cost.
+
+Before profiling, read `${storage_plan_filename}` and `${base_impl_todo_filename}` (Phase 8) to understand the intended storage layout and optimization goals.
+
+For each optimization attempt (up to 2 major attempts and 1 refinement), follow these steps:
+
+**Profile** — Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `${builder_path_hpp}` and `${builder_path_cpp}`. Compile once, call the run tool with mode "${run_tool_mode}", and report the per-phase breakdown. Then remove all timing instrumentation from the source files before proceeding.
+
+**Plan** — Based on the profiling data, identify the top 3 bottlenecks. Consult the hints below for common patterns. Write a short plan with the optimizations you will implement.
+
+**Implement** — Implement the planned optimizations in a batch. Before compiling, re-read every changed section and verify: (a) all variables declared before use, (b) no use-after-move/use-after-clear, (c) no duplicate variable names across scopes. Then compile once and validate correctness and the performance improvement by calling the run tool.
 
 Constraints:
-- No inspection of `query*.cpp`, build dirs, systems libs, validator/compile/run tool internals, or any other files not directly included by `${builder_path_hpp}/.cpp`.
-- No broad grep/find/ls beyond named target files.
-- No compile or run after individual edits. Only validate after a complete batch implementing one coeherent optimization strategy.
-- Use at most 2 major optimization attempts and 1 refinement.
-- If within 15% of target or bottleneck is memory-bandwidth/Parquet I/O bound, stop and report.
-- Always load all data from Parquet during ingestion (do not skip rows or columns) i.e. do not inspect query*.cpp to decide whether a column can be skipped, reordered differently, or stored unsafely. Assume all loaded columns must preserve semantics for existing and future queries. Storage layout must remain general enough that in theory arbitrary SQL could be executed 
+- Limit inspection to `${builder_path_hpp}`, `${builder_path_cpp}`, and directly included headers only. Do not inspect validator/compile/cache/tool internals unless an error explicitly indicates an interface mismatch. No broad grep/find/ls.
+- No compile or run after individual edits. Only validate after a complete batch implementing one coherent optimization strategy.
+- If the bottleneck is memory-bandwidth bound, stop and report.
+${storage_constraint}
+
+Hints — common optimization patterns:
+- **Parallelism**: Independent table builds can run concurrently in `std::thread`; the largest table dominates, so overlapping all smaller ones is free. Calibrate nested thread counts against the hardware above to avoid oversubscription.
+- **Sort strategy**: For a sort key with low cardinality (thousands of distinct values across millions of rows), use counting sort / bucket sort instead of `std::sort`. Sort the permutation array, then apply it in a single gather pass over all columns simultaneously.
+- **`as_string()` heap cost**: allocates one `std::string` per row. For single-character or low-cardinality string columns, prefer `char` or `uint8_t` with dict encoding — eliminates heap allocation and reduces scatter memory footprint.
+- **Large `unordered_map` indexes**: building an `unordered_map<int64_t, int32_t>` with millions of entries is slow due to cache-unfriendly separate chaining. If the key domain is dense integers, a flat `vector<int32_t>` indexed directly by key value is much faster — both to build and to probe.
+${interface_compat_hint}

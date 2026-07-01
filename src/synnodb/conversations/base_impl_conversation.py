@@ -22,8 +22,7 @@ from synnodb.conversations.prompts_gen import (
     base_fix_slow_queries_prompt,
     base_impl_query_prompt,
     base_impl_storage,
-    base_optimize_build_prompt,
-    base_optimize_build_simple,
+    base_optimize_build,
     base_planner_prompt,
     base_run_all_and_fix_prompt,
 )
@@ -242,9 +241,13 @@ class BaseImplConversation(CheckpointedConversation):
             ),
             COMPACTION_MARKER,
             OptimizeBuildStage(
-                builder_path=builder_path,
+                builder_path_cpp=builder_cpp_path,
+                builder_path_hpp=builder_hpp_path,
                 run_tool=self.run_tool,
                 persistent_storage=self.persistent_storage,
+                allow_storage_restructuring=True,
+                storage_plan_filename=storage_plan_filename,
+                base_impl_todo_filename=base_impl_todo_filename,
             ),
             ValidateAndFixStage(
                 run_tool=self.run_tool,
@@ -350,15 +353,14 @@ class BaseImplConversation(CheckpointedConversation):
                 # VALIDATE_MAX_SF_REP1_ON,  # only single repetition with largest (benchmarking) scale factor - we don't care if measured query rt is noisy
                 VALIDATE_OUTPUT_STDOUT_OFF,
                 # VALIDATE_OUTPUT_STDOUT_MAXSF_ON,  # include stdout and stderr for largest (benchmarking) scale factor to have more info in case of regressions
-                StaticStageConfig(
-                    descriptor="optimize build",
-                    get_prompt=lambda _exec_settings, _rt: base_optimize_build_prompt(
-                        builder_path_cpp=builder_cpp_path,
-                        builder_path_hpp=builder_hpp_path,
-                        persistent_storage=self.persistent_storage,
-                    ),
-                    measure_performance_after_stage=False,
-                    auto_revert_on_regression=False,
+                OptimizeBuildStage(
+                    builder_path_cpp=builder_cpp_path,
+                    builder_path_hpp=builder_hpp_path,
+                    run_tool=self.run_tool,
+                    persistent_storage=self.persistent_storage,
+                    allow_storage_restructuring=False,
+                    storage_plan_filename=storage_plan_filename,
+                    base_impl_todo_filename=base_impl_todo_filename,
                 ),
                 # VALIDATE_OUTPUT_STDOUT_MAXSF_OFF,
                 # VALIDATE_MAX_SF_REP1_OFF,
@@ -372,24 +374,29 @@ class BaseImplConversation(CheckpointedConversation):
 class OptimizeBuildStage(DynamicStageConfig):
     def __init__(
         self,
-        builder_path: str,
+        builder_path_cpp: str,
+        builder_path_hpp: str,
         run_tool: RunTool,
         persistent_storage: bool,
+        allow_storage_restructuring: bool,
+        storage_plan_filename: str,
+        base_impl_todo_filename: str,
     ):
         super().__init__(descriptor="optimize build", max_turns=None)
-        self.builder_path = builder_path
+        self.builder_path_cpp = builder_path_cpp
+        self.builder_path_hpp = builder_path_hpp
         self.run_tool = run_tool
         self.executed = False
         self.persistent_storage = persistent_storage
+        self.allow_storage_restructuring = allow_storage_restructuring
+        self.storage_plan_filename = storage_plan_filename
+        self.base_impl_todo_filename = base_impl_todo_filename
 
     def next_prompt(self) -> Optional[str]:
-        # run only once
         if self.executed:
             return None
         self.executed = True
 
-        # fetch last validate results or rerun benchmark if not available
-        # TODO: fetch last benchmark without rerunning if possible
         run_result = self.run_tool.run_worker(
             mode=RunToolMode.INGEST,
             optimize=True,
@@ -405,14 +412,16 @@ class OptimizeBuildStage(DynamicStageConfig):
             "Query batch must be available for optimize build stage"
         )
 
-        # generate prompt
-        prompt = base_optimize_build_simple(
-            builder_path=self.builder_path,
+        return base_optimize_build(
+            builder_path_cpp=self.builder_path_cpp,
+            builder_path_hpp=self.builder_path_hpp,
             current_ingest_time_ms=run_result.ingest_time_ms,
             current_exec_config=run_result.query_batch.exec_settings,
             persistent_storage=self.persistent_storage,
+            allow_storage_restructuring=self.allow_storage_restructuring,
+            storage_plan_filename=self.storage_plan_filename,
+            base_impl_todo_filename=self.base_impl_todo_filename,
         )
-        return prompt
 
 
 class ValidateAndFixStage(DynamicStageConfig):

@@ -189,24 +189,88 @@ def base_storage_invariant_check_prompt(
     )
 
 
-def base_optimize_build_simple(
-    builder_path: str,
+def _detect_hardware_context() -> str:
+    import psutil
+
+    cpu_model = "unknown"
+    total_ram_gb = 0
+
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                cpu_model = line.partition(":")[2].strip()
+                break
+    except Exception:
+        pass
+
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                total_ram_gb = int(line.split()[1]) // (1024 * 1024)
+                break
+    except Exception:
+        pass
+
+    physical_cores = psutil.cpu_count(logical=False) or 0
+    logical_cores = psutil.cpu_count(logical=True) or 0
+
+    parts = [f"CPU: {cpu_model}"]
+    if physical_cores > 0:
+        ht_str = "hyperthreading enabled" if logical_cores > physical_cores else "no hyperthreading"
+        parts.append(f"{physical_cores} physical cores / {logical_cores} logical cores ({ht_str})")
+    elif logical_cores > 0:
+        parts.append(f"{logical_cores} logical cores")
+    if total_ram_gb > 0:
+        parts.append(f"{total_ram_gb} GB RAM")
+
+    return ", ".join(parts)
+
+
+def base_optimize_build(
+    builder_path_cpp: str,
+    builder_path_hpp: str,
     current_ingest_time_ms: float,
     current_exec_config: ExecSettings,
     persistent_storage: bool,
+    allow_storage_restructuring: bool,
+    storage_plan_filename: str,
+    base_impl_todo_filename: str,
 ) -> str:
     if persistent_storage:
-        prompt_path = _PROMPTS_DIR / "ssd" / "base_optimize_build_simple_ssd.txt"
+        prompt_path = _PROMPTS_DIR / "ssd" / "base_optimize_build_ssd.txt"
     else:
-        prompt_path = _PROMPTS_DIR / "base_optimize_build_simple.txt"
+        prompt_path = _PROMPTS_DIR / "base_optimize_build.txt"
+
+    if allow_storage_restructuring:
+        storage_constraint = ""
+        interface_compat_hint = ""
+    else:
+        storage_constraint = (
+            "- Always load all data from Parquet during ingestion (do not skip rows or columns). "
+            "Do not inspect `query*.cpp` to decide what to load, skip, or reorder. "
+            "Storage layout must remain general enough that arbitrary SQL could in theory be executed."
+        )
+        interface_compat_hint = (
+            f"- **Interface compatibility**: Any change to a field's type or layout in `{builder_path_hpp}` "
+            "(column type, index structure, field name) must preserve the interface that existing query files use. "
+            "If the underlying type changes, wrap it in a class that exposes the same `.find()`/`.end()` or `[]` "
+            "semantics — do not modify query files to adapt to a new interface. "
+            "A type mismatch can compile silently and crash at runtime."
+        )
 
     template_str = _load_txt(prompt_path)
     template = Template(template_str)
     return template.substitute(
-        builder_path=builder_path,
+        builder_path_cpp=builder_path_cpp,
+        builder_path_hpp=builder_path_hpp,
         config_str=str(current_exec_config),
         current_ingest_time_ms=f"{int(current_ingest_time_ms)} ms",
         run_tool_mode=RunToolMode.INGEST.name,
+        storage_constraint=storage_constraint,
+        interface_compat_hint=interface_compat_hint,
+        hardware_context=_detect_hardware_context(),
+        storage_plan_filename=storage_plan_filename,
+        base_impl_todo_filename=base_impl_todo_filename,
     )
 
 
@@ -344,26 +408,6 @@ def base_fix_slow_queries_prompt(
         slow_query_list=slow_query_list,
         query_impl_path=query_impl_path,
         builder_path=builder_path,
-    )
-
-
-def base_optimize_build_prompt(
-    builder_path_cpp: str,
-    builder_path_hpp: str,
-    persistent_storage: bool,
-) -> str:
-    if persistent_storage:
-        prompt_path = _PROMPTS_DIR / "ssd" / "base_optimize_build_ssd.txt"
-    else:
-        prompt_path = _PROMPTS_DIR / "base_optimize_build.txt"
-
-    template_str = _load_txt(prompt_path)
-    template = Template(template_str)
-
-    return template.substitute(
-        run_tool_mode=RunToolMode.INGEST.name,
-        builder_path_cpp=builder_path_cpp,
-        builder_path_hpp=builder_path_hpp,
     )
 
 
