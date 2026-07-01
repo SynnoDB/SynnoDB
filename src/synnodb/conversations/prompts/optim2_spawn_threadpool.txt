@@ -1,4 +1,9 @@
-Add the following `get_query_pool` function to `${query_impl_cpp_filename}`:
+Verify that the shared query thread pool is available. New in-memory base implementations should
+already have `get_query_pool()` wired in `${query_impl_cpp_filename}` and `query_pool.hpp` available.
+If it is already present, do not add a duplicate definition; only make the smallest missing include
+or declaration fix needed for query files to call it.
+
+If `${query_impl_cpp_filename}` truly does not define it yet, add exactly one definition:
 ```
 // query_impl.cpp
 ThreadPool& get_query_pool() {
@@ -14,15 +19,17 @@ ThreadPool& get_query_pool() {
 ```
 The function is forward declared in `query_pool.hpp`.
 The ThreadPool struct is defined in `${thread_pool_filename}`.
-This thread pool will be shared across all queries and can be used to dispatch parallel tasks for query execution.
+This thread pool is shared across all queries and can be used to dispatch parallel tasks for query execution.
 
-In each queryN.cpp, add exactly:
+In each queryN.cpp that needs direct pool access, include:
 ```
 #include "query_pool.hpp"
-static ThreadPool& pool = get_query_pool();
 ```
-Place the static definition at file scope, once per file. Do not modify any other files besides query_impl.cpp, query_pool.hpp if needed, and the listed queryN.cpp files.
-Do not yet dispatch work to the thread pool, just ensure that it is initialized and can be accessed.
+Use `ThreadPool& pool = get_query_pool();` inside `run_qN()` or call `get_query_pool()` directly at
+the dispatch site. Do not add a file-scope static pool reference. Do not modify any other files
+besides query_impl.cpp, query_pool.hpp if needed, and the listed queryN.cpp files.
+Do not yet dispatch work to the thread pool in this setup step; just ensure that it is initialized
+and can be accessed.
 
 Call the run-tool after implementing the thread pool initialization. Check that the code compiles and runs correctly.
 

@@ -12,6 +12,13 @@ Focus on multi-threading specific bottlenecks:
 - Memory bandwidth saturation: too many threads contending for the same memory regions.
 - Remaining sequential sections that limit parallel speedup (Amdahl's law).
 
+The base implementation should already run through the shared query pool (`get_query_pool()`,
+`parallel_for`, `parallel_reduce<T>`) and be correct at both CORE_IDS=1 and multiple threads. Do
+not introduce a separate single-threaded/multi-threaded code path. Preserve the same semantics for
+every thread count: private per-thread/per-slice state in the hot loop, deterministic merges after
+the parallel region, exact integer/fixed-point accumulation for DECIMAL/INT aggregates, no nested
+pool calls, and no shared mutable accumulator/map/output vector in the hot loop.
+
 After making changes, validate correctness and confirm performance improved.
 Target: reduce runtime further from $current_rt (${exec_settings_str}). Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: $st_rt).
 

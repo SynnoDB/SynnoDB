@@ -1,21 +1,25 @@
-"""Shared-memory zero-copy Arrow transport — the Phase-3 data plane (Python side).
+"""Shared-memory zero-copy Arrow transport (Python side of the ``/dev/shm`` data plane).
 
-The router and the C++ engine worker exchange bulk data as Arrow IPC laid out in a
-``/dev/shm`` (tmpfs) segment that both processes ``mmap``. On the read side the
-Arrow arrays are **zero-copy views** into the mapping (Arrow IPC is offset-based and
-position-independent, so no fixed-address mmap is needed — unlike the pointer-rich
-``misc/misc/shm_test.cpp`` prototype). This module is the Python end; the C++ worker
-implements the symmetric side (``ReadArrowTableFromShm`` / an Arrow-IPC shm writer).
+Bulk data crosses between the Python parent and a C++ engine as Arrow IPC written into a
+``/dev/shm`` (tmpfs) segment that both processes ``mmap``. On the read side the Arrow arrays
+are **zero-copy views** into the mapping (Arrow IPC is offset-based and position-independent,
+so no fixed-address mmap is needed). This module is the canonical Python end of that wire
+format, with two consumers:
+
+* The serving engines (``router.process_engine``) take ``SHM_DIR`` and ``_pid_alive`` from
+  here. ``ShmHotLoadEngine`` writes its ingest segments into ``/dev/shm`` and the generated
+  C++ loader maps them zero-copy via ``ReadArrowTableFromShm`` (``cpp_helpers/shm_arrow_loader.hpp``).
+* ``ShmWriter`` / ``read_table`` are the reference producer/consumer that round-trips the C++
+  shm helpers (``shm_arrow_{loader,writer}.hpp``) in ``tests/test_cpp_shm.py``, pinning the
+  exact byte format the C++ side must read and write.
 
 Ownership & lifecycle (the hard, mandatory part):
 
-* The **Python parent owns** every segment — it creates and ``unlink``s them, because
-  the engine can be ``SIGKILL``'d and cannot self-clean.
-* Segment names encode the owner pid: ``synnodb-<owner_pid>-<uid>.arrow``. A startup
-  ``sweep_orphans`` removes segments whose owner pid is dead — orphans are a silent
-  RAM leak.
-* ``SegmentRef`` is the small, picklable handle passed to the worker over the control
-  channel (env/pipe); it never carries data, only the segment name and byte length.
+* The **Python parent owns** every segment — it creates and ``unlink``s them, because the
+  engine can be ``SIGKILL``'d and cannot self-clean.
+* Segment names encode the owner pid (``synnodb-<owner_pid>-<seq>.arrow``); ``sweep_orphans``
+  removes segments whose owner pid is dead — orphans are a silent RAM leak.
+* ``SegmentRef`` is a small, picklable handle (segment name + byte length) — never data.
 """
 from __future__ import annotations
 

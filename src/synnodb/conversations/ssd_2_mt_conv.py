@@ -2,8 +2,10 @@ import logging
 from typing import List
 
 from synnodb.conversations.in_mem_2_mt_conv import InMem2MTConversation
+from synnodb.conversations.conversation import COMPACTION_MARKER
 from synnodb.conversations.prompts_gen import (
     load_expert_knowledge,
+    optim2_prompt_add_threadpool,
     optim2_prompt_introduce_threading,
     optim_prompt_w_expert_knowledge,
     optim_prompt_w_human_reference,
@@ -26,6 +28,29 @@ class SSD2MTOptConv(InMem2MTConversation):
       - run()              → no timing-instrumentation setup
                              (already done in round 1)
     """
+
+    # SSD still uses the legacy staged introduction path. The in-memory base
+    # implementation is now parallel-ready from the start, but SSD has its own
+    # storage-specific templates/prompts and is intentionally left unchanged here.
+    def _assemble_pre_stages(
+        self, mandatory_constraints: str, general_pretext: str
+    ) -> List[StageConfig | str]:
+        return [
+            StaticStageConfig(
+                descriptor="Add ThreadPool",
+                get_prompt=lambda _exec_settings, _rt: optim2_prompt_add_threadpool(
+                    db_loader_filename=self.file_paths["builder_hpp_path"],
+                    thread_pool_filename=self.file_paths["thread_pool_filename"],
+                    general_pretext=general_pretext,
+                    constraints_str=mandatory_constraints,
+                    storage_is_bespoke=self.bespoke_storage,
+                ),
+                max_turns=100,
+                measure_performance_after_stage=False,
+                auto_revert_on_regression=False,
+            ),
+            COMPACTION_MARKER,
+        ]
 
     def _build_stages(
         self,

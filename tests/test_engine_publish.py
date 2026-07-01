@@ -15,6 +15,8 @@ from synnodb.workloads.engine_publish import (
 )
 from synnodb.workloads.query_params import substitute
 
+from receipt_helpers import passing_receipt, write_fake_engine_db
+
 Q1 = (
     "select sum(l_quantity) as q from lineitem "
     "where l_shipdate <= date '1998-12-01' - interval '[DELTA]' day"
@@ -98,7 +100,7 @@ def test_manifest_unsupported_version_rejected():
 def _fake_engine_workspace(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
-    (ws / "db").write_bytes(b"\x7fELF-fake-binary")
+    write_fake_engine_db(ws / "db")
     (ws / "query1.cpp").write_text("int main(){}")
     (ws / "db_loader.hpp").write_text("// header")
     obj = ws / "obj"
@@ -112,8 +114,9 @@ def test_publish_engine_copies_self_contained(tmp_path):
     ws = _fake_engine_workspace(tmp_path)
     engines = tmp_path / "engines"
     templates = [QueryTemplate("1", "select 1", ())]
-    dest = publish_engine(ws, query_templates=templates, parquet_dir="/data/sf1",
-                          engines_dir=str(engines), scale_factor=1.0)
+    dest = publish_engine(ws, query_templates=templates,
+                          receipt=passing_receipt(ws, ["1"], scale_factors=(1.0,)),
+                          parquet_dir="/data/sf1", engines_dir=str(engines), scale_factor=1.0)
     assert dest is not None
     assert (dest / "db").exists() and (dest / "query1.cpp").exists()
     assert not (dest / "obj").exists()        # compile intermediates skipped
@@ -129,19 +132,21 @@ def test_publish_no_engines_dir_returns_none(tmp_path, monkeypatch):
     monkeypatch.delenv("SYNNO_DATA_DIR", raising=False)
     ws = _fake_engine_workspace(tmp_path)
     assert publish_engine(ws, query_templates=[QueryTemplate("1", "select 1", ())],
+                          receipt=passing_receipt(ws, ["1"]),
                           parquet_dir="/d", engines_dir=None) is None
 
 
 def test_publish_no_templates_returns_none(tmp_path):
     ws = _fake_engine_workspace(tmp_path)
-    assert publish_engine(ws, query_templates=[], parquet_dir="/d",
-                          engines_dir=str(tmp_path / "engines")) is None
+    assert publish_engine(ws, query_templates=[], receipt=passing_receipt(ws, ["1"]),
+                          parquet_dir="/d", engines_dir=str(tmp_path / "engines")) is None
 
 
 def test_publish_is_idempotent_on_same_engine(tmp_path):
     ws = _fake_engine_workspace(tmp_path)
     engines = tmp_path / "engines"
     templates = [QueryTemplate("1", "select 1", ())]
-    a = publish_engine(ws, query_templates=templates, parquet_dir="/d", engines_dir=str(engines))
-    b = publish_engine(ws, query_templates=templates, parquet_dir="/d", engines_dir=str(engines))
+    rc = passing_receipt(ws, ["1"])
+    a = publish_engine(ws, query_templates=templates, receipt=rc, parquet_dir="/d", engines_dir=str(engines))
+    b = publish_engine(ws, query_templates=templates, receipt=rc, parquet_dir="/d", engines_dir=str(engines))
     assert a == b and len(list(engines.iterdir())) == 1

@@ -64,6 +64,8 @@ class PrepareWorkspace:
             "query_impl.cpp",
             "parquet_reader.hpp",
             "parquet_reader.cpp",
+            "query_pool.hpp",
+            "thread_pool.hpp",
         }
 
         readonly_files_to_be_git_tracked = {
@@ -117,13 +119,17 @@ class PrepareWorkspace:
                 + query_impl_str[include_pos:]
             )
 
-        # replace trace stuff
+        # replace trace stuff. This is intentionally idempotent because base
+        # workspaces may already be assembled with a thread pool, and callers may
+        # request sample tracing during base preparation.
         trace_kw = 'results.push_back(QueryResult{req.query_id, req.req_id, "", elapsed_ms, error});'
         trace_target = "results.push_back(QueryResult{req.query_id, req.req_id, trace_get_and_clear(), elapsed_ms, error});"
-        assert trace_kw in query_impl_str, (
-            f"Could not find '{trace_kw}' in {query_impl_path}"
-        )
-        query_impl_str = query_impl_str.replace(trace_kw, trace_target)
+        if trace_kw in query_impl_str:
+            query_impl_str = query_impl_str.replace(trace_kw, trace_target)
+        else:
+            assert trace_target in query_impl_str, (
+                f"Could not find trace result emission in {query_impl_path}"
+            )
 
         # remove comments
         trace_kw_list = ["TRACE_FLUSH();", "TRACE_RESET();"]

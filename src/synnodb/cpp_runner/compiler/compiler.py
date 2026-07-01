@@ -509,6 +509,11 @@ class Compiler:
                 # crash_handler.hpp) can name frames in the main `db` binary, not just the
                 # dlopen'd query .so. Cheap, and only affects the final link.
                 "-rdynamic",
+                # Stamp the executable with a build-id too (the plugins already get one above).
+                # The publish gate uses these ids to prove the engine on disk is the one that was
+                # validated; relying on the linker's default would leave the binary unidentified on
+                # toolchains that default --build-id to none.
+                "-Wl,--build-id=sha1",
                 *self.pkg_libs,
                 "-o",
                 self._relpath(self.workdir / self.app_name),

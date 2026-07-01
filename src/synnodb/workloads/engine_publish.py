@@ -22,9 +22,12 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..duckdb_compat.discovery import resolve_engines_dir
+
+if TYPE_CHECKING:
+    from .validation_receipt import ValidationReceipt
 from ..router.manifest import EngineManifest, QueryTemplate, build_manifest_from_dir, infer_duckdb_type
 from ..router.normalize import normalize_sql, unify_and_bind
 from ..router.registry import PlaceholderSpec
@@ -311,6 +314,7 @@ def publish_engine(
     workspace: "str | Path",
     *,
     query_templates: Sequence[QueryTemplate],
+    receipt: "ValidationReceipt",
     parquet_dir: "str | Path | None" = None,
     scale_factor: Optional[float] = None,
     source_run_id: Optional[str] = None,
@@ -321,6 +325,7 @@ def publish_engine(
     shm_capable: bool = False,
     bundle_parquet_dir: "str | Path | None" = None,
     source_db: Optional[str] = None,
+    threads: Optional[int] = None,
 ) -> Optional[Path]:
     """Write a manifest for the engine in *workspace* and publish it for auto-discovery.
 
@@ -332,7 +337,20 @@ def publish_engine(
     engine as able to hot-load its tables from Arrow over shm. *bundle_parquet_dir* copies a
     parquet snapshot into the package (recorded as the relative ``parquet_dir="data"``), making
     a self-contained, standalone engine. *source_db* records the database the engine was built for.
+
+    *receipt* is a :class:`ValidationReceipt` proving a live, cache-bypassed validation of this
+    exact build. It is required: publish refuses (raising :class:`ReceiptRejected`, writing
+    nothing) unless the receipt matches the engine on disk and covers the queries and scale factor
+    being published. A ``shm_capable`` engine whose receipt did not validate the shm plane is
+    downgraded to parquet-only rather than shipped with an unverified serving plane.
     """
+    from .validation_receipt import (
+        PLANE_PARQUET,
+        PLANE_SHM,
+        ReceiptRejected,
+        verify_receipt_for_publish,
+    )
+
     workspace = Path(workspace)
     target = resolve_engines_dir(engines_dir)
     if target is None:
@@ -341,6 +359,36 @@ def publish_engine(
     if not query_templates:
         log.info("publish: no routable templates for the engine in %s, skipping", workspace)
         return None
+    # Gate: refuse to publish anything the receipt does not prove. Raises ReceiptRejected (so the
+    # caller's best-effort wrapper logs and ships nothing) on a mismatched/non-live/failed receipt.
+    verify_receipt_for_publish(
+        receipt,
+        workspace=workspace,
+        published_query_ids=[t.query_id for t in query_templates],
+        scale_factor=scale_factor,
+    )
+    # Reconcile the served planes against what the receipt actually validated. Every plane the
+    # engine will serve must have been validated.
+    #
+    # The parquet plane is the standalone/fallback serving plane (the router points a ProcessEngine
+    # at it). If the engine ships a parquet snapshot but the receipt never validated parquet, there
+    # is no safe fallback - refuse, since parquet cannot be "downgraded" away.
+    serves_parquet = parquet_dir is not None or bundle_parquet_dir is not None
+    if serves_parquet and not receipt.covers_plane(PLANE_PARQUET):
+        raise ReceiptRejected(
+            "publishing a parquet-serving engine but the receipt did not validate the parquet "
+            f"plane (receipt covered {list(receipt.data_planes)}); refusing to ship an "
+            "unvalidated serving plane"
+        )
+    # The shm hot-load plane is an optional optimization; never ship it on a receipt that only
+    # exercised parquet. Downgrade to parquet-only (the engine still serves) instead of refusing.
+    if shm_capable and not receipt.covers_plane(PLANE_SHM):
+        log.warning(
+            "publish: receipt covers planes %s but not the shm plane; publishing %s as "
+            "parquet-only (shm hot-load withheld until the shm plane is validated)",
+            list(receipt.data_planes), workspace,
+        )
+        shm_capable = False
     # A bundled snapshot is referenced by the portable relative path; otherwise record the
     # caller's path (or None for a pure shm engine).
     manifest_parquet_dir = "data" if bundle_parquet_dir is not None else (
@@ -356,6 +404,7 @@ def publish_engine(
         parquet_dir=manifest_parquet_dir,
         shm_capable=shm_capable,
         source_db=source_db,
+        threads=threads,
         write=False,
     )
     dest = _atomic_publish(workspace, manifest, target, name=name, bundle_parquet_dir=bundle_parquet_dir)
@@ -402,6 +451,7 @@ def publish_from_provider(
     provider: object,
     query_ids: Iterable[str],
     *,
+    receipt: "ValidationReceipt",
     parquet_dir: "str | Path | None" = None,
     scale_factor: Optional[float] = None,
     source_run_id: Optional[str] = None,
@@ -413,14 +463,15 @@ def publish_from_provider(
     bundle_parquet_dir: "str | Path | None" = None,
     expected_tables: Optional[Mapping[str, Sequence]] = None,
     source_db: Optional[str] = None,
+    threads: Optional[int] = None,
 ) -> Optional[Path]:
     """Publish the engine in *workspace*, taking query templates from *provider*'s workload.
 
     Pulls each query's ``[NAME]`` template from ``provider.sql_dict`` and a few sample
     assignments from the workload generator, then derives, validates, and publishes. Designed
-    to be called best-effort at the end of a generation run. *name* / *shm_capable* /
-    *bundle_parquet_dir* / *expected_tables* / *source_db* are passed straight through to
-    :func:`publish_engine` (see there).
+    to be called best-effort at the end of a generation run. *receipt* (required) and *name* /
+    *shm_capable* / *bundle_parquet_dir* / *expected_tables* / *source_db* are passed straight
+    through to :func:`publish_engine` (see there); the receipt gates the publish.
     """
     sql_dict = getattr(provider, "sql_dict", {})
     templates_by_qid: dict[str, str] = {}
@@ -438,6 +489,7 @@ def publish_from_provider(
     return publish_engine(
         workspace,
         query_templates=query_templates,
+        receipt=receipt,
         parquet_dir=parquet_dir,
         scale_factor=scale_factor,
         source_run_id=source_run_id,
@@ -448,4 +500,5 @@ def publish_from_provider(
         bundle_parquet_dir=bundle_parquet_dir,
         expected_tables=expected_tables,
         source_db=source_db,
+        threads=threads,
     )

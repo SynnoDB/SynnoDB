@@ -1,6 +1,6 @@
 Parallelize the implementation of query $query_id (`query${query_id}.hpp/cpp`) to utilize multiple CPU cores. The goal is to reduce the query execution time by decomposing the work into parallel tasks that can be executed concurrently.
 The thread_pool is already added and initialized in the query files. Use its ThreadPool API defined in `${thread_pool_filename}` to manage the execution of parallel tasks.
-Call `thread_pool.parallel_for(f)` to dispatch work, where `f(tid, n_threads)` is invoked concurrently on all threads at once.
+Prefer `parallel_reduce<T>(get_query_pool(), n, identity, fold, combine)` for scans that reduce into SUM / COUNT / MIN / MAX or GROUP BY buckets: each worker folds a contiguous slice into private state, then partials are merged deterministically. Use `get_query_pool().parallel_for(f)` only for non-reduction work such as writing disjoint preallocated output ranges, where `f(tid, n_threads)` is invoked concurrently on all threads at once.
 
 Current single-threaded tracing/profiling output. Use it to classify the bottleneck (I/O-bound vs CPU-bound) before choosing a parallelization pattern:
 ${tracing_block}
@@ -12,6 +12,7 @@ Common strategies for decomposing the query execution into parallel work units i
 - Range-based partitioning of table scans: each thread processes a disjoint range of rows.
 - Parallel aggregation with per-thread local accumulators, then a sequential final merge.
 - Parallel hash joins with thread-local hash tables.
+- Ordered projection with per-thread/per-morsel output buffers merged in logical row order before SQL ORDER BY / LIMIT.
 - Any other approach that minimizes synchronization overhead between threads.
 - Lock-free data structures if concurrent access is required
 
@@ -25,5 +26,6 @@ ${constraints}
 - Read each file at most once per round. Do not re-read files to look up details you already saw.
 - Be carefull with changes that affect other queries${bespoke_storage_related}. Avoid regressions on the other queries.
 - Dispatch work to the thread pool and collect results before returning. Avoid spawning new threads per query call.
+- Do not mutate one shared accumulator, map, or output vector from the hot loop. Do not nest `parallel_for` / `parallel_reduce`. Do not parallel-reduce DECIMAL or integer aggregates through floating point.
 
 Validate correctness after each change. If performance did not improve, reconsider the parallelization strategy and try again.

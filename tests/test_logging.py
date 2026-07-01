@@ -1,4 +1,4 @@
-"""Debug/observability plumbing: the router, worker, and shm paths must emit enough
+"""Debug/observability plumbing: the router and shm paths must emit enough
 to chase errors. These tests assert the key lifecycle events are logged.
 """
 from __future__ import annotations
@@ -6,10 +6,9 @@ from __future__ import annotations
 import logging
 
 import pyarrow as pa
-import pytest
 
 import synnodb
-from synnodb.router import RouterMode, RouterPolicy, TemplateRegistry, WorkerEngine
+from synnodb.router import RouterMode, RouterPolicy, TemplateRegistry
 
 
 def test_enable_debug_logging_is_idempotent():
@@ -33,20 +32,6 @@ def test_router_logs_every_decision(caplog):
         con.execute("SELECT * FROM t")  # no template -> fallback (logged)
     messages = [r.getMessage() for r in caplog.records]
     assert any("fallback" in m for m in messages), messages
-
-
-def test_worker_logs_spawn_ingest_run(caplog, tmp_path):
-    with caplog.at_level(logging.DEBUG, logger="synnodb.router.worker"):
-        eng = WorkerEngine("dbg", {"1": "SELECT count(*) AS c FROM t"}, shm_dir=tmp_path / "shm")
-        try:
-            eng.ingest({"t": pa.table({"a": [1, 2, 3]})})
-            eng.run("1", {})
-        finally:
-            eng.close()
-    messages = [r.getMessage() for r in caplog.records]
-    assert any("spawning worker" in m for m in messages), messages
-    assert any("ingest" in m for m in messages), messages
-    assert any("run query_id=1" in m for m in messages), messages
 
 
 def test_shm_write_is_logged(caplog, tmp_path):

@@ -20,6 +20,8 @@ class GenStoragePlanConversation(CheckpointedConversation):
         schema: str,
         workspace_path: Path,
         db_storage: DBStorage,
+        num_threads: int,
+        max_turns: int | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -27,6 +29,8 @@ class GenStoragePlanConversation(CheckpointedConversation):
         self.schema = schema
         self.workspace_path = workspace_path
         self.db_storage = db_storage
+        self.num_threads = num_threads
+        self.default_max_turns = max_turns
 
     async def run(self):
         self.used = []
@@ -68,9 +72,11 @@ class GenStoragePlanConversation(CheckpointedConversation):
                     storage_plan_filename=storage_plan_filename,
                     persistent_storage=self.db_storage
                     in [DBStorage.LABSTORE, DBStorage.SSD],
+                    num_threads=self.num_threads,
                 ),
                 measure_performance_after_stage=False,
                 auto_revert_on_regression=False,
                 post_stage_validate=_validate_storage_plan_exists,
+                max_turns=self.default_max_turns,
             ),
         ]

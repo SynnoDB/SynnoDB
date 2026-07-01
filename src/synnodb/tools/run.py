@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from synnodb.cpp_runner.compiler.compiler_cached import CachedCompiler
+from synnodb.cpp_runner.hotpatch.elf_build_id import read_build_id
 from synnodb.cpp_runner.hotpatch.hotpatch_proc import HotpatchProc, HotpatchProcRunResult
 from synnodb.cpp_runner.hotpatch.pool import HotpatchPool
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
@@ -17,11 +18,47 @@ from synnodb.tools.validate.query_validator_class import (
     QueryValidator,
 )
 from synnodb.tools.validate.run_and_check_queries import assemble_error
+from synnodb.utils.core_utils import core_ids_to_env
 from synnodb.utils.json_utils import json_dumps
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import QueryBatch, WorkloadProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _env_bool(name: str) -> bool:
+    """Parse a boolean environment variable. Unset, empty, "0", "false", "no",
+    and "off" (any case) are False; everything else is True. Avoids the trap where
+    ``SYNNO_X=0`` reads as truthy under a bare ``os.environ.get``."""
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _cgroup_launch_policy(memory_limit_bytes: int) -> Tuple[Dict[str, object], str]:
+    """Resolve the opt-in cgroup launch policy (env-driven) into HotpatchProc kwargs
+    and a pool-key suffix.
+
+    The suffix MUST be appended to the runner pool key: runners with different launch
+    policies must never be shared, or a warm uncapped runner could be reused for a
+    capped, require-cgroup run and silently bypass both the memory ceiling and the
+    fail-closed check. The shared-parent slice and its budget are part of the policy too:
+    a runner warmed under the old per-orchestrator parent must not be reused once a shared
+    parent (or a different one / budget) is configured, or it would bypass the aggregate
+    slice. Returns ``({}, "")`` when the cgroup path is disabled.
+    """
+    if not _env_bool("SYNNO_ENABLE_CGROUP"):
+        return {}, ""
+    require = _env_bool("SYNNO_REQUIRE_CGROUP")
+    parent = os.environ.get("SYNNO_CGROUP_PARENT", "").strip()
+    parent_max = os.environ.get("SYNNO_CGROUP_PARENT_MAX", "").strip()
+    kwargs: Dict[str, object] = {
+        "memory_max_bytes": memory_limit_bytes,
+        "require_cgroup": require,
+    }
+    suffix = (
+        f"|cgroup_max={memory_limit_bytes}|require={require}"
+        f"|parent={parent}|parent_max={parent_max}"
+    )
+    return kwargs, suffix
 
 
 @dataclass
@@ -136,6 +173,7 @@ class RunTool:
         query_ids: list[str] | None = None,
         trace_mode: bool = False,  # set trace flag
         force_compile: bool = False,
+        force_live: bool = False,  # bypass the validation cache so every query is executed live (paired with force_compile by the publish gate)
         external_call: bool = False,
         current_git_snapshot: Optional[
             str
@@ -190,14 +228,21 @@ class RunTool:
                 "core_ids must be provided if parallelism is enabled"
             )
 
-        # local definition overwrites global
+        # local definition overwrites global. Build the CORE_IDS env the engine reads via
+        # the shared helper, so generation (here) and serving (the router) derive the engine's
+        # thread count identically. Serial -> "1" (single thread, not "use all cores").
         extra_env = dict()
+        extra_env["CORE_IDS"] = core_ids_to_env(
+            current_core_ids if current_parallelism else None
+        )
         if current_parallelism:
+            # The engine must run on exactly the resolved core set: if CORE_IDS ever stops
+            # matching the threads we counted, validation would silently measure a different
+            # parallelism than the storage plan / base impl were told to design for.
             assert current_core_ids is not None
-            extra_env["CORE_IDS"] = ",".join(str(c) for c in current_core_ids)
-        else:
-            extra_env["CORE_IDS"] = (
-                "1"  # pass a single core. Just to ensure that it is not falling back to "use all cores" in case the thread-pool is already implemented.
+            assert len(extra_env["CORE_IDS"].split(",")) == current_num_threads, (
+                f"CORE_IDS {extra_env['CORE_IDS']!r} does not encode the "
+                f"{current_num_threads} resolved threads"
             )
 
         logger.info(
@@ -295,6 +340,7 @@ class RunTool:
                 current_parallelism=current_parallelism,
                 current_core_ids=current_core_ids,
                 run_tool_mode=mode,
+                force_live=force_live,
             )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
             result_list.append(result)
 
@@ -303,6 +349,89 @@ class RunTool:
                 break
 
         return result_list[-1]
+
+    def validate_for_publish(
+        self,
+        query_ids: list[str],
+        *,
+        mode: RunToolMode = RunToolMode.EXHAUSTIVE,
+        optimize: bool = True,
+    ):
+        """Validate *query_ids* live (cache-bypassed) and return a ``ValidationReceipt`` for the
+        publish gate. The receipt records the freshly-compiled build's build-ids, the concrete
+        instantiations validated, the scale factors covered, and a pass/fail verdict.
+
+        ``force_compile=True`` rebuilds the binary that publish then ships (so the recorded
+        build-ids match what is copied), and ``force_live=True`` skips the validation cache so a
+        since-broken engine cannot be blessed by an earlier cached success.
+        """
+        from synnodb.workloads.validation_receipt import (
+            FAIL,
+            PASS,
+            PLANE_PARQUET,
+            ValidatedQuery,
+            ValidationReceipt,
+            engine_build_ids,
+        )
+
+        # A receipt must attest to a real correctness check. When answer validation is off
+        # (no query_validator, or parse_out_and_validate_output=False as a VALIDATE_OFF run sets),
+        # run_worker reports success after merely running the binary - it never compares answers.
+        # Minting a "pass" from that would let a wrong-answer engine publish, so refuse instead.
+        if self.query_validator is None or not self.parse_out_and_validate_output:
+            raise RuntimeError(
+                "validate_for_publish cannot mint a publish receipt: answer validation is not "
+                "active (needs a query_validator and parse_out_and_validate_output=True). A "
+                "receipt must prove correctness, never a bare run."
+            )
+
+        result = self.run_worker(
+            mode=mode,
+            optimize=optimize,
+            query_ids=query_ids,
+            force_compile=True,
+            force_live=True,
+        )
+
+        # Enumerate the concrete instantiations the run validated. produce_workload is
+        # deterministic (a fixed RNG seed) and is the same function run_worker drives internally,
+        # so re-deriving it here records exactly what was executed. Threads/cores do not affect the
+        # generated bindings, only the system config, so a 1-thread enumeration is faithful.
+        batches = self.workload_provider.produce_workload(
+            run_mode=mode, num_threads=1, core_ids=None, query_ids=query_ids
+        )
+        bindings_by_qid: dict[str, list[dict]] = {}
+        scale_factors: list[float] = []
+        for batch in batches:
+            sf = getattr(batch.exec_settings, "scale_factor", None)
+            if sf is not None and not any(abs(sf - s) < 1e-9 for s in scale_factors):
+                scale_factors.append(float(sf))
+            for entry in batch.query_list:
+                seen = bindings_by_qid.setdefault(entry.query_id, [])
+                if entry.placeholders not in seen:
+                    seen.append(dict(entry.placeholders))
+        validated_queries = tuple(
+            ValidatedQuery(qid, tuple(binds)) for qid, binds in bindings_by_qid.items()
+        )
+
+        snapshotter = getattr(self.query_validator, "git_snapshotter", None)
+        snapshot_id = getattr(snapshotter, "current_hash", None) if snapshotter else None
+
+        return ValidationReceipt(
+            snapshot_id=snapshot_id,
+            build_ids=engine_build_ids(self.cwd),
+            validated_queries=validated_queries,
+            coverage_policy=(
+                f"deterministic workload generator (fixed seed), {mode.value} mode; proves the "
+                "listed bindings per query, not every possible template value"
+            ),
+            data_planes=(PLANE_PARQUET,),
+            dataset=self.dataset_name,
+            validated_scale_factors=tuple(scale_factors),
+            mode=mode.value,
+            live_run=True,
+            verdict=PASS if result.success else FAIL,
+        )
 
     def run_query_batch(
         self,
@@ -318,6 +447,7 @@ class RunTool:
         current_parallelism: bool,
         run_tool_mode: RunToolMode,
         current_core_ids: list[int] | None,
+        force_live: bool = False,
     ) -> RunWorkerResult:
         # assemble call cmd
         cmd = f"./db {batch.cli_call_args}"
@@ -356,9 +486,31 @@ class RunTool:
             phys_ram_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
             hp_kwargs["memory_limit_bytes"] = int(phys_ram_bytes * 0.9)
 
+        # Opt-in hard resident-memory ceiling via a per-runner cgroup v2 (A2). Uses
+        # the same budget as the RLIMIT_AS value but enforces RSS, so a breach is
+        # OOM-killed as a group instead of taking down the host. SYNNO_REQUIRE_CGROUP
+        # makes a host without cgroup delegation fail closed rather than silently
+        # dropping to RLIMIT_AS only. The policy suffix keeps the pool key distinct so
+        # a warm runner from a different policy is never reused (see helper).
+        cgroup_kwargs, cgroup_key_suffix = _cgroup_launch_policy(
+            hp_kwargs["memory_limit_bytes"]
+        )
+        hp_kwargs.update(cgroup_kwargs)
+        pool_key += cgroup_key_suffix
+
+        # A libloader.so source change alters how the loader ingests its input, so
+        # the engine's resident (loader-owned) input tables are stale - a defect
+        # the in-process hotpatch cannot fix (the builder restart in pipeline.hpp
+        # only refreshes libbuilder.so). Fingerprint the loader plugin's build-id
+        # so the pool restarts the whole engine when it changes. read_build_id
+        # returns None when the .so is not built yet, which the pool treats as
+        # "no signal".
+        loader_build_id = read_build_id(os.path.join(self.cwd, "build", "libloader.so"))
+
         runner = HotpatchPool.get(
             pool_key,
             factory=lambda: HotpatchProc(cmd, **hp_kwargs),
+            fingerprint=loader_build_id,
         )
 
         # validate output correctness
@@ -396,6 +548,7 @@ class RunTool:
                 compile_key_hash=compile_key_hash,  # via this hash we ensure val is correctly chained to cache.
                 recompile_if_necessary_callback=fn_compile_callback,
                 trace_mode=trace_mode,
+                force_live=force_live,
             )
 
             msg = val_result.message

@@ -65,6 +65,11 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             ("column_ingest.hpp", cpp_helpers_dir / "column_ingest.hpp"),
             ("column_egress.hpp", cpp_helpers_dir / "column_egress.hpp"),
         ]
+        if not persistent_storage:
+            file_sources += [
+                ("thread_pool.hpp", src_dir / "thread_pool.hpp"),
+                ("query_pool.hpp", src_dir / "query_pool.hpp"),
+            ]
 
         assert isinstance(self.workload_provider, OLAPWorkloadProvider), (
             f"Expected workload_provider to be an instance of OLAPWorkloadProvider, got {type(self.workload_provider)}"

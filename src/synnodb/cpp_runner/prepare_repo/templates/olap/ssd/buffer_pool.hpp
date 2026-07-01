@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <fcntl.h>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <sys/mman.h>
 #include <stdexcept>
@@ -35,7 +36,9 @@ static constexpr int64_t BP_PAGE_BYTES = 2LL * 1024 * 1024;  // 2 MiB pages
 
 struct BufferPool {
     struct Frame {
-        uint8_t* data      = nullptr;
+        // Owns its page buffer so a throw mid-construction (an out-of-memory build) frees every
+        // frame already allocated: vector<Frame> unwinding runs ~Frame, which frees data.
+        std::unique_ptr<uint8_t[]> data;
         int      col_id    = -1;
         int64_t  page_idx  = -1;
         int      pin_count = 0;
@@ -78,13 +81,12 @@ struct BufferPool {
             throw std::invalid_argument("BufferPool: num_frames must be positive");
         frames_.resize(static_cast<size_t>(num_frames));
         for (auto& f : frames_)
-            f.data = new uint8_t[BP_PAGE_BYTES];
+            f.data = std::unique_ptr<uint8_t[]>(new uint8_t[BP_PAGE_BYTES]);
         page_map_.reserve(static_cast<size_t>(num_frames) * 2);
     }
 
     ~BufferPool() {
-        for (auto& f : frames_) delete[] f.data;
-        for (auto& c : cols_)   if (c.fd >= 0) ::close(c.fd);
+        for (auto& c : cols_) if (c.fd >= 0) ::close(c.fd);
     }
 
     // Open a column file and return its column-id.
@@ -123,7 +125,7 @@ struct BufferPool {
                 load_cv_.wait(lk, [&] { return !f.loading; });
             }
             if (bytes_out) *bytes_out = page_bytes_locked(col_id, page_idx);
-            return f.data;
+            return f.data.get();
         }
 
         int victim = evict_locked();
@@ -144,7 +146,7 @@ struct BufferPool {
         lk.unlock();
         try {
             PROFILE_SCOPE("buffer_pool_read_page");
-            read_exact_unlocked(cols_[col_id].fd, f.data, bread, off, col_id);
+            read_exact_unlocked(cols_[col_id].fd, f.data.get(), bread, off, col_id);
         } catch (...) {
             lk.lock();
             page_map_.erase(key);
@@ -163,7 +165,7 @@ struct BufferPool {
         lk.unlock();
         load_cv_.notify_all();
         if (bytes_out) *bytes_out = bread;
-        return f.data;
+        return f.data.get();
     }
 
     void unpin_page(int col_id, int64_t page_idx) {
@@ -216,7 +218,7 @@ struct BufferPool {
     //
     // Always advises MADV_HUGEPAGE (THP must be "madvise" or "always" on the
     // host to take effect). access_advice is passed to madvise to hint the
-    // access pattern — default is MADV_SEQUENTIAL; pass MADV_RANDOM for
+    // access pattern - default is MADV_SEQUENTIAL; pass MADV_RANDOM for
     // sparse/random touches to disable kernel read-ahead.
     //
     // Process-wide RAM is bounded by RLIMIT_AS (set by the parent runner):
@@ -224,7 +226,7 @@ struct BufferPool {
     // past the limit fails with ENOMEM, surfaced here as a runtime_error
     // naming the column and size for attribution.
     //
-    // Note: mmap'd regions live outside the frame pool — they are NOT released
+    // Note: mmap'd regions live outside the frame pool - they are NOT released
     // by clear() and do not count against num_frames. Caller owns the lifetime.
     void* mmap_col(int col_id, int access_advice = MADV_SEQUENTIAL) const {
         if (col_id < 0 || col_id >= static_cast<int>(cols_.size()))
@@ -321,6 +323,6 @@ private:
             }
             clock_hand_ = (clock_hand_ + 1) % n;
         }
-        throw std::runtime_error("BufferPool: all frames pinned — increase pool size");
+        throw std::runtime_error("BufferPool: all frames pinned - increase pool size");
     }
 };

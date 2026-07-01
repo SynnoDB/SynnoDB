@@ -64,8 +64,11 @@ class RunConfig:
     optimize_sample_plan_source: str | None = (
         None  # "umbra" or "duckdb" - determines where the initial sample plans are sourced from for the optimization conversation; this only affects the first optimization stage and does not impact the overall conversation structure
     )
-    max_num_threads: int | None = (
-        None  # only relevant for the multi-threading optimization conversation; determines how many threads to use for the optimized implementation
+    threads: int | None = (
+        None  # target degree of parallelism (the DuckDB config={'threads': N}); None = all usable cores. Single source of truth for storage planning, the run tools, and the served engine.
+    )
+    max_turns: int | None = (
+        None  # default per-stage LLM turn budget; None = each conversation's own default (typically 225)
     )
     api_base: str | None = (
         None  # API base URL for local model endpoints (e.g. http://dgx02:13505/v1)
@@ -125,7 +128,8 @@ def add_common_args(
     include_sdk: bool = False,
     include_optimize_sample_plan_source: bool = False,
     include_use_supervision_agent: bool = False,
-    include_max_num_threads: bool = False,
+    include_threads: bool = False,
+    include_max_turns: bool = False,
     include_api_base: bool = False,
     include_glm_thinking: bool = False,
     include_model_extra_body: bool = False,
@@ -397,12 +401,25 @@ def add_common_args(
             help="Whether to use a supervision agent to guide the implementation agent. This became necessary after openai introduced gpt5.4 - then the agents suddenly all ask for user confirmation. The supervision agent will provide feedback to the implementation agent and only ask for user confirmation for critical decisions.",
         )
 
-    if include_max_num_threads:
+    if include_threads:
         parser.add_argument(
-            "--max_num_threads",
+            "--threads",
             type=int,
             default=None,
-            help="Only relevant for the multi-threading optimization conversation mode: determines how many threads to use for the optimized implementation.",
+            help="Target degree of parallelism the generated engine is designed, validated, "
+            "and served at - the DuckDB config={'threads': N}. Flows into the storage plan, "
+            "the base-impl prompt, the run tools, and the published engine. Default: all "
+            "usable cores of this machine.",
+        )
+
+    if include_max_turns:
+        parser.add_argument(
+            "--max_turns",
+            type=int,
+            default=None,
+            help="Default per-stage LLM turn budget, for every stage that does not set "
+            "its own explicit override. Flows into the storage plan and base-impl "
+            "conversations. Default: each conversation's own default (typically 225).",
         )
 
     if include_api_base:

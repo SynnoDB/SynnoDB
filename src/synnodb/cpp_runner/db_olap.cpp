@@ -83,7 +83,14 @@ void usecase_run_child(int read_fd, int done_fd) {
         // The stage is kept in both modes so that the builder always receives a
         // populated ParquetTables* with the correct file paths, without needing
         // to know the parquet directory itself.
-        stage<RunPolicy::OnChange>("./build/libloader.so",
+        // restart_child_on_source_change: when libbuilder.so changes, the loader
+        // restarts the builder PROCESS instead of letting it rebuild g_database
+        // in place. An in-place dlclose+rebuild never returns the old dataset's
+        // heap to the OS (glibc arenas), so RSS ratchets one copy per reload (the
+        // 480 GB SF50 incident); a fresh builder process reclaims it on _exit.
+        // The loader keeps the Arrow input tables resident and re-hands them to
+        // the new builder via the COW fork, so no re-ingest from parquet happens.
+        restart_child_on_source_change(stage<RunPolicy::OnChange>("./build/libloader.so",
             [](Plugin& plugin) {
                 auto api = plugin.get<LoaderApi>();
                 std::cerr << "loader start\n";
@@ -100,7 +107,7 @@ void usecase_run_child(int read_fd, int done_fd) {
                     api.destroy(olap_state.parquet_tables);
                     olap_state.parquet_tables = nullptr;
                 }
-            }),
+            })),
         // ── Builder stage ────────────────────────────────────────────────────
         // Behaviour differs by storage mode:
         //

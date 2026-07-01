@@ -202,6 +202,7 @@ class QueryValidator:
         skip_validate: bool = False,
         recompile_if_necessary_callback: Callable
         | None = None,  # will internally check if recompilation is necessary (i.e. if compile result was from cache) and call the callback if it is necessary
+        force_live: bool = False,  # bypass the validation cache: never replay a cached verdict (nor restore its snapshot), always execute. The publish gate uses this so a stale cached success cannot bless a since-broken build.
     ) -> ExecValidateResult:
         with custom_span(
             f"exec_and_validate ({query_batch.exec_settings}, trace_mode={trace_mode}, {'no-validate' if skip_validate else ''})",
@@ -216,6 +217,7 @@ class QueryValidator:
                 other_config=other_config,
                 stop_on_first_error=True,
                 compile_key_hash=compile_key_hash,
+                force_live=force_live,
             )
 
             if result is not None:
@@ -386,6 +388,7 @@ class QueryValidator:
         stop_on_first_error: bool,
         compile_key_hash: str,
         query_batch: QueryBatch,
+        force_live: bool = False,
     ) -> tuple[ExecValidateResult | None, Optional[Path], str | None, dict | None]:
         if self.git_snapshotter is None:
             logger.warning(
@@ -408,6 +411,14 @@ class QueryValidator:
             return None, None, hash, hash_payload
 
         cache_path = _cache_path_for_hash(self.validate_cache_dir, hash)
+
+        if force_live:
+            # Cache bypass: do not replay a cached verdict and - critically - do not restore that
+            # entry's snapshot over the current build (that restore is exactly what would let a
+            # stale success bless a since-broken engine). Still return cache_path so the fresh
+            # live result refreshes the cache for this snapshot.
+            return None, cache_path, hash, hash_payload
+
         if not cache_path.exists():
             return None, cache_path, hash, hash_payload
 

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -35,12 +36,12 @@ static int64_t get_buffer_pool_frames() {
 Database* build(ParquetTables* tables) {
     // TODO: Implement SSD-backed column serialization in three steps:
     //
-    // Step 1 — Choose a frame budget and create the shared BufferPool.
+    // Step 1 - Choose a frame budget and create the shared BufferPool.
     //   get_buffer_pool_frames() reads BUFFER_POOL_MB (the frame-pool share of
     //   the total RAM budget, already pre-split by the parent runner) and
     //   converts it to a frame count. Defaults to 1 GiB with >= 64 frames.
     //
-    // Step 2 — For each needed column in each table path in `tables`:
+    // Step 2 - For each needed column in each table path in `tables`:
     //   a) Open the Parquet file with ParquetFileScanner and read only the
     //      needed column(s), one row group at a time. Do NOT materialize all
     //      tables in RAM.
@@ -55,7 +56,7 @@ Database* build(ParquetTables* tables) {
     //   c) Register the file with the pool and store the handle with
     //      reg_int32(), reg_int64(), reg_fixed_width<T>(), or reg_string().
     //
-    // Step 3 — Release each Arrow row-group/table batch before moving to the
+    // Step 3 - Release each Arrow row-group/table batch before moving to the
     //   next one, then return the populated Database*.
     //
     // Note: build() runs when the hotpatch builder stage reruns. The framework
@@ -65,16 +66,19 @@ Database* build(ParquetTables* tables) {
     const std::string storage_dir = get_storage_dir();
     std::filesystem::create_directories(storage_dir);
 
-    auto* db = new Database{};
-    db->pool = new BufferPool(get_buffer_pool_frames());
+    // Own the partial dataset while it is being built: if any step below throws (a large build
+    // running out of memory is the expected case), unwinding destroys db, which frees the pool
+    // and every column handle. Ownership is handed to the caller only once build() succeeds.
+    auto db = std::make_unique<Database>();
+    db->pool = std::make_unique<BufferPool>(get_buffer_pool_frames());
 
-    // TODO: serialize columns and populate db handles here
+    // TODO: serialize columns and populate db handles here, e.g.
+    //   db->l_orderkey = reg_int32(db->pool.get(), storage_dir + "lineitem.l_orderkey.bin", n);
 
-    return db;
+    return db.release();
 }
 
 void destroy_database(Database* db) {
-    if (!db) return;
-    delete db->pool;
+    // ~Database frees the BufferPool and every column handle it owns.
     delete db;
 }

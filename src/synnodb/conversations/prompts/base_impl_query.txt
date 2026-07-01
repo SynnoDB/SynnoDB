@@ -11,6 +11,27 @@ Limit file inspection to: `${builder_path}`, `${query_impl_path}`, and at most 3
 
 Focus on correctness first! The implementation can be optimized later.
 
+${parallelism_note}
+
+Parallel-ready execution structure: the in-memory workspace already provides the shared query pool
+through `query_pool.hpp` / `thread_pool.hpp` (`get_query_pool()`, `parallel_for`, and
+`parallel_reduce<T>`). Non-parallel base validation runs with CORE_IDS=1, so these primitives take
+their serial fast path and should be byte-identical to a plain loop; later MT stages can scale the
+same code by raising the thread count. Write the base implementation so changing CORE_IDS alone
+keeps the query correct - no separate ST/MT code path should be needed. For the dominant scan/aggregation in this query, prefer
+`parallel_reduce<T>(get_query_pool(), n_morsels_or_rows, identity, fold, combine)` now instead of
+writing a serial loop you intend to parallelize later. Keep the shape workload-agnostic:
+- partition by logical row ranges or morsels of the dominant input table;
+- fold each slice into private per-thread/per-slice state only - no shared hot-loop map, output
+  vector, counter, or mutex-protected accumulator;
+- build shared lookup/hash structures before the parallel region and treat them as read-only inside;
+- merge partials deterministically after the region. For aggregates, use associative/commutative
+  integer or exact fixed-point merges (`+`, min, max, bit-or, element-wise bucket add). For ordered
+  projections, merge earlier logical slices before later slices, then apply SQL ORDER BY/LIMIT;
+- do not nest `parallel_for` / `parallel_reduce`, and do not reduce DECIMAL/INT aggregates through
+  floating point. If a query genuinely cannot benefit from the pool, keep the accumulator shape
+  private-and-mergeable so it can be parallelized safely later.
+
 Output contract (CRITICAL for exactness): run_q${query_id} returns std::shared_ptr<arrow::Table>
 built with cpp_helpers/column_egress.hpp (`using namespace synnodb::egress;`). Each output column
 must reproduce DuckDB's type AND value exactly:

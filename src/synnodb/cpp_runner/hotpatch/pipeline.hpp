@@ -5,8 +5,10 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <iostream>
 #include <poll.h>
 #include <signal.h>
@@ -240,6 +242,20 @@ struct DoneToken {
 // term_signal field (no signal was actually raised). 70 == EX_SOFTWARE.
 inline constexpr int kStageThrewExitCode = 70;
 
+// Sentinel exit code written to the done pipe when a stage fails to START its
+// downstream child (fork/pipe failure -> invalid ChildHandle). Distinct from
+// kStageThrewExitCode so run_parent can report "failed to start child" rather
+// than "threw a C++ exception"; it carries no trace payload either, so it must be
+// in read_done_and_trace's early-return set. 71 == EX_OSERR ("cannot fork").
+inline constexpr int kChildStartFailedExitCode = 71;
+
+// Sentinel exit code for a freshly forked stage child that cannot safely arm its parent-death
+// signal: either prctl(PR_SET_PDEATHSIG) failed, or the intended parent already exited in the
+// fork->arm window (getppid() no longer matches it), so running on would leave an unprotected
+// orphan. The child _exit()s with this rather than continuing. Kept distinct from the sentinels
+// above and from db_launch's 81-85. No done token is written (the subtree is collapsing anyway).
+inline constexpr int kParentDeathSetupFailedExitCode = 72;
+
 enum class RunPolicy {
     OnChange,
     Always,
@@ -297,7 +313,37 @@ struct ChildHandle {
     pid_t pid = -1;
     int write_fd = -1;
     int pid_fd = -1;
+
+    // A handle is valid only once a child was actually started. start_stage_child
+    // returns a default (pid == -1) handle when fork()/pipe() fails, so callers
+    // must check this before treating the child as live.
+    bool valid() const { return pid > 0; }
 };
+
+// Re-arm PR_SET_PDEATHSIG in a freshly forked child and close the fork->arm race.
+//
+// fork(2) clears PR_SET_PDEATHSIG, so every internal stage child must re-arm it to be SIGKILL'd
+// when its immediate parent dies. But there is a window between fork() and this prctl() in which
+// the parent could already have exited; the death signal we arm then references a parent that is
+// gone, and the child would run orphaned forever. Closing it needs the *intended* parent pid,
+// captured by the caller with getpid() BEFORE fork() (after fork, getppid() returns the reaper if
+// the parent already died, so it cannot be trusted as the baseline). If prctl fails, or getppid()
+// no longer matches the intended parent, the child _exit()s rather than run unprotected. This is
+// the same captured-pid race check db_launch performs for the top-level ./db.
+inline void rearm_pdeathsig_or_exit(pid_t intended_parent) {
+    // This runs in a freshly forked child, so prefer write/dprintf to STDERR over stdio
+    // (std::cerr / perror) - the latter touch locks/buffers that are unsafe in a post-fork child.
+    if (::prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
+        dprintf(STDERR_FILENO, "stage child: prctl(PR_SET_PDEATHSIG): %s\n", std::strerror(errno));
+        _exit(kParentDeathSetupFailedExitCode);
+    }
+    if (::getppid() != intended_parent) {
+        dprintf(STDERR_FILENO,
+                "stage child: parent %ld exited before pdeathsig was armed; not running orphaned\n",
+                static_cast<long>(intended_parent));
+        _exit(kParentDeathSetupFailedExitCode);
+    }
+}
 
 template <class T>
 struct compute_traits;
@@ -389,6 +435,10 @@ struct StageDef {
     // Called with the old Plugin& before dlclose/dlopen when a reload is triggered.
     // Use to destroy state that was allocated via the old library before it is unmapped.
     Teardown teardown;
+    // When true, this stage restarts its downstream child PROCESS whenever the
+    // child's plugin source build-id changes, instead of letting the child
+    // reload its plugin in place. Set via restart_child_on_source_change().
+    bool restart_child_on_change = false;
 };
 
 template <RunPolicy P, class Compute>
@@ -407,7 +457,7 @@ static StageDef<P, detail::compute_input_t<Compute>, Compute, Teardown> make_sta
 }
 
 static void stop_child(ChildHandle& child) {
-    if (child.pid > 0) {
+    if (child.valid()) {
         try {
             ipc::write_control_message(
                 child.write_fd,
@@ -416,6 +466,113 @@ static void stop_child(ChildHandle& child) {
         }
         close(child.write_fd);
         waitpid(child.pid, nullptr, 0);
+    }
+    if (child.pid_fd >= 0) {
+        close(child.pid_fd);
+        child.pid_fd = -1;
+    }
+    child.pid = -1;
+    child.write_fd = -1;
+}
+
+// Grace period for a cooperative child TERMINATE before the parent force-kills
+// it during a restart-on-change (see bounded_stop_child). The child only has to
+// stop its own child and _exit(0), so this is a generous safety net, not a
+// normal-path latency.
+inline constexpr int kRestartChildTimeoutMs = 5000;
+
+static long monotonic_ms() {
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+// Non-reaping liveness probe: WNOWAIT leaves the child in a waitable state so
+// the single reap in bounded_stop_child still succeeds. Returns true once the
+// child has exited (is reapable).
+static bool child_has_exited(pid_t pid) {
+    siginfo_t si{};
+    si.si_pid = 0;
+    if (waitid(P_PID, static_cast<id_t>(pid), &si, WEXITED | WNOHANG | WNOWAIT) != 0) {
+        return false;
+    }
+    return si.si_pid != 0;
+}
+
+// Wait up to timeout_ms for the child to exit, without reaping it. Prefers the
+// pidfd (readable exactly when the process dies); falls back to polling the
+// non-reaping liveness check when no pidfd is available.
+static bool wait_for_child_exit(const ChildHandle& child, int timeout_ms) {
+    const long deadline = monotonic_ms() + timeout_ms;
+    if (child.pid_fd >= 0) {
+        for (;;) {
+            long remaining = deadline - monotonic_ms();
+            if (remaining <= 0)
+                return child_has_exited(child.pid);
+            struct pollfd pfd{};
+            pfd.fd = child.pid_fd;
+            pfd.events = POLLIN;
+            int rc = poll(&pfd, 1, static_cast<int>(remaining));
+            if (rc > 0)
+                return true;
+            if (rc == 0)
+                return child_has_exited(child.pid);
+            if (errno != EINTR)
+                return child_has_exited(child.pid);
+        }
+    }
+    for (;;) {
+        if (child_has_exited(child.pid))
+            return true;
+        if (monotonic_ms() >= deadline)
+            return false;
+        struct timespec nap{0, 2 * 1000 * 1000}; // 2 ms
+        nanosleep(&nap, nullptr);
+    }
+}
+
+static int pidfd_send_kill(int pid_fd) {
+#ifdef SYS_pidfd_send_signal
+    return static_cast<int>(
+        syscall(SYS_pidfd_send_signal, pid_fd, SIGKILL, nullptr, 0));
+#else
+    (void)pid_fd;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+// Force-kill the child PROCESS specifically - never its process group. Internal
+// stages share the ./db process group (only the top-level process setsid's), so
+// a killpg would also take down the parent stage we are keeping alive. The child
+// is still unreaped here, so kill(pid) cannot race a recycled PID.
+static void force_kill_child(const ChildHandle& child) {
+    if (child.pid_fd < 0 || pidfd_send_kill(child.pid_fd) != 0) {
+        kill(child.pid, SIGKILL);
+    }
+}
+
+// Bounded, brutal teardown for the restart-on-change path. Send the cooperative
+// TERMINATE - the child _exit(0)s WITHOUT running its stage teardown, so no
+// destroy_database walk over a 100+ GB heap - then wait a grace period and
+// SIGKILL the child PID if it overran. The point is OS reclamation on _exit, so
+// a restart must never be routed through the in-place reload branch.
+static void bounded_stop_child(ChildHandle& child, int timeout_ms) {
+    if (child.valid()) {
+        try {
+            ipc::write_control_message(
+                child.write_fd,
+                ipc::ControlMessage{.action = Action::TERMINATE});
+        } catch (const std::exception&) {
+        }
+        close(child.write_fd);
+        child.write_fd = -1;
+        if (!wait_for_child_exit(child, timeout_ms)) {
+            force_kill_child(child);
+        }
+        // Reap; retry across EINTR so an interrupted reap cannot leak a zombie.
+        while (waitpid(child.pid, nullptr, 0) < 0 && errno == EINTR) {
+        }
     }
     if (child.pid_fd >= 0) {
         close(child.pid_fd);
@@ -452,7 +609,7 @@ static void write_done(int done_fd, StatusInfo info) {
 }
 
 static bool reap_dead_child(ChildHandle& child, int done_fd) {
-    if (child.pid <= 0)
+    if (!child.valid())
         return false;
     int status = 0;
     pid_t r = waitpid(child.pid, &status, WNOHANG);
@@ -466,7 +623,7 @@ static bool reap_dead_child(ChildHandle& child, int done_fd) {
 // Propagate the RunBatch (including query_lines) to the child stage so every
 // stage in the chain processes exactly the same batch as the one requested.
 static bool notify_child_run(ChildHandle& child, int done_fd, const RunBatch& batch) {
-    if (child.pid <= 0)
+    if (!child.valid())
         return false;
     try {
         ipc::write_control_message(
@@ -584,11 +741,24 @@ static auto stage(const char* so_path, Compute compute, Teardown teardown) {
     return detail::make_stage<P>(so_path, compute, teardown);
 }
 
+// Opt a stage into restarting its downstream child PROCESS whenever the child's
+// plugin source build-id changes, instead of letting the child reload its plugin
+// in place. Use for a stage whose child holds a large heap that an in-place
+// rebuild would ratchet (the builder): only a fresh process returns that heap to
+// the OS. No effect on a terminal stage, which has no child.
+template <class StageT>
+static StageT restart_child_on_source_change(StageT stage_def) {
+    stage_def.restart_child_on_change = true;
+    return stage_def;
+}
+
 template <RunPolicy P, bool Done, class Input, class Compute, class Teardown, class NextStart>
 static void stage_loop_impl(
     int read_fd,
     int done_fd,
     const char* so_path,
+    const char* next_so_path,
+    bool restart_child_on_change,
     Input input,
     Compute compute,
     Teardown teardown,
@@ -604,6 +774,9 @@ static void stage_loop_impl(
     bool has_run = false;
     detail::ChildHandle child;
     bool child_active = false;
+    // Build-id this stage last forked its child with, for restart-on-change.
+    // Unused for a terminal stage (no child) and when the policy is off.
+    [[maybe_unused]] std::string last_child_build_id;
     int sigfd = -1;
     if constexpr (!std::is_same_v<NextStart, std::nullptr_t>) {
         sigfd = detail::setup_sigchld_fd();
@@ -614,6 +787,23 @@ static void stage_loop_impl(
 
     auto do_run = [&](const RunBatch& batch) {
         detail::RunEnvGuard run_env_guard(batch);
+        // Restart-on-source-change: replace the child PROCESS when its plugin
+        // source build-id changed, rather than letting the child reload in
+        // place. Only a fresh process returns the child's heap to the OS - an
+        // in-place dlclose+rebuild ratchets RSS (the 480 GB SF50 incident). The
+        // restart goes through TERMINATE (the child _exit(0)s with no teardown),
+        // never the reload branch that would walk and free the whole dataset.
+        if constexpr (!std::is_same_v<NextStart, std::nullptr_t>) {
+            if (restart_child_on_change && child_active && next_so_path != nullptr) {
+                std::string child_id = Plugin::file_build_id_for(next_so_path);
+                // Empty id => unreadable .so; skip rather than thrash, matching
+                // Plugin::needs_reload which also no-ops on an empty id.
+                if (!child_id.empty() && child_id != last_child_build_id) {
+                    detail::bounded_stop_child(child, detail::kRestartChildTimeoutMs);
+                    child_active = false;
+                }
+            }
+        }
         bool reload = plugin.needs_reload() || P == RunPolicy::AlwaysReload;
         bool should_run = reload || P == RunPolicy::Always || !has_run;
         if (reload) {
@@ -675,12 +865,46 @@ static void stage_loop_impl(
             }
             has_run = true;
             if constexpr (!std::is_same_v<NextStart, std::nullptr_t>) {
+                // Record the child's build-id BEFORE forking, so the recorded id
+                // is never newer than the one the child actually loads: an older
+                // record at worst forces a redundant restart next RUN, whereas a
+                // newer one could make the next RUN skip a real restart and reload
+                // in place (the ratchet this avoids).
+                if (restart_child_on_change && next_so_path != nullptr)
+                    last_child_build_id = Plugin::file_build_id_for(next_so_path);
                 child = next_start(result, read_fd);
+                if (!child.valid()) {
+                    // The child stage failed to start (fork/pipe failure ->
+                    // invalid handle). Report a structured failure on the done
+                    // pipe so run_parent unblocks instead of waiting forever for a
+                    // stage that will never run. No fds leak: start_stage_child
+                    // closes its pipe ends on failure, and the invalid handle owns
+                    // none.
+                    std::cerr << so_path << " failed to start child stage\n";
+                    detail::write_done(done_fd,
+                                       detail::StatusInfo{kChildStartFailedExitCode, 0});
+                    return;
+                }
                 child_active = true;
             }
         } else if constexpr (!std::is_same_v<NextStart, std::nullptr_t>) {
             if (has_run && !child_active) {
+                // Record before forking; see the note at the first fork site.
+                if (restart_child_on_change && next_so_path != nullptr)
+                    last_child_build_id = Plugin::file_build_id_for(next_so_path);
                 child = next_start(result, read_fd);
+                if (!child.valid()) {
+                    // The child stage failed to start (fork/pipe failure ->
+                    // invalid handle). Report a structured failure on the done
+                    // pipe so run_parent unblocks instead of waiting forever for a
+                    // stage that will never run. No fds leak: start_stage_child
+                    // closes its pipe ends on failure, and the invalid handle owns
+                    // none.
+                    std::cerr << so_path << " failed to start child stage\n";
+                    detail::write_done(done_fd,
+                                       detail::StatusInfo{kChildStartFailedExitCode, 0});
+                    return;
+                }
                 child_active = true;
             }
         }
@@ -818,6 +1042,8 @@ static void stage_loop_impl(
 template <RunPolicy P, class Input, class Compute, class Teardown, class NextStart>
 static detail::ChildHandle start_stage_child(
     const char* so_path,
+    const char* next_so_path,
+    bool restart_child_on_change,
     Input input,
     Compute compute,
     Teardown teardown,
@@ -829,13 +1055,16 @@ static detail::ChildHandle start_stage_child(
         perror("pipe");
         return {};
     }
+    // Captured before fork so the child can detect a parent that died in the fork->arm window.
+    pid_t intended_parent = getpid();
     pid_t pid = fork();
     if (pid == 0) {
         // Tie this stage child's lifetime to its parent stage process. If the
         // parent dies (e.g. the C++ run_parent terminates because Python was
         // SIGKILL'd), the kernel sends SIGKILL here so we don't leak an
-        // orphaned process spinning on a hung-up pipe.
-        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        // orphaned process spinning on a hung-up pipe. Race-checked against the
+        // captured parent pid so a parent that already exited is not missed.
+        detail::rearm_pdeathsig_or_exit(intended_parent);
         close(pipe_fd[1]);
         if (close_fd >= 0)
             close(close_fd);
@@ -843,6 +1072,8 @@ static detail::ChildHandle start_stage_child(
             pipe_fd[0],
             done_fd,
             so_path,
+            next_so_path,
+            restart_child_on_change,
             input,
             compute,
             teardown,
@@ -867,6 +1098,16 @@ struct Pipeline {
     Stage stage_def;
     Next next;
 
+    // so_path of the downstream stage's plugin, or nullptr for a terminal stage.
+    // Used by restart-on-change to read the child's build-id without loading it.
+    const char* next_so_path() const {
+        if constexpr (std::is_same_v<Next, std::nullptr_t>) {
+            return nullptr;
+        } else {
+            return next.stage_def.so_path;
+        }
+    }
+
     template <bool PropagateDone>
     auto make_next_start(int done_fd) {
         if constexpr (std::is_same_v<Next, std::nullptr_t>) {
@@ -890,6 +1131,8 @@ struct Pipeline {
             read_fd,
             done_fd,
             stage_def.so_path,
+            next_so_path(),
+            stage_def.restart_child_on_change,
             input,
             stage_def.compute,
             stage_def.teardown,
@@ -905,10 +1148,11 @@ struct Pipeline {
                 perror("pipe");
                 return {};
             }
+            pid_t intended_parent = getpid();  // captured before fork for the race check
             pid_t pid = fork();
             if (pid == 0) {
-                // See start_stage_child: same rationale for PR_SET_PDEATHSIG.
-                prctl(PR_SET_PDEATHSIG, SIGKILL);
+                // See start_stage_child: same rationale, same captured-pid race check.
+                detail::rearm_pdeathsig_or_exit(intended_parent);
                 close(pipe_fd[1]);
                 if (close_fd >= 0)
                     close(close_fd);
@@ -916,6 +1160,8 @@ struct Pipeline {
                     pipe_fd[0],
                     done_fd,
                     stage_def.so_path,
+                    next_so_path(),
+                    stage_def.restart_child_on_change,
                     input,
                     stage_def.compute,
                     stage_def.teardown,
@@ -937,6 +1183,8 @@ struct Pipeline {
             auto next_start = make_next_start<PropagateDone>(done_fd);
             return start_stage_child<Stage::policy>(
                 stage_def.so_path,
+                next_so_path(),
+                stage_def.restart_child_on_change,
                 input,
                 stage_def.compute,
                 stage_def.teardown,

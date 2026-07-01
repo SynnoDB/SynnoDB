@@ -11,6 +11,8 @@ Important:
 - the engine builds its in-memory columns from the Arrow inputs via typed, per-column helpers (decimals/money/quantity -> exact fixed-point integers value*10^scale; dates -> integer days; strings -> std::string; integers and floats -> their native types). Frame your layout as an organization or transformation OF these typed columns - partitioning, ordering, lossless encodings (RLE / dictionary / bit-packing), pre-aggregates - rather than raw Arrow-buffer or byte-level manipulation.
 - the engine must reproduce the reference (DuckDB) results bit-for-bit. Every encoding you propose must therefore be exactly and losslessly reconstructable: prefer exact fixed-point over floating point, and do not use lossy or approximate compression for any value that can appear in a query result.
 
+${parallelism_note}
+
 The queries are listed in the file: `${queries_path}`.
 The schema is:
 ${schema}

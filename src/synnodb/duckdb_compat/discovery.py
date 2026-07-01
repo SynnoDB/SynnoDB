@@ -107,7 +107,26 @@ def _resolve_parquet_dir(
     return p
 
 
-def _build_engine(manifest: EngineManifest, engine_dir: Path) -> Any:
+def _engine_extra_env(manifest: EngineManifest, threads_override: Optional[int]) -> dict:
+    """The env an engine subprocess runs under, fixing its thread count to the parallelism it
+    was built/validated for (``manifest.threads``), or a connect-time override
+    (``config={'threads': N}``). Resolved against this machine through the same helper the
+    factory uses, so serving runs the engine at the count it was validated at. Empty when
+    neither is known (older engines): the engine keeps its own default thread count."""
+    threads = threads_override if threads_override is not None else manifest.threads
+    if threads is None:
+        return {}
+    from synnodb.utils.core_utils import core_ids_to_env, get_cores_for_current_machine
+
+    _, core_ids = get_cores_for_current_machine(
+        leave_core_0_out=True, allow_hyperthreading=True, ncores_to_use=threads
+    )
+    return {"CORE_IDS": core_ids_to_env(core_ids)}
+
+
+def _build_engine(
+    manifest: EngineManifest, engine_dir: Path, *, threads_override: Optional[int] = None
+) -> Any:
     """Construct a ``ProcessEngine`` over the engine's snapshot (the parquet/standalone plane).
     Kept as the construction seam so a test can substitute an in-process engine.
     ``synnodb.cpp_runner`` is imported lazily inside the engine, so discovery stays light."""
@@ -116,7 +135,12 @@ def _build_engine(manifest: EngineManifest, engine_dir: Path) -> Any:
     parquet_dir = _resolve_parquet_dir(manifest, engine_dir, require_exists=False)
     if parquet_dir is None:
         raise ValueError(f"manifest for {manifest.engine_id} has no parquet_dir")
-    return ProcessEngine(manifest.engine_id, engine_dir, str(parquet_dir))
+    return ProcessEngine(
+        manifest.engine_id,
+        engine_dir,
+        str(parquet_dir),
+        extra_env=_engine_extra_env(manifest, threads_override),
+    )
 
 
 def _mount_snapshot_views(conn: Any, tables: "list", parquet_dir: Path) -> None:
@@ -171,14 +195,22 @@ def _shm_schema_ok(conn: Any, manifest: EngineManifest) -> bool:
     return True
 
 
-def _bind_engine(conn: Any, manifest: EngineManifest, engine_dir: Path, *, mount: bool) -> Any:
+def _bind_engine(
+    conn: Any,
+    manifest: EngineManifest,
+    engine_dir: Path,
+    *,
+    mount: bool,
+    threads_override: Optional[int] = None,
+) -> Any:
     """Choose and build an engine for *manifest* against *conn*, or return ``None`` when it is
     not servable yet (data not loaded and no snapshot to mount).
 
     Plane selection: serve the connection's own live data over the shm hot-load when the
     engine is shm-capable, its tables are present, and its schema is verified to match the
     engine build (:func:`_shm_schema_ok`); otherwise serve the engine's bundled snapshot via a
-    standalone ``ProcessEngine`` (mounting it as views first when asked).
+    standalone ``ProcessEngine`` (mounting it as views first when asked). Both planes run the
+    engine at *threads_override* / the manifest's recorded thread count (:func:`_engine_extra_env`).
     """
     from ..router.process_engine import ShmHotLoadEngine
 
@@ -186,7 +218,11 @@ def _bind_engine(conn: Any, manifest: EngineManifest, engine_dir: Path, *, mount
     present = _tables_present(conn, tables)
 
     if manifest.shm_capable and set(tables) <= present and _shm_schema_ok(conn, manifest):
-        engine = ShmHotLoadEngine(manifest.engine_id, engine_dir)
+        engine = ShmHotLoadEngine(
+            manifest.engine_id,
+            engine_dir,
+            extra_env=_engine_extra_env(manifest, threads_override),
+        )
         try:
             engine.ingest(_aligned_arrow(conn, tables))
         except EngineResourceError:
@@ -209,12 +245,20 @@ def _bind_engine(conn: Any, manifest: EngineManifest, engine_dir: Path, *, mount
                 _mount_snapshot_views(conn, missing, snapshot)
                 present = _tables_present(conn, tables)
         if set(tables) <= present:
-            engine = _build_engine(manifest, engine_dir)
+            engine = _build_engine(
+                manifest, engine_dir, threads_override=threads_override
+            )
             return engine
     return None
 
 
-def _promote_to_shm(conn: Any, manifest: EngineManifest, engine_dir: Path) -> bool:
+def _promote_to_shm(
+    conn: Any,
+    manifest: EngineManifest,
+    engine_dir: Path,
+    *,
+    threads_override: Optional[int] = None,
+) -> bool:
     """Re-bind an already-registered engine from the parquet/mounted plane to the faster shm
     hot-load, once the connection's live tables are present and verified to match the build.
 
@@ -240,7 +284,11 @@ def _promote_to_shm(conn: Any, manifest: EngineManifest, engine_dir: Path) -> bo
     tables = _engine_tables(manifest)
     if not (set(tables) <= _tables_present(conn, tables) and _shm_schema_ok(conn, manifest)):
         return False
-    engine = ShmHotLoadEngine(manifest.engine_id, engine_dir)
+    engine = ShmHotLoadEngine(
+        manifest.engine_id,
+        engine_dir,
+        extra_env=_engine_extra_env(manifest, threads_override),
+    )
     engine.ingest(_aligned_arrow(conn, tables))
     try:
         register_manifest(conn, manifest, engine, strict=True)  # replaces the package's bindings
@@ -254,7 +302,12 @@ def _promote_to_shm(conn: Any, manifest: EngineManifest, engine_dir: Path) -> bo
 
 
 def discover_engines(
-    conn: Any, engines_dir: Path, registered: Set[str], *, mount: bool = False
+    conn: Any,
+    engines_dir: Path,
+    registered: Set[str],
+    *,
+    mount: bool = False,
+    threads_override: Optional[int] = None,
 ) -> Set[str]:
     """Register engines under *engines_dir* that are not already in *registered*.
 
@@ -288,10 +341,13 @@ def discover_engines(
         # (new content -> new id) be re-discovered, and re-binds the same package only when needed.
         key = f"{child.name}\x1f{manifest.engine_id}"
         if key in registered:
-            _promote_to_shm(conn, manifest, child)  # upgrade to shm if live data is now present
+            # upgrade to shm if live data is now present
+            _promote_to_shm(conn, manifest, child, threads_override=threads_override)
             continue
         try:
-            engine = _bind_engine(conn, manifest, child, mount=mount)
+            engine = _bind_engine(
+                conn, manifest, child, mount=mount, threads_override=threads_override
+            )
             if engine is None:
                 continue  # not servable yet; retry on a later scan
             try:

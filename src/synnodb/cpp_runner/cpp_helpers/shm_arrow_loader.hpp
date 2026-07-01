@@ -2,33 +2,20 @@
 // ============================================================================
 // shm_arrow_loader.hpp — zero-copy Arrow ingestion from a /dev/shm segment.
 //
-// This is the C++ engine-worker side of the Phase-3 shared-memory data plane
-// (the Python side is src/synnodb/router/shm_transport.py + _worker_main.py).
-// The Python parent writes a table as Arrow IPC into a /dev/shm segment; the
-// engine maps it here and gets an arrow::Table whose buffers are ZERO-COPY views
-// into the mapping (Arrow IPC is offset-based / position-independent, so no fixed
-// mmap address is needed — unlike misc/misc/shm_test.cpp).
+// The C++ engine ingest side of the shared-memory data plane (the Python side is
+// router/shm_transport.py and router/process_engine.py::ShmHotLoadEngine). The Python
+// parent writes each table as Arrow IPC into a /dev/shm segment; the engine maps it here
+// and gets an arrow::Table whose buffers are ZERO-COPY views into the mapping (Arrow IPC is
+// offset-based / position-independent, so no fixed mmap address is needed).
 //
-// ---------------------------------------------------------------------------
-// STATUS: written against the documented Arrow C++ APIs (verified present in the
-//   linked libarrow 23.0.1 — see compiler/compiler_factory.py:87 `pkgconfig_libs
-//   = ["arrow","parquet"]`), but NOT YET COMPILED in this repo. It is intentionally
-//   not in any build source list, so it cannot break the existing build.
-//
-// INTEGRATION (3 steps), grounded in the loader path:
-//   1. Add this file's translation unit (or include it) to the loader lib sources
-//      in compiler/compiler_factory_olap.py (alongside loader_api.cpp,
-//      parquet_reader.cpp, loader_utils.cpp), and `#include <arrow/ipc/reader.h>`.
-//   2. In the generated load() — prepare_repo/templates/parquet_reader.cpp:22-29 —
-//      replace each `tables->X = ReadParquetTable(path + "X.parquet");` with
-//      `tables->X = ReadArrowTableFromShm(shm_name_for("X"));` where the shm names
-//      arrive via env (mirroring STORAGE_DIR; see workload_provider_olap.py:160-161).
-//   3. Keep the mapping alive for the table's lifetime (ParquetTables already owns
-//      the arrow::Table, so this is automatic).
-//
-// VALIDATION REQUIRED: compile with the engine's toolchain and round-trip a table
-//   written by src/synnodb/router/shm_transport.py::ShmWriter.write_table (Arrow
-//   IPC *file* format) — that Python writer is the tested reference producer.
+// WIRED & VALIDATED: the in-memory loader's generated load() takes the shm branch when
+//   SYNNODB_SHM_INGEST is set — prepare_repo/prepare_workspace_olap.py::_gen_table_reads emits
+//   `if (synnodb::shm_ingest_enabled()) { tables->X = ReadArrowTableFromShm(shm_ingest_path_for("X")); }`
+//   into parquet_reader.cpp, which #includes this header; it is on the compiler include path
+//   (compiler/compiler_factory.py include_dirs) and links libarrow. Round-tripped against the
+//   Python transport by tests/cpp/shm_io_test.cpp (driven from tests/test_cpp_shm.py), and
+//   exercised end to end by tests/test_shm_hot_load.py (a real engine serving Q1 over /dev/shm).
+//   ParquetTables owns the arrow::Table, so the mapping stays alive for the table's lifetime.
 // ============================================================================
 
 #include <memory>

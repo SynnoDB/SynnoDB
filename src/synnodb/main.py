@@ -341,18 +341,32 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     run_stats_collector = RunStatsCollector(**collector_args)
 
     # run tool parallelism setup (must be determined before QueryValidator so the
-    # num_threads value is included in the query-cache key). Computed (and logged
-    # to W&B) in run_conv_wrapper; for CHECK_SF it reflects the source run's stage.
+    # num_threads value is included in the query-cache key)
+    #
+    # `threads` is the canonical target degree of parallelism (the DuckDB-style
+    # config={'threads': N}); None means "all usable cores". Resolve it against this
+    # machine ONCE so the storage planner, the base-impl prompt, the MT round, and the
+    # served engine all agree on the same number. The storage/base/optim stages still
+    # VALIDATE serially (CORE_IDS=1, byte-identical) but are TOLD this target so they
+    # design a layout/implementation that partitions cleanly across it.
+    target_threads, target_core_ids = get_cores_for_current_machine(
+        leave_core_0_out=True,
+        allow_hyperthreading=True,
+        ncores_to_use=getattr(args, "threads", None),
+    )
+    assert target_threads >= 1 and len(target_core_ids) == target_threads, (
+        f"could not resolve any usable core for threads={getattr(args, 'threads', None)}"
+    )
+    args.target_threads = target_threads
+
+    # Parallelism need is resolved in run_conv_wrapper (args.needs_parallelism): for
+    # CHECK_SF it reflects the replayed source run's stage, otherwise spec.needs_parallelism.
     if args.needs_parallelism:
         parallelism = True
-        _, core_ids = get_cores_for_current_machine(
-            leave_core_0_out=True,
-            allow_hyperthreading=True,
-            ncores_to_use=args.max_num_threads,  # measure perf improvement with 20 cores
-        )
+        core_ids = target_core_ids
     else:
         parallelism = False
-        _, core_ids = 1, None
+        core_ids = None
 
     # cap result CSVs at this size before snapshotting (used by validator and
     # exposed in the LLM cache key via config_kwargs below for cache stability)
@@ -589,6 +603,8 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     _publish_generated_engine(
         workspace_path, workload_provider, query_list, parquet_dir, workload_spec,
         getattr(args, "wandb_run_id", None),
+        run_tool=run_tool,
+        threads=getattr(args, "target_threads", None),
     )
 
     logger.debug(
@@ -642,20 +658,78 @@ def _resolve_sf_dir(base_parquet_dir, scale_factor):
     return found[0] if found else None
 
 
+def _loader_is_shm_capable(workspace_path) -> bool:
+    """Whether the compiled loader can ingest from /dev/shm. The shm branch
+    (``shm_ingest_enabled()``) is generated only for the in-memory plane (see
+    ``prepare_workspace_olap._gen_table_reads``); probing the emitted loader advertises shm
+    exactly when the binary supports it, with no separate storage-mode flag to keep in sync."""
+    reader = workspace_path / "parquet_reader.cpp"
+    try:
+        return reader.exists() and "shm_ingest_enabled" in reader.read_text()
+    except OSError:
+        return False
+
+
+def _derive_expected_tables(sf_dir, tables):
+    """The manifest's ``expected_tables`` (column name + DuckDB type) for the engine's tables,
+    read from the published parquet the *same way* the serving compatibility gate reads the live
+    schema (``information_schema.columns`` + ``check_compatibility``), so an engine never rejects
+    its own build. Returns ``None`` if any table's parquet is absent, so the caller publishes
+    without the shm plane rather than shipping a half-declared schema (the shm gate refuses an
+    engine whose ``expected_tables`` does not cover every table its loader reads)."""
+    import duckdb
+
+    from synnodb.router.registry import ColumnSpec
+
+    con = duckdb.connect()
+    try:
+        out = {}
+        for t in tables:
+            pq = Path(sf_dir) / f"{t}.parquet"
+            if not pq.exists():
+                return None
+            ident = '"' + t.replace('"', '""') + '"'
+            lit = "'" + str(pq).replace("'", "''") + "'"
+            con.execute(f"CREATE TABLE {ident} AS SELECT * FROM read_parquet({lit})")
+            rows = con.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE lower(table_name) = ? ORDER BY ordinal_position",
+                [t.lower()],
+            ).fetchall()
+            out[t] = tuple(ColumnSpec(n, str(dt)) for n, dt in rows)
+        return out
+    finally:
+        con.close()
+
+
 def _publish_generated_engine(
-    workspace_path, workload_provider, query_list, base_parquet_dir, workload_spec, run_id
+    workspace_path, workload_provider, query_list, base_parquet_dir, workload_spec, run_id,
+    run_tool,
+    threads=None,
 ):
     """Publish the engine produced by this run for the drop-in router to auto-discover.
 
     Best-effort: only base/optimized runs leave a ``db`` binary, an engines directory must be
     configured, and the parquet the engine serves must exist. Any failure is logged and
     swallowed so it never fails a generation run.
+
+    The publish is gated on a cache-bypassed live re-validation of the queries being published:
+    *run_tool* re-compiles and re-runs them with the validation cache disabled, producing a
+    :class:`ValidationReceipt` that publish requires. If that final validation does not pass, the
+    engine is *not* published - this is what stops a since-broken build (e.g. one that OOM-failed
+    to load) from shipping on the strength of an earlier cached success.
+
+    An in-memory engine is published as shm-capable (the zero-copy ``/dev/shm`` hot-load plane)
+    with the ``expected_tables`` the plane requires; the disk-backed parquet snapshot stays as the
+    fallback plane. The shm plane is not exercised by generation (which runs over parquet), so the
+    parquet-only receipt downgrades it to parquet-only at publish time.
     """
     try:
         if not (workspace_path / "db").exists():
             return  # not an engine-producing run (e.g. storage plan)
         from synnodb.duckdb_compat.discovery import resolve_engines_dir
         from synnodb.workloads.engine_publish import publish_from_provider
+        from synnodb.workloads.validation_receipt import PASS
 
         if resolve_engines_dir(None) is None:
             logger.info("publish: no engines dir (SYNNO_ENGINES_DIR / SYNNO_DATA_DIR); skipping")
@@ -665,12 +739,35 @@ def _publish_generated_engine(
         if sf_dir is None:
             logger.info("publish: no parquet under %s; skipping engine publish", base_parquet_dir)
             return
+
+        # Final cache-bypassed live validation. Its receipt is the publish precondition; a failing
+        # verdict means the current build is broken, so we refuse to publish rather than ship it.
+        receipt = run_tool.validate_for_publish(query_list)
+        if receipt.verdict != PASS:
+            logger.warning(
+                "publish: final live validation did not pass (verdict=%s); NOT publishing the "
+                "engine in %s", receipt.verdict, workspace_path,
+            )
+            return
+
+        shm_capable = False
+        expected_tables = None
+        if _loader_is_shm_capable(workspace_path):
+            expected_tables = _derive_expected_tables(sf_dir, list(workload_provider.dataset_tables))
+            shm_capable = expected_tables is not None
+            if not shm_capable:
+                logger.info("publish: loader is shm-capable but a table parquet is missing under "
+                            "%s; publishing the parquet plane only", sf_dir)
         dest = publish_from_provider(
             workspace_path, workload_provider, query_list,
+            receipt=receipt,
             parquet_dir=sf_dir, scale_factor=sf, source_run_id=run_id,
+            shm_capable=shm_capable, expected_tables=expected_tables,
+            threads=threads,
         )
         if dest is not None:
-            logger.info("published bespoke engine for auto-discovery -> %s", dest)
+            logger.info("published bespoke engine for auto-discovery -> %s (shm_capable=%s)",
+                        dest, shm_capable)
     except Exception:
         logger.warning("publish: could not publish the generated engine (continuing)", exc_info=True)
 
@@ -935,6 +1032,8 @@ if __name__ == "__main__":
         include_memory_budget_mb=True,
         include_include_mem_budget_for_in_mem_in_hashes=True,
         include_db_storage=True,
+        include_threads=True,
+        include_max_turns=True,
         include_model_extra_body=True,
     )
     args = parser.parse_args()

@@ -37,9 +37,11 @@ from .registry import ColumnSpec, PlaceholderSpec
 # v2 adds the optional ``parquet_dir`` (the data the engine ingested), so the runtime can
 # bring up the engine with no extra inputs. v3 adds ``shm_capable`` (the binary can ingest
 # its tables zero-copy from /dev/shm Arrow, the hot-load plane). v4 adds ``source_db`` (the
-# database an optimize_database engine was built for). Older manifests still load.
-SCHEMA_VERSION = 4
-_SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4)
+# database an optimize_database engine was built for). v5 adds ``threads`` (the degree of
+# parallelism the engine was built/validated for; the runtime serves it at this thread count).
+# Older manifests still load.
+SCHEMA_VERSION = 5
+_SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
 
 
 def content_engine_id(source_files: Mapping[str, str], *, prefix: str = "eng") -> str:
@@ -100,6 +102,11 @@ class EngineManifest:
     # Used to refuse silently clobbering the engine of a *different* database that happens to share
     # a friendly name (e.g. two ``tpch.db`` files in different directories -> both ``synno-tpch``).
     source_db: Optional[str] = None
+    # The degree of parallelism the engine was generated, validated, and is served at (the
+    # DuckDB ``config={'threads': N}``). The runtime sets the engine's CORE_IDS from this so it
+    # runs at the same thread count it was built for. None = unknown (older engines): the runtime
+    # leaves the thread count to the engine's own default.
+    threads: Optional[int] = None
 
     # ---- serialization --------------------------------------------------
     def to_dict(self) -> dict:
@@ -112,6 +119,7 @@ class EngineManifest:
             "parquet_dir": self.parquet_dir,
             "shm_capable": self.shm_capable,
             "source_db": self.source_db,
+            "threads": self.threads,
             "expected_tables": {
                 table: [[c.name, c.type] for c in cols]
                 for table, cols in self.expected_tables.items()
@@ -136,6 +144,7 @@ class EngineManifest:
             parquet_dir=d.get("parquet_dir"),
             shm_capable=bool(d.get("shm_capable", False)),
             source_db=d.get("source_db"),
+            threads=d.get("threads"),
             expected_tables={
                 table: tuple(ColumnSpec(n, t) for n, t in cols)
                 for table, cols in d.get("expected_tables", {}).items()
@@ -183,6 +192,7 @@ def build_manifest_from_dir(
     parquet_dir: Optional[str] = None,
     shm_capable: bool = False,
     source_db: Optional[str] = None,
+    threads: Optional[int] = None,
     write: bool = True,
 ) -> EngineManifest:
     """Assemble (and optionally write) an :class:`EngineManifest` for a generated engine.
@@ -203,6 +213,7 @@ def build_manifest_from_dir(
         parquet_dir=str(parquet_dir) if parquet_dir is not None else None,
         shm_capable=shm_capable,
         source_db=source_db,
+        threads=threads,
         expected_tables={t: tuple(cols) for t, cols in (expected_tables or {}).items()},
     )
     if write:
@@ -248,6 +259,7 @@ def write_manifest_for_engine(
     expected_tables: Optional[Mapping[str, Sequence[ColumnSpec]]] = None,
     parquet_dir: Optional[str] = None,
     shm_capable: bool = False,
+    threads: Optional[int] = None,
     write: bool = True,
 ) -> EngineManifest:
     """The factory-side writer: build & write ``manifest.json`` for a generated engine.
@@ -279,6 +291,7 @@ def write_manifest_for_engine(
         expected_tables=expected_tables,
         parquet_dir=parquet_dir,
         shm_capable=shm_capable,
+        threads=threads,
         write=write,
     )
 

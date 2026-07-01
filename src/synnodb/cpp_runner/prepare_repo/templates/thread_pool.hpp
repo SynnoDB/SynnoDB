@@ -1,7 +1,9 @@
 #pragma once
 
 // ──────────────────────────────────────────────────────────────────────────────
-// ThreadPool: parallel-for thread pool with CPU affinity support.
+// ThreadPool: parallel-for / deterministic-reduce pool with CPU affinity support.
+//
+// FILE_VERSION: 1
 //
 // Design
 //   • Workers use a two-phase idle strategy:
@@ -14,7 +16,8 @@
 //     workers call yield(). 0 = pure spin within the spin phase.
 //   • idle_spin_limit: total _mm_pause iterations before sleeping on condvar.
 //     Default ~100k ≈ a few hundred μs. Set to 0 for pure spin (dedicated cores).
-//   • parallel_for uses fn+ctx type-erasure — zero heap allocation per call.
+//   • parallel_for uses fn+ctx type-erasure - zero heap allocation per call.
+//   • parallel_for captures worker exceptions and rethrows one on the caller.
 //   • Not re-entrant: do not call parallel_for from within a worker task.
 //   • x86 only (_mm_pause).
 //
@@ -26,11 +29,17 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 #include <atomic>
+#include <algorithm>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <immintrin.h>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "cpu_affinity.hpp"
@@ -57,6 +66,8 @@ struct ThreadPool {
 
     std::mutex              idle_mutex;
     std::condition_variable idle_cv;
+    std::mutex              exception_mutex;
+    std::exception_ptr      first_exception;
 
     // ── Constructors ───────────────────────────────────────────────────────
 
@@ -85,6 +96,10 @@ struct ThreadPool {
     // If core_ids is empty or too short the corresponding worker is unpinned.
     void init(int n, std::vector<int> cores = {})
     {
+        if (!workers.empty()) {
+            throw std::logic_error("ThreadPool::init called more than once");
+        }
+        if (n <= 0) n = 1;
         num_threads = n;
         core_ids    = std::move(cores);
 
@@ -117,7 +132,11 @@ struct ThreadPool {
                     (void)slept;
                     my_gen = generation.load(std::memory_order_acquire);
                     if (shutdown.load(std::memory_order_relaxed)) break;
-                    task_fn(task_ctx, tid, num_threads);
+                    try {
+                        task_fn(task_ctx, tid, num_threads);
+                    } catch (...) {
+                        record_exception(std::current_exception());
+                    }
                     done_count.fetch_add(1, std::memory_order_release);
                 }
             });
@@ -127,8 +146,10 @@ struct ThreadPool {
     // ── parallel_for ───────────────────────────────────────────────────────
     //
     // Calls f(tid, n_threads) on all n_threads threads concurrently, then
-    // blocks until all workers finish.  The callable f must outlive this call
-    // (it is captured by pointer, not copied).
+    // blocks until all workers finish. The callable f must outlive this call
+    // (it is captured by pointer, not copied). If any invocation throws, all
+    // already-dispatched invocations are allowed to finish, then one exception
+    // is rethrown on the caller's thread.
     template <typename F>
     void parallel_for(F&& f) {
         if (num_threads <= 1) { f(0, 1); return; }
@@ -141,11 +162,19 @@ struct ThreadPool {
         };
         task_ctx = static_cast<void*>(&f);
 
+        {
+            std::lock_guard<std::mutex> lk(exception_mutex);
+            first_exception = nullptr;
+        }
         done_count.store(0, std::memory_order_relaxed);
         generation.fetch_add(1, std::memory_order_release); // wakes spinning workers
         idle_cv.notify_all();                                // wakes sleeping workers
 
-        f(0, num_threads); // main thread runs as tid 0
+        try {
+            f(0, num_threads); // main thread runs as tid 0
+        } catch (...) {
+            record_exception(std::current_exception());
+        }
 
         // Wait for all workers.
         const int need = num_threads - 1;
@@ -157,6 +186,19 @@ struct ThreadPool {
                 spins = 0;
             }
         }
+
+        std::exception_ptr err;
+        {
+            std::lock_guard<std::mutex> lk(exception_mutex);
+            err = first_exception;
+        }
+        if (err) std::rethrow_exception(err);
+    }
+
+private:
+    void record_exception(std::exception_ptr err) {
+        std::lock_guard<std::mutex> lk(exception_mutex);
+        if (!first_exception) first_exception = std::move(err);
     }
 };
 
@@ -194,9 +236,51 @@ inline void init_thread_pool(ThreadPool& pool, int spin_yield_after = 0)
 
     pool.spin_yield_after = spin_yield_after;
     int n = (int)cores.size();
+    if (!cores.empty()) {
+        pin_process_to_cpu(cores[0]);  // pin the caller/main query thread as tid 0
+    }
     pool.init(n, std::move(cores));
 }
 
 
 // implemented in query_impl.cpp, shared thread pool for all query functions
 ThreadPool& get_query_pool();
+
+
+// ── parallel_reduce ───────────────────────────────────────────────────────────
+//
+// Deterministic reduction over [0, n). Each thread folds a contiguous slice into
+// a private accumulator copied from identity, then partials are merged in fixed
+// thread order. For scalar/grouped aggregates, fold and combine should be
+// associative and commutative for the result to be independent of thread count.
+// Ordered projection is also valid when each partial represents its contiguous
+// input slice and combine appends earlier slices before later slices. Use integer
+// / exact fixed-point state for SQL aggregates; never use this for floating-point
+// SUM where bitwise reproducibility matters.
+template <typename T, typename FoldFn, typename CombineFn>
+T parallel_reduce(ThreadPool& pool, int64_t n, const T& identity,
+                  FoldFn fold, CombineFn combine) {
+    if (n <= 0) return identity;
+
+    const int nt = pool.num_threads < 1 ? 1 : pool.num_threads;
+    std::vector<T> partials((size_t)nt, identity);
+
+    pool.parallel_for([&](int tid, int n_threads) {
+        const int64_t chunk = (n + n_threads - 1) / n_threads;
+        const int64_t lo = (int64_t)tid * chunk;
+        if (lo >= n) return;
+        const int64_t hi = std::min(lo + chunk, n);
+
+        T local = identity;
+        for (int64_t i = lo; i < hi; ++i) {
+            fold(local, i);
+        }
+        partials[(size_t)tid] = std::move(local);
+    });
+
+    T acc = identity;
+    for (const T& part : partials) {
+        combine(acc, part);
+    }
+    return acc;
+}
