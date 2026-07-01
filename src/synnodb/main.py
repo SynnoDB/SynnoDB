@@ -935,6 +935,7 @@ if __name__ == "__main__":
         include_memory_budget_mb=True,
         include_include_mem_budget_for_in_mem_in_hashes=True,
         include_db_storage=True,
+        include_model_extra_body=True,
     )
     args = parser.parse_args()
     args.write_query_and_args_files = True

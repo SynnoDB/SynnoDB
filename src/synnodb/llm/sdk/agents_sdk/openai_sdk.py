@@ -39,7 +39,7 @@ from synnodb.observability.logging.run_stats_collector import (
     SUPERVISOR_AGENT_NAME,
     RunStatsCollector,
 )
-from synnodb.utils.model_setup import setup_model_config
+from synnodb.utils.model_setup import resolve_model_extra_body, setup_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +145,9 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
                 runtime_tracker=self.runtime_tracker,
                 working_dir=self.workspace_path_absolute,
                 glm_thinking_enabled=getattr(self.args, "glm_thinking", False),
+                model_extra_body=resolve_model_extra_body(
+                    getattr(self.args, "model_extra_body", None)
+                ),
             )
             instructions = [
                 f"You can edit files inside {self.workspace_path} using the apply_patch tool. ",
