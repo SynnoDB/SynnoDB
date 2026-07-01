@@ -441,6 +441,43 @@ class UmbraRunner:
             cur.execute(f"DROP TABLE IF EXISTS {quoted}")
         cur.close()
 
+    def _reset_admin_con(self) -> None:
+        if getattr(self, "_admin_con", None) is not None:
+            try:
+                self._admin_con.close()
+            except Exception:
+                pass
+        self._admin_con = self._create_admin_con()
+        self._admin_con.autocommit = True
+
+    def reconnect_sf(self, scale_factor: float):
+        """Recover the connection for a scale factor after the server drops it.
+
+        Used when Umbra closes a connection unexpectedly (server crash/restart
+        or an OOM-killed query): closes the stale connection, ensures the
+        container is back up (when auto-restart is enabled), refreshes the admin
+        connection, and re-establishes a fresh per-SF connection.
+        """
+        stale = self._conns.pop(scale_factor, None)
+        if stale is not None:
+            try:
+                stale.close()
+            except Exception:
+                pass
+        if self._loaded_sf == scale_factor:
+            self._con = None
+            self._loaded_sf = None
+
+        if self._allow_auto_restarts:
+            self._ensure_container_running(query_mode=True)
+
+        # The admin connection may have died together with the server.
+        self._reset_admin_con()
+
+        self._switch_sf(scale_factor)
+        assert self._con is not None
+        return self._con
+
     def _switch_sf(self, scale_factor: float) -> None:
         if self._loaded_sf == scale_factor:
             # do not switch: already on the right SF

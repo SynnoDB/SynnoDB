@@ -19,13 +19,13 @@ bash demo_and_analysis/ui_template_runner/deploy_code/deploy.sh --transfer --sta
 
 `--transfer` zips the generated code and copies it to `bespoke_demo:~/bespoke_olap/demo_and_analysis/ui_template_runner/output/`.
 
-`--start` kills any existing tmux sessions and starts four named sessions: `umbra`, `bespoke`, `ui`, and `telemetry`. Each session's output is written to `~/bespoke_olap_logs/<datetime>_<service>.log` on the remote. The exact log path is printed at the end.
+`--start` kills any existing tmux sessions and starts four named sessions: `umbra`, `bespoke`, `ui`, and `telemetry`. Each session's output is written to `~/bespoke_olap/webrunner_logs/<datetime>_<service>.log` on the remote. The exact log path is printed at the end.
 
 `deploy.sh` automatically downloads the [DB-IP City Lite](https://db-ip.com/db/lite.php#how-to-use) database (free, no account required) into `output/GeoLite2-City.mmdb` for local IP geolocation in the telemetry dashboard.
 
 To attach to a running session: `ssh bespoke_demo -t tmux attach -t ui`
 
-To tail logs: `ssh bespoke_demo "tail -f ~/bespoke_olap_logs/*_ui.log"`
+To tail logs: `ssh bespoke_demo "tail -f ~/bespoke_olap/webrunner_logs/*_ui.log"`
 
 ## Prerequisites
 
@@ -90,7 +90,7 @@ All services emit structured log lines to stdout. Key prefixes:
 
 | Prefix | Where | What |
 |---|---|---|
-| `TELEMETRY` | `bespoke_service`, `umbra_service`, `run_generated_code_service` | Per-query latency: `run_id=`, `engine=`, `query=`, `time_ms=`, `sf=` |
+| `TELEMETRY` | `bespoke_service`, `umbra_service`, `run_generated_code_service` | Per-query latency: `run_id=`, `engine=`, `time_ms=`, `sf=` (the UI service also adds `query=`) |
 | `SYSSTAT` | `telemetry_service` | Memory and load average every 10 s |
 | `PROCSTAT` | `telemetry_service` | Per-process CPU/mem for each service process |
 
@@ -98,11 +98,11 @@ Quick grep examples:
 
 ```bash
 # All query latencies from a run
-grep TELEMETRY ~/bespoke_olap_logs/<datetime>_*.log
+grep TELEMETRY ~/bespoke_olap/webrunner_logs/<datetime>_*.log
 
 # Bespoke vs DuckDB latencies side by side
-grep 'TELEMETRY engine=bespoke\|TELEMETRY engine=duckdb' ~/bespoke_olap_logs/<datetime>_ui.log
+grep 'TELEMETRY engine=bespoke\|TELEMETRY engine=duckdb' ~/bespoke_olap/webrunner_logs/<datetime>_ui.log
 
 # Memory over time
-grep SYSSTAT ~/bespoke_olap_logs/<datetime>_telemetry.log
+grep SYSSTAT ~/bespoke_olap/webrunner_logs/<datetime>_telemetry.log
 ```
