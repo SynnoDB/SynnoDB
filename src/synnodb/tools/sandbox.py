@@ -216,7 +216,9 @@ def _readonly_ctx(paths: Sequence[Path]) -> contextlib.AbstractContextManager[No
                 try:
                     os.chmod(p, mode)
                 except OSError:
-                    logger.warning("Failed to restore permissions on %s", p, exc_info=True)
+                    logger.warning(
+                        "Failed to restore permissions on %s", p, exc_info=True
+                    )
 
     return _ctx()
 

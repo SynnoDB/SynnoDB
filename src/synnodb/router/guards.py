@@ -8,6 +8,7 @@ fallback always says *why*.
 The guarantee: a guard failure is never an error — it is a fallback. Guards exist to
 keep the bespoke path inside the envelope an engine was built and validated for.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ GuardOutcome = Tuple[bool, str]
 class GuardContext:
     sql: str
     binding: EngineBinding
-    conn: Any                        # SynnoConnection (exposes .duckdb, schema introspection)
+    conn: Any  # SynnoConnection (exposes .duckdb, schema introspection)
     registry: TemplateRegistry
     parameters: Optional[Any] = None  # bound params, if the user passed them
 
@@ -66,7 +67,9 @@ def placeholder_arity_guard(ctx: GuardContext) -> GuardOutcome:
         if actual == expected:
             return True, f"{actual} placeholders"
         return False, f"placeholder arity {actual} != expected {expected}"
-    if ctx.binding.template_sql is not None and has_param_markers(ctx.binding.template_sql):
+    if ctx.binding.template_sql is not None and has_param_markers(
+        ctx.binding.template_sql
+    ):
         return True, "structural bind"
     actual = len(extract_literals(ctx.sql))
     if actual == expected:

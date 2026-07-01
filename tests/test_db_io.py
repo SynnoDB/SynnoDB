@@ -1,5 +1,6 @@
 """Loading a DuckDB file into memory and exporting tables to parquet (the data plumbing
 behind ``optimize_database`` and the bundled parquet snapshot)."""
+
 from __future__ import annotations
 
 import duckdb
@@ -47,7 +48,12 @@ def test_export_tables_to_parquet(tmp_path):
     mem.execute("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (1),(2)")
     out = export_tables_to_parquet(mem, ["t"], tmp_path / "snap")
     assert (out / "t.parquet").exists()
-    assert mem.execute(f"SELECT count(*) FROM read_parquet('{out}/t.parquet')").fetchone()[0] == 2
+    assert (
+        mem.execute(f"SELECT count(*) FROM read_parquet('{out}/t.parquet')").fetchone()[
+            0
+        ]
+        == 2
+    )
 
 
 def test_connect_file_is_a_plain_duckdb_passthrough(tmp_path):

@@ -6,6 +6,7 @@ bug that fails at SF1 was only ever exercised after a six-minute SF50 load.
 These cover the derivation (`_derive_sf_ladder`) directly: target-only input is augmented with
 the smallest available SFs, an explicit ladder is honoured, and a missing small SF warns loudly.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,8 +29,8 @@ def test_target_only_is_augmented_with_smallest_available(tmp_path):
     """Passing just the target SF derives a small-first ladder from on-disk data."""
     _make_sf_tree(tmp_path, [1, 2, 10, 20, 50])
     fast_check, exhaustive, benchmark, ingest = _derive_sf_ladder((50,), tmp_path)
-    assert fast_check == (1, 2)          # two cheapest rungs for fast iteration
-    assert exhaustive == (1, 2, 50)      # small rungs then the target
+    assert fast_check == (1, 2)  # two cheapest rungs for fast iteration
+    assert exhaustive == (1, 2, 50)  # small rungs then the target
     assert benchmark == 50
     assert ingest == (50,)
 
@@ -52,4 +53,6 @@ def test_no_small_sf_warns_and_falls_back(tmp_path, caplog):
     assert fast_check == (50,)
     assert exhaustive == (50,)
     assert benchmark == 50
-    assert any("No scale factor smaller than the target" in r.message for r in caplog.records)
+    assert any(
+        "No scale factor smaller than the target" in r.message for r in caplog.records
+    )

@@ -6,6 +6,7 @@ args_parser) and the run/validate defaults iterate `provider.query_ids`. Before 
 `OLAPWorkloadProvider` always defaulted to the whole benchmark (_get_all_query_ids),
 so a Q1 run scaffolded and validated all 22 queries.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -89,9 +90,7 @@ def test_scaffolding_only_emits_scoped_query_files(tmp_path):
     # exactly the in-scope query files; none of the other 21
     assert "query1.cpp" in files and "query1.hpp" in files
     assert "query2.cpp" not in files and "query22.cpp" not in files
-    emitted = sorted(
-        f for f in files if f[5:6].isdigit() and f.startswith("query")
-    )
+    emitted = sorted(f for f in files if f[5:6].isdigit() and f.startswith("query"))
     assert emitted == ["query1.cpp", "query1.hpp"], emitted
 
     # queries.md (the doc the agent reads) only contains Q1

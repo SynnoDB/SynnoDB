@@ -5,6 +5,7 @@ conservative by default and fully overridable from the environment, so a user ca
 disable or tune routing without touching code. The top-level invariant it serves:
 **with no engines (or ``mode=off``) behavior is byte-identical to DuckDB.**
 """
+
 from __future__ import annotations
 
 import os
@@ -21,8 +22,8 @@ class RouterMode(str, Enum):
     *happy* path.
     """
 
-    OFF = "off"                    # never route; pure DuckDB passthrough
-    SAMPLED = "sampled"            # serve bespoke; cross-check a fraction against DuckDB
+    OFF = "off"  # never route; pure DuckDB passthrough
+    SAMPLED = "sampled"  # serve bespoke; cross-check a fraction against DuckDB
     BESPOKE_ONLY = "bespoke_only"  # tests only: raise instead of falling back
 
     def __str__(self) -> str:  # nicer logs / reprs
@@ -74,14 +75,14 @@ class RouterPolicy:
     # router additionally skips all parsing when nothing is registered (see route()), so an
     # engine-less connection pays no per-query cost. SYNNODB_ROUTER=off disables it entirely.
     mode: RouterMode = RouterMode.SAMPLED
-    enabled: bool = True                       # hard kill switch (env SYNNODB_ROUTER=off)
+    enabled: bool = True  # hard kill switch (env SYNNODB_ROUTER=off)
 
     # Writes are not supported yet: a non-read statement on a SynnoConnection raises rather
     # than running on DuckDB. Flip to False (or SYNNODB_BLOCK_WRITES=off) to pass writes
     # through to DuckDB unaccelerated.
     block_writes: bool = True
 
-    cross_check_rate: float = 0.1              # fraction of routed queries also run on DuckDB
+    cross_check_rate: float = 0.1  # fraction of routed queries also run on DuckDB
     # Burn-in: always cross-check the first N executions of each template, regardless of
     # cross_check_rate, so a freshly built (or freshly republished) engine cannot serve a single
     # unverified result before it has proven itself. A systematically wrong engine is then caught
@@ -89,18 +90,18 @@ class RouterPolicy:
     # happens to hit one. Set to 0 to disable burn-in (pure sampling). When cross_check_rate is 0
     # the operator has explicitly opted out of all verification, and burn-in is skipped too.
     verify_first_n: int = 10
-    select_only: bool = True                   # only SELECT-family statements may route
+    select_only: bool = True  # only SELECT-family statements may route
     require_schema_match: bool = True
     require_sf_match: bool = True
 
     engine_timeout_ms: int = 30_000
-    breaker_threshold: int = 3                 # consecutive failures before quarantine
+    breaker_threshold: int = 3  # consecutive failures before quarantine
     max_result_bytes: int = 512 * 1024 * 1024  # result-arena ceiling; over → fall back
 
     allow_templates: Optional[FrozenSet[str]] = None  # None = all registered
     deny_templates: FrozenSet[str] = field(default_factory=frozenset)
 
-    verbose: bool = True                       # one-line per routed/cross-checked query
+    verbose: bool = True  # one-line per routed/cross-checked query
 
     def with_(self, **overrides) -> "RouterPolicy":
         """A derived policy (immutable update)."""

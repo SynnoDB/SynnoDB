@@ -1,4 +1,5 @@
 """Routing observability: ``why()`` dry-runs the decision, and ``router_stats`` tallies it."""
+
 from __future__ import annotations
 
 import pyarrow as pa
@@ -29,8 +30,12 @@ def _con():
     )
     con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
     con.duckdb.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z'),(5,'z')")
-    register_engine(con, template_sql=TEMPLATE, engine=LocalCallableEngine("e", {"1": _engine}),
-                    placeholders=[PlaceholderSpec("p0", "INTEGER")])
+    register_engine(
+        con,
+        template_sql=TEMPLATE,
+        engine=LocalCallableEngine("e", {"1": _engine}),
+        placeholders=[PlaceholderSpec("p0", "INTEGER")],
+    )
     return con
 
 
@@ -67,8 +72,8 @@ def test_why_blocked_for_write():
 
 def test_session_counters_track_routed_and_fallback():
     con = _con()
-    con.execute("SELECT count(*) AS c FROM t WHERE a >= 4")      # routes
-    con.execute("SELECT a FROM t ORDER BY a")                    # valid, falls back (no match)
+    con.execute("SELECT count(*) AS c FROM t WHERE a >= 4")  # routes
+    con.execute("SELECT a FROM t ORDER BY a")  # valid, falls back (no match)
     s = con.router_stats()["session"]
     assert s["routed"] == 1
     assert s["fell_back"] == 1

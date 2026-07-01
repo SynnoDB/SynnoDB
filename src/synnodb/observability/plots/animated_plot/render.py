@@ -87,7 +87,9 @@ def main() -> None:
         raise ValueError("--run-ids must contain at least one run id")
 
     print(f"Run IDs: {', '.join(run_ids)}")
-    print(f"Viewport mode: {args.viewport_mode}  sliding_window={args.sliding_window_turns}  min_visible={args.min_visible_turns}")
+    print(
+        f"Viewport mode: {args.viewport_mode}  sliding_window={args.sliding_window_turns}  min_visible={args.min_visible_turns}"
+    )
 
     viewport = FrameViewportConfig(
         mode=XAxisMode(args.viewport_mode),

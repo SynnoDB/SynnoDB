@@ -3,6 +3,7 @@ per-benchmark enum switches returned, for both built-in workloads. This guards t
 refactor that collapsed ~9 `if benchmark == TPCH/CEB else raise` branches into spec
 reads.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -30,8 +31,14 @@ def test_tpch_spec_parity():
     s = get_workload_spec("tpch")
     assert s.dataset_name == "tpch"
     assert s.tables == (
-        "customer", "lineitem", "nation", "orders",
-        "part", "partsupp", "region", "supplier",
+        "customer",
+        "lineitem",
+        "nation",
+        "orders",
+        "part",
+        "partsupp",
+        "region",
+        "supplier",
     )
     assert s.all_query_ids == tuple(str(i) for i in range(1, 23))
     assert s.benchmark_sf == 20

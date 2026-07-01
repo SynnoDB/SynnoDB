@@ -1,6 +1,7 @@
 """The strict write block: only read-only queries pass through ``con.execute``; everything
 else raises ``WriteNotSupportedError``. Data setup goes through the ``.duckdb`` escape hatch.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -68,7 +69,7 @@ def test_escape_hatch_allows_writes():
 def test_read_only_introspection_passes():
     con = _con()
     con.duckdb.execute("CREATE TABLE t(a int, b varchar)")
-    con.execute("DESCRIBE t")            # read-only introspection
+    con.execute("DESCRIBE t")  # read-only introspection
     con.execute("PRAGMA table_info('t')")
 
 

@@ -26,7 +26,8 @@ def prepare_storage_plan(ctx: PrepareContext) -> str:
 
 def prepare_base(ctx: PrepareContext) -> str:
     parallel_ready_in_memory = (
-        getattr(ctx.prepare_workspace_provider, "db_storage", None) == DBStorage.IN_MEMORY
+        getattr(ctx.prepare_workspace_provider, "db_storage", None)
+        == DBStorage.IN_MEMORY
     )
     usecase_args = {
         **ctx.usecase_prepare_args,

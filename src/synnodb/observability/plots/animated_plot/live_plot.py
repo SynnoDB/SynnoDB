@@ -23,7 +23,10 @@ from synnodb.observability.plots.animated_plot.terminal_input_builder import (
     build_terminal_turns,
 )
 from synnodb.observability.plots.plot_timeline import PlotConfig
-from synnodb.observability.plots.utils.wandb_utils import combine_histories, get_wandb_stats
+from synnodb.observability.plots.utils.wandb_utils import (
+    combine_histories,
+    get_wandb_stats,
+)
 
 
 @dataclass

@@ -4,9 +4,9 @@ tested Python transport — validating the Phase-3 zero-copy data plane in *real
 Skips cleanly when no C++ toolchain / Arrow dev headers are present, so CI without a
 compiler still passes.
 """
+
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,9 +40,10 @@ def driver(tmp_path_factory) -> Path:
     cc = _compiler()
     if cc is None:
         pytest.skip("no C++ compiler (g++/clang++) available")
-    if not shutil.which("pkg-config") or subprocess.run(
-        ["pkg-config", "--exists", "arrow"]
-    ).returncode != 0:
+    if (
+        not shutil.which("pkg-config")
+        or subprocess.run(["pkg-config", "--exists", "arrow"]).returncode != 0
+    ):
         pytest.skip("Arrow C++ dev (pkg-config arrow) not available")
 
     out_bin = tmp_path_factory.mktemp("cpp") / "shm_io_test"
@@ -61,10 +62,14 @@ def driver(tmp_path_factory) -> Path:
 
 def test_ingest_python_to_cpp(driver, tmp_path):
     n = 50_000
-    table = pa.table({"a": pa.array(range(n), pa.int64()), "label": [f"r{i % 7}" for i in range(n)]})
+    table = pa.table(
+        {"a": pa.array(range(n), pa.int64()), "label": [f"r{i % 7}" for i in range(n)]}
+    )
     w = ShmWriter(base_dir=tmp_path)
     ref = w.write_table(table)
-    out = subprocess.run([str(driver), "read", str(tmp_path / ref.name)], capture_output=True, text=True)
+    out = subprocess.run(
+        [str(driver), "read", str(tmp_path / ref.name)], capture_output=True, text=True
+    )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == f"rows={n} cols=2 col0=a sum0={sum(range(n))}"
     w.close()
@@ -73,7 +78,9 @@ def test_ingest_python_to_cpp(driver, tmp_path):
 def test_egress_cpp_to_python(driver, tmp_path):
     m = 30_000
     path = tmp_path / "result.arrow"
-    out = subprocess.run([str(driver), "write", str(path), str(m)], capture_output=True, text=True)
+    out = subprocess.run(
+        [str(driver), "write", str(path), str(m)], capture_output=True, text=True
+    )
     assert out.returncode == 0, out.stderr
     back = read_table(path)  # Python reads the C++-written segment, zero-copy
     assert back.num_rows == m
@@ -86,6 +93,8 @@ def test_large_table_roundtrip_both_directions(driver, tmp_path):
     table = pa.table({"a": pa.array(range(n), pa.int64()), "label": ["r0"] * n})
     w = ShmWriter(base_dir=tmp_path)
     ref = w.write_table(table)
-    out = subprocess.run([str(driver), "read", str(tmp_path / ref.name)], capture_output=True, text=True)
+    out = subprocess.run(
+        [str(driver), "read", str(tmp_path / ref.name)], capture_output=True, text=True
+    )
     assert out.stdout.strip() == f"rows={n} cols=2 col0=a sum0={sum(range(n))}"
     w.close()

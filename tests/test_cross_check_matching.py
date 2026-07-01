@@ -8,6 +8,7 @@ quarantined. ``results_equal`` now groups by the exact columns and matches the g
 columns one-to-one within tolerance (maximum bipartite matching), so this no longer happens, while
 real differences are still caught.
 """
+
 from __future__ import annotations
 
 import pyarrow as pa
@@ -16,7 +17,12 @@ from synnodb.router.adapt import results_equal
 
 
 def _t(rows):
-    return pa.table({"k": pa.array([r[0] for r in rows]), "v": pa.array([r[1] for r in rows], pa.float64())})
+    return pa.table(
+        {
+            "k": pa.array([r[0] for r in rows]),
+            "v": pa.array([r[1] for r in rows], pa.float64()),
+        }
+    )
 
 
 def test_tolerance_equal_rows_match_despite_sort_misalignment():
@@ -65,8 +71,12 @@ def test_large_all_float_result_is_bounded_and_correct():
     n = 5000
     vals = [float(i) for i in range(n)]
     a = pa.table({"x": pa.array(vals, pa.float64())})
-    b_same = pa.table({"x": pa.array([v + 1e-9 for v in reversed(vals)], pa.float64())})  # same multiset
-    b_diff = pa.table({"x": pa.array(vals[:-1] + [float(n) + 10.0], pa.float64())})        # one row off
+    b_same = pa.table(
+        {"x": pa.array([v + 1e-9 for v in reversed(vals)], pa.float64())}
+    )  # same multiset
+    b_diff = pa.table(
+        {"x": pa.array(vals[:-1] + [float(n) + 10.0], pa.float64())}
+    )  # one row off
 
     t = time.perf_counter()
     assert results_equal(b_same, a, ordered=False) is True

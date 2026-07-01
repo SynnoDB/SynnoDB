@@ -25,6 +25,7 @@ IN-list) are described by a *group* spec binding several placeholders jointly:
 :func:`parse_param_space` validates a query's specs against its template (the typing layer);
 :func:`ParamSpace.sample` draws one concrete assignment; :func:`substitute` fills it in.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -45,12 +46,22 @@ def configure_byo_debug() -> bool:
     parameter values and the SQL + args line the engine will receive. Same env-var pattern as
     SYNNODB_WORKER_LOG.
     """
-    on = os.environ.get("SYNNODB_BYO_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+    on = os.environ.get("SYNNODB_BYO_DEBUG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     if on:
-        for name in ("synnodb.workloads.query_params", "synnodb.workloads.byo_workload"):
+        for name in (
+            "synnodb.workloads.query_params",
+            "synnodb.workloads.byo_workload",
+        ):
             logging.getLogger(name).setLevel(logging.DEBUG)
         root = logging.getLogger()
-        if not root.handlers:  # standalone (registration before the framework logging is set up)
+        if (
+            not root.handlers
+        ):  # standalone (registration before the framework logging is set up)
             h = logging.StreamHandler()
             h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
             root.addHandler(h)
@@ -138,6 +149,7 @@ def substitute(template: str, assignment: dict[str, object]) -> str:
 # A scalar spec binds one placeholder; a group spec binds several jointly. Each spec knows
 # how to (a) sample one value/row with an RNG and (b) describe itself as UI metadata (so a
 # live dashboard can render a slider / dropdown / date-picker without re-deriving ranges).
+
 
 @dataclass(frozen=True)
 class IntSpec:
@@ -377,11 +389,15 @@ def _parse_scalar_spec(ph: str, raw: object):
 def _parse_date(ph: str, raw: dict, key: str) -> datetime.date:
     _require(key in raw, f"'{ph}' (date spec): missing required field '{key}'.")
     v = raw[key]
-    _require(isinstance(v, str), f"'{ph}' (date spec): '{key}' must be an ISO date string.")
+    _require(
+        isinstance(v, str), f"'{ph}' (date spec): '{key}' must be an ISO date string."
+    )
     try:
         return datetime.date.fromisoformat(v)
     except ValueError as e:
-        raise ValueError(f"'{ph}' (date spec): '{key}'={v!r} is not a valid ISO date.") from e
+        raise ValueError(
+            f"'{ph}' (date spec): '{key}'={v!r} is not a valid ISO date."
+        ) from e
 
 
 def _parse_group_spec(idx: int, raw: object):
@@ -431,7 +447,10 @@ def _parse_group_spec(idx: int, raw: object):
                 f"number).",
             )
         distinct = raw.get("distinct", True)
-        _require(isinstance(distinct, bool), f"{label} (sample): 'distinct' must be a boolean.")
+        _require(
+            isinstance(distinct, bool),
+            f"{label} (sample): 'distinct' must be a boolean.",
+        )
         if distinct:
             # "distinct" means distinct *values*: dedupe by value (random.sample draws by
             # position, so a domain like ["A","A","B"] could otherwise hand two placeholders
@@ -443,7 +462,9 @@ def _parse_group_spec(idx: int, raw: object):
                 f"{len(phs_t)} distinct values, got {len(domain)}.",
             )
         return SampleGroupSpec(phs_t, tuple(domain), distinct)
-    raise ValueError(f"{label}: unknown group spec type {t!r}. Expected 'tuples' or 'sample'.")
+    raise ValueError(
+        f"{label}: unknown group spec type {t!r}. Expected 'tuples' or 'sample'."
+    )
 
 
 def parse_param_space(
@@ -468,8 +489,13 @@ def parse_param_space(
             )
         return ParamSpace((), {}, ())
 
-    _require(isinstance(raw_params, dict), "params must be an object mapping placeholder -> spec.")
-    _require(isinstance(raw_groups, list), "param_groups must be a list of group specs.")
+    _require(
+        isinstance(raw_params, dict),
+        "params must be an object mapping placeholder -> spec.",
+    )
+    _require(
+        isinstance(raw_groups, list), "param_groups must be a list of group specs."
+    )
 
     scalars = {ph: _parse_scalar_spec(ph, raw) for ph, raw in raw_params.items()}
     groups = [_parse_group_spec(i, raw) for i, raw in enumerate(raw_groups)]

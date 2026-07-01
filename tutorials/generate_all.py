@@ -29,6 +29,7 @@ compiled ``./db`` is driven through the warm HotpatchProc IPC protocol, and each
 result is compared to DuckDB. Use ``SYNNO_SHM_IPC_INSTANTIATIONS`` to test more concrete
 parameter bindings per query.
 """
+
 from __future__ import annotations
 
 import os
@@ -47,7 +48,9 @@ DATA_ROOT = Path(os.environ.get("SYNNO_DATA_DIR", "/mnt/labstore/learneddb/synno
 # SF range; the canonical learneddb tree currently only has sf1/2/20, so it cannot serve an
 # SF50 target until its sf50/ parquet is materialised - override SYNNO_TPCH_PARQUET to a tree
 # that has the target SF.
-PARQUET_DIR = Path(os.environ.get("SYNNO_TPCH_PARQUET", "/mnt/labstore/bespoke_olap/tpch_parquet"))
+PARQUET_DIR = Path(
+    os.environ.get("SYNNO_TPCH_PARQUET", "/mnt/labstore/bespoke_olap/tpch_parquet")
+)
 ENGINES_DIR = Path(os.environ.get("SYNNO_ENGINES_DIR", DATA_ROOT / "engines"))
 ENGINES_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["SYNNO_ENGINES_DIR"] = str(ENGINES_DIR)
@@ -95,7 +98,9 @@ def _require_shm_loader(workspace: Path) -> None:
     try:
         text = reader.read_text()
     except OSError as exc:
-        raise RuntimeError(f"cannot verify shm-ingest support; missing {reader}") from exc
+        raise RuntimeError(
+            f"cannot verify shm-ingest support; missing {reader}"
+        ) from exc
     if "shm_ingest_enabled" not in text or "SYNNODB_SHM_INGEST" not in text:
         raise RuntimeError(
             f"{workspace} was not generated with the shm-ingest loader branch; "
@@ -139,16 +144,22 @@ def run_shm_ipc_check(workspace: Path, spec, query_ids: list[str]) -> None:
         core_ids=None,
     )
     if len(batches) != 1:
-        raise RuntimeError(f"expected one benchmark batch for shm check, got {len(batches)}")
+        raise RuntimeError(
+            f"expected one benchmark batch for shm check, got {len(batches)}"
+        )
     batch = batches[0]
 
     con = duckdb.connect(":memory:")
     try:
-        log(f"loading target SF tables into DuckDB views from {batch.exec_settings.parquet_dir}")
+        log(
+            f"loading target SF tables into DuckDB views from {batch.exec_settings.parquet_dir}"
+        )
         for table in spec.tables:
             parquet = batch.exec_settings.parquet_dir / f"{table}.parquet"
             if not parquet.exists():
-                raise FileNotFoundError(f"missing parquet table for shm check: {parquet}")
+                raise FileNotFoundError(
+                    f"missing parquet table for shm check: {parquet}"
+                )
             con.execute(
                 f"CREATE VIEW {_quote_ident(table)} AS "
                 f"SELECT * FROM read_parquet({_sql_lit(parquet)})"
@@ -158,7 +169,9 @@ def run_shm_ipc_check(workspace: Path, spec, query_ids: list[str]) -> None:
             log(f"staging {len(spec.tables)} table(s) into /dev/shm for engine ingest")
             engine.ingest(
                 {
-                    table: con.execute(f"SELECT * FROM {_quote_ident(table)}").to_arrow_table()
+                    table: con.execute(
+                        f"SELECT * FROM {_quote_ident(table)}"
+                    ).to_arrow_table()
                     for table in spec.tables
                 }
             )
@@ -170,9 +183,13 @@ def run_shm_ipc_check(workspace: Path, spec, query_ids: list[str]) -> None:
                 got = engine.run(entry.query_id, entry.placeholders)
                 ordered = has_order_by(entry.sql)
                 order_keys = (
-                    order_by_key_indices(entry.sql, expected.column_names) if ordered else None
+                    order_by_key_indices(entry.sql, expected.column_names)
+                    if ordered
+                    else None
                 )
-                if not results_equal(got, expected, ordered=ordered, order_keys=order_keys):
+                if not results_equal(
+                    got, expected, ordered=ordered, order_keys=order_keys
+                ):
                     diffs, diff_total = results_diff(
                         got, expected, ordered=ordered, order_keys=order_keys
                     )
@@ -221,12 +238,16 @@ def main() -> None:
         log(f"===== STORAGE PLAN for queries {queries} START =====")
         t0 = time.time()
         plan = db.createStoragePlan()
-        log(f"===== STORAGE PLAN DONE in {time.time() - t0:.0f}s  run={plan.run_id} =====")
+        log(
+            f"===== STORAGE PLAN DONE in {time.time() - t0:.0f}s  run={plan.run_id} ====="
+        )
 
         log("===== BASE IMPL (all queries on the one plan) START =====")
         t0 = time.time()
         impl = db.createBaseImpl(storage_plan=plan.text)
-        log(f"===== BASE IMPL DONE in {time.time() - t0:.0f}s  workspace={impl.workspace} =====")
+        log(
+            f"===== BASE IMPL DONE in {time.time() - t0:.0f}s  workspace={impl.workspace} ====="
+        )
 
         if SHM_IPC_CHECK:
             log("===== SHM/IPC ALL-QUERY CHECK START =====")

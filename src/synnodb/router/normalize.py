@@ -12,6 +12,7 @@ Two jobs:
 ``sqlglot`` is imported lazily so ``import synnodb`` stays cheap for users who never
 trigger routing.
 """
+
 from __future__ import annotations
 
 import functools
@@ -21,11 +22,44 @@ from typing import Any, List, Optional, Sequence
 _DIALECT = "duckdb"
 
 # Leading keyword → read-only? Used as a fast path and a fallback when parsing fails.
-_READ_KEYWORDS = {"select", "with", "explain", "describe", "desc", "show", "summarize", "values", "pragma", "table", "from"}
+_READ_KEYWORDS = {
+    "select",
+    "with",
+    "explain",
+    "describe",
+    "desc",
+    "show",
+    "summarize",
+    "values",
+    "pragma",
+    "table",
+    "from",
+}
 _WRITE_KEYWORDS = {
-    "insert", "update", "delete", "merge", "create", "drop", "alter", "truncate",
-    "replace", "attach", "detach", "copy", "import", "export", "set", "begin",
-    "commit", "rollback", "checkpoint", "vacuum", "call", "use", "load", "install",
+    "insert",
+    "update",
+    "delete",
+    "merge",
+    "create",
+    "drop",
+    "alter",
+    "truncate",
+    "replace",
+    "attach",
+    "detach",
+    "copy",
+    "import",
+    "export",
+    "set",
+    "begin",
+    "commit",
+    "rollback",
+    "checkpoint",
+    "vacuum",
+    "call",
+    "use",
+    "load",
+    "install",
 }
 
 _LEADING_WORD = re.compile(r"\s*(?:--[^\n]*\n|/\*.*?\*/|\s)*([A-Za-z_]+)", re.DOTALL)
@@ -148,7 +182,9 @@ def normalize_sql(sql: str) -> Optional[str]:
         return None
 
     def _placeholder(node: "exp.Expression") -> "exp.Expression":
-        if isinstance(node, (exp.Literal, exp.Boolean, exp.Null, exp.Parameter, exp.Placeholder)):
+        if isinstance(
+            node, (exp.Literal, exp.Boolean, exp.Null, exp.Parameter, exp.Placeholder)
+        ):
             return exp.Placeholder()
         # A cast wrapping a single literal/placeholder is a typed literal (DATE 'x',
         # CAST(5 AS BIGINT)). Collapse it to a placeholder so an inline `date 'x'` shares
@@ -261,7 +297,9 @@ def tables_in(sql: str) -> List[str]:
     # A CTE is referenced as a Table node but is not a real table; exclude CTE names so a
     # query like ``WITH revenue AS (...) SELECT ... FROM lineitem, revenue`` reports only the
     # real tables (``lineitem``), not the CTE alias.
-    cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE) if cte.alias_or_name}
+    cte_names = {
+        cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE) if cte.alias_or_name
+    }
     names: List[str] = []
     for table in tree.find_all(exp.Table):
         if table.name and table.name.lower() not in cte_names:
@@ -318,7 +356,9 @@ def has_param_markers(template_sql: str) -> bool:
         return False
     from sqlglot import expressions as exp
 
-    return bool(list(tree.find_all(exp.Placeholder)) or list(tree.find_all(exp.Parameter)))
+    return bool(
+        list(tree.find_all(exp.Placeholder)) or list(tree.find_all(exp.Parameter))
+    )
 
 
 @functools.lru_cache(maxsize=512)
@@ -362,7 +402,9 @@ def _record(name: str, value: Any, bound: dict) -> bool:
     return True
 
 
-def _unify(t: Any, i: Any, names: Sequence[str], counter: List[int], bound: dict) -> bool:
+def _unify(
+    t: Any, i: Any, names: Sequence[str], counter: List[int], bound: dict
+) -> bool:
     """Structurally unify a template node *t* with an incoming node *i*. A ``?`` /
     ``$name`` placeholder in the template is a wildcard that binds to the whole incoming
     sub-expression; everything else must match in type, and literals must match in value."""
@@ -401,7 +443,9 @@ def _unify(t: Any, i: Any, names: Sequence[str], counter: List[int], bound: dict
     return True
 
 
-def _unify_arg(tv: Any, iv: Any, names: Sequence[str], counter: List[int], bound: dict) -> bool:
+def _unify_arg(
+    tv: Any, iv: Any, names: Sequence[str], counter: List[int], bound: dict
+) -> bool:
     from sqlglot import expressions as exp
 
     if isinstance(tv, list) or isinstance(iv, list):

@@ -3,6 +3,7 @@ not a silent quarantine. The router builds an ``EngineDivergedError`` naming the
 query, and the offending rows/cells, logs it at WARNING, records it on the trace, quarantines the
 template, and serves the trusted DuckDB result.
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,7 +24,9 @@ TEMPLATE = "SELECT count(*) AS c FROM t WHERE a >= 2"
 
 
 def _wrong_engine(ph):
-    return pa.table({"c": pa.array([999], pa.int64())})  # always wrong (DuckDB returns 4)
+    return pa.table(
+        {"c": pa.array([999], pa.int64())}
+    )  # always wrong (DuckDB returns 4)
 
 
 def _con():
@@ -33,8 +36,12 @@ def _con():
     )
     con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
     con.duckdb.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z'),(5,'z')")
-    register_engine(con, template_sql=TEMPLATE, engine=LocalCallableEngine("synno-x", {"1": _wrong_engine}),
-                    placeholders=[PlaceholderSpec("p0", "INTEGER")])
+    register_engine(
+        con,
+        template_sql=TEMPLATE,
+        engine=LocalCallableEngine("synno-x", {"1": _wrong_engine}),
+        placeholders=[PlaceholderSpec("p0", "INTEGER")],
+    )
     return con
 
 
@@ -64,21 +71,29 @@ def test_engine_crash_is_loud_and_quarantine_reported_by_why(caplog):
     are logged at WARNING, and why() reports 'quarantined' rather than the misleading 'no template
     match'. The user still gets the correct DuckDB answer."""
     con = synnodb.connect(
-        policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0, breaker_threshold=2),
+        policy=RouterPolicy(
+            mode=RouterMode.SAMPLED, cross_check_rate=1.0, breaker_threshold=2
+        ),
         registry=TemplateRegistry(),
     )
     con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
     con.duckdb.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z'),(5,'z')")
-    register_engine(con, template_sql=TEMPLATE, engine=LocalCallableEngine("synno-x", {"1": _crashing}),
-                    placeholders=[PlaceholderSpec("p0", "INTEGER")])
+    register_engine(
+        con,
+        template_sql=TEMPLATE,
+        engine=LocalCallableEngine("synno-x", {"1": _crashing}),
+        placeholders=[PlaceholderSpec("p0", "INTEGER")],
+    )
     try:
         with caplog.at_level(logging.WARNING):
             for _ in range(2):  # breaker_threshold -> quarantine on the 2nd
                 assert con.execute(TEMPLATE).fetchall() == [(4,)]  # correct, via DuckDB
         msgs = "\n".join(r.getMessage() for r in caplog.records)
-        assert "bespoke engine error" in msgs and "synno-x" in msgs   # first fault is loud
-        assert "quarantined" in msgs                                   # breaker trip is loud
-        assert "quarantined" in con.why(TEMPLATE)["reason"]            # why() is honest
+        assert (
+            "bespoke engine error" in msgs and "synno-x" in msgs
+        )  # first fault is loud
+        assert "quarantined" in msgs  # breaker trip is loud
+        assert "quarantined" in con.why(TEMPLATE)["reason"]  # why() is honest
     finally:
         con.close()
 
@@ -99,10 +114,14 @@ def test_cross_check_comparison_error_serves_verified_duckdb(caplog, monkeypatch
     try:
         with caplog.at_level(logging.WARNING):
             rows = con.execute(TEMPLATE).fetchall()
-        assert rows == [(4,)]  # the VERIFIED DuckDB result, not the engine's unverified 999
-        assert con._last["served_by"] == "duckdb"  # reported honestly, not a bogus engine serve
+        assert rows == [
+            (4,)
+        ]  # the VERIFIED DuckDB result, not the engine's unverified 999
+        assert (
+            con._last["served_by"] == "duckdb"
+        )  # reported honestly, not a bogus engine serve
         msgs = "\n".join(r.getMessage() for r in caplog.records)
-        assert "cross-check comparison failed" in msgs                 # visible, not silent
+        assert "cross-check comparison failed" in msgs  # visible, not silent
         assert con.router_stats()["session"]["cross_check_error"] >= 1
     finally:
         con.close()
@@ -126,7 +145,9 @@ def test_cross_check_reference_error_falls_back_to_duckdb(caplog, monkeypatch):
     try:
         with caplog.at_level(logging.WARNING):
             rows = con.execute(TEMPLATE).fetchall()
-        assert rows == [(4,)]  # the caller's DuckDB fallback produced the correct answer
+        assert rows == [
+            (4,)
+        ]  # the caller's DuckDB fallback produced the correct answer
         assert con._last["served_by"] == "duckdb"
         msgs = "\n".join(r.getMessage() for r in caplog.records)
         assert "cross-check reference execution failed" in msgs

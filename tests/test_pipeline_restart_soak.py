@@ -22,6 +22,7 @@ negative control that proves the first is actually measuring the fix. Memory is
 measured via PSS rather than RSS because RSS double-counts the copy-on-write
 Arrow-input pages shared between loader and builder.
 """
+
 import os
 import select
 import shutil
@@ -40,7 +41,9 @@ _ACTION_RUN = 1
 _DONE_TOKEN_BYTES = 8  # struct DoneToken { int exit_code; int term_signal; }
 
 _SOAK_DIR = Path(__file__).parent / "soak_engine"
-_HOTPATCH_DIR = Path(__file__).resolve().parents[1] / "src" / "synnodb" / "cpp_runner" / "hotpatch"
+_HOTPATCH_DIR = (
+    Path(__file__).resolve().parents[1] / "src" / "synnodb" / "cpp_runner" / "hotpatch"
+)
 
 _HOG_MB = 24
 _INPUT_MB = 8
@@ -71,11 +74,21 @@ def _build_builder_so(build_dir: Path, build_id_hex: str) -> None:
     agent editing and recompiling db_loader.cpp.
     """
     tmp = build_dir / "libbuilder_soak.so.tmp"
-    _compile([
-        _CXX, "-O2", "-std=c++20", "-shared", "-fPIC", "-I", str(_SOAK_DIR),
-        f"-Wl,--build-id=0x{build_id_hex}", "-o", str(tmp),
-        str(_SOAK_DIR / "builder_soak.cpp"),
-    ])
+    _compile(
+        [
+            _CXX,
+            "-O2",
+            "-std=c++20",
+            "-shared",
+            "-fPIC",
+            "-I",
+            str(_SOAK_DIR),
+            f"-Wl,--build-id=0x{build_id_hex}",
+            "-o",
+            str(tmp),
+            str(_SOAK_DIR / "builder_soak.cpp"),
+        ]
+    )
     os.replace(tmp, build_dir / "libbuilder_soak.so")
 
 
@@ -83,17 +96,36 @@ def _build_builder_so(build_dir: Path, build_id_hex: str) -> None:
 def soak_build(tmp_path_factory) -> Path:
     """Compile the synthetic host and plugins once into a private build dir."""
     build_dir = tmp_path_factory.mktemp("soak_engine")
-    _compile([
-        _CXX, "-O2", "-std=c++20", "-I", str(_HOTPATCH_DIR),
-        "-o", str(build_dir / "db_soak_host"),
-        str(_SOAK_DIR / "host_soak.cpp"), str(_HOTPATCH_DIR / "build_id.cpp"), "-ldl",
-    ])
+    _compile(
+        [
+            _CXX,
+            "-O2",
+            "-std=c++20",
+            "-I",
+            str(_HOTPATCH_DIR),
+            "-o",
+            str(build_dir / "db_soak_host"),
+            str(_SOAK_DIR / "host_soak.cpp"),
+            str(_HOTPATCH_DIR / "build_id.cpp"),
+            "-ldl",
+        ]
+    )
     for name in ("loader", "query"):
-        _compile([
-            _CXX, "-O2", "-std=c++20", "-shared", "-fPIC", "-I", str(_SOAK_DIR),
-            "-Wl,--build-id", "-o", str(build_dir / f"lib{name}_soak.so"),
-            str(_SOAK_DIR / f"{name}_soak.cpp"),
-        ])
+        _compile(
+            [
+                _CXX,
+                "-O2",
+                "-std=c++20",
+                "-shared",
+                "-fPIC",
+                "-I",
+                str(_SOAK_DIR),
+                "-Wl,--build-id",
+                "-o",
+                str(build_dir / f"lib{name}_soak.so"),
+                str(_SOAK_DIR / f"{name}_soak.cpp"),
+            ]
+        )
     _build_builder_so(build_dir, f"{0:040x}")
     return build_dir
 
@@ -116,7 +148,7 @@ def _descendants(root: int) -> list[int]:
         try:
             data = Path(f"/proc/{entry}/stat").read_text()
             # comm (field 2) may contain spaces/parens; ppid is the field after ')'.
-            ppid = int(data[data.rindex(")") + 2:].split()[1])
+            ppid = int(data[data.rindex(")") + 2 :].split()[1])
         except (OSError, ValueError):
             continue
         children.setdefault(ppid, []).append(int(entry))

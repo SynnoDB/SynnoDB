@@ -3,6 +3,7 @@
 Light-weight by construction: importing this package pulls in no LLM/factory code,
 and ``sqlglot`` is imported lazily inside the normalizer.
 """
+
 from .adapt import results_equal, to_synno_result
 from .backend import Backend, DuckDBBackend
 from .engine import BespokeEngine, LocalCallableEngine

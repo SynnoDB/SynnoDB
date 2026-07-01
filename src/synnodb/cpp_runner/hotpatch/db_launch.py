@@ -4,6 +4,7 @@
 is compiled once into a content-addressed cache and reused; the binary has no
 runtime dependencies beyond libc, so a single build serves every runner.
 """
+
 from __future__ import annotations
 
 import hashlib

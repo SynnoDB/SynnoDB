@@ -12,6 +12,7 @@ against the RAII template it passes. It is the regression guard for that fix.
 Skips without a C++ toolchain, a working sanitizer runtime, or Arrow/Parquet dev headers
 (db_loader.cpp includes them).
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,16 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-SSD = REPO / "src" / "synnodb" / "cpp_runner" / "prepare_repo" / "templates" / "olap" / "ssd"
+SSD = (
+    REPO
+    / "src"
+    / "synnodb"
+    / "cpp_runner"
+    / "prepare_repo"
+    / "templates"
+    / "olap"
+    / "ssd"
+)
 CPP_HELPERS = REPO / "src" / "synnodb" / "cpp_runner" / "cpp_helpers"
 DRIVER = REPO / "tests" / "cpp" / "build_raii_test.cpp"
 
@@ -45,7 +55,9 @@ def _toolchain_ok() -> bool:
 
 
 def _pkg(*args: str) -> list[str]:
-    return subprocess.run(["pkg-config", *args, "arrow", "parquet"], capture_output=True, text=True).stdout.split()
+    return subprocess.run(
+        ["pkg-config", *args, "arrow", "parquet"], capture_output=True, text=True
+    ).stdout.split()
 
 
 @pytest.fixture(scope="module")
@@ -55,10 +67,22 @@ def driver(tmp_path_factory):
     cc = "g++" if shutil.which("g++") else "clang++"
     out = tmp_path_factory.mktemp("build_raii") / "build_raii_test"
     cmd = [
-        cc, "-std=c++20", "-O1", "-g", "-fsanitize=address", "-fno-omit-frame-pointer",
-        "-I", str(SSD), "-I", str(CPP_HELPERS), *_pkg("--cflags"),
-        str(DRIVER), str(SSD / "db_loader.cpp"), *_pkg("--libs"),
-        "-o", str(out),
+        cc,
+        "-std=c++20",
+        "-O1",
+        "-g",
+        "-fsanitize=address",
+        "-fno-omit-frame-pointer",
+        "-I",
+        str(SSD),
+        "-I",
+        str(CPP_HELPERS),
+        *_pkg("--cflags"),
+        str(DRIVER),
+        str(SSD / "db_loader.cpp"),
+        *_pkg("--libs"),
+        "-o",
+        str(out),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -70,7 +94,9 @@ def driver(tmp_path_factory):
 
 def _run(driver: Path, mode: str, storage: Path) -> subprocess.CompletedProcess:
     env = dict(os.environ, ASAN_OPTIONS="detect_leaks=1")
-    return subprocess.run([str(driver), mode, str(storage)], capture_output=True, text=True, env=env)
+    return subprocess.run(
+        [str(driver), mode, str(storage)], capture_output=True, text=True, env=env
+    )
 
 
 def test_build_is_exception_safe_under_oom(driver, tmp_path):
@@ -79,8 +105,12 @@ def test_build_is_exception_safe_under_oom(driver, tmp_path):
     ok = _run(driver, "ok", tmp_path)
     if ok.returncode != 0:
         if any(m in ok.stderr for m in _SANITIZER_UNAVAILABLE):
-            pytest.skip(f"sanitizer runtime unavailable in this environment:\n{ok.stderr}")
-        pytest.fail(f"successful build()/destroy_database leaked or double-freed:\n{ok.stderr}")
+            pytest.skip(
+                f"sanitizer runtime unavailable in this environment:\n{ok.stderr}"
+            )
+        pytest.fail(
+            f"successful build()/destroy_database leaked or double-freed:\n{ok.stderr}"
+        )
 
     # With the sanitizer confirmed working, a throw mid-build must free the partial dataset.
     thrown = _run(driver, "throw", tmp_path)

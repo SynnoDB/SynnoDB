@@ -161,8 +161,10 @@ class WorkspaceEditor:
             path=operation.path,
             cache_extra={"diff": operation.diff},
             run_impl=lambda: impl(operation),
-            legacy_activity=lambda status, output: self._legacy_activity_summary_entry_for_cached_result(
-                op_type, operation, status, output
+            legacy_activity=lambda status, output: (
+                self._legacy_activity_summary_entry_for_cached_result(
+                    op_type, operation, status, output
+                )
             ),
         )
 

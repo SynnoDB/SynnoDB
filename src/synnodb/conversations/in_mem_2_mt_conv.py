@@ -78,7 +78,6 @@ class InMem2MTConversation(OptimizationConversation):
     async def run(self) -> Optional[List[str]]:
         self.used = []
 
-        queries_path = self.file_paths["queries_path"]
         query_impl_path = self.file_paths["query_impl_path"]
         builder_path = self.file_paths["builder_path"]
         # describe the optimization problem (same as round 1)

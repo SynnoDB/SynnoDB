@@ -5,9 +5,10 @@ this interface. ``DuckDBBackend`` is the only implementation today; a
 ``PostgresBackend`` is the reserved seam for "we also want Postgres" — same router,
 same guards, a different base — and is intentionally not built yet.
 """
+
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 import pyarrow as pa
 
@@ -15,8 +16,7 @@ import pyarrow as pa
 class Backend(Protocol):
     """The base executor: runs SQL and returns Arrow (for cross-check / fallback)."""
 
-    def execute_arrow(self, sql: str, parameters: Any = None) -> pa.Table:
-        ...
+    def execute_arrow(self, sql: str, parameters: Any = None) -> pa.Table: ...
 
 
 def _result_to_arrow(cursor: Any) -> pa.Table:
@@ -38,7 +38,11 @@ class DuckDBBackend:
         self._con = connection
 
     def execute_arrow(self, sql: str, parameters: Any = None) -> pa.Table:
-        cursor = self._con.execute(sql, parameters) if parameters is not None else self._con.execute(sql)
+        cursor = (
+            self._con.execute(sql, parameters)
+            if parameters is not None
+            else self._con.execute(sql)
+        )
         return _result_to_arrow(cursor)
 
     @property

@@ -154,13 +154,17 @@ def test_create_file_impl_overwrites_existing_non_readonly(tmp_path):
     (workspace / "db_loader.cpp").write_text("// stub\nold content\n", encoding="utf-8")
 
     op = ApplyPatchOperation(
-        type="create_file", path="db_loader.cpp", diff="+// real impl\n+int build(){return 0;}\n"
+        type="create_file",
+        path="db_loader.cpp",
+        diff="+// real impl\n+int build(){return 0;}\n",
     )
     result, _ = editor._create_file_impl(op)
 
     assert result.status == "completed"
     assert "Overwrote existing" in result.output
-    assert (workspace / "db_loader.cpp").read_text(encoding="utf-8") == "// real impl\nint build(){return 0;}"
+    assert (workspace / "db_loader.cpp").read_text(
+        encoding="utf-8"
+    ) == "// real impl\nint build(){return 0;}"
 
 
 def test_create_file_impl_creates_new_file(tmp_path):
@@ -184,7 +188,9 @@ def test_create_file_impl_still_blocks_readonly(tmp_path):
         snapshotter=_FakeSnapshotter(),  # type: ignore[arg-type]
     )
     (workspace / "args_parser.hpp").write_text("// framework", encoding="utf-8")
-    op = ApplyPatchOperation(type="create_file", path="args_parser.hpp", diff="+hacked\n")
+    op = ApplyPatchOperation(
+        type="create_file", path="args_parser.hpp", diff="+hacked\n"
+    )
     result, _ = editor._create_file_impl(op)
     assert result.status == "failed" and "read-only" in result.output
     assert (workspace / "args_parser.hpp").read_text(encoding="utf-8") == "// framework"

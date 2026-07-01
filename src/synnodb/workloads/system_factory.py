@@ -1,7 +1,11 @@
 import enum
 from abc import abstractmethod
 
-from synnodb.workloads.workload_provider import ExecSettings, GeneralSystemConfig, Workload
+from synnodb.workloads.workload_provider import (
+    ExecSettings,
+    GeneralSystemConfig,
+    Workload,
+)
 
 
 class System(enum.Enum):

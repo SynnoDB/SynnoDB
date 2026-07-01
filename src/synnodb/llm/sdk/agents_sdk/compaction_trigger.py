@@ -4,7 +4,6 @@ Kept dependency-free (no SDK/tooling imports) so the trigger logic is unit-testa
 in isolation and importable from the wrapper without pulling heavy modules.
 """
 
-
 # Trigger a proactive compaction once the context window is this full. Kept below
 # 1.0 so we compact BEFORE a hard overflow rather than only reacting to one.
 COMPACTION_TRIGGER_FRACTION = 0.90
