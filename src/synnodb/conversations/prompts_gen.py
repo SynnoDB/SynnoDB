@@ -257,17 +257,27 @@ def _detect_hardware_context(
     physical_cores = psutil.cpu_count(logical=False) or 0
     logical_cores = psutil.cpu_count(logical=True) or 0
 
+    # Derive the build-time parallelism ceiling from the process's CPU affinity so
+    # that cpuset/affinity-limited workers (where psutil.cpu_count() reports host-wide
+    # counts) see the cores they can actually use, matching the run tool's own core
+    # resolution via get_cores_for_current_machine().
+    try:
+        from synnodb.utils.core_utils import get_cores_for_current_machine
+        usable_cores, _ = get_cores_for_current_machine(leave_core_0_out=False, allow_hyperthreading=True)
+    except Exception:
+        usable_cores = physical_cores
+
     parts = [f"CPU: {cpu_model}"]
-    if physical_cores > 0:
+    if usable_cores > 0:
         ht_str = "hyperthreading enabled" if logical_cores > physical_cores else "no hyperthreading"
-        parts.append(f"{physical_cores} physical cores / {logical_cores} logical cores ({ht_str})")
+        parts.append(f"{usable_cores} cores available for build parallelism ({ht_str})")
     elif logical_cores > 0:
         parts.append(f"{logical_cores} logical cores")
 
     if serving_threads and serving_threads > 0:
         parts.append(
             f"the engine is built, validated, and served at {serving_threads} query "
-            "worker threads (size build-time parallelism to the physical cores above, but "
+            "worker threads (size build-time parallelism to the available cores above, but "
             "this is the degree the engine actually runs at - do not exceed it for serving)"
         )
 

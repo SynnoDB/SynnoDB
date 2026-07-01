@@ -49,6 +49,17 @@ def test_detect_hardware_context_non_empty():
     assert _detect_hardware_context().strip()
 
 
+def test_hardware_context_core_count_comes_from_affinity():
+    import os
+    import psutil
+    from synnodb.utils.core_utils import get_cores_for_current_machine
+
+    # Compute what the affinity-based count should be (same call as prompts_gen uses).
+    usable_cores, _ = get_cores_for_current_machine(leave_core_0_out=False, allow_hyperthreading=True)
+    ctx = _detect_hardware_context()
+    assert f"{usable_cores} cores available for build parallelism" in ctx
+
+
 def test_hardware_context_reports_configured_threads_and_budget_ceiling():
     # The optimizer must be anchored to the engine's operating envelope, not the raw host:
     # the configured serving parallelism and the memory budget framed as a hard ceiling.
@@ -120,3 +131,15 @@ def test_single_edit_instrumentation_removal_instruction():
         for restructure in (False, True):
             prompt = _build(persistent, restructure)
             assert "single edit" in prompt
+
+
+def test_plan_files_allowed_in_scope_constraint():
+    for persistent in (False, True):
+        for restructure in (False, True):
+            prompt = _build(persistent, restructure)
+            # The constraint block must list both plan files so the agent is not
+            # forced to violate scope in order to follow the "read before profiling"
+            # instruction.
+            constraint_block = prompt[prompt.index("Constraints:"):]
+            assert _STORAGE_PLAN in constraint_block
+            assert _TODO in constraint_block
