@@ -62,6 +62,19 @@ class CachedLitellmModel(LitellmModel):
     ):
         self.glm_thinking_enabled = glm_thinking_enabled
         self.model_extra_body = model_extra_body
+        if model_extra_body:
+            # model_extra_body is merged into the request post-hash (like the GLM
+            # thinking hint), so it is deliberately NOT part of the LLM cache key.
+            # Warn once so reusing a cache dir with a different MODEL_EXTRA_BODY /
+            # --model_extra_body does not silently return responses generated under
+            # the previous body. Use a fresh cache dir (or --do_not_cache) to force
+            # new calls when changing it.
+            logger.warning(
+                "model_extra_body is set (%s) but is not part of the LLM cache key; "
+                "reusing this llm_cache dir with a different MODEL_EXTRA_BODY will "
+                "serve responses cached under the previous body.",
+                model_extra_body,
+            )
         if glm_thinking_enabled:
             kwargs.setdefault(
                 "should_replay_reasoning_content", _glm_should_replay_reasoning

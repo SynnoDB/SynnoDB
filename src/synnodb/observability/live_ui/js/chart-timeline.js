@@ -80,6 +80,16 @@ const timeTravelLinePlugin = {
 
 Chart.register(correctnessAlignPlugin, timeTravelLinePlugin);
 
+// A speedup segment is "complete" (drawn solid) only when both of its endpoints
+// cover every benchmark query. Segments touching a preliminary point are dashed
+// (same colour, just dashed).
+function isCompleteSpeedupSegment(seg) {
+  const ds = chart?.data?.datasets?.[seg.datasetIndex]?.data ?? [];
+  const a = ds[seg.p0DataIndex];
+  const b = ds[seg.p1DataIndex];
+  return !!(a && b && a.complete && b.complete);
+}
+
 // ── Init / update ────────────────────────────────────────────────────────
 function initChart() {
   const ctx = document.getElementById('tc').getContext('2d');
@@ -102,19 +112,26 @@ function initChart() {
           yAxisID: 'yR1',
           data: [],
           borderColor: '#f97316',
-          borderDash: [5, 3],
           backgroundColor: 'rgba(249,115,22,0.07)',
-          pointRadius: 2, pointHoverRadius: 5,
+          pointRadius: 0, pointHoverRadius: 5,
           tension: 0.25, fill: false, order: 2, spanGaps: true,
         },
-        { // 2 — Speedup (right axis 2)
+        { // 2 — Speedup (right axis 2). Dashed while preliminary (not every
+          //     benchmark query implemented yet), solid once it covers them all.
           label: 'Speedup ×DuckDB',
           yAxisID: 'yR2',
           data: [],
           borderColor: '#3b6ef5',
           backgroundColor: 'rgba(59,110,245,0.15)',
-          pointRadius: 3, pointHoverRadius: 6,
+          // No permanent markers — the line reads cleaner; a point still appears
+          // on hover so tooltips/time-travel stay usable.
+          pointRadius: 0, pointHoverRadius: 6,
           tension: 0.3, fill: false, order: 1, spanGaps: true,
+          segment: {
+            // A segment is solid only when both endpoints include all queries;
+            // any segment touching a preliminary point is dashed (same colour).
+            borderDash: seg => isCompleteSpeedupSegment(seg) ? undefined : [6, 4],
+          },
         },
       ],
     },
@@ -137,7 +154,19 @@ function initChart() {
       plugins: {
         legend: {
           position:'top', align:'end',
-          labels:{color:'#e5eefc', boxWidth:16, padding:14, font:{size:11}},
+          labels:{
+            color:'#e5eefc', padding:14, font:{size:11},
+            // Draw each entry as a short line segment (matching the series'
+            // colour and dash pattern) instead of a filled rectangle.
+            usePointStyle:true, pointStyle:'line', boxWidth:22, boxHeight:8,
+            pointStyleWidth:22,
+            // Thicken just the legend markers (leaves the chart lines untouched).
+            generateLabels(chart) {
+              const items = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+              items.forEach(it => { it.lineWidth = 3; });
+              return items;
+            },
+          },
         },
         tooltip: {
           backgroundColor:'#101e34', titleColor:'#e5eefc',
@@ -155,7 +184,17 @@ function initChart() {
             label: item => {
               const v = item.parsed.y;
               if (v == null) return null;
-              if (item.datasetIndex === 2) return ' Speedup: ' + v.toFixed(2) + '×';
+              if (item.datasetIndex === 2) {
+                const raw = item.raw || {};
+                let s = ' Speedup: ' + v.toFixed(2) + '×';
+                if (!raw.complete) {
+                  // Preliminary: only some benchmark queries implemented so far.
+                  s += raw.total != null && raw.nQueries != null
+                    ? ` (preliminary — ${raw.nQueries}/${raw.total} queries)`
+                    : ' (preliminary)';
+                }
+                return s;
+              }
               return ' ' + item.dataset.label + ': ' + v.toLocaleString();
             },
           },
@@ -266,13 +305,16 @@ function updateChart(steps, data) {
   const loc      = steps.map(s => (data[s] || {})['code/loc']     ?? null);
   const speedup  = computeSpeedupSeries(steps, data);
   const sections = getSections(steps, data);
-  const hasSpeedup = speedup.some(v => v != null);
+  const hasSpeedup = speedup.some(s => s.value != null);
 
   chart._timelinePoints = points;
   chart.data.labels           = steps.map(String);
   chart.data.datasets[0].data = points.map((p, i) => ({x: p.x, y: tokens[i],  step: p.step, time: p.time}));
   chart.data.datasets[1].data = points.map((p, i) => ({x: p.x, y: loc[i],     step: p.step, time: p.time}));
-  chart.data.datasets[2].data = points.map((p, i) => ({x: p.x, y: speedup[i], step: p.step, time: p.time}));
+  chart.data.datasets[2].data = points.map((p, i) => ({
+    x: p.x, y: speedup[i].value, step: p.step, time: p.time,
+    complete: speedup[i].complete, nQueries: speedup[i].nQueries, total: speedup[i].total,
+  }));
   chart.options.plugins.sectionBg.sections = sections;
   chart.options.plugins.sectionBg.points   = points;
   chart.options.scales.yR2.display         = hasSpeedup;
