@@ -68,6 +68,7 @@ def _base_run_config(cfg: "SynnoConfig") -> dict[str, Any]:
         verbose=cfg.verbose,
         threads=cfg.threads,
         max_turns=cfg.max_turns,
+        model_extra_body=cfg.model_extra_body,
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import enum
 from dataclasses import dataclass
+from typing import Any
 
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import Workload
@@ -73,6 +74,11 @@ class RunConfig:
         None  # API base URL for local model endpoints (e.g. http://dgx02:13505/v1)
     )
     glm_thinking: bool = False  # enable GLM-5 interleaved thinking mode
+    model_extra_body: str | dict[str, Any] | None = (
+        None  # Merged into every request's extra_body (host-independent escape hatch,
+        # e.g. OpenRouter provider routing). A dict (Python API) or JSON-object string
+        # (CLI). Falls back to $MODEL_EXTRA_BODY.
+    )
     db_storage: DBStorage = (
         DBStorage.IN_MEMORY  # whether to use persistent storage instead of in-memory DBMS
     )
@@ -126,6 +132,7 @@ def add_common_args(
     include_max_turns: bool = False,
     include_api_base: bool = False,
     include_glm_thinking: bool = False,
+    include_model_extra_body: bool = False,
     include_db_storage: bool = False,
     include_memory_budget_mb: bool = False,
     include_include_mem_budget_for_in_mem_in_hashes: bool = False,
@@ -459,4 +466,16 @@ def add_common_args(
             default=False,
             help="Enable GLM-5 interleaved thinking mode. Passes thinking:{type:enabled} "
             "to the API and replays reasoning_content across turns for coherent multi-step reasoning.",
+        )
+
+    if include_model_extra_body:
+        parser.add_argument(
+            "--model_extra_body",
+            type=str,
+            default=None,
+            help="JSON object merged into every request's extra_body (LiteLLM models). "
+            "Host-independent escape hatch for provider-specific fields, e.g. OpenRouter "
+            "provider routing: "
+            "'{\"provider\": {\"sort\": \"throughput\", \"ignore\": [\"baseten\"], \"allow_fallbacks\": true}}'. "
+            "Defaults to the $MODEL_EXTRA_BODY env var.",
         )

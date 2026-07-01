@@ -1034,6 +1034,7 @@ if __name__ == "__main__":
         include_db_storage=True,
         include_threads=True,
         include_max_turns=True,
+        include_model_extra_body=True,
     )
     args = parser.parse_args()
     args.write_query_and_args_files = True

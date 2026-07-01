@@ -3,7 +3,9 @@ from abc import abstractmethod
 from pathlib import Path
 
 from synnodb.conversations.filenames import PLAN_FILENAME_BY_USECASE
-from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import extract_version_id
+from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
+    extract_version_id,
+)
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.utils import utils
 from synnodb.workloads.workload_provider import WorkloadProvider
@@ -310,6 +312,16 @@ def _write_files(
             logger.info(f"Deleting {path} as part of optim preparation")
             path.unlink()
         else:
+            # Unlink any existing target before writing. A prior run that was
+            # hard-killed inside the sandbox's read-only window (see
+            # sandbox._readonly_ctx) can leave artifacts at mode 0444, which
+            # would make write_text fail with PermissionError. Unlinking (the
+            # workspace dir is writable, so this succeeds even for 0444 files)
+            # lets the write self-heal instead of wedging every future run.
+            assert path.is_file() or not path.exists(), (
+                f"Expected {path} to be a file or not exist"
+            )
+            path.unlink(missing_ok=True)
             path.write_text(content)
 
 

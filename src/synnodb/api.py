@@ -121,6 +121,10 @@ class SynnoConfig:
     # is the default per-stage LLM turn budget; None -> each conversation's own default.
     threads: int | None = None
     max_turns: int | None = None
+    # Merged into every LiteLLM request's extra_body (host-independent escape hatch,
+    # e.g. OpenRouter provider routing: {"provider": {"sort": "throughput", ...}}).
+    # None -> falls back to the $MODEL_EXTRA_BODY env var.
+    model_extra_body: dict[str, Any] | None = None
     # escape hatch for any unmodelled RunConfig field: applied (dataclasses.replace)
     # onto the RunConfig a stage's build_config produces, just before execution.
     extra_config: dict[str, Any] = field(default_factory=dict)
