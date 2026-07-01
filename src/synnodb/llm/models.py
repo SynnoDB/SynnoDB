@@ -87,6 +87,13 @@ MODELS = {
         "output": 15.00 / 1_000_000,  # USD pro Token
         "context_window": 1_050_000,
     },
+    # https://openrouter.ai/z-ai/glm-5.2
+    "openrouter/z-ai/glm-5.2": {
+        "input": 1.2 / 1_000_000,  # USD pro Token
+        "cached_input": 0.2 / 1_000_000,  # USD pro Token
+        "output": 4.10 / 1_000_000,  # USD pro Token
+        "context_window": 1_000_000,
+    },
     "anthropic/claude-opus-4-20250514": {
         "input": 15.00 / 1_000_000,
         "cached_input": 1.50 / 1_000_000,

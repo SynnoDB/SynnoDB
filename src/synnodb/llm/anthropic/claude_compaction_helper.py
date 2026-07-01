@@ -51,12 +51,14 @@ class ClaudeCompactionHelper:
         self,
         claude_compaction_model: str,
         api_base: str | None = None,
+        model_extra_body: Dict[str, Any] | None = None,
     ):
         self.claude_compaction_model = claude_compaction_model
         self._is_anthropic = claude_compaction_model.startswith(
             "anthropic/"
         ) or claude_compaction_model.startswith("claude-")
         self._api_base = api_base
+        self._model_extra_body = model_extra_body
 
         if self._is_anthropic:
             from anthropic import AsyncAnthropic
@@ -114,6 +116,11 @@ class ClaudeCompactionHelper:
                 model=model,
                 max_tokens=16000,
                 messages=compact_messages,  # type: ignore
+                **(
+                    {"extra_body": self._model_extra_body}
+                    if self._model_extra_body
+                    else {}
+                ),
             )
             summary_parts = []
             for block in response.content:
@@ -139,6 +146,11 @@ class ClaudeCompactionHelper:
                 messages=oai_messages,
                 max_tokens=16000,
                 **({"base_url": self._api_base} if self._api_base else {}),
+                **(
+                    {"extra_body": self._model_extra_body}
+                    if self._model_extra_body
+                    else {}
+                ),
             )
             summary_text = response.choices[0].message.content.strip()
 

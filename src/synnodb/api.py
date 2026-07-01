@@ -115,6 +115,10 @@ class SynnoConfig:
     do_not_cache: bool = False
     verbose: bool = False              # stream DEBUG logs to the console (logfile is always DEBUG)
     workspace: str | None = None       # run output dir; None -> local ./output
+    # Merged into every LiteLLM request's extra_body (host-independent escape hatch,
+    # e.g. OpenRouter provider routing: {"provider": {"sort": "throughput", ...}}).
+    # None -> falls back to the $MODEL_EXTRA_BODY env var.
+    model_extra_body: dict[str, Any] | None = None
     # escape hatch for any unmodelled RunConfig field: applied (dataclasses.replace)
     # onto the RunConfig a stage's build_config produces, just before execution.
     extra_config: dict[str, Any] = field(default_factory=dict)
