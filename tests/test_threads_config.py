@@ -27,6 +27,26 @@ def test_core_ids_to_env_serial_and_parallel():
     assert len(core_ids_to_env([3, 5, 7]).split(",")) == 3
 
 
+# ── threads config -> concrete cores ───────────────────────────────────────
+
+
+def test_resolve_target_cores_semantics():
+    from synnodb.utils.core_utils import resolve_target_cores
+
+    # None (unset) -> 1 (single-threaded default).
+    assert resolve_target_cores(None)[0] == 1
+    # N -> N (up to the machine's usable cores).
+    assert resolve_target_cores(1)[0] == 1
+    # 0 -> auto-detect every usable core (>= the single-thread case).
+    all_n, _ = resolve_target_cores(0)
+    assert all_n >= resolve_target_cores(1)[0]
+    # Negative is rejected.
+    import pytest
+
+    with pytest.raises(ValueError):
+        resolve_target_cores(-1)
+
+
 # ── Prompt guidance (the planner/base writer are told the target) ──────────
 
 

@@ -17,6 +17,7 @@ Constraints:
 - Limit inspection to `${builder_path_hpp}`, `${builder_path_cpp}`, and directly included headers only. Do not inspect validator/compile/cache/tool internals unless an error explicitly indicates an interface mismatch. No broad grep/find/ls.
 - No compile or run after individual edits. Only validate after a complete batch implementing one coherent optimization strategy.
 - If the bottleneck is memory-bandwidth bound, stop and report.
+- Keep the engine's peak in-memory footprint within about 10-15% of the decompressed size of the loaded column data (roughly rows x the natural width of each typed value, NOT the compressed Parquet size). Do not trade memory for speed beyond that headroom unless it buys a large, measured speedup; a modest speedup does not justify a multiplied footprint.
 ${storage_constraint}
 
 Hints - common optimization patterns:
