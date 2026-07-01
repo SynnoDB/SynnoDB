@@ -57,9 +57,11 @@ class CachedLitellmModel(LitellmModel):
         tools_loaded_deferred: bool = False,
         run_stats_collector: RunStatsCollector | None = None,
         glm_thinking_enabled: bool = False,
+        model_extra_body: Dict[str, Any] | None = None,
         **kwargs,
     ):
         self.glm_thinking_enabled = glm_thinking_enabled
+        self.model_extra_body = model_extra_body
         if glm_thinking_enabled:
             kwargs.setdefault(
                 "should_replay_reasoning_content", _glm_should_replay_reasoning
@@ -121,6 +123,40 @@ class CachedLitellmModel(LitellmModel):
             return copied
         except Exception as exc:
             logger.warning("Failed to enable GLM thinking on model settings: %s", exc)
+            return model_settings
+
+    def _augment_model_settings_for_extra_body(
+        self, model_settings: ModelSettings
+    ) -> Any:
+        """Merge the user-configured ``model_extra_body`` into the request.
+
+        Host-independent escape hatch for provider-specific request fields, e.g.
+        OpenRouter provider routing (``{"provider": {"sort": "throughput", ...}}``).
+        Resolved upstream (see ``resolve_model_extra_body``) from the
+        ``--model_extra_body`` CLI flag / ``MODEL_EXTRA_BODY`` env var. Injected here
+        (post-hash, like the GLM/Anthropic hints) via ``extra_body``, which LiteLLM
+        forwards verbatim to the provider. Configured keys win over any set earlier
+        (e.g. GLM ``thinking``), so this stays a deliberate override.
+        """
+        if not self.model_extra_body:
+            return model_settings
+        if model_settings is None:
+            return model_settings
+        try:
+            existing_body = getattr(model_settings, "extra_body", None) or {}
+            updated_body = (
+                dict(existing_body) if isinstance(existing_body, dict) else {}
+            )
+            updated_body.update(self.model_extra_body)
+            if is_dataclass(model_settings):
+                return replace(model_settings, extra_body=updated_body)
+            copied = copy.deepcopy(model_settings)
+            setattr(copied, "extra_body", updated_body)
+            return copied
+        except Exception as exc:
+            logger.warning(
+                "Failed to apply model_extra_body to model settings: %s", exc
+            )
             return model_settings
 
     def _augment_model_settings_for_anthropic_prompt_caching(
@@ -256,6 +292,10 @@ class CachedLitellmModel(LitellmModel):
         kwargs["model_settings"] = self._augment_model_settings_for_glm_thinking(
             kwargs["model_settings"]
         )
+        # merge any user-configured extra_body (e.g. OpenRouter provider routing)
+        kwargs["model_settings"] = self._augment_model_settings_for_extra_body(
+            kwargs["model_settings"]
+        )
 
         try:
             time_start = time.perf_counter()
@@ -368,7 +408,7 @@ class CachedLitellmModel(LitellmModel):
             time_start = time.perf_counter()
             resp = await super().get_response(*args, **retry_kwargs)
             llm_time = time.perf_counter() - time_start
-        except litellm.ServerUnavailableError as e:
+        except litellm.exceptions.ServiceUnavailableError as e:
             logger.warning(
                 f"Model server unavailable error encountered: {e}. This may be due to a transient issue with the model server. Retrying once after a short delay."
             )
