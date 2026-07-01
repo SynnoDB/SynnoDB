@@ -44,6 +44,7 @@ class CachedOpenAIResponsesCompactionSession(OpenAIResponsesCompactionSession):
         use_claude_compaction: bool = False,
         claude_compaction_model: Optional[str] = "claude-sonnet-4-5-20250929",
         compaction_api_base: Optional[str] = None,
+        model_extra_body: Optional[dict[str, Any]] = None,
         **kwargs,
     ):
         self.cache_dir = cache_dir
@@ -66,6 +67,7 @@ class CachedOpenAIResponsesCompactionSession(OpenAIResponsesCompactionSession):
             self.claude_compaction_helper = ClaudeCompactionHelper(
                 claude_compaction_model=claude_compaction_model,
                 api_base=compaction_api_base,
+                model_extra_body=model_extra_body,
             )
 
         # call original openai compaction session init

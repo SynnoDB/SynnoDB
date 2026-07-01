@@ -66,6 +66,7 @@ def _base_run_config(cfg: "SynnoConfig") -> dict[str, Any]:
         do_not_cache=cfg.do_not_cache,
         workspace_dir=cfg.workspace,
         verbose=cfg.verbose,
+        model_extra_body=cfg.model_extra_body,
     )
 
 
