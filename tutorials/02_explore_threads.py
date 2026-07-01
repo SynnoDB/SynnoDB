@@ -1,9 +1,9 @@
-"""Tutorial 2 / explore: generate a multi-threaded engine for TPC-H Q1-5 at SF20.
+"""Tutorial 2 / explore: accelerate TPC-H Q1-5 at SF20 with a multi-threaded engine.
 
-This is the middle rung of the ladder. Tutorial 1 (01_quickstart.ipynb) showed the whole
-generate -> drop-in -> speedup loop for a single query, single-threaded, in a notebook. Here we
-scale up: five queries, a bigger scale factor, and - the new idea - we control PARALLELISM with
-the DuckDB-style `threads` knob.
+This is the middle rung of the ladder. Tutorial 1 (01_quickstart.ipynb) accelerated a single
+DuckDB query in a notebook. Here we scale up: accelerate five queries, at a bigger scale factor,
+and - the new idea - control PARALLELISM with the DuckDB-style `threads` knob. As always, SynnoDB
+accelerates the queries you choose while DuckDB keeps serving everything else.
 
 Unlike the notebook, generation here takes long enough (many minutes) that you want it running
 unattended. Run it in tmux:
@@ -156,14 +156,16 @@ def main() -> None:
     impl = db.createBaseImpl(storage_plan=plan.text)
     log(f"base impl done ({time.time() - t0:.0f}s), published to {ENGINES_DIR}, workspace={impl.workspace}")
 
-    # 4) Drop in SynnoDB and serve the SAME published engine at two thread counts. This is a
-    #    RUNTIME override (no regeneration): connect(config={'threads': N}) runs the engine at N,
-    #    using the same knob semantics as generation - 8 = eight workers, 0 = all cores.
-    import synnodb as sduck
+    # 4) Serve the SAME published engine at two thread counts on a real DuckDB connection
+    #    (con.duckdb is DuckDB; con.execute accelerates the queries that have an engine, and
+    #    falls back to DuckDB for the rest). The thread count is a RUNTIME override, no
+    #    regeneration: connect(config={'threads': N}) runs at N, same knob as generation -
+    #    8 = eight workers, 0 = all cores.
+    import synnodb
     from synnodb.router import RouterMode, RouterPolicy
 
     for serve_threads in (GEN_THREADS, 0):
-        con = sduck.connect(
+        con = synnodb.connect(
             ":memory:",
             engines=str(ENGINES_DIR),
             policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0),
