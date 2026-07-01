@@ -76,29 +76,16 @@ function getEffectiveScaleFactor(steps, data) {
   return getMaxScaleFactor(steps, data);
 }
 
-// Total number of queries in the benchmark suite, logged by the validator as
-// validation/num_all_queries. Constant per run; we take the max seen so old
-// rows that predate the metric don't drag it down. Returns null when no row
-// carries it (older runs) — callers then treat the whole line as final.
-function getTotalQueryCount(steps, data) {
-  let total = null;
-  for (const step of steps) {
-    const raw = Number((data[step] || {})['validation/num_all_queries']);
-    if (Number.isFinite(raw) && raw > 0) total = total == null ? raw : Math.max(total, raw);
-  }
-  return total;
-}
-
 // Cumulative cross-query speedup at each step. Pinned to the effective scale
 // factor (user pick, or largest observed) so the line stays consistent.
 //
-// Each entry is {value, complete}: `value` is the speedup (or null when we lack
-// runtimes for every query seen so far), and `complete` is true only once the
-// point covers ALL benchmark queries. A preliminary point (fewer than all
-// queries implemented) is drawn dashed; a complete one solid.
+// Each entry is {value, complete, nQueries, total}: `value` is the speedup (or
+// null when we lack runtimes for every query seen so far). `total` is the full
+// set of benchmark queries the run ever covers, and `nQueries` is how many this
+// point covers. A point is preliminary (drawn dashed) while it covers fewer
+// than `total` queries, and final (solid) once it covers them all.
 function computeSpeedupSeries(steps, data) {
   const targetSf = getEffectiveScaleFactor(steps, data);
-  const totalQueries = getTotalQueryCount(steps, data);
   const currentRuntimes = new Map(); // qid -> {impl, duck}
   const expectedQueries = new Set();
   const series = [];
@@ -125,7 +112,7 @@ function computeSpeedupSeries(steps, data) {
     }
 
     if (!expectedQueries.size) {
-      series.push({value: null, complete: false, nQueries: 0, total: totalQueries});
+      series.push({value: null, nQueries: 0});
       continue;
     }
 
@@ -137,15 +124,20 @@ function computeSpeedupSeries(steps, data) {
       totalDuck += runtimes.duck;
     }
     const value = haveAll && totalImpl > 0 ? totalDuck / totalImpl : null;
-    const nQueries = expectedQueries.size;
-    // A point is final once it includes every benchmark query. When the total
-    // is unknown (older runs without the metric) we can't call it preliminary,
-    // so treat any real value as complete — preserving the old solid line.
-    const complete = value != null &&
-      (totalQueries == null || nQueries >= totalQueries);
-    series.push({value, complete, nQueries, total: totalQueries});
+    series.push({value, nQueries: expectedQueries.size});
   }
-  return series;
+
+  // The full benchmark suite for this run is the largest set of queries we ever
+  // accumulate (expectedQueries grows monotonically, so this is its final size).
+  // Any point covering fewer queries than that is preliminary. Derived purely
+  // from the runtimes already logged — no dedicated "total queries" metric.
+  const total = series.reduce((m, s) => Math.max(m, s.nQueries), 0) || null;
+  return series.map(s => ({
+    value: s.value,
+    nQueries: s.nQueries,
+    total,
+    complete: s.value != null && (total == null || s.nQueries >= total),
+  }));
 }
 
 // Latest impl/duck per query across all steps (sorted numerically when ids are integers).

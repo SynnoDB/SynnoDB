@@ -81,7 +81,8 @@ const timeTravelLinePlugin = {
 Chart.register(correctnessAlignPlugin, timeTravelLinePlugin);
 
 // A speedup segment is "complete" (drawn solid) only when both of its endpoints
-// cover every benchmark query. Segments touching a preliminary point are dashed.
+// cover every benchmark query. Segments touching a preliminary point are dashed
+// (same colour, just dashed).
 function isCompleteSpeedupSegment(seg) {
   const ds = chart?.data?.datasets?.[seg.datasetIndex]?.data ?? [];
   const a = ds[seg.p0DataIndex];
@@ -111,9 +112,8 @@ function initChart() {
           yAxisID: 'yR1',
           data: [],
           borderColor: '#f97316',
-          borderDash: [5, 3],
           backgroundColor: 'rgba(249,115,22,0.07)',
-          pointRadius: 2, pointHoverRadius: 5,
+          pointRadius: 0, pointHoverRadius: 5,
           tension: 0.25, fill: false, order: 2, spanGaps: true,
         },
         { // 2 — Speedup (right axis 2). Dashed while preliminary (not every
@@ -123,11 +123,13 @@ function initChart() {
           data: [],
           borderColor: '#3b6ef5',
           backgroundColor: 'rgba(59,110,245,0.15)',
-          pointRadius: 3, pointHoverRadius: 6,
+          // No permanent markers — the line reads cleaner; a point still appears
+          // on hover so tooltips/time-travel stay usable.
+          pointRadius: 0, pointHoverRadius: 6,
           tension: 0.3, fill: false, order: 1, spanGaps: true,
           segment: {
             // A segment is solid only when both endpoints include all queries;
-            // any segment touching a preliminary point is dashed.
+            // any segment touching a preliminary point is dashed (same colour).
             borderDash: seg => isCompleteSpeedupSegment(seg) ? undefined : [6, 4],
           },
         },
