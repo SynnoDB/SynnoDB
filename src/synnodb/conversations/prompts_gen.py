@@ -217,24 +217,137 @@ def base_storage_invariant_check_prompt(
     )
 
 
-def base_optimize_build_simple(
-    builder_path: str,
+def _detect_hardware_context(
+    serving_threads: int | None = None,
+    memory_budget_mb: int | None = None,
+) -> str:
+    """Describe the envelope the optimizer must build within.
+
+    This is deliberately *not* a raw dump of the host. The engine is designed,
+    validated, and served at a configured degree of parallelism (``serving_threads``)
+    and runs its build under a fixed memory ceiling (``memory_budget_mb``, enforced via
+    the builder's cgroup ``memory.max``). Advertising the machine's full logical-core
+    count or total RAM instead invites the model to oversubscribe threads and to trade
+    memory for build speed until it overruns the budget and the build is killed - the
+    out-of-memory-during-build failure mode the ceiling exists to prevent. So report the
+    physical cores as a ceiling for one-time build parallelism, but anchor the numbers
+    the model optimizes against to the configured serving threads and memory budget.
+    """
+    import psutil
+
+    cpu_model = "unknown"
+    total_ram_gb = 0
+
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                cpu_model = line.partition(":")[2].strip()
+                break
+    except Exception:
+        pass
+
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                total_ram_gb = int(line.split()[1]) // (1024 * 1024)
+                break
+    except Exception:
+        pass
+
+    physical_cores = psutil.cpu_count(logical=False) or 0
+    logical_cores = psutil.cpu_count(logical=True) or 0
+
+    # Derive the build-time parallelism ceiling from the process's CPU affinity so
+    # that cpuset/affinity-limited workers (where psutil.cpu_count() reports host-wide
+    # counts) see the cores they can actually use, matching the run tool's own core
+    # resolution via get_cores_for_current_machine().
+    try:
+        from synnodb.utils.core_utils import get_cores_for_current_machine
+        usable_cores, _ = get_cores_for_current_machine(leave_core_0_out=False, allow_hyperthreading=True)
+    except Exception:
+        usable_cores = physical_cores
+
+    parts = [f"CPU: {cpu_model}"]
+    if usable_cores > 0:
+        ht_str = "hyperthreading enabled" if logical_cores > physical_cores else "no hyperthreading"
+        parts.append(f"{usable_cores} cores available for build parallelism ({ht_str})")
+    elif logical_cores > 0:
+        parts.append(f"{logical_cores} logical cores")
+
+    if serving_threads and serving_threads > 0:
+        parts.append(
+            f"the engine is built, validated, and served at {serving_threads} query "
+            "worker threads (size build-time parallelism to the available cores above, but "
+            "this is the degree the engine actually runs at - do not exceed it for serving)"
+        )
+
+    # Memory is a hard ceiling, never free headroom. Report the budget the build runs
+    # under so the model sizes structures to it; fall back to total RAM only when no
+    # explicit budget is set, and even then frame it as a shared ceiling.
+    if memory_budget_mb and memory_budget_mb > 0:
+        parts.append(
+            f"{memory_budget_mb // 1024} GB memory budget - a hard ceiling enforced on the "
+            "build; exceeding it kills the build, so do not trade memory for speed beyond it"
+        )
+    elif total_ram_gb > 0:
+        parts.append(
+            f"{total_ram_gb} GB system RAM (shared ceiling - the build must fit well within "
+            "it; do not size structures assuming all of it is free)"
+        )
+
+    return ", ".join(parts)
+
+
+def base_optimize_build(
+    builder_path_cpp: str,
+    builder_path_hpp: str,
     current_ingest_time_ms: float,
     current_exec_config: ExecSettings,
     persistent_storage: bool,
+    allow_storage_restructuring: bool,
+    storage_plan_filename: str,
+    base_impl_todo_filename: str,
+    serving_threads: int | None = None,
+    memory_budget_mb: int | None = None,
 ) -> str:
     if persistent_storage:
-        prompt_path = _PROMPTS_DIR / "ssd" / "base_optimize_build_simple_ssd.txt"
+        prompt_path = _PROMPTS_DIR / "ssd" / "base_optimize_build_ssd.txt"
     else:
-        prompt_path = _PROMPTS_DIR / "base_optimize_build_simple.txt"
+        prompt_path = _PROMPTS_DIR / "base_optimize_build.txt"
+
+    if allow_storage_restructuring:
+        storage_constraint = ""
+        interface_compat_hint = ""
+    else:
+        storage_constraint = (
+            "- Always load all data from Parquet during ingestion (do not skip rows or columns). "
+            "Do not inspect `query*.cpp` to decide what to load, skip, or reorder. "
+            "Storage layout must remain general enough that arbitrary SQL could in theory be executed."
+        )
+        interface_compat_hint = (
+            f"- **Interface compatibility**: Any change to a field's type or layout in `{builder_path_hpp}` "
+            "(column type, index structure, field name) must preserve the interface that existing query files use. "
+            "If the underlying type changes, wrap it in a class that exposes the same `.find()`/`.end()` or `[]` "
+            "semantics - do not modify query files to adapt to a new interface. "
+            "A type mismatch can compile silently and crash at runtime."
+        )
 
     template_str = _load_txt(prompt_path)
     template = Template(template_str)
     return template.substitute(
-        builder_path=builder_path,
+        builder_path_cpp=builder_path_cpp,
+        builder_path_hpp=builder_path_hpp,
         config_str=str(current_exec_config),
         current_ingest_time_ms=f"{int(current_ingest_time_ms)} ms",
         run_tool_mode=RunToolMode.INGEST.name,
+        storage_constraint=storage_constraint,
+        interface_compat_hint=interface_compat_hint,
+        hardware_context=_detect_hardware_context(
+            serving_threads=serving_threads,
+            memory_budget_mb=memory_budget_mb,
+        ),
+        storage_plan_filename=storage_plan_filename,
+        base_impl_todo_filename=base_impl_todo_filename,
     )
 
 
@@ -374,26 +487,6 @@ def base_fix_slow_queries_prompt(
         slow_query_list=slow_query_list,
         query_impl_path=query_impl_path,
         builder_path=builder_path,
-    )
-
-
-def base_optimize_build_prompt(
-    builder_path_cpp: str,
-    builder_path_hpp: str,
-    persistent_storage: bool,
-) -> str:
-    if persistent_storage:
-        prompt_path = _PROMPTS_DIR / "ssd" / "base_optimize_build_ssd.txt"
-    else:
-        prompt_path = _PROMPTS_DIR / "base_optimize_build.txt"
-
-    template_str = _load_txt(prompt_path)
-    template = Template(template_str)
-
-    return template.substitute(
-        run_tool_mode=RunToolMode.INGEST.name,
-        builder_path_cpp=builder_path_cpp,
-        builder_path_hpp=builder_path_hpp,
     )
 
 

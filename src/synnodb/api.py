@@ -117,8 +117,9 @@ class SynnoConfig:
     workspace: str | None = None       # run output dir; None -> local ./output
     # DuckDB-style engine config options, with defaults. `threads` is the target degree
     # of parallelism the generated engine is designed, validated, and served at (the
-    # DuckDB config={'threads': N}); None -> all usable cores of the host. `max_turns`
-    # is the default per-stage LLM turn budget; None -> each conversation's own default.
+    # DuckDB config={'threads': N}); None -> 1 (single-threaded, the default), 0 -> all
+    # usable cores of the host, N -> N threads. `max_turns` is the default per-stage LLM
+    # turn budget; None -> each conversation's own default.
     threads: int | None = None
     max_turns: int | None = None
     # Merged into every LiteLLM request's extra_body (host-independent escape hatch,

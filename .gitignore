@@ -1,6 +1,7 @@
 .env
 cache/
 output/
+output_old/
 artifacts/
 lsyncd.conf.lua
 duckdb
