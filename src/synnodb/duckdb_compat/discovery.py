@@ -118,8 +118,11 @@ def _engine_extra_env(manifest: EngineManifest, threads_override: Optional[int])
         return {}
     from synnodb.utils.core_utils import core_ids_to_env, get_cores_for_current_machine
 
+    # threads == 0 means "all usable cores", matching the generation-side `threads` knob
+    # (resolve_target_cores). A positive N pins to N cores.
+    ncores_to_use = None if threads == 0 else threads
     _, core_ids = get_cores_for_current_machine(
-        leave_core_0_out=True, allow_hyperthreading=True, ncores_to_use=threads
+        leave_core_0_out=True, allow_hyperthreading=True, ncores_to_use=ncores_to_use
     )
     return {"CORE_IDS": core_ids_to_env(core_ids)}
 

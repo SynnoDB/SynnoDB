@@ -148,6 +148,20 @@ def test_engine_extra_env_override_beats_manifest_and_empty_when_unknown():
     assert discovery._engine_extra_env(EngineManifest("e", (), threads=None), None) == {}
 
 
+def test_engine_extra_env_threads_zero_serves_on_all_cores():
+    # A serving override of 0 means "all usable cores", matching the generation-side knob -
+    # not a single thread (the get_cores_for_current_machine(0) -> empty -> "1" trap).
+    from synnodb.utils.core_utils import get_cores_for_current_machine
+
+    m = EngineManifest("e", (), threads=8)
+    _, all_cores = get_cores_for_current_machine(
+        leave_core_0_out=True, allow_hyperthreading=True, ncores_to_use=None
+    )
+    env = discovery._engine_extra_env(m, threads_override=0)
+    assert env["CORE_IDS"] == core_ids_to_env(all_cores)
+    assert env["CORE_IDS"] != "1"
+
+
 def _resolve(n: int):
     from synnodb.utils.core_utils import get_cores_for_current_machine
 
