@@ -13,6 +13,7 @@ Two layers:
   parent the kernel OOM-kills exactly one runner, the other lives). Skipped where
   delegation is unavailable; verified in development under a sudo-delegated cgroup.
 """
+
 import os
 import subprocess
 import sys
@@ -103,10 +104,17 @@ def test_parse_byte_size_ok(text, expected):
 @pytest.mark.parametrize(
     "bad",
     [
-        "", "  ", "G", "12x", "-5", "0", "1.5G", "abc",
-        "1_000",   # int() accepts underscores; the byte parser must not
-        "+5G",     # a sign is not a byte count
-        "5 G",     # internal whitespace
+        "",
+        "  ",
+        "G",
+        "12x",
+        "-5",
+        "0",
+        "1.5G",
+        "abc",
+        "1_000",  # int() accepts underscores; the byte parser must not
+        "+5G",  # a sign is not a byte count
+        "5 G",  # internal whitespace
         "٤٨٠",  # Unicode digits (480) - ASCII only
     ],
 )
@@ -162,7 +170,9 @@ def test_prepare_shared_parent_unbounded_without_budget(fake_root, monkeypatch):
         cgroup._prepare_shared_parent(parent)
 
 
-def test_prepare_shared_parent_enables_subtree_and_keeps_existing_budget(fake_root, monkeypatch):
+def test_prepare_shared_parent_enables_subtree_and_keeps_existing_budget(
+    fake_root, monkeypatch
+):
     monkeypatch.delenv("SYNNO_CGROUP_PARENT_MAX", raising=False)
     parent = _make_parent(fake_root, subtree="", memory_max="700000000")
     out = cgroup._prepare_shared_parent(parent)
@@ -215,7 +225,9 @@ def test_parent_max_unwritable_refuses_when_unbounded(fake_root, monkeypatch):
 def test_parent_max_unwritable_keeps_tighter_existing(fake_root, monkeypatch, caplog):
     """If the write fails but the existing limit is already at least as tight as
     requested, running under the stricter cap is safe - keep it with a warning."""
-    parent = _make_parent(fake_root, memory_max="100000000")  # tighter than the 500M ask
+    parent = _make_parent(
+        fake_root, memory_max="100000000"
+    )  # tighter than the 500M ask
     monkeypatch.setenv("SYNNO_CGROUP_PARENT_MAX", "500M")
     _fail_memory_max_writes(monkeypatch)
     with caplog.at_level("WARNING", logger=cgroup.logger.name):
@@ -242,7 +254,9 @@ def test_runner_cgroup_nests_under_shared_parent_single_victim(fake_root, monkey
 
     runner = RunnerCgroup.create(256 << 20, name="runner-a")
     assert runner.path.parent == parent  # nested directly under the shared parent
-    assert (runner.path / "memory.oom.group").read_text().strip() == "1"  # child kills as a group
+    assert (
+        runner.path / "memory.oom.group"
+    ).read_text().strip() == "1"  # child kills as a group
     assert (runner.path / "memory.max").read_text().strip() == str(256 << 20)
     # We must never stamp oom.group=1 on the shared parent (that would be kill-all).
     assert not (parent / "memory.oom.group").exists()
@@ -346,7 +360,9 @@ def test_aggregate_gap_without_shared_parent_both_survive():
     try:
         procs = [_spawn_hog(r) for r in runners]
         time.sleep(4)  # let both pin their memory
-        assert all(p.poll() is None for p in procs), "a runner died without a shared cap"
+        assert all(p.poll() is None for p in procs), (
+            "a runner died without a shared cap"
+        )
         assert not any(_oom_group_killed(r) for r in runners)
     finally:
         for p in procs:
@@ -367,7 +383,9 @@ def test_shared_parent_aggregate_kills_single_victim(monkeypatch):
     cgroup._delegation = None
     cgroup._cgroup_env_sig = None
     os.environ.pop("SYNNO_CGROUP_PARENT", None)
-    base = cgroup._prepare_runner_parent()  # orchestrator's delegated cgroup (leader set up)
+    base = (
+        cgroup._prepare_runner_parent()
+    )  # orchestrator's delegated cgroup (leader set up)
 
     parent = base / f"synno-agg-test-{os.getpid()}"
     parent.mkdir()

@@ -9,10 +9,11 @@ The registry also tracks table *dirtiness* (a write/register/read_* touched a bo
 table → its templates fall back until re-ingest) and *quarantine* (a failed engine
 or a cross-check mismatch sidelines a template).
 """
+
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Iterable, Mapping, Optional, Tuple
 
 
@@ -41,18 +42,18 @@ class EngineBinding:
     runnable", which the guards treat as a fallback cause.
     """
 
-    template_id: str                         # stable id (engine_id + query_id)
-    normalized_sql: str                      # the structural match key
-    query_id: str                            # engine-local query id, e.g. "1"
-    engine_id: str                           # content-addressed engine identity
+    template_id: str  # stable id (engine_id + query_id)
+    normalized_sql: str  # the structural match key
+    query_id: str  # engine-local query id, e.g. "1"
+    engine_id: str  # content-addressed engine identity
     placeholders: Tuple[PlaceholderSpec, ...]
     output_schema: Tuple[ColumnSpec, ...]
-    tables: FrozenSet[str]                   # source tables this query reads
-    schema_fingerprint: str                  # fingerprint of the tables' schema at build
+    tables: FrozenSet[str]  # source tables this query reads
+    schema_fingerprint: str  # fingerprint of the tables' schema at build
     scale_factor: Optional[float] = None
-    storage_mode: str = "flat"               # "bespoke" | "flat"
-    engine: Any = None                       # EngineWorker handle (Phase 2)
-    template_sql: Optional[str] = None       # original parameterized template, for
+    storage_mode: str = "flat"  # "bespoke" | "flat"
+    engine: Any = None  # EngineWorker handle (Phase 2)
+    template_sql: Optional[str] = None  # original parameterized template, for
     #                                          structural binding of an inline query's
     #                                          values to the engine's placeholders
 

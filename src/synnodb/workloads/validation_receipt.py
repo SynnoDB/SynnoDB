@@ -14,9 +14,10 @@ parameter bindings, stated coverage policy, data planes, dataset/scale factors),
 :func:`verify_receipt_for_publish` re-derives the on-disk build-ids and rejects any mismatch, so a
 validate-one-build / publish-another mismatch cannot slip through.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 

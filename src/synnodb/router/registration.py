@@ -12,6 +12,7 @@ source of truth), so the runtime guards line up with how the engine was built:
 adds it to a connection's registry. This is the runtime half of the
 factory↔runtime contract — Phase 2c builds the same binding from a ``manifest.json``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,7 +37,18 @@ log = logging.getLogger("synnodb.router.registration")
 # DuckDB's Arrow type for the column is reachable from an egress builder family.
 _NESTED_OUTPUT_BASES = frozenset({"LIST", "ARRAY", "STRUCT", "MAP", "UNION", "ROW"})
 _UNSUPPORTED_OUTPUT_BASES = frozenset(
-    {"INTERVAL", "BLOB", "BYTEA", "VARBINARY", "BIT", "UUID", "TIME", "ENUM", "JSON", "UHUGEINT"}
+    {
+        "INTERVAL",
+        "BLOB",
+        "BYTEA",
+        "VARBINARY",
+        "BIT",
+        "UUID",
+        "TIME",
+        "ENUM",
+        "JSON",
+        "UHUGEINT",
+    }
 )
 
 
@@ -46,7 +58,9 @@ def _unsupported_output_reasons(output_schema: Sequence[ColumnSpec]) -> List[str
     for c in output_schema:
         t = str(c.type).upper().strip()
         m = re.match(r"[A-Z0-9_]+", t)
-        base = m.group(0) if m else t  # leading type token: TIME vs TIMESTAMP, DECIMAL(38,2)->DECIMAL
+        base = (
+            m.group(0) if m else t
+        )  # leading type token: TIME vs TIMESTAMP, DECIMAL(38,2)->DECIMAL
         # Nested/array types: DuckDB spells them ``INTEGER[]``, ``INTEGER[3]``, ``STRUCT(...)``, ...
         if re.search(r"\[\s*\d*\s*\]", t) or base in _NESTED_OUTPUT_BASES:
             reasons.append(
@@ -95,7 +109,9 @@ def _literalize(template_sql: str, placeholders: Sequence[PlaceholderSpec]) -> s
 
     def _typed_null(type_str: str) -> "exp.Expression":
         try:
-            return exp.Cast(this=exp.Null(), to=exp.DataType.build(type_str, dialect="duckdb"))
+            return exp.Cast(
+                this=exp.Null(), to=exp.DataType.build(type_str, dialect="duckdb")
+            )
         except Exception:
             return exp.Null()
 
@@ -122,7 +138,9 @@ def describe_output(
     duck = _connection(conn)
     sql = _literalize(template_sql, placeholders)
     cursor = duck.execute(f"SELECT * FROM ({sql}) AS _synno_schema LIMIT 0")
-    return tuple(ColumnSpec(name=col[0], type=str(col[1])) for col in cursor.description)
+    return tuple(
+        ColumnSpec(name=col[0], type=str(col[1])) for col in cursor.description
+    )
 
 
 def schema_fingerprint(conn: Any, tables: Iterable[str]) -> str:
@@ -153,7 +171,9 @@ def make_binding(
     normalized = normalize_sql(template_sql)
     if normalized is None:
         raise ValueError(f"template_sql is not parseable: {template_sql!r}")
-    bound_tables = frozenset(tables) if tables is not None else frozenset(tables_in(template_sql))
+    bound_tables = (
+        frozenset(tables) if tables is not None else frozenset(tables_in(template_sql))
+    )
     output_schema = describe_output(conn, template_sql, placeholders)
     # Fail fast: a query whose output types the engine cannot reproduce exactly is refused here
     # (DuckDB serves it) instead of binding and failing later inside egress.
@@ -163,8 +183,12 @@ def make_binding(
     fingerprint = schema_fingerprint(conn, bound_tables)
     log.debug(
         "binding %s::%s tables=%s fingerprint=%s output=%s normalized=%r",
-        engine_id, query_id, sorted(bound_tables), fingerprint,
-        [(c.name, c.type) for c in output_schema], normalized,
+        engine_id,
+        query_id,
+        sorted(bound_tables),
+        fingerprint,
+        [(c.name, c.type) for c in output_schema],
+        normalized,
     )
     return EngineBinding(
         template_id=f"{engine_id}::{query_id}",
@@ -182,7 +206,9 @@ def make_binding(
     )
 
 
-def register_engine(conn: Any, *, template_sql: str, engine: Any, **kwargs: Any) -> EngineBinding:
+def register_engine(
+    conn: Any, *, template_sql: str, engine: Any, **kwargs: Any
+) -> EngineBinding:
     """Build a binding and add it to *conn*'s router registry. Returns the binding."""
     registry = conn.router.registry
     binding = make_binding(conn, template_sql=template_sql, engine=engine, **kwargs)

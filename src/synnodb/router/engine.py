@@ -19,6 +19,7 @@ Every implementation returns a ``pyarrow.Table`` whose schema is expected to mat
 the binding's canonical (DuckDB) output schema; ``adapt`` turns it into a
 ``SynnoResult``.
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, Mapping, Protocol, runtime_checkable

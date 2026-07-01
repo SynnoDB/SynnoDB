@@ -5,6 +5,7 @@ that were *routed* or *cross-checked* (the interesting ones). Plain fallbacks ar
 logged at DEBUG so a production loop is not spammed. Full detail is always available
 at DEBUG as the trace's ``as_dict()``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,8 +28,8 @@ class RouteTrace:
     """Everything decided about one statement. Built incrementally during routing."""
 
     sql: str
-    decision: str = "pending"            # "bespoke" | "fallback" | "write-passthrough"
-    reason: str = ""                     # human-readable cause
+    decision: str = "pending"  # "bespoke" | "fallback" | "write-passthrough"
+    reason: str = ""  # human-readable cause
     template: Optional[str] = None
     guard_results: List[GuardResult] = field(default_factory=list)
     bespoke_ms: Optional[float] = None
@@ -73,7 +74,9 @@ class RouteTrace:
             "decision": self.decision,
             "reason": self.reason,
             "template": self.template,
-            "guards": [{"name": n, "ok": ok, "detail": d} for n, ok, d in self.guard_results],
+            "guards": [
+                {"name": n, "ok": ok, "detail": d} for n, ok, d in self.guard_results
+            ],
             "bespoke_ms": self.bespoke_ms,
             "duckdb_ms": self.duckdb_ms,
             "cross_checked": self.cross_checked,
@@ -121,7 +124,9 @@ def enable_debug_logging(level: int = logging.DEBUG, stream=None) -> None:
     import os
 
     root = logging.getLogger("synnodb")
-    if not any(getattr(h, "_synnodb_tag", None) == _DEBUG_HANDLER_TAG for h in root.handlers):
+    if not any(
+        getattr(h, "_synnodb_tag", None) == _DEBUG_HANDLER_TAG for h in root.handlers
+    ):
         handler = logging.StreamHandler(stream)
         handler.setFormatter(logging.Formatter("%(name)s %(levelname)s: %(message)s"))
         handler._synnodb_tag = _DEBUG_HANDLER_TAG  # type: ignore[attr-defined]

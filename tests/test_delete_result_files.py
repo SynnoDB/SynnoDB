@@ -6,6 +6,7 @@ path is still cleaned for older engines. Result names are keyed by request id an
 stable across iterations, so missing either extension would silently misvalidate a stale file -
 which is the regression this guards.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

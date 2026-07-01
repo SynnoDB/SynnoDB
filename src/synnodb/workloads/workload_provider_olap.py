@@ -152,12 +152,16 @@ class OLAPWorkloadProvider(WorkloadProvider):
 
         if run_mode == RunToolMode.FAST_CHECK:
             instantiations = self.num_instantiations
-            repetitions = 1  # each parameter instantiation runs once (only BENCHMARK repeats)
+            repetitions = (
+                1  # each parameter instantiation runs once (only BENCHMARK repeats)
+            )
             scale_factors = self.spec.scale_factors_for(run_mode)
 
         elif run_mode == RunToolMode.EXHAUSTIVE:
             instantiations = self.num_instantiations
-            repetitions = 1  # each parameter instantiation runs once (only BENCHMARK repeats)
+            repetitions = (
+                1  # each parameter instantiation runs once (only BENCHMARK repeats)
+            )
             scale_factors = self.spec.scale_factors_for(run_mode)
 
             if scale_factors[-1] != self.benchmark_sf:
@@ -170,7 +174,9 @@ class OLAPWorkloadProvider(WorkloadProvider):
             scale_factors = [self.benchmark_sf]
         elif run_mode == RunToolMode.INGEST:
             instantiations = self.spec.ingest_instantiations
-            repetitions = 1  # each parameter instantiation runs once (only BENCHMARK repeats)
+            repetitions = (
+                1  # each parameter instantiation runs once (only BENCHMARK repeats)
+            )
             scale_factors = self.spec.scale_factors_for(run_mode)
 
         else:

@@ -15,6 +15,7 @@ from synnodb.observability.logging.wandb_api_helper import (
     wandb_retrieve_metrics_for_run,
 )
 from synnodb.tools.validate.query_validator_class import format_args_string
+from synnodb.workloads.dataset.dataset_tables_dict import get_dataset_name
 from synnodb.workloads.dataset.query_gen_factory import get_query_gen
 
 sys.path.append(str(Path(__file__).parent.parent))
@@ -148,7 +149,7 @@ def main() -> None:
     args_list = format_args_string(query_list, placeholder_list)
 
     # run the queries - results will be written to '*.csv' files in the sourcefile directory e.g. bespoke_tpch
-    result = db_engine.run_worker(
+    db_engine.run_worker(
         scale_factor=args.sf,
         optimize=args.optimize,
         stdin_args_data=args_list,

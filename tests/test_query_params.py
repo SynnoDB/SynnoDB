@@ -1,5 +1,6 @@
 """Unit tests for template filling + typed parameter specs
 (synnodb.workloads.query_params)."""
+
 from __future__ import annotations
 
 import datetime
@@ -37,7 +38,9 @@ def test_coerce_for_engine_stringifies():
 
 
 def test_substitute_fills_template():
-    sql = qp.substitute("x <= date '1998-12-01' - interval '[DELTA]' day", {"DELTA": "90"})
+    sql = qp.substitute(
+        "x <= date '1998-12-01' - interval '[DELTA]' day", {"DELTA": "90"}
+    )
     assert "[DELTA]" not in sql and "interval '90' day" in sql
 
 
@@ -52,15 +55,22 @@ def test_no_placeholders_empty_space():
 
 def test_no_placeholders_but_params_raises():
     with pytest.raises(ValueError, match="no placeholders"):
-        qp.parse_param_space({"X": {"type": "int", "min": 1, "max": 2}}, None, "select 1")
+        qp.parse_param_space(
+            {"X": {"type": "int", "min": 1, "max": 2}}, None, "select 1"
+        )
 
 
 def test_missing_and_extra_placeholders_raise():
     with pytest.raises(ValueError, match="missing="):
-        qp.parse_param_space({"X": {"type": "int", "min": 1, "max": 2}}, None, "a=[X] b=[Y]")
+        qp.parse_param_space(
+            {"X": {"type": "int", "min": 1, "max": 2}}, None, "a=[X] b=[Y]"
+        )
     with pytest.raises(ValueError, match="extra="):
         qp.parse_param_space(
-            {"X": {"type": "int", "min": 1, "max": 2}, "Z": {"type": "int", "min": 1, "max": 2}},
+            {
+                "X": {"type": "int", "min": 1, "max": 2},
+                "Z": {"type": "int", "min": 1, "max": 2},
+            },
             None,
             "a=[X]",
         )
@@ -84,7 +94,9 @@ def test_unknown_type_raises():
 
 
 def test_int_spec_samples_on_grid():
-    space = qp.parse_param_space({"X": {"type": "int", "min": 60, "max": 120}}, None, "v=[X]")
+    space = qp.parse_param_space(
+        {"X": {"type": "int", "min": 60, "max": 120}}, None, "v=[X]"
+    )
     rnd = random.Random(0)
     vals = {int(space.sample(rnd)["X"]) for _ in range(200)}
     assert vals and all(60 <= v <= 120 for v in vals)
@@ -105,7 +117,9 @@ def test_int_spec_min_gt_max_raises():
 
 def test_int_spec_bad_step_raises():
     with pytest.raises(ValueError, match="step must be > 0"):
-        qp.parse_param_space({"X": {"type": "int", "min": 1, "max": 5, "step": 0}}, None, "v=[X]")
+        qp.parse_param_space(
+            {"X": {"type": "int", "min": 1, "max": 5, "step": 0}}, None, "v=[X]"
+        )
 
 
 def test_float_spec_exact_decimal_text():
@@ -132,7 +146,14 @@ def test_date_spec_day_in_range():
 def test_date_spec_granularity_rejected():
     with pytest.raises(ValueError, match="granularity.*no longer supported"):
         qp.parse_param_space(
-            {"DT": {"type": "date", "min": "1993-01-01", "max": "1994-01-01", "granularity": "month"}},
+            {
+                "DT": {
+                    "type": "date",
+                    "min": "1993-01-01",
+                    "max": "1994-01-01",
+                    "granularity": "month",
+                }
+            },
             None,
             "d=[DT]",
         )
@@ -141,7 +162,9 @@ def test_date_spec_granularity_rejected():
 def test_date_spec_bad_iso_raises():
     with pytest.raises(ValueError, match="not a valid ISO date"):
         qp.parse_param_space(
-            {"DT": {"type": "date", "min": "1993-13-99", "max": "1994-01-01"}}, None, "d=[DT]"
+            {"DT": {"type": "date", "min": "1993-13-99", "max": "1994-01-01"}},
+            None,
+            "d=[DT]",
         )
 
 
@@ -149,17 +172,27 @@ def test_categorical_sample_and_empty_raises():
     space = qp.parse_param_space(
         {"R": {"type": "categorical", "values": ["ASIA", "EUROPE"]}}, None, "r=[R]"
     )
-    assert {space.sample(random.Random(7))["R"] for _ in range(20)} <= {"ASIA", "EUROPE"}
+    assert {space.sample(random.Random(7))["R"] for _ in range(20)} <= {
+        "ASIA",
+        "EUROPE",
+    }
     with pytest.raises(ValueError, match="non-empty list"):
-        qp.parse_param_space({"R": {"type": "categorical", "values": []}}, None, "r=[R]")
+        qp.parse_param_space(
+            {"R": {"type": "categorical", "values": []}}, None, "r=[R]"
+        )
 
 
 def test_categorical_all_in_lists_renders_as_in_list():
     # A categorical whose values are all lists is a stable single-placeholder IN-list.
     space = qp.parse_param_space(
-        {"SEGS": {"type": "categorical", "values": [["A", "B"], ["C"]]}}, None, "x in [SEGS]"
+        {"SEGS": {"type": "categorical", "values": [["A", "B"], ["C"]]}},
+        None,
+        "x in [SEGS]",
     )
-    assert {space.sample(random.Random(s))["SEGS"] for s in range(20)} <= {"('A', 'B')", "('C')"}
+    assert {space.sample(random.Random(s))["SEGS"] for s in range(20)} <= {
+        "('A', 'B')",
+        "('C')",
+    }
 
 
 def test_categorical_mixed_scalar_and_in_list_raises():
@@ -177,12 +210,19 @@ def test_categorical_mixed_scalar_and_in_list_raises():
 def test_tuples_group_stays_aligned():
     space = qp.parse_param_space(
         None,
-        [{"type": "tuples", "placeholders": ["A", "B"],
-          "values": [["FRANCE", "GERMANY"], ["CHINA", "JAPAN"]]}],
+        [
+            {
+                "type": "tuples",
+                "placeholders": ["A", "B"],
+                "values": [["FRANCE", "GERMANY"], ["CHINA", "JAPAN"]],
+            }
+        ],
         "a='[A]' b='[B]'",
     )
-    pairs = {(space.sample(random.Random(s))["A"], space.sample(random.Random(s))["B"])
-             for s in range(20)}
+    pairs = {
+        (space.sample(random.Random(s))["A"], space.sample(random.Random(s))["B"])
+        for s in range(20)
+    }
     assert pairs <= {("FRANCE", "GERMANY"), ("CHINA", "JAPAN")}  # never crossed
 
 
@@ -199,7 +239,13 @@ def test_tuples_rejects_non_scalar_cell():
     with pytest.raises(ValueError, match="must be a simple scalar"):
         qp.parse_param_space(
             None,
-            [{"type": "tuples", "placeholders": ["A", "B"], "values": [["X", ["Y", "Z"]]]}],
+            [
+                {
+                    "type": "tuples",
+                    "placeholders": ["A", "B"],
+                    "values": [["X", ["Y", "Z"]]],
+                }
+            ],
             "[A] [B]",
         )
 
@@ -207,7 +253,13 @@ def test_tuples_rejects_non_scalar_cell():
 def test_sample_group_distinct():
     space = qp.parse_param_space(
         None,
-        [{"type": "sample", "placeholders": ["I1", "I2", "I3"], "domain": ["a", "b", "c", "d"]}],
+        [
+            {
+                "type": "sample",
+                "placeholders": ["I1", "I2", "I3"],
+                "domain": ["a", "b", "c", "d"],
+            }
+        ],
         "[I1] [I2] [I3]",
     )
     assign = space.sample(random.Random(8))
@@ -218,7 +270,13 @@ def test_sample_group_distinct_domain_too_small_raises():
     with pytest.raises(ValueError, match="needs a domain of at least"):
         qp.parse_param_space(
             None,
-            [{"type": "sample", "placeholders": ["I1", "I2", "I3"], "domain": ["a", "b"]}],
+            [
+                {
+                    "type": "sample",
+                    "placeholders": ["I1", "I2", "I3"],
+                    "domain": ["a", "b"],
+                }
+            ],
             "[I1] [I2] [I3]",
         )
 
@@ -228,7 +286,13 @@ def test_sample_group_distinct_dedupes_duplicate_domain():
     # value so every placeholder still gets a distinct one.
     space = qp.parse_param_space(
         None,
-        [{"type": "sample", "placeholders": ["I1", "I2"], "domain": ["A", "A", "B", "C"]}],
+        [
+            {
+                "type": "sample",
+                "placeholders": ["I1", "I2"],
+                "domain": ["A", "A", "B", "C"],
+            }
+        ],
         "[I1] [I2]",
     )
     for s in range(50):
@@ -241,7 +305,13 @@ def test_sample_group_distinct_insufficient_distinct_values_raises():
     with pytest.raises(ValueError, match="needs a domain of at least"):
         qp.parse_param_space(
             None,
-            [{"type": "sample", "placeholders": ["I1", "I2", "I3"], "domain": ["A", "A", "B"]}],
+            [
+                {
+                    "type": "sample",
+                    "placeholders": ["I1", "I2", "I3"],
+                    "domain": ["A", "A", "B"],
+                }
+            ],
             "[I1] [I2] [I3]",
         )
 
@@ -250,7 +320,13 @@ def test_sample_group_rejects_non_scalar_domain_value():
     with pytest.raises(ValueError, match="must be a simple scalar"):
         qp.parse_param_space(
             None,
-            [{"type": "sample", "placeholders": ["A", "B"], "domain": ["x", ["y", "z"]]}],
+            [
+                {
+                    "type": "sample",
+                    "placeholders": ["A", "B"],
+                    "domain": ["x", ["y", "z"]],
+                }
+            ],
             "[A] [B]",
         )
 
@@ -258,7 +334,14 @@ def test_sample_group_rejects_non_scalar_domain_value():
 def test_sample_group_non_distinct_allows_repeats():
     space = qp.parse_param_space(
         None,
-        [{"type": "sample", "placeholders": ["A", "B"], "domain": ["x"], "distinct": False}],
+        [
+            {
+                "type": "sample",
+                "placeholders": ["A", "B"],
+                "domain": ["x"],
+                "distinct": False,
+            }
+        ],
         "[A] [B]",
     )
     assert space.sample(random.Random(9)) == {"A": "x", "B": "x"}
@@ -269,7 +352,10 @@ def test_sample_group_non_distinct_allows_repeats():
 
 def test_sample_is_in_template_order():
     space = qp.parse_param_space(
-        {"Y": {"type": "int", "min": 1, "max": 1}, "X": {"type": "int", "min": 2, "max": 2}},
+        {
+            "Y": {"type": "int", "min": 1, "max": 1},
+            "X": {"type": "int", "min": 2, "max": 2},
+        },
         None,
         "first=[X] second=[Y]",  # template order is X, then Y
     )
@@ -278,7 +364,10 @@ def test_sample_is_in_template_order():
 
 def test_sampling_is_deterministic_per_seed():
     space = qp.parse_param_space(
-        {"X": {"type": "int", "min": 1, "max": 100}, "R": {"type": "categorical", "values": list("abcdef")}},
+        {
+            "X": {"type": "int", "min": 1, "max": 100},
+            "R": {"type": "categorical", "values": list("abcdef")},
+        },
         None,
         "v=[X] r=[R]",
     )
@@ -306,7 +395,13 @@ def test_metadata_shapes_for_widgets():
 def test_group_metadata_is_per_column_categorical():
     space = qp.parse_param_space(
         None,
-        [{"type": "sample", "placeholders": ["I1", "I2"], "domain": ["13", "31", "23"]}],
+        [
+            {
+                "type": "sample",
+                "placeholders": ["I1", "I2"],
+                "domain": ["13", "31", "23"],
+            }
+        ],
         "[I1] [I2]",
     )
     meta = space.metadata()

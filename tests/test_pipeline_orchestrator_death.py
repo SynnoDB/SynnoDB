@@ -13,6 +13,7 @@ PR_SET_PDEATHSIG - so if the arming ever regressed, the engine would block forev
 would fail with survivors. An intermediate 'orchestrator' process (death_orchestrator.py) owns the
 engine so the test can kill it without killing pytest itself.
 """
+
 import os
 import select
 import signal
@@ -30,11 +31,15 @@ _ACTION_RUN = 1
 _DONE_TOKEN_BYTES = 8
 
 _SOAK_DIR = Path(__file__).parent / "soak_engine"
-_HOTPATCH_DIR = Path(__file__).resolve().parents[1] / "src" / "synnodb" / "cpp_runner" / "hotpatch"
+_HOTPATCH_DIR = (
+    Path(__file__).resolve().parents[1] / "src" / "synnodb" / "cpp_runner" / "hotpatch"
+)
 _CXX = os.environ.get("CXX", "g++")
 
 pytestmark = pytest.mark.skipif(
-    shutil.which(_CXX) is None or not sys.platform.startswith("linux") or not Path("/proc").exists(),
+    shutil.which(_CXX) is None
+    or not sys.platform.startswith("linux")
+    or not Path("/proc").exists(),
     reason="needs a C++ compiler and Linux /proc",
 )
 
@@ -48,22 +53,51 @@ def _compile(args: list[str]) -> None:
 @pytest.fixture(scope="module")
 def soak_build(tmp_path_factory) -> Path:
     build_dir = tmp_path_factory.mktemp("soak_death")
-    _compile([
-        _CXX, "-O2", "-std=c++20", "-I", str(_HOTPATCH_DIR),
-        "-o", str(build_dir / "db_soak_host"),
-        str(_SOAK_DIR / "host_soak.cpp"), str(_HOTPATCH_DIR / "build_id.cpp"), "-ldl",
-    ])
+    _compile(
+        [
+            _CXX,
+            "-O2",
+            "-std=c++20",
+            "-I",
+            str(_HOTPATCH_DIR),
+            "-o",
+            str(build_dir / "db_soak_host"),
+            str(_SOAK_DIR / "host_soak.cpp"),
+            str(_HOTPATCH_DIR / "build_id.cpp"),
+            "-ldl",
+        ]
+    )
     for name in ("loader", "query"):
-        _compile([
-            _CXX, "-O2", "-std=c++20", "-shared", "-fPIC", "-I", str(_SOAK_DIR),
-            "-Wl,--build-id", "-o", str(build_dir / f"lib{name}_soak.so"),
-            str(_SOAK_DIR / f"{name}_soak.cpp"),
-        ])
-    _compile([
-        _CXX, "-O2", "-std=c++20", "-shared", "-fPIC", "-I", str(_SOAK_DIR),
-        f"-Wl,--build-id=0x{0:040x}", "-o", str(build_dir / "libbuilder_soak.so"),
-        str(_SOAK_DIR / "builder_soak.cpp"),
-    ])
+        _compile(
+            [
+                _CXX,
+                "-O2",
+                "-std=c++20",
+                "-shared",
+                "-fPIC",
+                "-I",
+                str(_SOAK_DIR),
+                "-Wl,--build-id",
+                "-o",
+                str(build_dir / f"lib{name}_soak.so"),
+                str(_SOAK_DIR / f"{name}_soak.cpp"),
+            ]
+        )
+    _compile(
+        [
+            _CXX,
+            "-O2",
+            "-std=c++20",
+            "-shared",
+            "-fPIC",
+            "-I",
+            str(_SOAK_DIR),
+            f"-Wl,--build-id=0x{0:040x}",
+            "-o",
+            str(build_dir / "libbuilder_soak.so"),
+            str(_SOAK_DIR / "builder_soak.cpp"),
+        ]
+    )
     return build_dir
 
 
@@ -74,7 +108,7 @@ def _descendants(root: int) -> list[int]:
             continue
         try:
             data = Path(f"/proc/{entry}/stat").read_text()
-            ppid = int(data[data.rindex(")") + 2:].split()[1])
+            ppid = int(data[data.rindex(")") + 2 :].split()[1])
         except (OSError, ValueError):
             continue
         children.setdefault(ppid, []).append(int(entry))
@@ -91,7 +125,7 @@ def _running(pid: int) -> bool:
     collects it; that is dead, not a surviving engine, so treat it as not running."""
     try:
         data = Path(f"/proc/{pid}/stat").read_text()
-        state = data[data.rindex(")") + 2:].split()[0]
+        state = data[data.rindex(")") + 2 :].split()[0]
         return state != "Z"
     except (OSError, ValueError):
         return False
@@ -112,9 +146,16 @@ def test_orchestrator_death_reaps_the_engine_tree(soak_build):
     p2c_r, p2c_w = os.pipe()
     c2p_r, c2p_w = os.pipe()
     orch = subprocess.Popen(
-        [sys.executable, str(_SOAK_DIR / "death_orchestrator.py"),
-         str(soak_build), str(p2c_r), str(c2p_w)],
-        pass_fds=(p2c_r, c2p_w), stdout=subprocess.PIPE, text=True,
+        [
+            sys.executable,
+            str(_SOAK_DIR / "death_orchestrator.py"),
+            str(soak_build),
+            str(p2c_r),
+            str(c2p_w),
+        ],
+        pass_fds=(p2c_r, c2p_w),
+        stdout=subprocess.PIPE,
+        text=True,
     )
     os.close(p2c_r)
     os.close(c2p_w)
@@ -123,7 +164,9 @@ def test_orchestrator_death_reaps_the_engine_tree(soak_build):
     try:
         # The orchestrator prints the engine's top pid once it is launched.
         ready, _, _ = select.select([orch.stdout], [], [], 60.0)
-        assert ready, "orchestrator never reported the engine pid (engine failed to start)"
+        assert ready, (
+            "orchestrator never reported the engine pid (engine failed to start)"
+        )
         line = orch.stdout.readline()
         assert line.strip(), "orchestrator exited without reporting an engine pid"
         engine_pid = int(line.strip())
@@ -160,7 +203,9 @@ def test_orchestrator_death_reaps_the_engine_tree(soak_build):
             if not survivors:
                 break
             time.sleep(0.05)
-        assert not survivors, f"engine processes survived orchestrator death (orphaned): {survivors}"
+        assert not survivors, (
+            f"engine processes survived orchestrator death (orphaned): {survivors}"
+        )
     finally:
         for fd in (p2c_w, c2p_r):
             try:

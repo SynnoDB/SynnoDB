@@ -8,6 +8,7 @@ specs; correlated / distinct placeholders (Q7 nation pair, Q16/Q22 k-distinct, Q
 use a joint ``param_groups`` spec. This is exactly the shape a BI dashboard would render as
 sliders / dropdowns / date-pickers.
 """
+
 import json
 from pathlib import Path
 

@@ -78,8 +78,10 @@ def _is_table_header(line: str) -> bool:
     # Common header contains "Overhead" or "Children" and "Symbol"
     l = line.strip().lower()
     return (
-        (("overhead" in l) or ("children" in l)) and "symbol" in l
-    ) or l.startswith("overhead ") or l.startswith("children ")
+        ((("overhead" in l) or ("children" in l)) and "symbol" in l)
+        or l.startswith("overhead ")
+        or l.startswith("children ")
+    )
 
 
 def parse_perf_report_text(text: str) -> Tuple[List[Hotspot], Dict[str, int]]:
@@ -255,7 +257,9 @@ def hotspots_to_table(hotspots: List[Hotspot]) -> str:
     return "\n".join(lines)
 
 
-def build_summary_text(hotspots: List[Hotspot], callgraph: List[Tuple[float, str]]) -> str:
+def build_summary_text(
+    hotspots: List[Hotspot], callgraph: List[Tuple[float, str]]
+) -> str:
     lines = []
     lines.append(hotspots_to_table(hotspots))
     if callgraph:

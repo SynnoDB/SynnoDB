@@ -9,6 +9,7 @@ Returns the lowercase-hex build-id, or ``None`` when the file is missing,
 unreadable, not a 64-bit ELF, or carries no build-id note - callers treat
 ``None`` as "no change signal" and leave the runner as-is.
 """
+
 from __future__ import annotations
 
 import struct

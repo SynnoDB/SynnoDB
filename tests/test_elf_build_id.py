@@ -4,6 +4,7 @@ It is the loader-source-change detector behind the engine restart in run.py, so 
 wrong-but-non-None result would either restart the engine needlessly or, worse,
 keep a stale one; a robust None on unreadable input keeps it from thrashing.
 """
+
 import os
 import shutil
 import subprocess
@@ -21,7 +22,7 @@ pytestmark = pytest.mark.skipif(
     reason="needs a C++ compiler producing ELF shared objects",
 )
 
-_SRC = "extern \"C\" int f() { return 0; }\n"
+_SRC = 'extern "C" int f() { return 0; }\n'
 
 
 def _build_so(path: Path, build_id_flag: str) -> None:

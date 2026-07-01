@@ -11,6 +11,7 @@ execute bespoke → (sampled) cross-check against DuckDB. With ``mode=off``, or 
 engines registered, the router short-circuits to DuckDB immediately (and without parsing),
 guaranteeing byte-identical behavior at no per-query cost.
 """
+
 from __future__ import annotations
 
 import random
@@ -45,7 +46,7 @@ class RouteDecision:
     """
 
     routed: bool
-    result: Optional[Any]            # SynnoResult when routed; None otherwise
+    result: Optional[Any]  # SynnoResult when routed; None otherwise
     trace: RouteTrace
     stale_tables: Tuple[str, ...] = field(default_factory=tuple)
 
@@ -107,7 +108,9 @@ class QueryRouter:
                     c["cross_check_mismatch"] += 1
         elif trace.decision == "fallback":
             c["fell_back"] += 1
-            self._fallback_reasons[trace.reason] = self._fallback_reasons.get(trace.reason, 0) + 1
+            self._fallback_reasons[trace.reason] = (
+                self._fallback_reasons.get(trace.reason, 0) + 1
+            )
 
     def note_blocked_write(self) -> None:
         """Record a write the connection refused (writes are blocked at the connection)."""
@@ -117,7 +120,9 @@ class QueryRouter:
         """A snapshot of the session routing counters plus the fallback-reason breakdown."""
         return {**self.counters, "fallback_reasons": dict(self._fallback_reasons)}
 
-    def _fallback(self, trace: RouteTrace, reason: str, *, matched: bool = False) -> RouteDecision:
+    def _fallback(
+        self, trace: RouteTrace, reason: str, *, matched: bool = False
+    ) -> RouteDecision:
         trace.fell_back(reason)
         if matched and self.policy.mode is RouterMode.BESPOKE_ONLY:
             emit(trace, verbose=self.policy.verbose)
@@ -153,7 +158,11 @@ class QueryRouter:
         """
         names = [spec.name for spec in binding.placeholders]
         if parameters is not None:
-            values = list(parameters) if isinstance(parameters, (list, tuple)) else [parameters]
+            values = (
+                list(parameters)
+                if isinstance(parameters, (list, tuple))
+                else [parameters]
+            )
             if len(values) != len(names):
                 return None
             bound: Dict[str, Any] = {}
@@ -169,25 +178,34 @@ class QueryRouter:
         if binding.template_sql is not None and has_param_markers(binding.template_sql):
             return unify_and_bind(binding.template_sql, sql, names)
         values = extract_literals(sql)
-        return {name: (values[i] if i < len(values) else None) for i, name in enumerate(names)}
+        return {
+            name: (values[i] if i < len(values) else None)
+            for i, name in enumerate(names)
+        }
 
     def _record_failure(self, binding: EngineBinding) -> None:
         count = self._failures.get(binding.template_id, 0) + 1
         self._failures[binding.template_id] = count
-        if count >= self.policy.breaker_threshold and not self.registry.is_quarantined(binding.template_id):
+        if count >= self.policy.breaker_threshold and not self.registry.is_quarantined(
+            binding.template_id
+        ):
             # Make the breaker trip visible: the engine is now permanently sidelined for this
             # session, so a query the operator expects to be accelerated will always fall back.
             logger.warning(
                 "engine %s quarantined after %d consecutive failures (template %s); this query "
                 "now always falls back to DuckDB until the engine is re-registered",
-                binding.engine_id, count, binding.template_id,
+                binding.engine_id,
+                count,
+                binding.template_id,
             )
             self.registry.quarantine(binding.template_id)
 
     def _record_success(self, binding: EngineBinding) -> None:
         self._failures.pop(binding.template_id, None)
 
-    def _serve_reference(self, trace: RouteTrace, reference: Any, binding: EngineBinding) -> RouteDecision:
+    def _serve_reference(
+        self, trace: RouteTrace, reference: Any, binding: EngineBinding
+    ) -> RouteDecision:
         """Serve the trusted DuckDB reference already computed during the cross-check, instead of
         the engine result (on a divergence or a comparison failure). ``decision.routed`` stays True
         because the caller should use this result rather than re-running DuckDB, but ``served_by`` is
@@ -237,12 +255,20 @@ class QueryRouter:
             return self._fallback(trace, "no template match")
 
         # 4. guards (engine readiness, SELECT-only, dirty tables, schema, arity).
-        ctx = GuardContext(sql=sql, binding=binding, conn=conn, registry=self.registry, parameters=parameters)
+        ctx = GuardContext(
+            sql=sql,
+            binding=binding,
+            conn=conn,
+            registry=self.registry,
+            parameters=parameters,
+        )
         ok, results = evaluate(ctx)
         for name, passed, detail in results:
             trace.add_guard(name, passed, detail)
         if not ok:
-            return self._fallback(trace, results[-1][2] if results else "guard failed", matched=True)
+            return self._fallback(
+                trace, results[-1][2] if results else "guard failed", matched=True
+            )
 
         # 5. bind the engine's parameters by matching the query against the template. None
         #    means it matched the structural key but is not actually this template (a
@@ -250,7 +276,11 @@ class QueryRouter:
         #    difference), so fall back rather than run the engine with the wrong values.
         placeholders = self._bind_placeholders(binding, sql, parameters)
         if placeholders is None:
-            return self._fallback(trace, "placeholder binding failed (constant/structure mismatch)", matched=True)
+            return self._fallback(
+                trace,
+                "placeholder binding failed (constant/structure mismatch)",
+                matched=True,
+            )
 
         # 5b. execute bespoke.
         start = time.perf_counter()
@@ -265,14 +295,22 @@ class QueryRouter:
             first_fault = binding.template_id not in self._failures
             (logger.warning if first_fault else logger.debug)(
                 "bespoke engine error (template=%s query_id=%s): %s",
-                binding.template_id, binding.query_id, exc,
+                binding.template_id,
+                binding.query_id,
+                exc,
             )
-            logger.debug("bespoke engine error traceback (template=%s)", binding.template_id, exc_info=True)
+            logger.debug(
+                "bespoke engine error traceback (template=%s)",
+                binding.template_id,
+                exc_info=True,
+            )
             self._record_failure(binding)
             return self._fallback(trace, f"engine error: {exc!r}", matched=True)
         trace.bespoke_ms = (time.perf_counter() - start) * 1000.0
         trace.routed(binding.template_id)
-        self._exec_counts[binding.template_id] = self._exec_counts.get(binding.template_id, 0) + 1
+        self._exec_counts[binding.template_id] = (
+            self._exec_counts.get(binding.template_id, 0) + 1
+        )
 
         # 6. cross-check against DuckDB (correctness + speedup). Sampled by cross_check_rate, with a
         #    burn-in: a template's first verify_first_n executions are always checked. The invariant
@@ -293,17 +331,30 @@ class QueryRouter:
                 self.counters["cross_check_error"] += 1
                 logger.warning(
                     "cross-check reference execution failed for template=%s; falling back to DuckDB "
-                    "instead of serving the engine result unverified: %s", binding.template_id, exc,
+                    "instead of serving the engine result unverified: %s",
+                    binding.template_id,
+                    exc,
                 )
-                return self._fallback(trace, f"cross-check reference error: {exc!r}", matched=True)
+                return self._fallback(
+                    trace, f"cross-check reference error: {exc!r}", matched=True
+                )
 
             trace.cross_checked = True
-            if trace.bespoke_ms and trace.duckdb_ms:  # remember for later speedup estimates
-                self._template_timing[binding.template_id] = (trace.bespoke_ms, trace.duckdb_ms)
+            if (
+                trace.bespoke_ms and trace.duckdb_ms
+            ):  # remember for later speedup estimates
+                self._template_timing[binding.template_id] = (
+                    trace.bespoke_ms,
+                    trace.duckdb_ms,
+                )
             ordered = has_order_by(sql)
-            order_keys = order_by_key_indices(sql, reference.column_names) if ordered else None
+            order_keys = (
+                order_by_key_indices(sql, reference.column_names) if ordered else None
+            )
             try:
-                match = results_equal(table, reference, ordered=ordered, order_keys=order_keys)
+                match = results_equal(
+                    table, reference, ordered=ordered, order_keys=order_keys
+                )
             except Exception as exc:
                 # The reference is in hand but the comparison itself failed. Serve the VERIFIED
                 # DuckDB result (never the unverified engine result, as the old fail-open did) and
@@ -311,9 +362,13 @@ class QueryRouter:
                 self.counters["cross_check_error"] += 1
                 logger.warning(
                     "cross-check comparison failed for template=%s; serving the verified DuckDB "
-                    "result and recording an engine failure: %s", binding.template_id, exc,
+                    "result and recording an engine failure: %s",
+                    binding.template_id,
+                    exc,
                 )
-                trace.add_guard("cross_check", False, f"cross-check comparison error: {exc!r}")
+                trace.add_guard(
+                    "cross_check", False, f"cross-check comparison error: {exc!r}"
+                )
                 self._record_failure(binding)
                 return self._serve_reference(trace, reference, binding)
 
@@ -322,9 +377,14 @@ class QueryRouter:
                 # The engine disagreed with DuckDB. Surface exactly which cells/rows diverged (a
                 # silent quarantine hides a correctness bug from the operator), quarantine the
                 # template, and serve the trusted DuckDB result.
-                diffs, total = results_diff(table, reference, ordered=ordered, order_keys=order_keys)
+                diffs, total = results_diff(
+                    table, reference, ordered=ordered, order_keys=order_keys
+                )
                 diverged = EngineDivergedError(
-                    diffs, engine_id=binding.engine_id, query_id=binding.query_id, total=total
+                    diffs,
+                    engine_id=binding.engine_id,
+                    query_id=binding.query_id,
+                    total=total,
                 )
                 logger.warning("%s", diverged)
                 trace.add_guard("cross_check", False, str(diverged))
@@ -349,8 +409,12 @@ class QueryRouter:
         """
         pol = self.policy
         out: Dict[str, Any] = {
-            "decision": "would-fall-back", "reason": "", "template": None,
-            "guards": [], "placeholders": None, "normalized": None,
+            "decision": "would-fall-back",
+            "reason": "",
+            "template": None,
+            "guards": [],
+            "placeholders": None,
+            "normalized": None,
         }
         if not pol.routing_active:
             out["reason"] = "router disabled" if not pol.enabled else f"mode={pol.mode}"
@@ -371,13 +435,21 @@ class QueryRouter:
             quarantined = self.registry.quarantined_binding(normalized)
             if quarantined is not None:
                 out["template"] = quarantined.template_id
-                out["reason"] = ("engine quarantined after repeated failures or a cross-check "
-                                 "mismatch; DuckDB is serving this query until it is re-registered")
+                out["reason"] = (
+                    "engine quarantined after repeated failures or a cross-check "
+                    "mismatch; DuckDB is serving this query until it is re-registered"
+                )
                 return out
             out["reason"] = "no template match"
             return out
         out["template"] = binding.template_id
-        ctx = GuardContext(sql=sql, binding=binding, conn=conn, registry=self.registry, parameters=parameters)
+        ctx = GuardContext(
+            sql=sql,
+            binding=binding,
+            conn=conn,
+            registry=self.registry,
+            parameters=parameters,
+        )
         ok, results = evaluate(ctx)
         out["guards"] = [{"name": n, "ok": p, "detail": d} for n, p, d in results]
         if not ok:
@@ -387,5 +459,9 @@ class QueryRouter:
         if placeholders is None:
             out["reason"] = "placeholder binding failed (constant/structure mismatch)"
             return out
-        out["decision"], out["reason"], out["placeholders"] = "would-route", "matches template", placeholders
+        out["decision"], out["reason"], out["placeholders"] = (
+            "would-route",
+            "matches template",
+            placeholders,
+        )
         return out

@@ -9,6 +9,7 @@ argv / argparse round-trip and there are no standalone ``run_*.py`` scripts.
 
 The heavy conversation classes are still imported lazily inside each factory.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -85,7 +86,9 @@ def _memory_budget(cfg: "SynnoConfig") -> int | None:
     return None
 
 
-def validate_snapshot(snapshot_config, benchmark, queries_str, query_ids, db_storage, model):
+def validate_snapshot(
+    snapshot_config, benchmark, queries_str, query_ids, db_storage, model
+):
     """Validate that a previous run's logged config matches this run's settings."""
     snapshot_benchmark: str = snapshot_config["benchmark"]
     snapshot_queries_str = snapshot_config["queries_str"]
@@ -162,7 +165,9 @@ def resolve_source_snapshot(
         project=wandb_project,
         fetch_latest_runtimes=False,
     )
-    validate_snapshot(config, benchmark, queries_str, query_ids, db_storage=db_storage, model=model)
+    validate_snapshot(
+        config, benchmark, queries_str, query_ids, db_storage=db_storage, model=model
+    )
     commit_hash = statistics["code/snapshot_hash"]
     assert commit_hash != "N/A", (
         f"Could not retrieve a valid commit hash from wandb for run {wandb_id} in "
@@ -194,6 +199,7 @@ def build_optim_conv_args(ctx: "FrameworkContext"):
 # per-call inputs (the chaining tokens the SynnoDB.<stage> methods pass through).
 # The API always runs with a bespoke storage plan, so bespoke_storage=True here.
 
+
 def _config_storage_plan(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
     return RunConfig(
         **_base_run_config(cfg),
@@ -223,7 +229,12 @@ def _config_base_impl(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
             project=cfg.wandb_project,
         )
         validate_snapshot(
-            config, cfg.workload, cfg.queries, query_ids, db_storage=cfg.db_storage, model=cfg.model
+            config,
+            cfg.workload,
+            cfg.queries,
+            query_ids,
+            db_storage=cfg.db_storage,
+            model=cfg.model,
         )
         storage_plan_snapshot = statistics["code/snapshot_hash"]
         assert storage_plan_snapshot != "N/A", (
@@ -398,7 +409,9 @@ def _factory_base_impl(ctx: "FrameworkContext"):
     )
     from synnodb.workloads.workload_provider_olap import OLAPExecSettings
 
-    sample_query_args_dict = get_sample_query_args(workload_provider=ctx.workload_provider)
+    sample_query_args_dict = get_sample_query_args(
+        workload_provider=ctx.workload_provider
+    )
     exec_settings = get_sample_exec_settings(workload_provider=ctx.workload_provider)
     assert isinstance(exec_settings, OLAPExecSettings)
 
@@ -440,7 +453,9 @@ def _factory_optim(ctx: "FrameworkContext"):
             **ctx.conv_args,
         )
     else:
-        raise Exception(f"Unsupported db_storage for optim conversation: {ctx.db_storage}")
+        raise Exception(
+            f"Unsupported db_storage for optim conversation: {ctx.db_storage}"
+        )
 
 
 def _factory_make_mt(ctx: "FrameworkContext"):
@@ -465,7 +480,9 @@ def _factory_make_mt(ctx: "FrameworkContext"):
             **ctx.conv_args,
         )
     else:
-        raise Exception(f"Unsupported db_storage for make_mt conversation: {ctx.db_storage}")
+        raise Exception(
+            f"Unsupported db_storage for make_mt conversation: {ctx.db_storage}"
+        )
 
 
 def _factory_check_sf(ctx: "FrameworkContext"):
@@ -485,60 +502,70 @@ def _factory_check_sf(ctx: "FrameworkContext"):
 
 
 # ------------------------------- registration -------------------------------
-register_stage(Stage(
-    name="createStoragePlan",
-    usecases=_OLAP,
-    build_config=_config_storage_plan,
-    prepare=prepare_storage_plan,
-    needs_parallelism=False,
-    be_relaxed_supervision=False,
-    factory=_factory_storage_plan,
-    result=_build_storage_plan,
-))
+register_stage(
+    Stage(
+        name="createStoragePlan",
+        usecases=_OLAP,
+        build_config=_config_storage_plan,
+        prepare=prepare_storage_plan,
+        needs_parallelism=False,
+        be_relaxed_supervision=False,
+        factory=_factory_storage_plan,
+        result=_build_storage_plan,
+    )
+)
 
-register_stage(Stage(
-    name="createBaseImpl",
-    usecases=_OLAP,
-    build_config=_config_base_impl,
-    prepare=prepare_base,
-    needs_parallelism=False,
-    be_relaxed_supervision=False,
-    factory=_factory_base_impl,
-    result=_build_base_impl,
-))
+register_stage(
+    Stage(
+        name="createBaseImpl",
+        usecases=_OLAP,
+        build_config=_config_base_impl,
+        prepare=prepare_base,
+        needs_parallelism=False,
+        be_relaxed_supervision=False,
+        factory=_factory_base_impl,
+        result=_build_base_impl,
+    )
+)
 
-register_stage(Stage(
-    name="runOptimLoop",
-    usecases=_OLAP,
-    build_config=_config_optim,
-    prepare=prepare_optim,
-    needs_parallelism=False,
-    be_relaxed_supervision=True,
-    factory=_factory_optim,
-    result=_build_optimized,
-))
+register_stage(
+    Stage(
+        name="runOptimLoop",
+        usecases=_OLAP,
+        build_config=_config_optim,
+        prepare=prepare_optim,
+        needs_parallelism=False,
+        be_relaxed_supervision=True,
+        factory=_factory_optim,
+        result=_build_optimized,
+    )
+)
 
-register_stage(Stage(
-    name="addMultiThreading",
-    usecases=_OLAP,
-    build_config=_config_make_mt,
-    prepare=prepare_mt,
-    needs_parallelism=True,
-    be_relaxed_supervision=True,
-    factory=_factory_make_mt,
-    result=_build_multithreaded,
-))
+register_stage(
+    Stage(
+        name="addMultiThreading",
+        usecases=_OLAP,
+        build_config=_config_make_mt,
+        prepare=prepare_mt,
+        needs_parallelism=True,
+        be_relaxed_supervision=True,
+        factory=_factory_make_mt,
+        result=_build_multithreaded,
+    )
+)
 
 # Dynamic prepare: CHECK_SF replays the source run's prepare. The source stage
 # name is on the RunConfig; prepare_replay_source_run resolves that stage and
 # runs its prepare, and main.py resolves parallelism from it too.
-register_stage(Stage(
-    name="checkSfCorrectness",
-    usecases=_OLAP,
-    build_config=_config_check_sf,
-    prepare=prepare_replay_source_run,
-    needs_parallelism=False,
-    be_relaxed_supervision=False,
-    factory=_factory_check_sf,
-    result=_build_correctness,
-))
+register_stage(
+    Stage(
+        name="checkSfCorrectness",
+        usecases=_OLAP,
+        build_config=_config_check_sf,
+        prepare=prepare_replay_source_run,
+        needs_parallelism=False,
+        be_relaxed_supervision=False,
+        factory=_factory_check_sf,
+        result=_build_correctness,
+    )
+)

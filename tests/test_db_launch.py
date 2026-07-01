@@ -6,6 +6,7 @@ exec (the keystone invariant - HotpatchProc's IPC must survive the launcher), an
 the cgroup manager's parsing/fail-closed logic. The privileged cgroup-OOM path is
 covered in test_hotpatch_cgroup.py, gated on real delegation.
 """
+
 import os
 import subprocess
 import sys
@@ -39,9 +40,9 @@ def test_exec_passthrough(launcher):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--cgroup"],          # flag missing its value
-        ["--as-limit"],        # flag missing its value
-        ["--"],                # no target program
+        ["--cgroup"],  # flag missing its value
+        ["--as-limit"],  # flag missing its value
+        ["--"],  # no target program
         ["--bogus", "--", "/bin/true"],  # unknown flag
     ],
 )
@@ -53,9 +54,16 @@ def test_usage_errors_exit_64(launcher, argv):
 def test_fail_closed_on_unjoinable_cgroup(launcher):
     """A bad --cgroup must abort before exec, not run the target unbounded."""
     out = subprocess.run(
-        [launcher, "--cgroup", "/sys/fs/cgroup/does/not/exist", "--",
-         "/bin/echo", "SHOULD_NOT_RUN"],
-        capture_output=True, text=True,
+        [
+            launcher,
+            "--cgroup",
+            "/sys/fs/cgroup/does/not/exist",
+            "--",
+            "/bin/echo",
+            "SHOULD_NOT_RUN",
+        ],
+        capture_output=True,
+        text=True,
     )
     assert out.returncode == 83, out.stderr
     assert "SHOULD_NOT_RUN" not in out.stdout
@@ -64,9 +72,17 @@ def test_fail_closed_on_unjoinable_cgroup(launcher):
 def test_as_limit_is_enforced(launcher):
     """--as-limit caps RLIMIT_AS so an over-budget allocation fails in the target."""
     out = subprocess.run(
-        [launcher, "--as-limit", str(64 * 1024 * 1024), "--",
-         sys.executable, "-c", "b = bytearray(256*1024*1024); print('ALLOC OK')"],
-        capture_output=True, text=True,
+        [
+            launcher,
+            "--as-limit",
+            str(64 * 1024 * 1024),
+            "--",
+            sys.executable,
+            "-c",
+            "b = bytearray(256*1024*1024); print('ALLOC OK')",
+        ],
+        capture_output=True,
+        text=True,
     )
     assert out.returncode != 0
     assert "ALLOC OK" not in out.stdout
@@ -76,7 +92,8 @@ def test_sets_new_session(launcher):
     """The target becomes its own session leader (PID == SID) for group reaping."""
     out = subprocess.run(
         [launcher, "--", "/bin/sh", "-c", 'echo "$$ $(ps -o sid= -p $$)"'],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert out.returncode == 0, out.stderr
     pid, sid = out.stdout.split()
@@ -124,7 +141,12 @@ def test_memory_events_parsing(tmp_path):
     )
     events = RunnerCgroup(tmp_path).memory_events()
     assert events == {
-        "low": 0, "high": 0, "max": 37, "oom": 1, "oom_kill": 2, "oom_group_kill": 1
+        "low": 0,
+        "high": 0,
+        "max": 37,
+        "oom": 1,
+        "oom_kill": 2,
+        "oom_group_kill": 1,
     }
 
 

@@ -1,6 +1,7 @@
 """Zero-overhead drop-in: with no engines registered, the router falls back without parsing,
 so an engine-less connection pays nothing per query.
 """
+
 from __future__ import annotations
 
 import synnodb
@@ -28,16 +29,28 @@ def test_nonempty_registry_does_normalize(monkeypatch):
     from synnodb.router.registry import ColumnSpec, EngineBinding, PlaceholderSpec
 
     reg = TemplateRegistry()
-    reg.register(EngineBinding(
-        template_id="e::1", normalized_sql=normalize_sql("SELECT a FROM t WHERE a = 1"),
-        query_id="1", engine_id="e", placeholders=(PlaceholderSpec("p0", "INTEGER"),),
-        output_schema=(ColumnSpec("a", "INTEGER"),), tables=frozenset({"t"}),
-        schema_fingerprint="fp",
-    ))
+    reg.register(
+        EngineBinding(
+            template_id="e::1",
+            normalized_sql=normalize_sql("SELECT a FROM t WHERE a = 1"),
+            query_id="1",
+            engine_id="e",
+            placeholders=(PlaceholderSpec("p0", "INTEGER"),),
+            output_schema=(ColumnSpec("a", "INTEGER"),),
+            tables=frozenset({"t"}),
+            schema_fingerprint="fp",
+        )
+    )
     calls = {"n": 0}
     real = router_module.normalize_sql
-    monkeypatch.setattr(router_module, "normalize_sql", lambda s: (calls.__setitem__("n", calls["n"] + 1), real(s))[1])
-    QueryRouter(RouterPolicy(mode=RouterMode.SAMPLED), reg).route("SELECT x FROM other", None, conn=None)
+    monkeypatch.setattr(
+        router_module,
+        "normalize_sql",
+        lambda s: (calls.__setitem__("n", calls["n"] + 1), real(s))[1],
+    )
+    QueryRouter(RouterPolicy(mode=RouterMode.SAMPLED), reg).route(
+        "SELECT x FROM other", None, conn=None
+    )
     assert calls["n"] == 1  # parsed once to compute the structural key
 
 

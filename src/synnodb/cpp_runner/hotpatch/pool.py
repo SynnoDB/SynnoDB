@@ -33,9 +33,7 @@ class _HotpatchHolder:
             # The warm runner was built against a different fingerprint; the
             # hotpatch loop cannot reload this change in place, so retire it and
             # build a fresh engine below.
-            logger.info(
-                "Restarting warm runner %s: build fingerprint changed", key
-            )
+            logger.info("Restarting warm runner %s: build fingerprint changed", key)
             self.terminate(key)
             runner = None
         if runner is None:

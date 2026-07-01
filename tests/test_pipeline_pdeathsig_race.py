@@ -9,6 +9,7 @@ the intended parent, the child _exit()s with kParentDeathSetupFailedExitCode ins
 This drives the real helper (compiled from pipeline.hpp) in a fork, forcing the mismatch branch, and
 asserts the child exits with the sentinel rather than proceeding.
 """
+
 import os
 import shutil
 import subprocess
@@ -18,7 +19,9 @@ from pathlib import Path
 import pytest
 
 _SOAK_DIR = Path(__file__).parent / "soak_engine"
-_HOTPATCH_DIR = Path(__file__).resolve().parents[1] / "src" / "synnodb" / "cpp_runner" / "hotpatch"
+_HOTPATCH_DIR = (
+    Path(__file__).resolve().parents[1] / "src" / "synnodb" / "cpp_runner" / "hotpatch"
+)
 _CXX = os.environ.get("CXX", "g++")
 
 # Mirrors kParentDeathSetupFailedExitCode in pipeline.hpp.
@@ -34,9 +37,18 @@ pytestmark = pytest.mark.skipif(
 def probe(tmp_path_factory) -> Path:
     out = tmp_path_factory.mktemp("pdeathsig") / "probe"
     proc = subprocess.run(
-        [_CXX, "-O2", "-std=c++20", "-I", str(_HOTPATCH_DIR),
-         "-o", str(out), str(_SOAK_DIR / "pdeathsig_race_probe.cpp")],
-        capture_output=True, text=True,
+        [
+            _CXX,
+            "-O2",
+            "-std=c++20",
+            "-I",
+            str(_HOTPATCH_DIR),
+            "-o",
+            str(out),
+            str(_SOAK_DIR / "pdeathsig_race_probe.cpp"),
+        ],
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"compile failed:\n{proc.stderr}")

@@ -2,6 +2,7 @@
 and serving: resolution -> CORE_IDS, the prompt guidance, the engine manifest, and the runtime
 override that runs a published engine at the configured thread count.
 """
+
 from __future__ import annotations
 
 import synnodb
@@ -145,7 +146,9 @@ def test_engine_extra_env_override_beats_manifest_and_empty_when_unknown():
     rec = discovery._engine_extra_env(m, threads_override=None)
     assert rec["CORE_IDS"] == core_ids_to_env(_resolve(2))
     # neither known -> no CORE_IDS; the engine keeps its own default.
-    assert discovery._engine_extra_env(EngineManifest("e", (), threads=None), None) == {}
+    assert (
+        discovery._engine_extra_env(EngineManifest("e", (), threads=None), None) == {}
+    )
 
 
 def _resolve(n: int):

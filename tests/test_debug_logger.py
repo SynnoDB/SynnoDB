@@ -182,6 +182,8 @@ def test_entries_accumulate_in_order(tmp_path):
     dl.log_llm_turn(1, "L")
     dl.log_tool_result(1, "shell", "R")
     out = _read(dl)
-    assert out.index("[Prompt 0") < out.index("[Turn 1 - LLM]") < out.index(
-        "[Turn 1 - Tool: shell]"
+    assert (
+        out.index("[Prompt 0")
+        < out.index("[Turn 1 - LLM]")
+        < out.index("[Turn 1 - Tool: shell]")
     )

@@ -1,6 +1,7 @@
 """Debug/observability plumbing: the router and shm paths must emit enough
 to chase errors. These tests assert the key lifecycle events are logged.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +27,9 @@ def test_enable_debug_logging_is_idempotent():
 
 
 def test_router_logs_every_decision(caplog):
-    con = synnodb.connect(policy=RouterPolicy(mode=RouterMode.SAMPLED), registry=TemplateRegistry())
+    con = synnodb.connect(
+        policy=RouterPolicy(mode=RouterMode.SAMPLED), registry=TemplateRegistry()
+    )
     con.duckdb.execute("CREATE TABLE t(a INTEGER)")  # setup via the escape hatch
     with caplog.at_level(logging.DEBUG, logger="synnodb.router"):
         con.execute("SELECT * FROM t")  # no template -> fallback (logged)

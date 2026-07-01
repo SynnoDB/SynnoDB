@@ -21,6 +21,7 @@ Cursor model mirrors DuckDB exactly: ``execute`` returns the connection and the
 ``fetch*`` methods read the *current* result, which is either a bespoke
 ``SynnoResult`` (when routed) or DuckDB's own last result (when not).
 """
+
 from __future__ import annotations
 
 import sys
@@ -108,7 +109,11 @@ class SynnoConnection:
     # ---- the intercepted entry points ----------------------------------
     def execute(self, query: str, parameters: Any = None) -> "SynnoConnection":
         router = self._router
-        if router is not None and router.policy.block_writes and not is_read_only_query(query):
+        if (
+            router is not None
+            and router.policy.block_writes
+            and not is_read_only_query(query)
+        ):
             router.note_blocked_write()
             raise WriteNotSupportedError(write_not_supported_message(query))
         with self._spinner():
@@ -128,8 +133,11 @@ class SynnoConnection:
         t0 = time.perf_counter()
         self._exec_duckdb(query, parameters)
         object.__setattr__(self, "_current", None)
-        object.__setattr__(self, "_last", {"served_by": "duckdb",
-                                           "duckdb_ms": (time.perf_counter() - t0) * 1000.0})
+        object.__setattr__(
+            self,
+            "_last",
+            {"served_by": "duckdb", "duckdb_ms": (time.perf_counter() - t0) * 1000.0},
+        )
 
     def _capture_routed(self, decision: Any) -> None:
         tr = decision.trace
@@ -137,12 +145,20 @@ class SynnoConnection:
             # The engine ran but diverged (or could not be compared); the trusted DuckDB reference
             # was served. Report it honestly so the footer shows DuckDB, not a bogus engine speedup
             # for a result the engine did not actually produce.
-            object.__setattr__(self, "_last", {"served_by": "duckdb", "duckdb_ms": tr.duckdb_ms})
+            object.__setattr__(
+                self, "_last", {"served_by": "duckdb", "duckdb_ms": tr.duckdb_ms}
+            )
         else:
-            object.__setattr__(self, "_last", {
-                "served_by": "engine", "engine_ms": tr.bespoke_ms,
-                "duckdb_ms": tr.duckdb_ms, "template": tr.template,
-            })
+            object.__setattr__(
+                self,
+                "_last",
+                {
+                    "served_by": "engine",
+                    "engine_ms": tr.bespoke_ms,
+                    "duckdb_ms": tr.duckdb_ms,
+                    "template": tr.template,
+                },
+            )
 
     def _spinner(self):
         # Interactive-only: off a TTY this is a shared no-op context manager (no thread, no I/O),
@@ -156,7 +172,11 @@ class SynnoConnection:
     def executemany(self, query: str, parameters: Any = None) -> "SynnoConnection":
         # Parameter-batch execution is for writes; never routed, and blocked like any write.
         router = self._router
-        if router is not None and router.policy.block_writes and not is_read_only_query(query):
+        if (
+            router is not None
+            and router.policy.block_writes
+            and not is_read_only_query(query)
+        ):
             router.note_blocked_write()
             raise WriteNotSupportedError(write_not_supported_message(query))
         if parameters is None:
@@ -297,21 +317,31 @@ class SynnoConnection:
         from .display import QueryTiming, format_footer
 
         est = None
-        if (last.get("served_by") == "engine" and last.get("duckdb_ms") is None
-                and last.get("template") and self._router is not None):
+        if (
+            last.get("served_by") == "engine"
+            and last.get("duckdb_ms") is None
+            and last.get("template")
+            and self._router is not None
+        ):
             try:
                 est = self._router.last_duckdb_ms(last["template"])
             except Exception:
                 est = None
-        return format_footer(QueryTiming(
-            served_by=last.get("served_by", "duckdb"), engine_ms=last.get("engine_ms"),
-            duckdb_ms=last.get("duckdb_ms"), duckdb_ms_estimated=est,
-        ))
+        return format_footer(
+            QueryTiming(
+                served_by=last.get("served_by", "duckdb"),
+                engine_ms=last.get("engine_ms"),
+                duckdb_ms=last.get("duckdb_ms"),
+                duckdb_ms_estimated=est,
+            )
+        )
 
     def _render(self, *, max_rows: int = 20) -> str:
         from .display import render_table
 
-        body = render_table(self._materialize_current().to_arrow_table(), max_rows=max_rows)
+        body = render_table(
+            self._materialize_current().to_arrow_table(), max_rows=max_rows
+        )
         footer = self._footer()
         return body + ("\n" + footer if footer else "")
 
@@ -349,9 +379,14 @@ class SynnoConnection:
         # The cursor shares the router, its registry, and therefore its engines: it joins the
         # shared refcount so the engines outlive whichever of parent/cursor closes first.
         return SynnoConnection(
-            self._inner.cursor(), self._router, owns_inner=True,
-            engines_dir=self._engines_dir, mount=self._mount, owns_router=False,
-            engine_refcount=self._engine_refcount, engine_threads=self._engine_threads,
+            self._inner.cursor(),
+            self._router,
+            owns_inner=True,
+            engines_dir=self._engines_dir,
+            mount=self._mount,
+            owns_router=False,
+            engine_refcount=self._engine_refcount,
+            engine_threads=self._engine_threads,
         )
 
     def _close_engines(self) -> None:
@@ -417,8 +452,14 @@ class SynnoConnection:
         """
         router = self._router
         if router is None:
-            return {"decision": "would-fall-back", "reason": "no router",
-                    "template": None, "guards": [], "placeholders": None, "normalized": None}
+            return {
+                "decision": "would-fall-back",
+                "reason": "no router",
+                "template": None,
+                "guards": [],
+                "placeholders": None,
+                "normalized": None,
+            }
         self._maybe_discover()
         return router.why(query, parameters, self)
 
@@ -441,7 +482,11 @@ class SynnoConnection:
                 ).fetchall()
             except Exception:
                 rows = []
-            cols = ",".join(f"{name}:{dtype}" for name, dtype in rows) if rows else "<missing>"
+            cols = (
+                ",".join(f"{name}:{dtype}" for name, dtype in rows)
+                if rows
+                else "<missing>"
+            )
             parts.append(f"{table}({cols})")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 

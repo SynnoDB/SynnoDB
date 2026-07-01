@@ -8,6 +8,7 @@ query files are stubs — so the model saw them fail and went off implementing a
 The prompts now take explicit query_ids (matching the stages' post_stage_validate
 gates, which were already scoped to self.all_query_ids).
 """
+
 from __future__ import annotations
 
 from synnodb.conversations.prompts_gen import (

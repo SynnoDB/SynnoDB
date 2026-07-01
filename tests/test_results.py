@@ -13,11 +13,11 @@ def test_storage_plan_carries_the_document(tmp_path):
     plan = _build_storage_plan("rid", "snaphash", tmp_path, None, {})
     assert isinstance(plan, StoragePlan)
     assert plan.text == "PLAN BODY"
-    assert str(plan) == "PLAN BODY"          # the object IS the document
+    assert str(plan) == "PLAN BODY"  # the object IS the document
     assert plan.path == tmp_path / "storage_plan.txt"
     assert plan.run_id == "rid"
     assert plan.snapshot_hash == "snaphash"  # W&B-free chaining token
-    assert _as_arg(plan) == "rid"            # chains on its run id
+    assert _as_arg(plan) == "rid"  # chains on its run id
 
 
 def test_storage_plan_missing_file_is_empty_not_an_error(tmp_path):
@@ -39,6 +39,6 @@ def test_base_impl_collects_generated_engine_files(tmp_path):
 
 def test_artifact_without_run_id_cannot_chain():
     plan = StoragePlan(None, Path("x"), None, Path("x/storage_plan.txt"), "")
-    assert not plan                          # falsy: nothing to chain
+    assert not plan  # falsy: nothing to chain
     with pytest.raises(ValueError, match="cannot chain"):
         _as_arg(plan)

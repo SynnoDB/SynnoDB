@@ -12,6 +12,7 @@ built with ``cpp_helpers/column_egress.hpp`` - decimal128 straight from the engi
 double round-trip. ``ShmHotLoadEngine`` (below) is the zero-copy hot-load over
 ``/dev/shm`` behind the same ``BespokeEngine`` interface.
 """
+
 from __future__ import annotations
 
 import logging
@@ -44,7 +45,9 @@ class ProcessEngine:
     ) -> None:
         self.engine_id = engine_id
         self.workspace = Path(workspace)
-        self.parquet_dir = str(parquet_dir).rstrip("/") + "/"  # loader expects trailing /
+        self.parquet_dir = (
+            str(parquet_dir).rstrip("/") + "/"
+        )  # loader expects trailing /
         self.binary = binary
         self.memory_limit_bytes = memory_limit_bytes
         self.timeout_s = timeout_s
@@ -110,19 +113,30 @@ class ProcessEngine:
 
         log.debug(
             "engine=%s: workspace not writable by uid=%d; using scratch cwd=%s",
-            self.engine_id, uid, scratch,
+            self.engine_id,
+            uid,
+            scratch,
         )
         self._cwd = scratch
         self._result_dir = scratch / "results"
 
     def _runner(self) -> Any:
-        from synnodb.cpp_runner.hotpatch.hotpatch_proc import HotpatchProc  # heavy: lazy
+        from synnodb.cpp_runner.hotpatch.hotpatch_proc import (
+            HotpatchProc,
+        )  # heavy: lazy
 
         if self._proc is None:
             self._ensure_writable_cwd()
             cmd = f"{self.binary} {self.parquet_dir}"
-            log.info("engine=%s starting warm runner: %s (cwd=%s)", self.engine_id, cmd, self._cwd)
-            self._proc = HotpatchProc(command=cmd, cwd=self._cwd, memory_limit_bytes=self.memory_limit_bytes)
+            log.info(
+                "engine=%s starting warm runner: %s (cwd=%s)",
+                self.engine_id,
+                cmd,
+                self._cwd,
+            )
+            self._proc = HotpatchProc(
+                command=cmd, cwd=self._cwd, memory_limit_bytes=self.memory_limit_bytes
+            )
         return self._proc
 
     def run(self, query_id: str, placeholders: Mapping[str, Any]) -> pa.Table:
@@ -141,19 +155,25 @@ class ProcessEngine:
         log.debug("engine=%s run query_id=%s line=%r", self.engine_id, query_id, qa)
         result = runner.run(timeout=self.timeout_s, query_lines=[qa], run_env=run_env)
 
-        for qr in (result.query_results or []):
+        for qr in result.query_results or []:
             err = getattr(qr, "error", None)
             if err:
                 raise EngineExecutionError(
                     f"engine reported an error for query {query_id}: {err}",
-                    engine_id=self.engine_id, query_id=str(query_id), req_id=req_id,
-                    response=result.response, stderr=result.stderr,
+                    engine_id=self.engine_id,
+                    query_id=str(query_id),
+                    req_id=req_id,
+                    response=result.response,
+                    stderr=result.stderr,
                 )
         if not arrow_path.exists():
             raise EngineExecutionError(
                 "engine produced no result file (result_<req_id>.arrow)",
-                engine_id=self.engine_id, query_id=str(query_id), req_id=req_id,
-                response=result.response, stderr=result.stderr,
+                engine_id=self.engine_id,
+                query_id=str(query_id),
+                req_id=req_id,
+                response=result.response,
+                stderr=result.stderr,
             )
         try:
             # Exact, typed: the engine built Arrow (decimal128 from its int128 accumulators),
@@ -164,12 +184,21 @@ class ProcessEngine:
             # diagnostics, not an opaque pyarrow/IO error from deep in the read.
             raise EngineExecutionError(
                 f"failed to read engine result: {exc}",
-                engine_id=self.engine_id, query_id=str(query_id), req_id=req_id,
-                response=result.response, stderr=result.stderr,
+                engine_id=self.engine_id,
+                query_id=str(query_id),
+                req_id=req_id,
+                response=result.response,
+                stderr=result.stderr,
             ) from exc
         # A 0-row table is a legitimate empty answer (not an error); the cross-check compares it to
         # DuckDB by row content, so an empty engine result vs a non-empty DuckDB result mismatches.
-        log.debug("engine=%s query_id=%s -> %d rows, %d cols", self.engine_id, query_id, table.num_rows, table.num_columns)
+        log.debug(
+            "engine=%s query_id=%s -> %d rows, %d cols",
+            self.engine_id,
+            query_id,
+            table.num_rows,
+            table.num_columns,
+        )
         return table
 
     def _read_arrow(self, path: Path) -> pa.Table:
@@ -218,7 +247,7 @@ def _proc_start_time(pid: int) -> Optional[str]:
         with open(f"/proc/{pid}/stat", "r") as f:
             data = f.read()
         # field 2 (comm) is parenthesized and may contain spaces/parens; split after the last ')'.
-        post = data[data.rfind(")") + 2:].split()
+        post = data[data.rfind(")") + 2 :].split()
         return post[19]  # field 22 overall -> index 19 among the post-comm fields
     except (OSError, IndexError):
         return None
@@ -237,7 +266,7 @@ def _sweep_ingest_orphans(base: Path) -> int:
     except OSError:
         return 0
     for path in children:
-        parts = path.name[len(_INGEST_PREFIX):].split("-")
+        parts = path.name[len(_INGEST_PREFIX) :].split("-")
         pid_str = parts[0] if parts else ""
         tagged_start = parts[1] if len(parts) > 1 else None
         if not pid_str.isdigit():
@@ -246,7 +275,9 @@ def _sweep_ingest_orphans(base: Path) -> int:
         alive = _pid_alive(pid)
         # Reap if dead, or if alive but the start time no longer matches (PID recycled). When the
         # tag or /proc has no start time, fall back to the dead-PID check alone.
-        if alive and (tagged_start is None or _proc_start_time(pid) in (None, tagged_start)):
+        if alive and (
+            tagged_start is None or _proc_start_time(pid) in (None, tagged_start)
+        ):
             continue
         shutil.rmtree(path, ignore_errors=True)
         removed += 1
@@ -288,7 +319,9 @@ class ShmHotLoadEngine(ProcessEngine):
 
         from .shm_transport import SHM_DIR
 
-        if self._ingest_dir is not None:  # idempotent: drop a prior snapshot before re-ingesting
+        if (
+            self._ingest_dir is not None
+        ):  # idempotent: drop a prior snapshot before re-ingesting
             shutil.rmtree(self._ingest_dir, ignore_errors=True)
             self._ingest_dir = None
             self._loaded = False
@@ -314,7 +347,9 @@ class ShmHotLoadEngine(ProcessEngine):
             )
         pid = os.getpid()
         start = _proc_start_time(pid) or "0"
-        ingest_dir = Path(tempfile.mkdtemp(prefix=f"{_INGEST_PREFIX}{pid}-{start}-", dir=base))
+        ingest_dir = Path(
+            tempfile.mkdtemp(prefix=f"{_INGEST_PREFIX}{pid}-{start}-", dir=base)
+        )
         try:
             total = 0
             for name, table in tables.items():
@@ -324,7 +359,13 @@ class ShmHotLoadEngine(ProcessEngine):
                         writer.write_table(table)
                 nbytes = seg.stat().st_size
                 total += nbytes
-                log.debug("engine=%s shm ingest table=%s rows=%d bytes=%d", self.engine_id, name, table.num_rows, nbytes)
+                log.debug(
+                    "engine=%s shm ingest table=%s rows=%d bytes=%d",
+                    self.engine_id,
+                    name,
+                    table.num_rows,
+                    nbytes,
+                )
         except Exception:
             shutil.rmtree(ingest_dir, ignore_errors=True)
             raise
@@ -336,8 +377,13 @@ class ShmHotLoadEngine(ProcessEngine):
         self._result_dir = ingest_dir
         self.extra_env = {**self.extra_env, "SYNNODB_SHM_INGEST": str(ingest_dir)}
         self._loaded = True
-        log.info("engine=%s ingested %d table(s), %.1f MiB via shm -> %s",
-                 self.engine_id, len(tables), total / 1048576, ingest_dir)
+        log.info(
+            "engine=%s ingested %d table(s), %.1f MiB via shm -> %s",
+            self.engine_id,
+            len(tables),
+            total / 1048576,
+            ingest_dir,
+        )
 
     def run(self, query_id: str, placeholders: Mapping[str, Any]) -> pa.Table:
         if not self._loaded:

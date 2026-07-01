@@ -12,6 +12,7 @@ This module copies every public exception class (anything subclassing ``Exceptio
 and the ``typing`` namespace out of ``duckdb`` into its own namespace, so both
 ``synnodb.SomeException`` and ``from synnodb.duckdb_compat.errors import ...`` work.
 """
+
 from __future__ import annotations
 
 import duckdb as _duckdb

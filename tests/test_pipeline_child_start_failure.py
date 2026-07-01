@@ -16,6 +16,7 @@ child-start failure (not the generic "threw a C++ exception"). The select()
 timeout makes a regression - e.g. dropping the new sentinel from run_parent's
 early-return - fail fast rather than wedge the suite.
 """
+
 import json
 import os
 import select
@@ -36,7 +37,9 @@ _CXX = os.environ.get("CXX", "g++")
 # Mirrors ipc::MESSAGE_MAGIC / ACTION_RUN and kChildStartFailedExitCode in pipeline.hpp.
 _MAGIC = 0x31525043
 _ACTION_RUN = 1
-_CHILD_START_FAILED_EXIT_CODE = 71  # EX_OSERR; the distinct child-start-failure sentinel
+_CHILD_START_FAILED_EXIT_CODE = (
+    71  # EX_OSERR; the distinct child-start-failure sentinel
+)
 
 pytestmark = pytest.mark.skipif(
     shutil.which(_CXX) is None or not sys.platform.startswith("linux"),
@@ -54,21 +57,41 @@ def _compile(args: list[str]) -> None:
 def childfail_db(tmp_path_factory) -> Path:
     build_dir = tmp_path_factory.mktemp("childfail")
     # Real db.cpp + a minimal use-case whose stage fails to start its child.
-    _compile([
-        _CXX, "-O2", "-std=c++20",
-        "-I", str(_CPP_RUNNER), "-I", str(_HOTPATCH_DIR), "-I", str(_CPP_RUNNER / "api"),
-        "-o", str(build_dir / "db_childfail"),
-        str(_CPP_RUNNER / "db.cpp"),
-        str(_SOAK_DIR / "db_childfail_usecase.cpp"),
-        str(_HOTPATCH_DIR / "build_id.cpp"),
-        "-ldl",
-    ])
+    _compile(
+        [
+            _CXX,
+            "-O2",
+            "-std=c++20",
+            "-I",
+            str(_CPP_RUNNER),
+            "-I",
+            str(_HOTPATCH_DIR),
+            "-I",
+            str(_CPP_RUNNER / "api"),
+            "-o",
+            str(build_dir / "db_childfail"),
+            str(_CPP_RUNNER / "db.cpp"),
+            str(_SOAK_DIR / "db_childfail_usecase.cpp"),
+            str(_HOTPATCH_DIR / "build_id.cpp"),
+            "-ldl",
+        ]
+    )
     # The loader stage loads this .so before trying (and failing) to start its child.
-    _compile([
-        _CXX, "-O2", "-std=c++20", "-shared", "-fPIC", "-I", str(_SOAK_DIR),
-        "-Wl,--build-id", "-o", str(build_dir / "libloader_soak.so"),
-        str(_SOAK_DIR / "loader_soak.cpp"),
-    ])
+    _compile(
+        [
+            _CXX,
+            "-O2",
+            "-std=c++20",
+            "-shared",
+            "-fPIC",
+            "-I",
+            str(_SOAK_DIR),
+            "-Wl,--build-id",
+            "-o",
+            str(build_dir / "libloader_soak.so"),
+            str(_SOAK_DIR / "loader_soak.cpp"),
+        ]
+    )
     return build_dir
 
 

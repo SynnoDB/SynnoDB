@@ -1,11 +1,11 @@
 """Interactive display: the result table renderer, the query-time / speedup footer with a speed
 emoji, and the performance-safe spinner (a no-op off a TTY so the hot path pays nothing)."""
+
 from __future__ import annotations
 
 import time
 
 import pyarrow as pa
-import pytest
 
 import synnodb
 from synnodb.duckdb_compat.display import (
@@ -51,16 +51,21 @@ def test_render_table_handles_nulls_and_empty():
 
 # ---- speedup badge + footer ------------------------------------------------
 def test_speed_badge_tiers():
-    assert speed_badge(100) == "\U0001f525"   # fire
-    assert speed_badge(20) == "\U0001f680"    # rocket
+    assert speed_badge(100) == "\U0001f525"  # fire
+    assert speed_badge(20) == "\U0001f680"  # rocket
     assert speed_badge(5) == "⚡"
     assert speed_badge(1.5) == "\U0001f642"
-    assert speed_badge(0.5) == "\U0001f422"   # turtle
+    assert speed_badge(0.5) == "\U0001f422"  # turtle
 
 
 def test_footer_engine_with_real_speedup():
     f = format_footer(QueryTiming("engine", engine_ms=2.0, duckdb_ms=20.0))
-    assert "synno engine" in f and "2.0 ms" in f and "10.0× vs DuckDB" in f and "\U0001f680" in f
+    assert (
+        "synno engine" in f
+        and "2.0 ms" in f
+        and "10.0× vs DuckDB" in f
+        and "\U0001f680" in f
+    )
 
 
 def test_footer_engine_with_estimate_and_without_data():
@@ -71,7 +76,9 @@ def test_footer_engine_with_estimate_and_without_data():
 
 
 def test_footer_duckdb():
-    assert "DuckDB" in format_footer(QueryTiming("duckdb", duckdb_ms=12.3)) and "12.3 ms" in _f("duckdb", 12.3)
+    assert "DuckDB" in format_footer(
+        QueryTiming("duckdb", duckdb_ms=12.3)
+    ) and "12.3 ms" in _f("duckdb", 12.3)
 
 
 def _f(served, dms):
@@ -137,14 +144,18 @@ def test_connection_routed_footer_shows_engine_speedup_and_caches_duckdb_time():
     def eng(ph):
         return pa.table({"c": pa.array([3], pa.int64())})
 
-    con = synnodb.connect(policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0),
-                          registry=TemplateRegistry())
+    con = synnodb.connect(
+        policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0),
+        registry=TemplateRegistry(),
+    )
     try:
         con.duckdb.execute("CREATE TABLE t(a INTEGER)")
         con.duckdb.execute("INSERT INTO t VALUES (1),(2),(3)")
         binding = register_engine(
-            con, template_sql="SELECT count(*) AS c FROM t WHERE a >= 1",
-            engine=LocalCallableEngine("synno-x", {"1": eng}), placeholders=[PlaceholderSpec("p0", "INTEGER")],
+            con,
+            template_sql="SELECT count(*) AS c FROM t WHERE a >= 1",
+            engine=LocalCallableEngine("synno-x", {"1": eng}),
+            placeholders=[PlaceholderSpec("p0", "INTEGER")],
         )
         con.execute("SELECT count(*) AS c FROM t WHERE a >= 1")
         out = repr(con)

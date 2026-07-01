@@ -72,6 +72,28 @@ pgrouter-inspect = "synnodb.misc.router.pgrouter.inspect:main"
 Homepage = "https://github.com/JWehrstein/SynnoDB"
 Repository = "https://github.com/JWehrstein/SynnoDB"
 
+[tool.ruff]
+target-version = "py313"
+# Research notebooks and the self-contained router sub-project (own pyproject)
+# are not part of the package lint gate.
+extend-exclude = ["*.ipynb", "src/synnodb/misc/router"]
+
+[tool.ruff.lint]
+# Ruff's default rule set (pyflakes F + a curated pycodestyle subset E4/E7/E9),
+# minus a few checks whose "violations" are intentional in this codebase.
+ignore = [
+    "E402",  # module import not at top — several entrypoint scripts import after sys.path setup
+    "E712",  # `== True/False` — used deliberately in pandas boolean masks
+    "E741",  # ambiguous variable name — a few short names in numeric helpers
+    "E731",  # lambda assignment
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Lazy PEP 562 factory re-exports: names are declared for type-checkers and
+# `__all__` but resolved at runtime via __getattr__, so they read as unused
+# imports (F401) / undefined-in-`__all__` (F405).
+"src/synnodb/__init__.py" = ["F401", "F405"]
+
 [tool.pytest.ini_options]
 # Collect the canonical package test suite (CLAUDE.md: "All tests live in the tests/
 # folder"). The router sub-project under src/synnodb/misc/router ships its own pyproject
