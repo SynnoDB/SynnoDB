@@ -5,6 +5,23 @@
 > real vs planned. Companion to the build plan in
 > [.plans/duckdb_drop_in_router.md](../.plans/duckdb_drop_in_router.md).
 
+> **Realized architecture (read this first).** The out-of-process engine is the
+> factory-generated ``db`` binary held warm by the framework's own ``HotpatchProc``
+> runner - it already had a persistent warm loop and a framed control protocol over
+> dedicated pipe fds, so serving reuses it rather than inventing a second control plane.
+> The Python front is ``ShmHotLoadEngine`` / ``ProcessEngine`` in
+> [router/process_engine.py](../src/synnodb/router/process_engine.py); the router
+> auto-discovers published engines in
+> [duckdb_compat/discovery.py](../src/synnodb/duckdb_compat/discovery.py). Concretely:
+> the parent ingests the live DuckDB tables once as Arrow into a ``/dev/shm`` directory
+> named by ``SYNNODB_SHM_INGEST``; the generated loader maps each ``<table>.arrow``
+> zero-copy; the engine writes its answer as ``result_<req_id>.arrow`` in the same
+> directory. The earlier standalone ``WorkerEngine`` + JSON ``worker_protocol`` design
+> (sections 5 and 7 below describe its *logical* contract) was **removed**: it duplicated
+> the warm loop the binary already has and its reference worker ran DuckDB, not the
+> bespoke engine. The logical message/sequence below still describes the contract; the
+> *transport* is ``HotpatchProc``'s framed protocol + the shm directory, not a bespoke pipe.
+
 ## 1. Purpose
 
 SynnoDB is a drop-in replacement for the DuckDB Python client: a user does
@@ -219,9 +236,8 @@ Logger tree (all children of ``synnodb``; tune individually):
 |--------|-------|
 | `synnodb.router` | every routing decision + full `router-detail` (decision, reason, **each guard's verdict**, timings, cross-check result, speedup, sql) |
 | `synnodb.router.registration` | each binding: tables, **schema fingerprint**, captured **output schema**, **normalized SQL** (the match key) |
-| `synnodb.router.worker` | worker spawn (pid/argv), ingest (per-table rows/bytes/segment), run (query_id, worker-ms, round-trip-ms), worker death (exit code) |
+| `synnodb.router.process_engine` | engine spawn (warm-runner cmd/cwd), shm ingest (per-table rows/bytes, total MiB, ingest dir), run (query_id, rows/cols), engine errors |
 | `synnodb.router.shm` | shm segment writes (rows/bytes), orphan sweeps |
-| `synnodb.worker` (subprocess) | the engine worker's own stderr - load/run/errors **with traceback** (env `SYNNODB_WORKER_LOG`) |
 
 Engine faults log a full traceback at DEBUG (`synnodb.router`), and a cross-check
 mismatch is always a WARNING with the offending SQL. A "why didn't my query route?"
@@ -245,30 +261,29 @@ it match a template?" by comparing the logged `normalized` keys.
 | Result adaptation (Arrow→SynnoResult) + result equality | `synnodb.router.adapt` | **done (Phase 2)** ✓ |
 | Live registration (schema/fingerprint/output capture) | `synnodb.router.registration` | **done (Phase 2)** ✓ |
 | Engine manifest + (de)serialize + register + compatibility gate | `synnodb.router.manifest` | **done (Phase 2)** ✓ |
-| Shared-memory zero-copy Arrow transport (write/read, lifecycle, orphan sweep) | `synnodb.router.shm_transport` | **done (Phase 3a)** ✓ |
-| Out-of-process engine worker (control protocol + shm ingest/egress) | `synnodb.router.worker`, `._worker_main`, `.worker_protocol` | **done (Phase 3b)** ✓ |
+| Shared-memory zero-copy Arrow transport (write/read, lifecycle, orphan sweep) - reference producer/consumer pinning the C++ shm wire format | `synnodb.router.shm_transport` | **done** ✓ |
+| Out-of-process serving engine: warm ``db`` binary over ``HotpatchProc``, ``/dev/shm`` Arrow ingest (``SYNNODB_SHM_INGEST``) + ``result_<req_id>.arrow`` egress, crash-isolated, auto-discovered | `synnodb.router.process_engine` (`ProcessEngine`, `ShmHotLoadEngine`), `duckdb_compat.discovery` | **done** ✓ |
 | Content-addressed engine id + manifest builder + **factory-side writer** | `synnodb.router.manifest` | **done (Phase 0/2)** ✓ |
 | C++ `ReadArrowTableFromShm` / `WriteArrowTableToShm` (zero-copy ingest+egress) | `cpp_helpers/shm_arrow_{loader,writer}.hpp` | **done - compiled & round-tripped vs Python (libarrow 23.0.1)** ✓ |
 | Typed, exact Arrow egress (decimal128/256, int widths, float, bool, date, timestamp, NULLs) via `Cast` | `cpp_helpers/column_egress.hpp` | **done - compiled & egresses exact typed Arrow vs DuckDB** ✓ |
-| Wire shm headers + egress into the live engine build (compiler + templates) | `compiler_factory_olap.py`, `parquet_reader.cpp`, `query_impl.cpp`, `db_olap.cpp` | **integration step** - precise instructions in the header banners; needs the full engine build+data to validate |
-| Factory *calls* `write_manifest_for_engine` at finalization + chain-on-artifact | factory stages (`stages.py`, `api.py`) | one-line drop-in (documented in `manifest.py`); needs factory env |
+| Wire shm headers + egress into the live engine build (compiler + templates): the in-memory loader emits an `if (shm_ingest_enabled())` branch, result via `WriteArrowTableToShm` | `prepare_workspace_olap._gen_table_reads`, `parquet_reader.cpp`, `result_writer.hpp` | **done** ✓ (validated E2E: real q1q6byo engine serves Q1 over `/dev/shm`, bit-exact vs DuckDB) |
+| Factory auto-publishes the finished engine for auto-discovery, in-memory engines as shm-capable with `expected_tables` | `main._publish_generated_engine`, `workloads.engine_publish`, `optimize.optimize_database` | **done** ✓ |
 
-**Test coverage: 101 new tests green (222 repo total, zero regressions).** Python:
-`test_duckdb_compat.py` (drop-in conformance), `test_router.py`
+**Test coverage.** Python: `test_duckdb_compat.py` (drop-in conformance), `test_router.py`
 (policy/normalize/registry/guards/result), `test_router_e2e.py`
 (route/cross-check/quarantine/breaker/fallback matrix), `test_manifest.py`
 (round-trip/register/compat/content-addressing/**factory→runtime loop**),
-`test_shm_transport.py` (zero-copy + lifecycle + orphan sweep), `test_worker_engine.py`
-(out-of-process ingest/run + crash isolation + routing). **Real C++:**
-`test_cpp_shm.py` (compiles `shm_arrow_{loader,writer}.hpp`, round-trips both
-directions vs the Python transport, 1 M-row table), `test_column_egress.py` (compiles
-`column_egress.hpp`, verifies exact typed Arrow egress - decimal128/256, narrowed ints,
-float32, bool, date, timestamp, real NULLs - round-tripped vs pyarrow and DuckDB).
+`test_shm_transport.py` (zero-copy + lifecycle + orphan sweep), `test_router_discovery.py`
+(auto-discovery + binding), `test_factory_publish_shm.py` (auto-publish stamps the shm plane
++ `expected_tables`). **Real compiled engine:** `test_shm_hot_load.py` drives the local
+q1q6byo `db` binary through `synnodb.connect()` over both planes (`/dev/shm` hot-load and the
+parquet snapshot), bit-exact vs DuckDB. **Real C++ helpers:** `test_cpp_shm.py` (compiles
+`shm_arrow_{loader,writer}.hpp`, round-trips both directions vs the Python transport, 1 M-row
+table), `test_column_egress.py` (compiles `column_egress.hpp`, verifies exact typed Arrow
+egress - decimal128/256, narrowed ints, float32, bool, date, timestamp, real NULLs).
 
-_Last updated: Phases 1, 2, 3 + Phase-0 components all implemented and **validated,
-including the C++ data plane and output-struct codegen** (a real compiler + libarrow
-23.0.1 are present in this environment). The only work left is the mechanical wiring
-of the validated C++ pieces into the live engine's build/templates and the
-one-line factory call to `write_manifest_for_engine` - both require the full engine
-build pipeline + benchmark data to exercise end to end, and the integration points
-are documented precisely in the header banners and `manifest.py`._
+_Status: Phases 1-3 + Phase-0 implemented and validated end to end, including the C++ data
+plane wired into the live engine build and the factory auto-publish. The standalone
+``WorkerEngine`` / ``worker_protocol`` design was removed in favour of reusing the generated
+binary's existing warm-runner protocol (``HotpatchProc``); see the realized-architecture note
+at the top._

@@ -33,6 +33,8 @@ from synnodb.router.manifest import (
 from synnodb.router.registry import ColumnSpec, PlaceholderSpec, TemplateRegistry
 from synnodb.workloads.engine_publish import _atomic_publish, publish_engine
 
+from receipt_helpers import passing_receipt, write_fake_engine_db
+
 
 # --------------------------------------------------------------------------- #
 # Test doubles
@@ -77,7 +79,7 @@ def _conn_with_router():
 def _make_workspace(tmp_path, src="int main(){return 0;}") -> Path:
     ws = tmp_path / "ws"
     ws.mkdir(exist_ok=True)
-    (ws / "db").write_text("#!/bin/sh\n")
+    write_fake_engine_db(ws / "db")  # a real build-id so the publish gate's identity check runs
     (ws / "engine.cpp").write_text(src)
     return ws
 
@@ -107,6 +109,7 @@ def test_named_publish_crash_during_flip_keeps_old_engine(tmp_path, monkeypatch)
     ws = _make_workspace(tmp_path)
     engines = tmp_path / "engines"
     d1 = publish_engine(ws, query_templates=[QueryTemplate("1", "select 1", ())],
+                        receipt=passing_receipt(ws, ["1"]),
                         engines_dir=str(engines), name="synno-foo")
     assert (Path(d1) / "manifest.json").exists()
 
@@ -121,6 +124,7 @@ def test_named_publish_crash_during_flip_keeps_old_engine(tmp_path, monkeypatch)
     monkeypatch.setattr(ep.os, "replace", boom)
     with pytest.raises(RuntimeError):
         publish_engine(ws, query_templates=[QueryTemplate("1", "select 2", ())],
+                       receipt=passing_receipt(ws, ["1"]),
                        engines_dir=str(engines), name="synno-foo")
     monkeypatch.setattr(ep.os, "replace", real_replace)
 
@@ -144,6 +148,7 @@ def test_concurrent_republish_same_name_is_safe(tmp_path):
     ws = _make_workspace(tmp_path)
     engines = tmp_path / "engines"
     publish_engine(ws, query_templates=[QueryTemplate("1", "select 1", ())],
+                   receipt=passing_receipt(ws, ["1", "2", "3"]),
                    engines_dir=str(engines), name="synno-foo")
 
     errors: list = []
@@ -152,6 +157,7 @@ def test_concurrent_republish_same_name_is_safe(tmp_path):
         try:
             for _ in range(5):
                 publish_engine(ws, query_templates=[QueryTemplate(qid, f"select {qid}", ())],
+                               receipt=passing_receipt(ws, ["1", "2", "3"]),
                                engines_dir=str(engines), name="synno-foo")
         except Exception as exc:  # noqa: BLE001 - any failure is the bug
             errors.append((qid, exc))
@@ -430,6 +436,7 @@ def test_optimize_refuses_name_collision_with_different_db(tmp_path):
 
     # An engine named synno-tpch already published for database A.
     publish_engine(ws, query_templates=[QueryTemplate("1", "select 1", ())],
+                   receipt=passing_receipt(ws, ["1"]),
                    engines_dir=str(engines), name="synno-tpch",
                    source_db="/data/alpha/tpch.db")
 

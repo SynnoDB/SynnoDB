@@ -6,10 +6,14 @@ executes. Implementations:
 * ``LocalCallableEngine`` — in-process, backed by Python callables. Used for tests
   and for pure-Python engines; it lets the entire routing path (match → guards →
   execute → adapt → cross-check) be exercised without any C++/IPC.
-* (Phase 3) ``WorkerEngine`` — the warm C++ subprocess that dlopens the generated
-  plugin and exchanges Arrow over shared memory. Slots in behind this same
-  interface with no router changes.
-* (optional) ``RemoteEngine`` — the ``bespoke_service`` HTTP contract.
+* ``ProcessEngine`` (``router.process_engine``) — the warm C++ subprocess: a generated
+  ``db`` binary held resident behind ``HotpatchProc``, fed one query line and replying with
+  its exact Arrow result (``result_<req_id>.arrow``). Reads its data from a disk parquet
+  snapshot.
+* ``ShmHotLoadEngine`` (a ``ProcessEngine`` subclass) — the same warm binary, but ingested
+  the connection's live DuckDB tables once as zero-copy Arrow over ``/dev/shm``
+  (``SYNNODB_SHM_INGEST``); both ingest and result ride shared memory. This is the production
+  serving path the router auto-discovers (see ``duckdb_compat.discovery``).
 
 Every implementation returns a ``pyarrow.Table`` whose schema is expected to match
 the binding's canonical (DuckDB) output schema; ``adapt`` turns it into a

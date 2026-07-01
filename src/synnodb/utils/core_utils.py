@@ -34,3 +34,17 @@ def get_cores_for_current_machine(
         core_ids = core_ids[:ncores_to_use]
 
     return len(core_ids), core_ids
+
+
+def core_ids_to_env(core_ids: list[int] | None) -> str:
+    """Build the ``CORE_IDS`` env value the C++ thread pool reads (``init_thread_pool``).
+
+    A non-empty list -> that many worker threads, each pinned to the listed core. ``None``
+    or an empty list -> ``"1"``: a single thread, which both keeps the pool on its serial
+    fast path and stops ``init_thread_pool`` from falling back to "use every hardware core"
+    when no list is provided. Generation (the RunTool) and serving (the router) build the
+    env through this one function so the engine sees an identical thread count either way.
+    """
+    if not core_ids:
+        return "1"
+    return ",".join(str(c) for c in core_ids)

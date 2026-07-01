@@ -2,6 +2,7 @@ import logging
 
 from synnodb.conversations.filenames import get_filenames
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext
+from synnodb.utils.utils import DBStorage
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,15 @@ def prepare_storage_plan(ctx: PrepareContext) -> str:
 
 
 def prepare_base(ctx: PrepareContext) -> str:
+    parallel_ready_in_memory = (
+        getattr(ctx.prepare_workspace_provider, "db_storage", None) == DBStorage.IN_MEMORY
+    )
     usecase_args = {
         **ctx.usecase_prepare_args,
-        "add_thread_pool_to_query_impl": False,
+        # In-memory base query implementations are written in a parallel-ready
+        # shape. Non-parallel runs still execute through CORE_IDS=1, so the pool
+        # takes its serial fast path during base validation.
+        "add_thread_pool_to_query_impl": parallel_ready_in_memory,
         "add_sample_trace": ctx.add_sample_trace,
     }
     return ctx.prepare_workspace_provider.prepare(

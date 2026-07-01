@@ -13,6 +13,30 @@ def _load_txt(path: Path) -> str:
         return f.read()
 
 
+def parallelism_note(num_threads: int) -> str:
+    """Describe the parallelism the generated engine will run at.
+
+    Injected into the storage-plan and base-impl prompts so the layout and the query
+    implementation are designed for the SAME thread count the run tools validate at and
+    the published engine is served at (see ``--threads`` / DuckDB ``config={'threads': N}``).
+    """
+    if num_threads <= 1:
+        return (
+            "Execution model: the generated engine runs each query on a single thread. "
+            "Optimize for sequential scan locality; no cross-thread partitioning is needed."
+        )
+    return (
+        f"Execution model: the generated engine runs each query on {num_threads} worker threads "
+        f"that share this in-memory data. Design so the dominant scans and aggregations split into "
+        f"independent morsels / contiguous row-ranges (about {num_threads}, or a small multiple, so "
+        f"every thread gets several): keep each thread's accumulator state private and cheaply "
+        f"mergeable, build any shared lookup / hash / dictionary / zone-map structure once up front "
+        f"and treat it as read-only during the scan, and avoid a single hot shared structure that "
+        f"every row must update. Prefer layouts where a thread owns a contiguous slice of a table "
+        f"(and can emit its results in slice order) over ones that interleave rows across threads."
+    )
+
+
 # ── Misc────────────────────────────────
 def gen_incorrect_output_prompt(
     trace_mode: bool,
@@ -48,8 +72,11 @@ def gen_storage_plan_prompt(
     schema: str,
     storage_plan_filename: str,
     persistent_storage: bool,
+    num_threads: int,
 ) -> str:
     if persistent_storage:
+        # SSD/persistent base implementations are not parallel-ready (the in-memory pool is
+        # in-memory only), so the SSD template intentionally carries no parallelism note.
         prompt_path = _PROMPTS_DIR / "ssd" / "gen_storage_plan_ssd.txt"
     else:
         prompt_path = _PROMPTS_DIR / "gen_storage_plan.txt"
@@ -60,6 +87,7 @@ def gen_storage_plan_prompt(
         queries_path=queries_filename,
         schema=schema,
         storage_plan_filename=storage_plan_filename,
+        parallelism_note=parallelism_note(num_threads),
     )
 
 
@@ -189,7 +217,22 @@ def base_storage_invariant_check_prompt(
     )
 
 
-def _detect_hardware_context() -> str:
+def _detect_hardware_context(
+    serving_threads: int | None = None,
+    memory_budget_mb: int | None = None,
+) -> str:
+    """Describe the envelope the optimizer must build within.
+
+    This is deliberately *not* a raw dump of the host. The engine is designed,
+    validated, and served at a configured degree of parallelism (``serving_threads``)
+    and runs its build under a fixed memory ceiling (``memory_budget_mb``, enforced via
+    the builder's cgroup ``memory.max``). Advertising the machine's full logical-core
+    count or total RAM instead invites the model to oversubscribe threads and to trade
+    memory for build speed until it overruns the budget and the build is killed - the
+    out-of-memory-during-build failure mode the ceiling exists to prevent. So report the
+    physical cores as a ceiling for one-time build parallelism, but anchor the numbers
+    the model optimizes against to the configured serving threads and memory budget.
+    """
     import psutil
 
     cpu_model = "unknown"
@@ -220,8 +263,27 @@ def _detect_hardware_context() -> str:
         parts.append(f"{physical_cores} physical cores / {logical_cores} logical cores ({ht_str})")
     elif logical_cores > 0:
         parts.append(f"{logical_cores} logical cores")
-    if total_ram_gb > 0:
-        parts.append(f"{total_ram_gb} GB RAM")
+
+    if serving_threads and serving_threads > 0:
+        parts.append(
+            f"the engine is built, validated, and served at {serving_threads} query "
+            "worker threads (size build-time parallelism to the physical cores above, but "
+            "this is the degree the engine actually runs at - do not exceed it for serving)"
+        )
+
+    # Memory is a hard ceiling, never free headroom. Report the budget the build runs
+    # under so the model sizes structures to it; fall back to total RAM only when no
+    # explicit budget is set, and even then frame it as a shared ceiling.
+    if memory_budget_mb and memory_budget_mb > 0:
+        parts.append(
+            f"{memory_budget_mb // 1024} GB memory budget - a hard ceiling enforced on the "
+            "build; exceeding it kills the build, so do not trade memory for speed beyond it"
+        )
+    elif total_ram_gb > 0:
+        parts.append(
+            f"{total_ram_gb} GB system RAM (shared ceiling - the build must fit well within "
+            "it; do not size structures assuming all of it is free)"
+        )
 
     return ", ".join(parts)
 
@@ -235,6 +297,8 @@ def base_optimize_build(
     allow_storage_restructuring: bool,
     storage_plan_filename: str,
     base_impl_todo_filename: str,
+    serving_threads: int | None = None,
+    memory_budget_mb: int | None = None,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_optimize_build_ssd.txt"
@@ -254,7 +318,7 @@ def base_optimize_build(
             f"- **Interface compatibility**: Any change to a field's type or layout in `{builder_path_hpp}` "
             "(column type, index structure, field name) must preserve the interface that existing query files use. "
             "If the underlying type changes, wrap it in a class that exposes the same `.find()`/`.end()` or `[]` "
-            "semantics — do not modify query files to adapt to a new interface. "
+            "semantics - do not modify query files to adapt to a new interface. "
             "A type mismatch can compile silently and crash at runtime."
         )
 
@@ -268,7 +332,10 @@ def base_optimize_build(
         run_tool_mode=RunToolMode.INGEST.name,
         storage_constraint=storage_constraint,
         interface_compat_hint=interface_compat_hint,
-        hardware_context=_detect_hardware_context(),
+        hardware_context=_detect_hardware_context(
+            serving_threads=serving_threads,
+            memory_budget_mb=memory_budget_mb,
+        ),
         storage_plan_filename=storage_plan_filename,
         base_impl_todo_filename=base_impl_todo_filename,
     )
@@ -303,6 +370,7 @@ def base_impl_query_prompt(
     query_impl_path: str,
     sql: str,
     persistent_storage: bool,
+    num_threads: int,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_impl_query_ssd.txt"
@@ -331,6 +399,7 @@ def base_impl_query_prompt(
         builder_path=builder_path,
         query_impl_path=query_impl_path,
         sql=sql,
+        parallelism_note=parallelism_note(num_threads),
     )
 
 

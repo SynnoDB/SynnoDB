@@ -25,7 +25,12 @@ _STORAGE_PLAN = "storage_plan.txt"
 _TODO = "base_impl_todo.txt"
 
 
-def _build(persistent_storage: bool, allow_storage_restructuring: bool) -> str:
+def _build(
+    persistent_storage: bool,
+    allow_storage_restructuring: bool,
+    serving_threads: int | None = 8,
+    memory_budget_mb: int | None = 16384,
+) -> str:
     return base_optimize_build(
         builder_path_cpp=_BUILDER_CPP,
         builder_path_hpp=_BUILDER_HPP,
@@ -35,11 +40,44 @@ def _build(persistent_storage: bool, allow_storage_restructuring: bool) -> str:
         allow_storage_restructuring=allow_storage_restructuring,
         storage_plan_filename=_STORAGE_PLAN,
         base_impl_todo_filename=_TODO,
+        serving_threads=serving_threads,
+        memory_budget_mb=memory_budget_mb,
     )
 
 
 def test_detect_hardware_context_non_empty():
     assert _detect_hardware_context().strip()
+
+
+def test_hardware_context_reports_configured_threads_and_budget_ceiling():
+    # The optimizer must be anchored to the engine's operating envelope, not the raw host:
+    # the configured serving parallelism and the memory budget framed as a hard ceiling.
+    ctx = _detect_hardware_context(serving_threads=7, memory_budget_mb=4096)
+    assert "7 query worker threads" in ctx
+    assert "4 GB memory budget" in ctx
+    assert "ceiling" in ctx
+
+
+def test_hardware_context_omits_thread_claim_when_unset():
+    # Without a configured degree we must not invent a serving-parallelism number.
+    assert "worker threads" not in _detect_hardware_context()
+
+
+def test_hardware_context_frames_total_ram_as_ceiling_without_budget():
+    # With no explicit budget, total RAM is a shared ceiling, never free headroom.
+    ctx = _detect_hardware_context(memory_budget_mb=None)
+    # /proc/meminfo may be unreadable in some sandboxes; assert framing only when RAM shows.
+    if "system RAM" in ctx:
+        assert "shared ceiling" in ctx
+
+
+def test_optimize_build_prompt_surfaces_threads_and_budget():
+    for persistent in (False, True):
+        prompt = _build(
+            persistent, allow_storage_restructuring=True, serving_threads=9, memory_budget_mb=8192
+        )
+        assert "9 query worker threads" in prompt
+        assert "8 GB memory budget" in prompt
 
 
 def test_no_leftover_template_variables():

@@ -6,11 +6,11 @@ Before profiling, read `${storage_plan_filename}` and `${base_impl_todo_filename
 
 For each optimization attempt (up to 2 major attempts and 1 refinement), follow these steps:
 
-**Profile** — Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `${builder_path_hpp}` and `${builder_path_cpp}`. Compile once, call the run tool with mode "${run_tool_mode}", and report the per-phase breakdown. Then remove all timing instrumentation from the source files in a single edit (rewrite the instrumented section, do not remove markers one at a time) before proceeding.
+**Profile** - Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `${builder_path_hpp}` and `${builder_path_cpp}`. Compile once, call the run tool with mode "${run_tool_mode}", and report the per-phase breakdown. Then remove all timing instrumentation from the source files in a single edit (rewrite the instrumented section, do not remove markers one at a time) before proceeding.
 
-**Plan** — Based on the profiling data, identify the top 3 bottlenecks. Consult the hints below for common patterns. Write a short plan with the optimizations you will implement.
+**Plan** - Based on the profiling data, identify the top 3 bottlenecks. Consult the hints below for common patterns. Write a short plan with the optimizations you will implement.
 
-**Implement** — Implement the planned optimizations in a batch. Before compiling, re-read every changed section and verify: (a) all variables declared before use, (b) no use-after-move/use-after-clear, (c) no duplicate variable names across scopes. Then compile once and validate correctness and the performance improvement by calling the run tool.
+**Implement** - Implement the planned optimizations in a batch. Before compiling, re-read every changed section and verify: (a) all variables declared before use, (b) no use-after-move/use-after-clear, (c) no duplicate variable names across scopes. Then compile once and validate correctness and the performance improvement by calling the run tool.
 
 Constraints:
 - Limit inspection to `${builder_path_hpp}`, `${builder_path_cpp}`, directly included headers, and `file_loader_utils.hpp`/`.cpp` when present. Do not inspect validator/compile/cache/tool internals unless an error explicitly indicates an interface mismatch. No broad grep/find/ls.
@@ -18,7 +18,7 @@ Constraints:
 - If the bottleneck is Parquet I/O bound or disk write bandwidth bound, stop and report.
 ${storage_constraint}
 
-Hints — common optimization patterns:
+Hints - common optimization patterns:
 - **Parallelism**: Independent table serializations can run concurrently in `std::thread`; the largest table dominates, so overlapping all smaller ones is free. Calibrate thread counts against the hardware above to avoid oversubscription.
 - **Write batching**: Avoid per-row or per-element write syscalls. Accumulate column data in memory buffers and flush in large chunks to amortize syscall overhead and maximize write bandwidth.
 - **`as_string()` heap cost**: allocates one `std::string` per row during Arrow extraction. For single-character or low-cardinality string columns, extract directly via `GetView()` or read as `uint8_t` dict codes to avoid heap allocation in the read phase.

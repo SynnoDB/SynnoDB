@@ -1,17 +1,17 @@
 Optimize `${builder_path_hpp}` and `${builder_path_cpp}` build (ingest) time. The current build time is ${current_ingest_time_ms} (${config_str}).
 Hardware: ${hardware_context}.
 
-Note: the reported build time includes ALL work inside your `build()` function — Arrow column decoding via `column_ingest.hpp` helpers (`as_integer`, `as_string`, `scaled_integer`, `as_date_days`), sorting, index construction, and gather passes. There is no separate Parquet-read phase before `build()` is called. When adding timing instrumentation, place the first timestamp at the very first line of `build()` to capture the full cost.
+Note: the reported build time includes ALL work inside your `build()` function - Arrow column decoding via `column_ingest.hpp` helpers (`as_integer`, `as_string`, `scaled_integer`, `as_date_days`), sorting, index construction, and gather passes. There is no separate Parquet-read phase before `build()` is called. When adding timing instrumentation, place the first timestamp at the very first line of `build()` to capture the full cost.
 
 Before profiling, read `${storage_plan_filename}` and `${base_impl_todo_filename}` to understand the intended storage layout and optimization goals.
 
 For each optimization attempt (up to 2 major attempts and 1 refinement), follow these steps:
 
-**Profile** — Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `${builder_path_hpp}` and `${builder_path_cpp}`. Compile once, call the run tool with mode "${run_tool_mode}", and report the per-phase breakdown. Then remove all timing instrumentation from the source files in a single edit (rewrite the instrumented section, do not remove markers one at a time) before proceeding.
+**Profile** - Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `${builder_path_hpp}` and `${builder_path_cpp}`. Compile once, call the run tool with mode "${run_tool_mode}", and report the per-phase breakdown. Then remove all timing instrumentation from the source files in a single edit (rewrite the instrumented section, do not remove markers one at a time) before proceeding.
 
-**Plan** — Based on the profiling data, identify the top 3 bottlenecks. Consult the hints below for common patterns. Write a short plan with the optimizations you will implement.
+**Plan** - Based on the profiling data, identify the top 3 bottlenecks. Consult the hints below for common patterns. Write a short plan with the optimizations you will implement.
 
-**Implement** — Implement the planned optimizations in a batch. Before compiling, re-read every changed section and verify: (a) all variables declared before use, (b) no use-after-move/use-after-clear, (c) no duplicate variable names across scopes. Then compile once and validate correctness and the performance improvement by calling the run tool.
+**Implement** - Implement the planned optimizations in a batch. Before compiling, re-read every changed section and verify: (a) all variables declared before use, (b) no use-after-move/use-after-clear, (c) no duplicate variable names across scopes. Then compile once and validate correctness and the performance improvement by calling the run tool.
 
 Constraints:
 - Limit inspection to `${builder_path_hpp}`, `${builder_path_cpp}`, and directly included headers only. Do not inspect validator/compile/cache/tool internals unless an error explicitly indicates an interface mismatch. No broad grep/find/ls.
@@ -19,9 +19,9 @@ Constraints:
 - If the bottleneck is memory-bandwidth bound, stop and report.
 ${storage_constraint}
 
-Hints — common optimization patterns:
+Hints - common optimization patterns:
 - **Parallelism**: Independent table builds can run concurrently in `std::thread`; the largest table dominates, so overlapping all smaller ones is free. Calibrate nested thread counts against the hardware above to avoid oversubscription.
 - **Sort strategy**: For a sort key with low cardinality (thousands of distinct values across millions of rows), use counting sort / bucket sort instead of `std::sort`. Sort the permutation array, then apply it in a single gather pass over all columns simultaneously.
-- **`as_string()` heap cost**: allocates one `std::string` per row. For single-character or low-cardinality string columns, prefer `char` or `uint8_t` with dict encoding — eliminates heap allocation and reduces scatter memory footprint.
-- **Large `unordered_map` indexes**: building an `unordered_map<int64_t, int32_t>` with millions of entries is slow due to cache-unfriendly separate chaining. If the key domain is dense integers, a flat `vector<int32_t>` indexed directly by key value is much faster — both to build and to probe.
+- **`as_string()` heap cost**: allocates one `std::string` per row. For single-character or low-cardinality string columns, prefer `char` or `uint8_t` with dict encoding - eliminates heap allocation and reduces scatter memory footprint.
+- **Large `unordered_map` indexes**: building an `unordered_map<int64_t, int32_t>` with millions of entries is slow due to cache-unfriendly separate chaining. If the key domain is dense integers, a flat `vector<int32_t>` indexed directly by key value is much faster - both to build and to probe.
 ${interface_compat_hint}

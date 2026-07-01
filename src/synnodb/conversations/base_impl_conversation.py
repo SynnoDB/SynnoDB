@@ -50,9 +50,11 @@ class BaseImplConversation(CheckpointedConversation):
         sql_dict: dict[str, str],
         db_storage: DBStorage,
         parquet_dir: Path,
+        num_threads: int,
         read_storage_plan: bool = False,
         sample_query_args_dict: Optional[dict[str, str]] = None,
         use_master_prompt: bool = False,
+        max_turns: int | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -66,6 +68,8 @@ class BaseImplConversation(CheckpointedConversation):
         self.db_storage = db_storage
         self.persistent_storage = is_persistent_storage(db_storage)
         self.parquet_dir = parquet_dir
+        self.num_threads = num_threads
+        self.default_max_turns = max_turns
 
     def _validate_no_crazy_slow_queries(
         self, query_ids: list[str], query_impl_path: str, builder_path: str
@@ -155,6 +159,7 @@ class BaseImplConversation(CheckpointedConversation):
                 query_impl_path=query_impl_path,
                 sql=sql,
                 persistent_storage=self.persistent_storage,
+                num_threads=self.num_threads,
             )
 
         def _exec_validate_prompt(_exec_settings, _rt, *, qid: str):
@@ -226,6 +231,7 @@ class BaseImplConversation(CheckpointedConversation):
                 auto_revert_on_regression=False,
                 # if a plan exists, validate that it is correct before proceeding to impl stage. If it is not correct, go back to planner stage
                 post_stage_validate=_validate_plan_exists,
+                max_turns=self.default_max_turns,
             ),
             StaticStageConfig(
                 descriptor="base impl storage",
@@ -238,6 +244,7 @@ class BaseImplConversation(CheckpointedConversation):
                 ),
                 measure_performance_after_stage=False,
                 auto_revert_on_regression=False,
+                max_turns=self.default_max_turns,
             ),
             COMPACTION_MARKER,
             OptimizeBuildStage(
@@ -248,6 +255,8 @@ class BaseImplConversation(CheckpointedConversation):
                 allow_storage_restructuring=True,
                 storage_plan_filename=storage_plan_filename,
                 base_impl_todo_filename=base_impl_todo_filename,
+                num_threads=self.num_threads,
+                max_turns=self.default_max_turns,
             ),
             ValidateAndFixStage(
                 run_tool=self.run_tool,
@@ -255,6 +264,7 @@ class BaseImplConversation(CheckpointedConversation):
                 args_path=args_path,
                 builder_path=builder_path,
                 persistent_storage=self.persistent_storage,
+                max_turns=self.default_max_turns,
             ),
             COMPACTION_MARKER,
             VALIDATE_ON,
@@ -289,6 +299,7 @@ class BaseImplConversation(CheckpointedConversation):
                         post_stage_validate=functools.partial(
                             _validate_query_impl_exists, qid=query_id
                         ),
+                        max_turns=self.default_max_turns,
                     ),
                     StaticStageConfig(
                         descriptor=f"base impl exec & validate Q{query_id}",
@@ -306,6 +317,7 @@ class BaseImplConversation(CheckpointedConversation):
                             query_impl_path=query_impl_path,
                             builder_path=builder_path,
                         ),
+                        max_turns=self.default_max_turns,
                     ),
                     COMPACTION_MARKER,
                 ]
@@ -332,6 +344,7 @@ class BaseImplConversation(CheckpointedConversation):
                         query_impl_path=query_impl_path,
                         builder_path=builder_path,
                     ),
+                    max_turns=self.default_max_turns,
                 ),
                 StaticStageConfig(
                     descriptor="run all queries and fix any errors",
@@ -348,6 +361,7 @@ class BaseImplConversation(CheckpointedConversation):
                         query_impl_path=query_impl_path,
                         builder_path=builder_path,
                     ),
+                    max_turns=self.default_max_turns,
                 ),
                 BENCHMARK_MARKER,
                 # VALIDATE_MAX_SF_REP1_ON,  # only single repetition with largest (benchmarking) scale factor - we don't care if measured query rt is noisy
@@ -361,6 +375,8 @@ class BaseImplConversation(CheckpointedConversation):
                     allow_storage_restructuring=False,
                     storage_plan_filename=storage_plan_filename,
                     base_impl_todo_filename=base_impl_todo_filename,
+                    num_threads=self.num_threads,
+                    max_turns=self.default_max_turns,
                 ),
                 # VALIDATE_OUTPUT_STDOUT_MAXSF_OFF,
                 # VALIDATE_MAX_SF_REP1_OFF,
@@ -381,8 +397,10 @@ class OptimizeBuildStage(DynamicStageConfig):
         allow_storage_restructuring: bool,
         storage_plan_filename: str,
         base_impl_todo_filename: str,
+        num_threads: int,
+        max_turns: int | None = None,
     ):
-        super().__init__(descriptor="optimize build", max_turns=None)
+        super().__init__(descriptor="optimize build", max_turns=max_turns)
         self.builder_path_cpp = builder_path_cpp
         self.builder_path_hpp = builder_path_hpp
         self.run_tool = run_tool
@@ -391,6 +409,7 @@ class OptimizeBuildStage(DynamicStageConfig):
         self.allow_storage_restructuring = allow_storage_restructuring
         self.storage_plan_filename = storage_plan_filename
         self.base_impl_todo_filename = base_impl_todo_filename
+        self.num_threads = num_threads
 
     def next_prompt(self) -> Optional[str]:
         if self.executed:
@@ -421,6 +440,12 @@ class OptimizeBuildStage(DynamicStageConfig):
             allow_storage_restructuring=self.allow_storage_restructuring,
             storage_plan_filename=self.storage_plan_filename,
             base_impl_todo_filename=self.base_impl_todo_filename,
+            # Ground the optimizer in the engine's actual operating envelope, not the raw
+            # host: the serving parallelism it is built/validated for and the memory ceiling
+            # the build runs under. Advertising the whole machine invites oversubscription and
+            # memory-for-speed trades that overrun the cgroup budget and abort the build.
+            serving_threads=self.num_threads,
+            memory_budget_mb=self.run_tool.memory_budget_mb,
         )
 
 
@@ -432,8 +457,9 @@ class ValidateAndFixStage(DynamicStageConfig):
         args_path: str,
         builder_path: str,
         persistent_storage: bool,
+        max_turns: int | None = None,
     ):
-        super().__init__(descriptor="exec & validate", max_turns=None)
+        super().__init__(descriptor="exec & validate", max_turns=max_turns)
         self.executed = False
         self.run_tool = run_tool
         self.query_impl_path = query_impl_path

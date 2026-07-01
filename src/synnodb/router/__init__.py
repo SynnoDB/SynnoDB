@@ -20,10 +20,10 @@ from .manifest import (
 from .observe import RouteTrace, enable_debug_logging, logger
 from .policy import RouterMode, RouterPolicy
 from .registration import make_binding, register_engine
+from .process_engine import ProcessEngine, ShmHotLoadEngine
 from .registry import ColumnSpec, EngineBinding, PlaceholderSpec, TemplateRegistry
 from .router import QueryRouter, RouteDecision
 from .shm_transport import SegmentRef, ShmWriter, read_table, sweep_orphans
-from .worker import WorkerEngine, WorkerEngineError
 
 __all__ = [
     "QueryRouter",
@@ -55,8 +55,8 @@ __all__ = [
     "content_engine_id",
     "write_manifest_for_engine",
     "infer_duckdb_type",
-    "WorkerEngine",
-    "WorkerEngineError",
+    "ProcessEngine",
+    "ShmHotLoadEngine",
     "SegmentRef",
     "ShmWriter",
     "read_table",
