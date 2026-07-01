@@ -103,6 +103,10 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
 
         run_stats_collector_for_trigger = self.run_stats_collector
 
+        resolved_model_extra_body = resolve_model_extra_body(
+            getattr(self.args, "model_extra_body", None)
+        )
+
         def should_trigger_compaction_near_limit(context: dict[str, Any]) -> bool:
             # Proactively compact once we are near the model's context window so we
             # summarize BEFORE a hard overflow. The SDK consults this between turns
@@ -126,6 +130,7 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
             use_claude_compaction=use_litellm,  # apply compaction with claude in case we use litellm wrapper
             claude_compaction_model=model_name if use_litellm else None,
             compaction_api_base=api_base,
+            model_extra_body=resolved_model_extra_body,
         )
 
         if use_litellm:
@@ -145,9 +150,7 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
                 runtime_tracker=self.runtime_tracker,
                 working_dir=self.workspace_path_absolute,
                 glm_thinking_enabled=getattr(self.args, "glm_thinking", False),
-                model_extra_body=resolve_model_extra_body(
-                    getattr(self.args, "model_extra_body", None)
-                ),
+                model_extra_body=resolved_model_extra_body,
             )
             instructions = [
                 f"You can edit files inside {self.workspace_path} using the apply_patch tool. ",
