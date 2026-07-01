@@ -1,0 +1,58 @@
+name: no-ai-contributors
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  scan-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan commits for AI contributors
+        env:
+          # base/head are only set for pull_request events
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Names / emails to reject (case-insensitive, extended regex).
+          pattern='claude|anthropic|openai|codex|chatgpt|gpt-|github-copilot|noreply@anthropic\.com'
+
+          # Determine the commit range to inspect.
+          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ]; then
+            range="$BASE_SHA..$HEAD_SHA"          # pull_request: only the PR's commits
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${{ github.event.before }}^{commit}" 2>/dev/null; then
+            # First push (before=000...) or force-push (before rewritten/unreachable):
+            # no reliable base, so scan the full history reachable from the pushed tip.
+            range="${{ github.sha }}"
+          else
+            range="${{ github.event.before }}..${{ github.sha }}"  # push: only the newly pushed commits
+          fi
+
+          fail=0
+          for sha in $(git rev-list "$range"); do
+            # Author + committer identity (name & email) — always attribution.
+            identity=$(git show -s --format='%an%n%ae%n%cn%n%ce' "$sha")
+            # Only Co-Authored-By trailers from the message body (avoids prose false positives).
+            coauthors=$(git show -s --format='%B' "$sha" | grep -iE '^\s*Co-Authored-By:' || true)
+
+            hits=$(printf '%s\n%s\n' "$identity" "$coauthors" | grep -iE "$pattern" || true)
+            if [ -n "$hits" ]; then
+              echo "::error::Commit $sha lists a banned AI contributor:"
+              echo "$hits" | sed 's/^/    /'
+              fail=1
+            fi
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "Remove AI author/committer identities and Co-Authored-By trailers, then amend the commit(s)."
+            exit 1
+          fi
+          echo "No AI contributors found."
