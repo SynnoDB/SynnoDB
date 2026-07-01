@@ -3,11 +3,11 @@ Hardware: ${hardware_context}.
 
 Note: the reported build time includes ALL work inside your `build()` function — Arrow column decoding via `column_ingest.hpp` helpers (`as_integer`, `as_string`, `scaled_integer`, `as_date_days`), sorting, index construction, and gather passes. There is no separate Parquet-read phase before `build()` is called. When adding timing instrumentation, place the first timestamp at the very first line of `build()` to capture the full cost.
 
-Before profiling, read `${storage_plan_filename}` and `${base_impl_todo_filename}` (Phase 8) to understand the intended storage layout and optimization goals.
+Before profiling, read `${storage_plan_filename}` and `${base_impl_todo_filename}` to understand the intended storage layout and optimization goals.
 
 For each optimization attempt (up to 2 major attempts and 1 refinement), follow these steps:
 
-**Profile** — Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `${builder_path_hpp}` and `${builder_path_cpp}`. Compile once, call the run tool with mode "${run_tool_mode}", and report the per-phase breakdown. Then remove all timing instrumentation from the source files before proceeding.
+**Profile** — Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `${builder_path_hpp}` and `${builder_path_cpp}`. Compile once, call the run tool with mode "${run_tool_mode}", and report the per-phase breakdown. Then remove all timing instrumentation from the source files in a single edit (rewrite the instrumented section, do not remove markers one at a time) before proceeding.
 
 **Plan** — Based on the profiling data, identify the top 3 bottlenecks. Consult the hints below for common patterns. Write a short plan with the optimizations you will implement.
 
