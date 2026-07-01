@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 jobs:
-  scan-commits:
+  no-ai-contributors:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
