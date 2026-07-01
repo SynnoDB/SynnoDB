@@ -11,6 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+from synnodb.cpp_runner.hotpatch.cgroup import (
+    RunnerCgroup,
+    delegation_available,
+    delegation_failure_reason,
+    shared_parent_configured,
+)
+from synnodb.cpp_runner.hotpatch.db_launch import db_launch_binary
 from synnodb.cpp_runner.utils.proc_utils import ProcTreeTimeoutKiller
 from synnodb.tools.sandbox import _set_rlimits
 from synnodb.tools.validate.query_validator_class import QueryResult
@@ -37,11 +44,31 @@ except OSError:
 
 
 def _install_pdeathsig_and_new_session() -> None:
-    """Run in the child after fork(): tie its lifetime to the Python parent
-    via PR_SET_PDEATHSIG, and put it in its own session so the whole tree can
-    be reaped with killpg() as a last resort."""
-    if _libc is not None:
-        _libc.prctl(_PR_SET_PDEATHSIG, _signal.SIGKILL, 0, 0, 0)
+    """Fallback launch path only: run in the child after fork() when the db_launch
+    + cgroup path is not used. Ties the child's lifetime to the Python parent via
+    PR_SET_PDEATHSIG (with the standard captured-PPID race check) and starts a new
+    session so the tree can be reaped with killpg() as a last resort.
+
+    The hardened, production parent-death handling lives in db_launch (the cgroup
+    path); this is the best-effort fallback. It is NOT the complete A3 reaping
+    treatment, but it fails closed: if PR_SET_PDEATHSIG cannot be armed (no libc, or
+    prctl error), it refuses to launch rather than leave a child that would survive a
+    SIGKILL'd orchestrator.
+    """
+    if _libc is None:
+        # No libc/prctl: we cannot tie the child to the parent's death. Refuse to
+        # launch rather than orphan it. Only reachable on a non-glibc host, where the
+        # (glibc-targeted) engine cannot run anyway.
+        raise OSError("libc unavailable; cannot arm PR_SET_PDEATHSIG")
+    ppid_before = os.getppid()
+    if _libc.prctl(_PR_SET_PDEATHSIG, _signal.SIGKILL, 0, 0, 0) != 0:
+        # Could not arm the parent-death signal; refuse to launch a child that would
+        # not be reaped if the orchestrator is SIGKILL'd.
+        raise OSError("prctl(PR_SET_PDEATHSIG) failed")
+    # If the parent died between getppid() and prctl(), the signal we armed references
+    # a parent that is already gone; abort rather than run orphaned.
+    if os.getppid() != ppid_before:
+        raise OSError("parent exited during launch setup")
     try:
         os.setsid()
     except OSError:
@@ -98,6 +125,8 @@ class HotpatchProc:
         cwd: Path,
         extra_env: Optional[Dict[str, str]] = None,
         memory_limit_bytes: Optional[int] = None,
+        memory_max_bytes: Optional[int] = None,
+        require_cgroup: bool = False,
     ) -> None:
         """
         Args:
@@ -110,12 +139,27 @@ class HotpatchProc:
             memory_limit_bytes: Virtual-memory ceiling enforced via RLIMIT_AS.
                                  If None, RLIMIT_AS is not set and the child
                                  inherits the parent's (typically unlimited) limit.
+            memory_max_bytes: Hard resident-memory ceiling enforced via a per-runner
+                              cgroup v2 ``memory.max``. When set, the engine is
+                              launched through ``db_launch`` into a dedicated cgroup,
+                              so a breach is OOM-killed as a group without touching
+                              the host. When None, no cgroup is used.
+            require_cgroup: If True and cgroup delegation is unavailable, refuse to
+                            launch (fail closed) rather than silently dropping to
+                            RLIMIT_AS only. Production large-memory runs set this.
         """
         self._command = command
         self._echo_output = echo_output
         self._cwd = cwd
         self._extra_env = extra_env or {}
         self._memory_limit_bytes = memory_limit_bytes
+        self._memory_max_bytes = memory_max_bytes
+        self._require_cgroup = require_cgroup
+
+        # Per-runner cgroup for the current child (None when not using the cgroup
+        # path). Created in _start(), removed in _clear_proc_state().
+        self._cgroup: Optional[RunnerCgroup] = None
+        self._launch_counter = 0
 
         # subprocess.Popen handle; None when the child is not running.
         self._proc: subprocess.Popen[bytes] | None = None
@@ -183,6 +227,12 @@ class HotpatchProc:
         self._stderr_fd = None
         self._proc = None
 
+        # Remove the per-runner cgroup, if any. The child is reaped by the time this
+        # runs, so the cgroup is empty and rmdir succeeds; remove() is best-effort.
+        if self._cgroup is not None:
+            self._cgroup.remove()
+            self._cgroup = None
+
     def _start(self) -> None:
         """Launch the child process if it is not already running.
 
@@ -205,13 +255,40 @@ class HotpatchProc:
                 return
             self._clear_proc_state()
 
-        # Create the two custom control pipes.
-        # p2c (parent-to-child): parent writes commands; child reads them.
-        p2c_r, p2c_w = os.pipe()
-        # c2p (child-to-parent): child writes response lines; parent reads them.
-        c2p_r, c2p_w = os.pipe()
+        # AddressSanitizer reserves a huge virtual address space (its shadow memory,
+        # ~20 TB), so an RLIMIT_AS cap would kill the child at startup. When the sanitize
+        # build profile is active, skip the virtual-memory cap.
+        sanitize_active = bool(os.environ.get("SYNNO_SANITIZE", "").strip())
+        as_bytes = None if sanitize_active else self._memory_limit_bytes
 
-        # Build the argv list from the command string.
+        # Decide the launch mechanism before allocating any resources, so a
+        # fail-closed production run aborts cleanly. Exactly one mechanism runs:
+        #   - cgroup path: launch via db_launch, which joins a per-runner cgroup
+        #     (hard memory.max) and owns pdeathsig/setsid/RLIMIT_AS in compiled code;
+        #   - fallback path: the in-Python _preexec, used only when no cgroup ceiling
+        #     is requested or delegation is unavailable in a dev/test run.
+        use_cgroup = self._memory_max_bytes is not None and delegation_available()
+        if self._memory_max_bytes is not None and not use_cgroup:
+            # A configured shared parent (SYNNO_CGROUP_PARENT) makes the cgroup ceiling
+            # mandatory regardless of require_cgroup: the operator explicitly demanded the
+            # aggregate slice, so a setup failure must raise, never silently fall back to
+            # RLIMIT_AS (which defeats the aggregate guarantee).
+            if self._require_cgroup or shared_parent_configured():
+                reason = delegation_failure_reason()
+                detail = f" ({reason})" if reason else ""
+                raise RuntimeError(
+                    f"cgroup v2 memory ceiling is required but unavailable{detail}; "
+                    "refusing to launch a large-memory run without a hard memory ceiling. "
+                    "Set up cgroup delegation (e.g. a systemd unit with Delegate=yes), fix "
+                    "the configured SYNNO_CGROUP_PARENT slice, or clear it / require_cgroup "
+                    "for dev/test."
+                )
+            logger.warning(
+                "cgroup v2 delegation unavailable; falling back to RLIMIT_AS only "
+                "(no hard RSS ceiling). Acceptable for dev/test, not production."
+            )
+
+        # Build the base argv list from the command string.
         if isinstance(self._command, str):
             cmd = self._command.strip()
             cmd = cmd if cmd else "./db"
@@ -221,17 +298,10 @@ class HotpatchProc:
         else:
             argv = [str(self._command)]
 
-        # AddressSanitizer reserves a huge virtual address space (its shadow memory,
-        # ~20 TB), so an RLIMIT_AS cap would kill the child at startup. When the sanitize
-        # build profile is active, skip the virtual-memory cap.
-        sanitize_active = bool(os.environ.get("SYNNO_SANITIZE", "").strip())
-        as_bytes = None if sanitize_active else self._memory_limit_bytes
-
         def _preexec():
-            # Applied inside the child after fork() but before exec().
-            # Sets RLIMIT_AS to cap virtual memory usage, then ties the child's
-            # lifetime to this Python process (PR_SET_PDEATHSIG) and starts a
-            # new session so killpg() can reap the whole tree.
+            # Fallback path only: applied in the child after fork() before exec().
+            # Sets RLIMIT_AS, ties the child's lifetime to this process
+            # (PR_SET_PDEATHSIG), and starts a new session for killpg() reaping.
             if as_bytes is not None:
                 _set_rlimits(
                     cpu_seconds=None,
@@ -242,24 +312,61 @@ class HotpatchProc:
                 )
             _install_pdeathsig_and_new_session()
 
-        self._proc = subprocess.Popen(
-            argv,
-            # Explicitly pass the custom pipe fds so they survive the exec().
-            pass_fds=(p2c_r, c2p_w),
-            preexec_fn=_preexec,
-            env={
-                **os.environ,
-                # Tell the child which fd numbers to use for the control pipes.
-                "P2C_FD": str(p2c_r),
-                "C2P_FD": str(c2p_w),
-                **self._extra_env,
-            },
-            cwd=self._cwd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=False,  # Raw bytes — we decode manually with error handling.
-        )
+        # Create the two custom control pipes.
+        # p2c (parent-to-child): parent writes commands; child reads them.
+        p2c_r, p2c_w = os.pipe()
+        # c2p (child-to-parent): child writes response lines; parent reads them.
+        c2p_r, c2p_w = os.pipe()
+
+        # Everything that allocates an OS resource (the runner cgroup and the child
+        # process) is created under one guard: if any step raises, the cgroup and the
+        # four pipe fds we own are reclaimed before re-raising, so a failed launch
+        # leaks nothing. (self._proc stays None on failure, so _clear_proc_state would
+        # otherwise never run.) db_launch execs ./db in place, so Popen still sees the
+        # engine as its direct child and the pass_fds control pipes survive unchanged.
+        try:
+            if use_cgroup:
+                self._launch_counter += 1
+                self._cgroup = RunnerCgroup.create(
+                    self._memory_max_bytes,
+                    name=f"{os.getpid()}-{id(self) & 0xFFFF:x}-{self._launch_counter}",
+                )
+                prefix = [str(db_launch_binary()), "--cgroup", self._cgroup.procs_dir]
+                if as_bytes is not None:
+                    prefix += ["--as-limit", str(as_bytes)]
+                argv = [*prefix, "--", *argv]
+                preexec = None  # db_launch owns the per-process setup
+            else:
+                preexec = _preexec
+
+            self._proc = subprocess.Popen(
+                argv,
+                # Explicitly pass the custom pipe fds so they survive the exec().
+                pass_fds=(p2c_r, c2p_w),
+                preexec_fn=preexec,
+                env={
+                    **os.environ,
+                    # Tell the child which fd numbers to use for the control pipes.
+                    "P2C_FD": str(p2c_r),
+                    "C2P_FD": str(c2p_w),
+                    **self._extra_env,
+                },
+                cwd=self._cwd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,  # Raw bytes — we decode manually with error handling.
+            )
+        except BaseException:
+            if self._cgroup is not None:
+                self._cgroup.remove()
+                self._cgroup = None
+            for fd in (p2c_r, p2c_w, c2p_r, c2p_w):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
 
         # Close the child-side ends in the parent process; they are only needed
         # inside the child and keeping them open here would prevent EOF detection.
@@ -425,7 +532,10 @@ class HotpatchProc:
                             # EOF on c2p means the child closed the pipe (i.e. exited).
                             rc = self._proc.wait() if self._proc is not None else None
                             if rc is not None:
-                                if rc < 0 and self._memory_limit_bytes is not None:
+                                if rc < 0 and (
+                                    self._memory_limit_bytes is not None
+                                    or self._memory_max_bytes is not None
+                                ):
                                     # Drain stderr/stdout so the actual crash message is visible.
                                     while self._stdout_fd is not None:
                                         more = os.read(self._stdout_fd, 4096)
@@ -461,9 +571,29 @@ class HotpatchProc:
                                         if self._memory_limit_bytes is not None
                                         else None
                                     )
+                                    # On the cgroup path, memory.events is the
+                                    # authoritative OOM signal (read before the cgroup
+                                    # is torn down in _clear_proc_state).
+                                    cg_events = (
+                                        self._cgroup.memory_events()
+                                        if self._cgroup is not None
+                                        else {}
+                                    )
+                                    cgroup_oom = cg_events.get("oom_kill", 0) > 0
+                                    max_mb = (
+                                        self._memory_max_bytes // 1024 // 1024
+                                        if self._memory_max_bytes is not None
+                                        else None
+                                    )
                                     # Signal 9 = SIGKILL (OOM killer); signal 6 = SIGABRT
                                     # (std::terminate / abort inside the process).
-                                    if sig == 9:
+                                    if cgroup_oom:
+                                        cause = (
+                                            f"cgroup OOM (memory.max={max_mb} MB, "
+                                            f"oom_kill={cg_events.get('oom_kill', 0)}, "
+                                            f"oom_group_kill={cg_events.get('oom_group_kill', 0)})"
+                                        )
+                                    elif sig == 9:
                                         cause = f"likely OOM, limit={limit_mb} MB"
                                     elif budget_hit:
                                         cause = (
@@ -501,6 +631,10 @@ class HotpatchProc:
                             err = err_buf.decode("utf-8", errors="replace")
                             if killer is not None and killer.killed:
                                 response = f"{response}\nTerminated after {timeout} seconds due to timeout."
+                            # The child has exited (c2p EOF). Reclaim its cgroup, pipes
+                            # and proc state now rather than leaving a dead runner (and
+                            # an empty cgroup) cached until the next launch.
+                            self._clear_proc_state()
                             return HotpatchProcRunResult(
                                 response=response,
                                 stdout=out,
@@ -536,6 +670,9 @@ class HotpatchProc:
                 response = str(e)
                 out = out_buf.decode("utf-8", errors="replace")
                 err = err_buf.decode("utf-8", errors="replace")
+                # The child was signal-killed (cgroup OOM / abort); memory.events was
+                # already read into `response` above, so reclaim the cgroup now.
+                self._clear_proc_state()
                 return HotpatchProcRunResult(
                     response=response, stdout=out, stderr=err, query_results=[]
                 )

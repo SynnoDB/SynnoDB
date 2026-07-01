@@ -69,6 +69,7 @@ class SynnoConnection:
         mount: bool = False,
         owns_router: bool = True,
         engine_refcount: Optional[list] = None,
+        engine_threads: Optional[int] = None,
     ) -> None:
         # Store private state directly to avoid the proxying __getattr__/__setattr__.
         object.__setattr__(self, "_inner", inner)
@@ -95,6 +96,10 @@ class SynnoConnection:
         # When set, discovery mounts an engine's own bundled snapshot as views if the
         # connection lacks its tables (serve the synthesized database with no live DuckDB).
         object.__setattr__(self, "_mount", mount)
+        # The DuckDB-style config={'threads': N}: when set, every routed engine runs at N
+        # threads, overriding the count the engine was published with. None => the engine
+        # serves at its own recorded thread count (manifest.threads).
+        object.__setattr__(self, "_engine_threads", engine_threads)
         # Last-query timing (for the interactive footer) and a cached interactivity flag, so the
         # spinner/display machinery is a no-op off a TTY - the non-interactive hot path pays nothing.
         object.__setattr__(self, "_last", None)
@@ -174,7 +179,13 @@ class SynnoConnection:
         object.__setattr__(
             self,
             "_registered",
-            discover_engines(self, self._engines_dir, self._registered, mount=self._mount),
+            discover_engines(
+                self,
+                self._engines_dir,
+                self._registered,
+                mount=self._mount,
+                threads_override=self._engine_threads,
+            ),
         )
 
     def _maybe_discover(self) -> None:
@@ -340,7 +351,7 @@ class SynnoConnection:
         return SynnoConnection(
             self._inner.cursor(), self._router, owns_inner=True,
             engines_dir=self._engines_dir, mount=self._mount, owns_router=False,
-            engine_refcount=self._engine_refcount,
+            engine_refcount=self._engine_refcount, engine_threads=self._engine_threads,
         )
 
     def _close_engines(self) -> None:

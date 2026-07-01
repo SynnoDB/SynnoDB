@@ -48,11 +48,15 @@ def _connect(engines_dir):
 def test_publish_discover_route_q1_q6():
     from synnodb.workloads.engine_publish import publish_from_provider
 
+    from receipt_helpers import passing_receipt
+
     provider = _provider()
     with tempfile.TemporaryDirectory() as tmp:
         engines = Path(tmp) / "engines"
         dest = publish_from_provider(
-            Q1Q6BYO, provider, ["1", "6"], parquet_dir=SF1,
+            Q1Q6BYO, provider, ["1", "6"],
+            receipt=passing_receipt(Q1Q6BYO, ["1", "6"], scale_factors=(1.0,)),
+            parquet_dir=SF1,
             scale_factor=1.0, source_run_id="test", engines_dir=str(engines),
         )
         assert dest is not None and (dest / "manifest.json").exists()
@@ -81,10 +85,14 @@ def test_near_miss_constant_falls_back():
     from synnodb.workloads.engine_publish import publish_from_provider
     from synnodb.workloads.query_params import substitute
 
+    from receipt_helpers import passing_receipt
+
     provider = _provider()
     with tempfile.TemporaryDirectory() as tmp:
         engines = Path(tmp) / "engines"
-        publish_from_provider(Q1Q6BYO, provider, ["1"], parquet_dir=SF1,
+        publish_from_provider(Q1Q6BYO, provider, ["1"],
+                              receipt=passing_receipt(Q1Q6BYO, ["1"], scale_factors=(1.0,)),
+                              parquet_dir=SF1,
                               scale_factor=1.0, engines_dir=str(engines))
         con = _connect(engines)
         con.refresh_engines()

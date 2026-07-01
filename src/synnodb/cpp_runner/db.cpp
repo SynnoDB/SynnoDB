@@ -178,6 +178,7 @@ static DoneAndTrace read_done_and_trace(int done_fd, int trace_fd) {
         // is fully drained.
         if (have_done && (result.token.term_signal != 0 ||
                           result.token.exit_code == kStageThrewExitCode ||
+                          result.token.exit_code == kChildStartFailedExitCode ||
                           trace_fd < 0 || have_trace)) {
             return result;
         }
@@ -244,6 +245,9 @@ static void run_parent(PipelineControl& control, int trace_r) {
             } else if (token.exit_code == kStageThrewExitCode) {
                 sig_msg = "a pipeline stage threw a C++ exception "
                           "(see stderr for the exception message)";
+            } else if (token.exit_code == kChildStartFailedExitCode) {
+                sig_msg = "a pipeline stage failed to start its child process "
+                          "(see stderr for details)";
             }
             out << ",\"query_results\":[],\"stage_error\":\""
                 << json_escape(sig_msg) << "\"";
@@ -286,17 +290,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // The Python preexec_fn already set PR_SET_PDEATHSIG=SIGKILL on this
-    // process, but that setting is *cleared* across fork(2) in the child. So
+    // The Python preexec_fn / launcher already set PR_SET_PDEATHSIG=SIGKILL on
+    // this process, but that setting is *cleared* across fork(2) in the child. So
     // the forked child below must re-arm it; the parent keeps its inherited
     // setting and doesn't need to do anything here.
+    pid_t intended_parent = getpid();  // captured before fork for the race check
     pid_t pid = fork();
     if (pid == 0) {
         // Re-arm PR_SET_PDEATHSIG so this child is SIGKILL'd if its immediate
-        // parent (the C++ run_parent process) dies. Without this re-arming
-        // the child would be left running attached to init when the parent
-        // exits via an uncaught exception.
-        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        // parent (the C++ run_parent process) dies. Without this re-arming the
+        // child would be left running attached to init when the parent exits via
+        // an uncaught exception. Race-checked against the captured parent pid so a
+        // parent that already died in the fork->arm window is not missed.
+        detail::rearm_pdeathsig_or_exit(intended_parent);
         close(p2c[1]);
         close(done_pipe[0]);
         close(trace_pipe[0]);          // child does not read from trace pipe

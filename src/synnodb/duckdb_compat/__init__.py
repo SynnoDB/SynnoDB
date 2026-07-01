@@ -69,9 +69,20 @@ def connect(
     views when the connection has no such tables - querying the synthesized database with no
     DuckDB of your own.
     """
-    inner = _duckdb.connect(database=database, read_only=read_only, config=config or {}, **kwargs)
+    config = config or {}
+    inner = _duckdb.connect(database=database, read_only=read_only, config=config, **kwargs)
     router = QueryRouter(policy or RouterPolicy.from_env(), registry)
-    return SynnoConnection(inner, router, engines_dir=resolve_engines_dir(engines), mount=mount)
+    # ``config={'threads': N}`` configures inner DuckDB (above, unchanged) AND fixes the thread
+    # count of every routed bespoke engine, so a query served by the engine runs at the same
+    # parallelism DuckDB would - exactly the DuckDB knob, applied end-to-end.
+    engine_threads = config.get("threads")
+    return SynnoConnection(
+        inner,
+        router,
+        engines_dir=resolve_engines_dir(engines),
+        mount=mount,
+        engine_threads=int(engine_threads) if engine_threads is not None else None,
+    )
 
 
 _default_conn: Optional[SynnoConnection] = None

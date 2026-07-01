@@ -43,7 +43,7 @@ def patched_engine(monkeypatch):
     # Replace the ProcessEngine builder with an in-process engine so no binary is needed.
     monkeypatch.setattr(
         discovery, "_build_engine",
-        lambda manifest, engine_dir: LocalCallableEngine(manifest.engine_id, {"1": _engine_fn}),
+        lambda manifest, engine_dir, **_: LocalCallableEngine(manifest.engine_id, {"1": _engine_fn}),
     )
 
 

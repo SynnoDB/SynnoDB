@@ -1,11 +1,14 @@
 #include "query${qid}.hpp"
 #include "column_egress.hpp"
+#include "query_pool.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 // SQL:
@@ -18,6 +21,40 @@ std::shared_ptr<arrow::Table> run_q${qid}(Database* db, const Q${qid}Args& args)
     using namespace synnodb::egress;
 
     // TODO: implement query logic here, accumulating each output column into a typed C++ vector.
+    //
+    // Parallel-ready shape:
+    // The shared query pool is already wired through query_impl.cpp. Non-parallel validation runs
+    // with CORE_IDS=1, so parallel_for/parallel_reduce take the serial fast path; the same code
+    // must stay correct when CORE_IDS is raised later. Do not create separate ST/MT code paths.
+    // Prefer writing the dominant scan/aggregation through parallel_reduce now:
+    //
+    //   ThreadPool& pool = get_query_pool();
+    //   const int64_t n_rows = /* logical rows in the dominant scanned table */;
+    //   constexpr int64_t MORSEL = 1 << 16;
+    //   const int64_t n_morsels = (n_rows + MORSEL - 1) / MORSEL;
+    //   using Acc = /* scalar, array, vector, or map of exact integer/fixed-point state */;
+    //   Acc acc = parallel_reduce<Acc>(pool, n_morsels, Acc{},
+    //       [&](Acc& local, int64_t m) {
+    //           const int64_t lo = m * MORSEL;
+    //           const int64_t hi = std::min(lo + MORSEL, n_rows);
+    //           for (int64_t row = lo; row < hi; ++row) {
+    //               // read db's in-memory columns, apply filters/joins, update local only
+    //           }
+    //       },
+    //       [](Acc& acc, const Acc& part) {
+    //           // deterministic merge: +, min, max, bit-or, element-wise bucket add;
+    //           // for projections, append earlier logical slices before later slices.
+    //       });
+    //
+    // Guardrails: partition by logical row ranges, not by physical storage detail unless the
+    // storage layout explicitly supports it; build shared lookup/hash structures before the
+    // parallel region and treat them as read-only inside it; never mutate a shared hot-loop map,
+    // output vector, or counter; do not nest pool calls. Accumulate DECIMAL and integer SQL
+    // aggregates in exact integer/fixed-point state. Do not reduce floating-point sums unless the
+    // SQL output is genuinely DOUBLE and small thread-count-dependent rounding drift is acceptable.
+    // For ORDER BY/LIMIT or projections, produce per-thread/per-morsel output buffers, merge them
+    // in logical row/morsel order, then apply SQL ordering/limit after the merge.
+    //
     // CRITICAL for exactness: a DECIMAL output column (SUM of decimals, a decimal expression)
     // must be accumulated as the exact unscaled integer in __int128 - never through double -
     // and emitted with decimal_column(values, precision, scale). The scale is the column's

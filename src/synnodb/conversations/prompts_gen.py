@@ -13,6 +13,30 @@ def _load_txt(path: Path) -> str:
         return f.read()
 
 
+def parallelism_note(num_threads: int) -> str:
+    """Describe the parallelism the generated engine will run at.
+
+    Injected into the storage-plan and base-impl prompts so the layout and the query
+    implementation are designed for the SAME thread count the run tools validate at and
+    the published engine is served at (see ``--threads`` / DuckDB ``config={'threads': N}``).
+    """
+    if num_threads <= 1:
+        return (
+            "Execution model: the generated engine runs each query on a single thread. "
+            "Optimize for sequential scan locality; no cross-thread partitioning is needed."
+        )
+    return (
+        f"Execution model: the generated engine runs each query on {num_threads} worker threads "
+        f"that share this in-memory data. Design so the dominant scans and aggregations split into "
+        f"independent morsels / contiguous row-ranges (about {num_threads}, or a small multiple, so "
+        f"every thread gets several): keep each thread's accumulator state private and cheaply "
+        f"mergeable, build any shared lookup / hash / dictionary / zone-map structure once up front "
+        f"and treat it as read-only during the scan, and avoid a single hot shared structure that "
+        f"every row must update. Prefer layouts where a thread owns a contiguous slice of a table "
+        f"(and can emit its results in slice order) over ones that interleave rows across threads."
+    )
+
+
 # ── Misc────────────────────────────────
 def gen_incorrect_output_prompt(
     trace_mode: bool,
@@ -48,8 +72,11 @@ def gen_storage_plan_prompt(
     schema: str,
     storage_plan_filename: str,
     persistent_storage: bool,
+    num_threads: int,
 ) -> str:
     if persistent_storage:
+        # SSD/persistent base implementations are not parallel-ready (the in-memory pool is
+        # in-memory only), so the SSD template intentionally carries no parallelism note.
         prompt_path = _PROMPTS_DIR / "ssd" / "gen_storage_plan_ssd.txt"
     else:
         prompt_path = _PROMPTS_DIR / "gen_storage_plan.txt"
@@ -60,6 +87,7 @@ def gen_storage_plan_prompt(
         queries_path=queries_filename,
         schema=schema,
         storage_plan_filename=storage_plan_filename,
+        parallelism_note=parallelism_note(num_threads),
     )
 
 
@@ -239,6 +267,7 @@ def base_impl_query_prompt(
     query_impl_path: str,
     sql: str,
     persistent_storage: bool,
+    num_threads: int,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_impl_query_ssd.txt"
@@ -267,6 +296,7 @@ def base_impl_query_prompt(
         builder_path=builder_path,
         query_impl_path=query_impl_path,
         sql=sql,
+        parallelism_note=parallelism_note(num_threads),
     )
 
 
