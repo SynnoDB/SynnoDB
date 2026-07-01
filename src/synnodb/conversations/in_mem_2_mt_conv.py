@@ -9,10 +9,8 @@ from synnodb.conversations.conversation import (
 )
 from synnodb.conversations.optimization_conversation import OptimizationConversation
 from synnodb.conversations.prompts_gen import (
-    optim2_prompt_add_threadpool,
     optim2_prompt_check_large_sf,
     optim2_prompt_constraints,
-    optim2_prompt_introduce_threading,
     optim2_prompt_optimize_w_trace,
     optim_prompt_pretext_optim,
 )
@@ -25,14 +23,16 @@ logger = logging.getLogger(__name__)
 
 
 class InMem2MTConversation(OptimizationConversation):
-    """Second optimization round: add multi-threading to the existing implementation.
+    """Second optimization round: tune already parallel-ready in-memory queries.
 
-    Starts from a snapshot produced by OptimizationConversation (single-threaded).
-    The generated C++ code reads CORE_IDS from the environment at runtime to
-    configure both the thread pool size and CPU pinning.
+    Base in-memory implementations are generated through the shared query pool
+    from the start. They are validated at CORE_IDS=1, then this round simply
+    runs the same code with more CORE_IDS and optimizes bottlenecks such as skew,
+    contention, and memory bandwidth. It should not introduce a separate MT code
+    path or add the thread pool; those are framework/base responsibilities.
 
     Inherits all measurement/revert infrastructure and overrides:
-      - stage definitions  → multi-threading specific stages
+      - stage definitions  → MT-specific tuning stages
       - run()              → no timing-instrumentation setup
                              (already done in round 1)
     """
@@ -47,28 +47,11 @@ class InMem2MTConversation(OptimizationConversation):
         mandatory_constraints: str,
         general_pretext: str,
     ) -> List[StageConfig]:
-        """Multi-threading optimization stages for a single query."""
+        """Tuning stages for an already parallel-ready query."""
 
         configs: list[StaticStageConfig] = [
             StaticStageConfig(
-                descriptor=f"Introduce Multi-Threading ({query_id})",
-                get_prompt_with_tracing=lambda _exec_settings, rt, tracing_data: (
-                    optim2_prompt_introduce_threading(
-                        query_id=query_id,
-                        constraints_str=mandatory_constraints,
-                        current_rt_ms=rt,
-                        general_pretext=general_pretext,
-                        storage_is_bespoke=self.bespoke_storage,
-                        thread_pool_filename=self.file_paths["thread_pool_filename"],
-                        db_loader_header_filename=self.file_paths["builder_hpp_path"],
-                        persistent_storage=self.persistent_storage,
-                        tracing_data=tracing_data,
-                    )
-                ),
-                max_turns=150,
-            ),
-            StaticStageConfig(
-                descriptor=f"Optimize Multi-Threading w. Trace ({query_id})",
+                descriptor=f"Optimize Parallel-Ready MT w. Trace ({query_id})",
                 get_prompt_with_tracing=lambda _exec_settings, rt, tracing_data: (
                     optim2_prompt_optimize_w_trace(
                         query_id=query_id,
@@ -86,26 +69,10 @@ class InMem2MTConversation(OptimizationConversation):
 
         return configs
 
-    # shared with ssd-optim conversation
     def _assemble_pre_stages(
         self, mandatory_constraints: str, general_pretext: str
     ) -> List[StageConfig | str]:
-        return [
-            StaticStageConfig(
-                descriptor="Add ThreadPool",
-                get_prompt=lambda _exec_settings, _rt: optim2_prompt_add_threadpool(
-                    db_loader_filename=self.file_paths["builder_hpp_path"],
-                    thread_pool_filename=self.file_paths["thread_pool_filename"],
-                    general_pretext=general_pretext,
-                    constraints_str=mandatory_constraints,
-                    storage_is_bespoke=self.bespoke_storage,
-                ),
-                max_turns=100,
-                measure_performance_after_stage=False,
-                auto_revert_on_regression=False,
-            ),
-            COMPACTION_MARKER,
-        ]
+        return []
 
     # shared with ssd-optim conversation
     async def run(self) -> Optional[List[str]]:
@@ -177,13 +144,13 @@ class InMem2MTConversation(OptimizationConversation):
 
         branch_anchor_stage_nr = 2 + len(pre_stages)
         # The SDK branch helper copies turns strictly before the requested turn.
-        # Branching from this no-op anchor keeps the anchor out of per-query
-        # branches while preserving the real Add ThreadPool setup.
+        # Branching from this no-op anchor keeps the anchor out of per-query branches.
         await self._exec(
             (
                 "We are about to create one conversation branch per query for the "
-                "multi-threading optimization loop. Do not inspect files, do not "
-                "use tools, and do not change code. Reply exactly: Ready for "
+                "multi-threading tuning loop. The base implementation is already "
+                "parallel-ready through the shared query pool. Do not inspect files, "
+                "do not use tools, and do not change code. Reply exactly: Ready for "
                 "per-query branches."
             ),
             "Branch Anchor",

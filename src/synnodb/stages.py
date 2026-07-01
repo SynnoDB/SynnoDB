@@ -66,6 +66,8 @@ def _base_run_config(cfg: "SynnoConfig") -> dict[str, Any]:
         do_not_cache=cfg.do_not_cache,
         workspace_dir=cfg.workspace,
         verbose=cfg.verbose,
+        threads=cfg.threads,
+        max_turns=cfg.max_turns,
     )
 
 
@@ -312,7 +314,6 @@ def _config_make_mt(cfg: "SynnoConfig", inputs: dict[str, Any]) -> RunConfig:
         run_tool_offer_trace_option=True,
         use_supervision_agent=True,
         use_autonomy_master_prompt=False,
-        max_num_threads=20,
         memory_budget_mb=_memory_budget(cfg),
     )
 
@@ -381,6 +382,8 @@ def _factory_storage_plan(ctx: "FrameworkContext"):
         schema=ctx.workload_provider.dataset_schema,
         workspace_path=ctx.workspace_path,
         db_storage=ctx.db_storage,
+        num_threads=ctx.args.target_threads,
+        max_turns=ctx.args.max_turns,
         **ctx.auto_conversation_args,
         **ctx.conv_args,
     )
@@ -407,6 +410,8 @@ def _factory_base_impl(ctx: "FrameworkContext"):
         sql_dict=ctx.workload_provider.sql_dict,
         db_storage=ctx.db_storage,
         parquet_dir=exec_settings.parquet_dir,
+        num_threads=ctx.args.target_threads,
+        max_turns=ctx.args.max_turns,
         **ctx.auto_conversation_args,
         **ctx.conv_args,
     )

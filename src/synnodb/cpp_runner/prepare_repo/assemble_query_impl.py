@@ -50,7 +50,6 @@ ThreadPool& get_query_pool() {
     static struct Holder {
         ThreadPool pool;
         Holder() {
-            PROFILE_SCOPE("thread_pool_init");
             init_thread_pool(pool);
             pool.parallel_for([](int, int) {});  // warm-up
         }
@@ -63,7 +62,7 @@ ThreadPool& get_query_pool() {
         query_impl = query_impl.replace(thread_pool_include_kw, "")
         query_impl = query_impl.replace(thread_pool_placeholder_kw, "")
 
-    if add_sample_trace_to_query_impl or add_thread_pool_to_query_impl:
+    if add_sample_trace_to_query_impl:
         query_impl = query_impl.replace(trace_include_kw, '#include "trace.hpp"')
         # replace trace stuff
         trace_kw = 'results.push_back(QueryResult{req.query_id, req.req_id, "", elapsed_ms, error});'
@@ -85,10 +84,11 @@ ThreadPool& get_query_pool() {
         f"Keyword '{pin_thread_to_core_kw}' not found in query_impl.cpp template"
     )
     if add_thread_pool_to_query_impl:
-        # multi-threading workers will be pinned. Not sure where to pin main thread to.
+        # Initialize once before the query loop. With CORE_IDS=1 this is a cheap
+        # serial fast path; with multiple CORE_IDS it warms and pins the workers.
         query_impl = query_impl.replace(
             pin_thread_to_core_kw,
-            """""",
+            """(void)get_query_pool();""",
         )
     else:
         query_impl = query_impl.replace(
