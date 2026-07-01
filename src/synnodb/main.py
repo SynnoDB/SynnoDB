@@ -41,7 +41,7 @@ from synnodb.tools.workspace_editor import WorkspaceEditor
 from synnodb.utils.cli_config import RunConfig, Usecase, add_common_args
 from synnodb.utils.confirm_dialog import await_user_confirmation
 from synnodb.utils.conv_name_utils import generate_conv_name
-from synnodb.utils.core_utils import get_cores_for_current_machine
+from synnodb.utils.core_utils import resolve_target_cores
 from synnodb.utils.hugepages import get_num_numa_nodes, set_hugepages
 from synnodb.utils.pkgconfig import check_pkg
 from synnodb.utils.snapshot_utils import load_storage_plan_from_snapshot
@@ -344,16 +344,12 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     # num_threads value is included in the query-cache key)
     #
     # `threads` is the canonical target degree of parallelism (the DuckDB-style
-    # config={'threads': N}); None means "all usable cores". Resolve it against this
-    # machine ONCE so the storage planner, the base-impl prompt, the MT round, and the
+    # config={'threads': N}); None -> 1, 0 -> all usable cores, N -> N. Resolve it against
+    # this machine ONCE so the storage planner, the base-impl prompt, the MT round, and the
     # served engine all agree on the same number. The storage/base/optim stages still
     # VALIDATE serially (CORE_IDS=1, byte-identical) but are TOLD this target so they
     # design a layout/implementation that partitions cleanly across it.
-    target_threads, target_core_ids = get_cores_for_current_machine(
-        leave_core_0_out=True,
-        allow_hyperthreading=True,
-        ncores_to_use=getattr(args, "threads", None),
-    )
+    target_threads, target_core_ids = resolve_target_cores(getattr(args, "threads", None))
     assert target_threads >= 1 and len(target_core_ids) == target_threads, (
         f"could not resolve any usable core for threads={getattr(args, 'threads', None)}"
     )

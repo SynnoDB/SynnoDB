@@ -1,6 +1,9 @@
+import logging
 import os
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 
 def get_cores_for_current_machine(
@@ -34,6 +37,31 @@ def get_cores_for_current_machine(
         core_ids = core_ids[:ncores_to_use]
 
     return len(core_ids), core_ids
+
+
+def resolve_target_cores(threads: int | None) -> tuple[int, list[int]]:
+    """Resolve the DuckDB-style ``threads`` config to concrete worker cores.
+
+    None (unset) -> 1: a single-threaded engine, the default.
+    0            -> every usable core on this machine (auto-detect).
+    N >= 1       -> up to N cores (clamped to the machine's usable cores).
+    """
+    if threads is None:
+        ncores_to_use: int | None = 1
+    elif threads == 0:
+        ncores_to_use = None  # all usable cores
+    elif threads >= 1:
+        ncores_to_use = threads
+    else:
+        raise ValueError(f"threads must be 0 (all cores), None (default 1), or >= 1, got {threads}")
+
+    count, core_ids = get_cores_for_current_machine(ncores_to_use=ncores_to_use)
+    if ncores_to_use is not None and count < ncores_to_use:
+        logger.warning(
+            "threads=%d requested but only %d usable cores are available; using %d.",
+            ncores_to_use, count, count,
+        )
+    return count, core_ids
 
 
 def core_ids_to_env(core_ids: list[int] | None) -> str:
