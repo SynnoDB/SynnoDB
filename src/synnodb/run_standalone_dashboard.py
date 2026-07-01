@@ -25,7 +25,6 @@ import sys
 from urllib.parse import urlencode
 
 from synnodb.observability.live_ui.live_dashboard import StandaloneDashboard
-from synnodb.settings import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -38,9 +37,11 @@ def _dashboard_url(port: int, args: argparse.Namespace) -> str:
         params["db"] = args.db
     elif args.wandb_run_id:
         params["wandb_run_id"] = args.wandb_run_id
-        if args.wandb_entity != DEFAULT_WANDB_ENTITY:
+        # Only pin entity/project in the URL when the user overrode them;
+        # otherwise let the dashboard resolve the single repo default lazily.
+        if args.wandb_entity:
             params["wandb_entity"] = args.wandb_entity
-        if args.wandb_project != DEFAULT_WANDB_PROJECT:
+        if args.wandb_project:
             params["wandb_project"] = args.wandb_project
 
     query = f"?{urlencode(params)}" if params else ""
@@ -71,15 +72,15 @@ def main() -> None:
 
     parser.add_argument(
         "--wandb_entity",
-        default=DEFAULT_WANDB_ENTITY,
+        default=None,
         metavar="ENTITY",
-        help="W&B entity (default: your W&B default entity).",
+        help="W&B entity (default: $WANDB_ENTITY or your W&B default entity).",
     )
     parser.add_argument(
         "--wandb_project",
-        default=DEFAULT_WANDB_PROJECT,
+        default=None,
         metavar="PROJECT",
-        help="W&B project (default: %(default)s).",
+        help="W&B project (default: $WANDB_PROJECT or the shared SynnoDB project).",
     )
     parser.add_argument(
         "--host",
