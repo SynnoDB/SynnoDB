@@ -38,8 +38,8 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 | `js/state.js` | Shared mutable globals: last poll snapshot, chart instances, mode flags, time-travel cursor, hover state |
 | `js/util.js` | Pure helpers — `esc`, `fmtCost`/`fmtTime`/`fmtNum`/`fmtPieTime`/`fmtTimelineTick`, `parseJsonField`, `normalizeQueryId`/`parseQueryIds`, `isMetricTrue`/`isMetricFalse`, `addAxisHeadroom`, `getSegmentBounds` |
 | `js/sections.js` | Section colour palette + `getSections` + `setHoveredSection` + `sectionBgPlugin` (Chart.js) |
-| `js/metrics.js` | Per-query runtime extraction and cumulative speedup computation (`computeSpeedupSeries`, `getQueryRuntimes`, `getQueryAxisMax`) |
-| `js/chart-timeline.js` | Main timeline chart (tokens / LOC / speedup), time-travel cursor + drag scrubbing, `correctnessAlignPlugin` |
+| `js/metrics.js` | Per-query runtime extraction and cumulative speedup computation (`computeSpeedupSeries`, `getTotalQueryCount`, `getQueryRuntimes`, `getQueryAxisMax`); each speedup point carries `complete` (covers all `validation/num_all_queries` benchmark queries) so preliminary points can be drawn dashed |
+| `js/chart-timeline.js` | Main timeline chart (tokens / LOC / speedup), time-travel cursor + drag scrubbing, `correctnessAlignPlugin`; speedup line is dashed while preliminary and solid once all queries are implemented (`isCompleteSpeedupSegment`) |
 | `js/chart-query.js` | Per-query speedup/runtime bar chart with inline legend and `Speedup = 1` reference line |
 | `js/chart-dist.js` | Modal charts: pie of wall-clock per type, stacked-area cumulative time, call-count bar |
 | `js/log.js` | Activity log panel — type metadata, per-type `logDesc`/`logBody`, incremental `updateLog` |

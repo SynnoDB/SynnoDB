@@ -397,6 +397,11 @@ def check_output_correctness(
         "validation/avg_speedup": average_speedup,
         "validation/num_queries": len(query_ids_executed),
         "validation/num_successful_queries": len(query_ids_executed),
+        # Total number of queries in the benchmark suite (independent of how many
+        # were executed in this row). The live dashboard uses this to tell a
+        # preliminary cumulative speedup (only some queries implemented so far)
+        # from a final one that covers the whole benchmark.
+        "validation/num_all_queries": len(all_query_ids),
         "validation/query_ids_executed": query_ids_executed,
     }
 
