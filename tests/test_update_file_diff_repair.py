@@ -187,7 +187,9 @@ def test_update_file_impl_repairs_and_completes(tmp_path):
     assert "beta — gamma" in content  # the em dash was never clobbered
 
 
-def test_update_file_impl_unmatchable_diff_echoes_current_content(tmp_path, monkeypatch):
+def test_update_file_impl_unmatchable_diff_echoes_current_content(
+    tmp_path, monkeypatch
+):
     # silence the structured error sink; we only care about the recovery output
     monkeypatch.setattr(wse, "log_tool_call_error", lambda **kw: None)
     editor, workspace = _make_editor(tmp_path)

@@ -3,9 +3,13 @@
 This is a prompt-only guardrail against ballooning builds (the naive 70 GB engine) - there is
 no memory budget knob or enforcement, since the target scales itself to each engine's data.
 """
+
 from __future__ import annotations
 
-from synnodb.conversations.prompts_gen import base_optimize_build, gen_storage_plan_prompt
+from synnodb.conversations.prompts_gen import (
+    base_optimize_build,
+    gen_storage_plan_prompt,
+)
 from synnodb.workloads.workload_provider import ExecSettings
 
 

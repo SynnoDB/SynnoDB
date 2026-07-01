@@ -2,9 +2,9 @@
 explicit registration call. Uses an in-process engine (the manifest's ProcessEngine builder
 is replaced) so no compiled binary is needed.
 """
+
 from __future__ import annotations
 
-import json
 
 import pyarrow as pa
 import pytest
@@ -12,7 +12,12 @@ import pytest
 import synnodb
 from synnodb.duckdb_compat import discovery
 from synnodb.duckdb_compat.discovery import resolve_engines_dir
-from synnodb.router import LocalCallableEngine, RouterMode, RouterPolicy, TemplateRegistry
+from synnodb.router import (
+    LocalCallableEngine,
+    RouterMode,
+    RouterPolicy,
+    TemplateRegistry,
+)
 from synnodb.router.manifest import EngineManifest, QueryTemplate
 from synnodb.router.registry import ColumnSpec, PlaceholderSpec
 
@@ -42,8 +47,11 @@ def _write_manifest(engines_dir, engine_id="eng-test", expected_tables=None):
 def patched_engine(monkeypatch):
     # Replace the ProcessEngine builder with an in-process engine so no binary is needed.
     monkeypatch.setattr(
-        discovery, "_build_engine",
-        lambda manifest, engine_dir, **_: LocalCallableEngine(manifest.engine_id, {"1": _engine_fn}),
+        discovery,
+        "_build_engine",
+        lambda manifest, engine_dir, **_: LocalCallableEngine(
+            manifest.engine_id, {"1": _engine_fn}
+        ),
     )
 
 
@@ -66,7 +74,7 @@ def test_resolve_engines_dir_precedence(monkeypatch, tmp_path):
     assert resolve_engines_dir(None) == tmp_path / "engines"
     monkeypatch.setenv("SYNNO_ENGINES_DIR", str(tmp_path / "e"))
     assert resolve_engines_dir(None) == tmp_path / "e"
-    assert resolve_engines_dir("/explicit") .as_posix() == "/explicit"  # explicit wins
+    assert resolve_engines_dir("/explicit").as_posix() == "/explicit"  # explicit wins
 
 
 def test_discovers_and_routes(patched_engine, tmp_path):

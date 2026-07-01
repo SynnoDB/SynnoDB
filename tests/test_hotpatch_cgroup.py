@@ -6,6 +6,7 @@ cgroup OOM. The OOM test is skipped where delegation is unavailable (e.g. CI
 without a delegated slice); the launcher and cgroup mechanics are proven
 separately in test_db_launch.py and under a delegated cgroup in development.
 """
+
 import logging
 import sys
 from pathlib import Path
@@ -25,10 +26,20 @@ def _reset_cgroup_module_caches():
     """Keep each test hermetic: the cgroup module memoizes the parent/delegation and the
     process-static config signature, so reset them around every test (some tests here set
     SYNNO_CGROUP_PARENT) to avoid cross-test ordering effects."""
-    for attr in ("_runner_parent", "_delegation", "_delegation_error", "_cgroup_env_sig"):
+    for attr in (
+        "_runner_parent",
+        "_delegation",
+        "_delegation_error",
+        "_cgroup_env_sig",
+    ):
         setattr(cgroup_mod, attr, None)
     yield
-    for attr in ("_runner_parent", "_delegation", "_delegation_error", "_cgroup_env_sig"):
+    for attr in (
+        "_runner_parent",
+        "_delegation",
+        "_delegation_error",
+        "_cgroup_env_sig",
+    ):
         setattr(cgroup_mod, attr, None)
 
 

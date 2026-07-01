@@ -79,7 +79,9 @@ class ExecValidateResult:
 
 _CRASH_BANNER = "SynnoDB engine CRASH"
 # crash_handler.hpp prints frames as "<module>(+0x<file_offset>) <mangled_symbol>".
-_CRASH_FRAME_RE = re.compile(r"^\s*(?P<module>\S+)\(\+0x(?P<off>[0-9a-fA-F]+)\)\s*(?P<sym>\S*)")
+_CRASH_FRAME_RE = re.compile(
+    r"^\s*(?P<module>\S+)\(\+0x(?P<off>[0-9a-fA-F]+)\)\s*(?P<sym>\S*)"
+)
 _SYSTEM_LIB_PREFIXES = ("/lib/", "/usr/lib/", "/lib64/", "/usr/lib64/")
 
 

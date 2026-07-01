@@ -1,7 +1,7 @@
 """Ephemeral-workspace cleanup on the SynnoDB facade (cleanup_workspace / context manager)."""
+
 from __future__ import annotations
 
-from pathlib import Path
 
 from synnodb.api import SynnoDB
 

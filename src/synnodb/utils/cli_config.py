@@ -30,7 +30,9 @@ class RunConfig:
     verbose: bool = False  # stream DEBUG logs to the console (logfile is always DEBUG)
     start_snapshot: str | None = None
     storage_plan_snapshot: str | None = None
-    storage_plan_text: str | None = None  # storage plan content supplied directly (W&B-free path)
+    storage_plan_text: str | None = (
+        None  # storage plan content supplied directly (W&B-free path)
+    )
     max_scale_factor: int | None = None
     continue_run: bool = False
     replay: bool = False
@@ -476,6 +478,6 @@ def add_common_args(
             help="JSON object merged into every request's extra_body (LiteLLM models). "
             "Host-independent escape hatch for provider-specific fields, e.g. OpenRouter "
             "provider routing: "
-            "'{\"provider\": {\"sort\": \"throughput\", \"ignore\": [\"baseten\"], \"allow_fallbacks\": true}}'. "
+            '\'{"provider": {"sort": "throughput", "ignore": ["baseten"], "allow_fallbacks": true}}\'. '
             "Defaults to the $MODEL_EXTRA_BODY env var.",
         )

@@ -5,6 +5,7 @@ synthesized database, no live DuckDB of your own). Cross-checked against DuckDB.
 
 Skipped unless the recompiled q1q6byo engine and DuckDB's tpch extension are available.
 """
+
 from __future__ import annotations
 
 import glob
@@ -34,8 +35,10 @@ def _exact_arrow_engine() -> bool:
     if not (Q1Q6BYO / "db").exists() or not loader.exists() or not query.exists():
         return False
     try:
-        return (b"SYNNODB_SHM_INGEST" in loader.read_bytes()
-                and b"SYNNODB_RESULT_DIR" in query.read_bytes())
+        return (
+            b"SYNNODB_SHM_INGEST" in loader.read_bytes()
+            and b"SYNNODB_RESULT_DIR" in query.read_bytes()
+        )
     except OSError:
         return False
 
@@ -62,11 +65,17 @@ def tpch_db(tmp_path_factory):
 
 def _queries(dbfile):
     prov = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH, base_parquet_dir=dbfile.parent,
-        db_storage=DBStorage.IN_MEMORY, bespoke_ssd_storage_dir=None, query_ids=["1", "6"],
+        benchmark=OLAPWorkload.TPCH,
+        base_parquet_dir=dbfile.parent,
+        db_storage=DBStorage.IN_MEMORY,
+        bespoke_ssd_storage_dir=None,
+        query_ids=["1", "6"],
     )
     q1 = substitute(prov.sql_dict["Q1"], {"DELTA": "90"})
-    q6 = substitute(prov.sql_dict["Q6"], {"DATE": "1994-01-01", "DISCOUNT": "0.06", "QUANTITY": "24"})
+    q6 = substitute(
+        prov.sql_dict["Q6"],
+        {"DATE": "1994-01-01", "DISCOUNT": "0.06", "QUANTITY": "24"},
+    )
     return q1, q6
 
 
@@ -84,8 +93,13 @@ def _policy():
 
 def test_optimize_publishes_synno_named_engine(tpch_db):
     with tempfile.TemporaryDirectory() as tmp:
-        dest = optimize_database(tpch_db, ["1", "6"], engine_workspace=Q1Q6BYO,
-                                 engines_dir=str(Path(tmp) / "engines"), data_plane="auto")
+        dest = optimize_database(
+            tpch_db,
+            ["1", "6"],
+            engine_workspace=Q1Q6BYO,
+            engines_dir=str(Path(tmp) / "engines"),
+            data_plane="auto",
+        )
         assert dest.name == "synno-tpch"
         man = EngineManifest.read(dest / "manifest.json")
         assert man.shm_capable is True
@@ -97,14 +111,24 @@ def test_optimize_publishes_synno_named_engine(tpch_db):
 
 def test_data_plane_variants(tpch_db):
     with tempfile.TemporaryDirectory() as tmp:
-        shm = optimize_database(tpch_db, ["1"], engine_workspace=Q1Q6BYO,
-                                engines_dir=str(Path(tmp) / "shm"), data_plane="shm")
+        shm = optimize_database(
+            tpch_db,
+            ["1"],
+            engine_workspace=Q1Q6BYO,
+            engines_dir=str(Path(tmp) / "shm"),
+            data_plane="shm",
+        )
         m_shm = EngineManifest.read(shm / "manifest.json")
         assert m_shm.shm_capable is True and m_shm.parquet_dir is None
         assert not (shm / "data").exists()
 
-        pq = optimize_database(tpch_db, ["1"], engine_workspace=Q1Q6BYO,
-                               engines_dir=str(Path(tmp) / "pq"), data_plane="parquet")
+        pq = optimize_database(
+            tpch_db,
+            ["1"],
+            engine_workspace=Q1Q6BYO,
+            engines_dir=str(Path(tmp) / "pq"),
+            data_plane="parquet",
+        )
         m_pq = EngineManifest.read(pq / "manifest.json")
         assert m_pq.shm_capable is False and m_pq.parquet_dir == "data"
         assert (pq / "data" / "lineitem.parquet").exists()
@@ -114,8 +138,13 @@ def test_shm_hot_load_plane(tpch_db):
     q1, q6 = _queries(tpch_db)
     with tempfile.TemporaryDirectory() as tmp:
         engines = Path(tmp) / "engines"
-        optimize_database(tpch_db, ["1", "6"], engine_workspace=Q1Q6BYO,
-                          engines_dir=str(engines), data_plane="auto")
+        optimize_database(
+            tpch_db,
+            ["1", "6"],
+            engine_workspace=Q1Q6BYO,
+            engines_dir=str(engines),
+            data_plane="auto",
+        )
         # Plain on-disk connection: the engine hot-loads its tables as Arrow over shm.
         con = synnodb.connect(str(tpch_db), engines=str(engines), policy=_policy())
         try:
@@ -138,10 +167,17 @@ def test_parquet_synthesized_plane(tpch_db):
     q1, q6 = _queries(tpch_db)
     with tempfile.TemporaryDirectory() as tmp:
         engines = Path(tmp) / "engines"
-        optimize_database(tpch_db, ["1", "6"], engine_workspace=Q1Q6BYO,
-                          engines_dir=str(engines), data_plane="auto")
+        optimize_database(
+            tpch_db,
+            ["1", "6"],
+            engine_workspace=Q1Q6BYO,
+            engines_dir=str(engines),
+            data_plane="auto",
+        )
         # No database of our own: mount the engine's bundled snapshot and query it.
-        con = synnodb.connect(":memory:", engines=str(engines), mount=True, policy=_policy())
+        con = synnodb.connect(
+            ":memory:", engines=str(engines), mount=True, policy=_policy()
+        )
         try:
             con.refresh_engines()
             assert con.router_stats()["registry"]["templates"] == 2
@@ -151,24 +187,35 @@ def test_parquet_synthesized_plane(tpch_db):
                 got = con.execute(sql).to_arrow_table()
                 assert results_equal(got, _reference(tpch_db, sql), ordered=True)
             session = con.router_stats()["session"]
-            assert session["routed"] == 2 and session["cross_check_mismatch"] == 0  # bit-exact
+            assert (
+                session["routed"] == 2 and session["cross_check_mismatch"] == 0
+            )  # bit-exact
         finally:
             con.close()
 
 
 def test_near_miss_falls_back(tpch_db):
     q1, _ = _queries(tpch_db)
-    near_miss = q1.replace("1998-12-01", "1997-01-01")  # a constant the engine was not built for
+    near_miss = q1.replace(
+        "1998-12-01", "1997-01-01"
+    )  # a constant the engine was not built for
     with tempfile.TemporaryDirectory() as tmp:
         engines = Path(tmp) / "engines"
-        optimize_database(tpch_db, ["1"], engine_workspace=Q1Q6BYO,
-                          engines_dir=str(engines), data_plane="auto")
+        optimize_database(
+            tpch_db,
+            ["1"],
+            engine_workspace=Q1Q6BYO,
+            engines_dir=str(engines),
+            data_plane="auto",
+        )
         con = synnodb.connect(str(tpch_db), engines=str(engines), policy=_policy())
         try:
             con.refresh_engines()
             assert con.why(q1)["decision"] == "would-route"
             assert con.why(near_miss)["decision"] == "would-fall-back"
-            assert con.execute(near_miss).to_arrow_table().num_rows >= 1  # still correct via DuckDB
+            assert (
+                con.execute(near_miss).to_arrow_table().num_rows >= 1
+            )  # still correct via DuckDB
         finally:
             con.close()
 
@@ -178,14 +225,23 @@ def test_shm_segments_cleaned_up_on_close(tpch_db):
     before = set(glob.glob("/dev/shm/synno-ingest-*"))
     with tempfile.TemporaryDirectory() as tmp:
         engines = Path(tmp) / "engines"
-        optimize_database(tpch_db, ["1"], engine_workspace=Q1Q6BYO,
-                          engines_dir=str(engines), data_plane="shm")
+        optimize_database(
+            tpch_db,
+            ["1"],
+            engine_workspace=Q1Q6BYO,
+            engines_dir=str(engines),
+            data_plane="shm",
+        )
         con = synnodb.connect(str(tpch_db), engines=str(engines), policy=_policy())
         con.refresh_engines()
         con.execute(q1).fetchall()
-        assert set(glob.glob("/dev/shm/synno-ingest-*")) - before, "an ingest dir exists while open"
+        assert set(glob.glob("/dev/shm/synno-ingest-*")) - before, (
+            "an ingest dir exists while open"
+        )
         con.close()
-        assert not (set(glob.glob("/dev/shm/synno-ingest-*")) - before), "ingest dir leaked after close"
+        assert not (set(glob.glob("/dev/shm/synno-ingest-*")) - before), (
+            "ingest dir leaked after close"
+        )
 
 
 def test_shm_only_engine_needs_live_data(tpch_db):
@@ -194,12 +250,21 @@ def test_shm_only_engine_needs_live_data(tpch_db):
     q1, _ = _queries(tpch_db)
     with tempfile.TemporaryDirectory() as tmp:
         engines = Path(tmp) / "engines"
-        optimize_database(tpch_db, ["1"], engine_workspace=Q1Q6BYO,
-                          engines_dir=str(engines), data_plane="shm")
-        empty = synnodb.connect(":memory:", engines=str(engines), mount=True, policy=_policy())
+        optimize_database(
+            tpch_db,
+            ["1"],
+            engine_workspace=Q1Q6BYO,
+            engines_dir=str(engines),
+            data_plane="shm",
+        )
+        empty = synnodb.connect(
+            ":memory:", engines=str(engines), mount=True, policy=_policy()
+        )
         try:
             empty.refresh_engines()
-            assert empty.router_stats()["registry"]["templates"] == 0  # nothing to serve
+            assert (
+                empty.router_stats()["registry"]["templates"] == 0
+            )  # nothing to serve
             assert empty.why(q1)["decision"] == "would-fall-back"
         finally:
             empty.close()

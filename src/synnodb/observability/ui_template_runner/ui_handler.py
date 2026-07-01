@@ -11,14 +11,15 @@ from pathlib import Path
 _GUI_DIR = Path(__file__).parent
 
 _STATIC_FILES = {
-    "/ui":        ("ui.html",      "text/html; charset=utf-8"),
-    "/privacy":   ("privacy.html", "text/html; charset=utf-8"),
-    "/style.css": ("style.css",    "text/css; charset=utf-8"),
-    "/ui.js":     ("ui.js",        "application/javascript; charset=utf-8"),
+    "/ui": ("ui.html", "text/html; charset=utf-8"),
+    "/privacy": ("privacy.html", "text/html; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/ui.js": ("ui.js", "application/javascript; charset=utf-8"),
 }
 
-assert all((_GUI_DIR / fname).exists() for fname, _ in _STATIC_FILES.values()), \
+assert all((_GUI_DIR / fname).exists() for fname, _ in _STATIC_FILES.values()), (
     "One or more UI static files are missing"
+)
 
 
 def handle_static(path: str, handler) -> bool:
@@ -28,7 +29,9 @@ def handle_static(path: str, handler) -> bool:
         return False
     fname, mime = entry
     handler._send(
-        200, (_GUI_DIR / fname).read_bytes(), mime,
+        200,
+        (_GUI_DIR / fname).read_bytes(),
+        mime,
         extra_headers={"Cache-Control": "no-store, must-revalidate"},
     )
     return True

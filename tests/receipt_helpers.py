@@ -5,6 +5,7 @@ The publish API requires a :class:`ValidationReceipt`. Tests that exercise publi
 workspace they publish via :func:`passing_receipt`. Tests of the gate's *refusal* behavior
 construct receipts directly so they can set a single field wrong.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -37,10 +38,14 @@ def write_fake_engine_db(db_path: "str | Path") -> None:
     """Create a fake engine `db` binary that carries a real build-id (by copying a system ELF), so
     the publish gate's build-id identity check is exercised, not bypassed."""
     donor = _build_id_donor()
-    if donor is None:  # no Linux ELF with a build-id available (not expected on a real host)
+    if (
+        donor is None
+    ):  # no Linux ELF with a build-id available (not expected on a real host)
         import pytest
 
-        pytest.skip("no system binary with a build-id available for the fake engine fixture")
+        pytest.skip(
+            "no system binary with a build-id available for the fake engine fixture"
+        )
     shutil.copy2(donor, db_path)
 
 

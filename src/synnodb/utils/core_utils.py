@@ -53,13 +53,17 @@ def resolve_target_cores(threads: int | None) -> tuple[int, list[int]]:
     elif threads >= 1:
         ncores_to_use = threads
     else:
-        raise ValueError(f"threads must be 0 (all cores), None (default 1), or >= 1, got {threads}")
+        raise ValueError(
+            f"threads must be 0 (all cores), None (default 1), or >= 1, got {threads}"
+        )
 
     count, core_ids = get_cores_for_current_machine(ncores_to_use=ncores_to_use)
     if ncores_to_use is not None and count < ncores_to_use:
         logger.warning(
             "threads=%d requested but only %d usable cores are available; using %d.",
-            ncores_to_use, count, count,
+            ncores_to_use,
+            count,
+            count,
         )
     return count, core_ids
 

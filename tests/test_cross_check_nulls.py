@@ -6,6 +6,7 @@ verdict used by both the runtime cross-check and, in spirit, the generation vali
 NULL as distinct from any concrete value. So an engine that regresses to the old null->0 behaviour
 diverges from DuckDB and is caught (quarantined / fallback) rather than silently served.
 """
+
 from __future__ import annotations
 
 import pyarrow as pa
@@ -19,8 +20,8 @@ def _t(values, typ=pa.int64()):
 
 def test_null_is_not_zero():
     duckdb = _t([10, None, 20])
-    engine_buggy = _t([10, 0, 20])      # the old null->0 behaviour
-    engine_exact = _t([10, None, 20])   # full nullable support
+    engine_buggy = _t([10, 0, 20])  # the old null->0 behaviour
+    engine_exact = _t([10, None, 20])  # full nullable support
     assert results_equal(engine_buggy, duckdb, ordered=True) is False
     assert results_equal(engine_exact, duckdb, ordered=True) is True
 

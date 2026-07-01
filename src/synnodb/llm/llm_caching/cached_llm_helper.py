@@ -21,6 +21,7 @@ from synnodb.llm.sdk.agents_sdk.openai_token_usage import (
 )
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.tools.tool_call_error_logger import log_tool_call_error
 from synnodb.utils.utils import dump_pickle, load_pickle, sha256, stable_json
 
 logger = logging.getLogger(__name__)

@@ -5,6 +5,7 @@ in-place hotpatch cannot fix; the pool keys reuse on a fingerprint so the stale
 engine is retired instead of silently answering with stale data. These tests pin
 that behavior with a fake runner (no real engine launched).
 """
+
 from synnodb.cpp_runner.hotpatch.pool import _HotpatchHolder
 
 

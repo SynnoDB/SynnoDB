@@ -133,7 +133,9 @@ def exclude_workspace_from_enclosing_repo(workspace_path: Path) -> None:
     """
     try:
         ws = Path(workspace_path).resolve()
-        for parent in ws.parents:  # nearest enclosing repo (workspace's own .git excluded)
+        for (
+            parent
+        ) in ws.parents:  # nearest enclosing repo (workspace's own .git excluded)
             git_dir = parent / ".git"
             if git_dir.is_dir():
                 rel = ws.relative_to(parent).as_posix()
@@ -171,8 +173,15 @@ PICKLE_MODULE_REMAP: dict[str, str] = {
 # the old paths (e.g. "utils.snapshot_utils"); prepend the namespace so they still
 # resolve instead of forcing a cache wipe.
 _PRE_NAMESPACE_TOP_LEVELS = (
-    "utils.", "tools.", "conversations.", "workloads.", "cpp_runner.",
-    "observability.", "synth_framework.", "llm.", "main.",
+    "utils.",
+    "tools.",
+    "conversations.",
+    "workloads.",
+    "cpp_runner.",
+    "observability.",
+    "synth_framework.",
+    "llm.",
+    "main.",
 )
 
 

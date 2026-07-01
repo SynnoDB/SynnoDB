@@ -15,6 +15,7 @@ are inferred from the parquet directory. A templated query's specs are parsed in
 the run's seeded RNG), exactly as the built-in TPC-H generator draws its values; static
 (parameterless) queries get an identity generator.
 """
+
 from __future__ import annotations
 
 import json
@@ -162,7 +163,8 @@ def _build_param_spaces(
     if unknown:
         logger.warning(
             "%s has entries for queries that are not templated/known and were ignored: %s",
-            params_source, sorted(unknown),
+            params_source,
+            sorted(unknown),
         )
     missing = sorted(qid for qid in templated if qid not in params_by_id)
     if missing:
@@ -337,7 +339,9 @@ def register_workload_from_dir(
     params_source = "params.json"
     params_path = sql_dir / "params.json"
     if params_path.is_file():
-        params_by_id = _normalize_params(json.loads(params_path.read_text()), str(params_path))
+        params_by_id = _normalize_params(
+            json.loads(params_path.read_text()), str(params_path)
+        )
         params_source = str(params_path)
 
     return _register_static_workload(
@@ -393,7 +397,7 @@ def register_workload_from_json(
             continue
         if not isinstance(entry, dict) or "sql" not in entry:
             raise ValueError(
-                f'{queries_json}: query {qid!r} must be a SQL string or an object with a '
+                f"{queries_json}: query {qid!r} must be a SQL string or an object with a "
                 f'"sql" key, got {type(entry).__name__}.'
             )
         sql_by_id[qid] = str(entry["sql"])
@@ -469,7 +473,9 @@ def _register_static_workload(
 
         return gen
 
-    def placeholders_factory(provider: "OLAPWorkloadProvider", do_not_cache: bool = False):
+    def placeholders_factory(
+        provider: "OLAPWorkloadProvider", do_not_cache: bool = False
+    ):
         def gen(query_name: str, **_):
             qid = _bare(query_name)
             # representative placeholder set for arg-parser / engine generation

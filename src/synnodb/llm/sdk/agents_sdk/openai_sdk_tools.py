@@ -296,7 +296,7 @@ _REPLACE_IN_FILE_SCHEMA = {
         },
         "new_string": {
             "type": "string",
-            "description": "The replacement text (use \"\" only to delete the matched text).",
+            "description": 'The replacement text (use "" only to delete the matched text).',
         },
         "replace_all": {
             "type": "boolean",

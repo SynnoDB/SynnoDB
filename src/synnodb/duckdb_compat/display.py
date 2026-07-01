@@ -7,11 +7,11 @@ no-op, so ``execute`` runs byte-for-byte as before. Timing is read from the rout
 already produced, so there is no extra measurement, and rendering happens only when a human asks
 for it (``repr``/``show``), never during execution.
 """
+
 from __future__ import annotations
 
 import sys
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -24,8 +24,12 @@ class QueryTiming:
 
     served_by: str  # "engine" | "duckdb"
     engine_ms: Optional[float] = None
-    duckdb_ms: Optional[float] = None             # measured this query (cross-check or fallback run)
-    duckdb_ms_estimated: Optional[float] = None   # from a prior cross-check of the same template
+    duckdb_ms: Optional[float] = (
+        None  # measured this query (cross-check or fallback run)
+    )
+    duckdb_ms_estimated: Optional[float] = (
+        None  # from a prior cross-check of the same template
+    )
     rows: int = 0
 
 
@@ -42,7 +46,9 @@ def _cell(v: Any, max_w: int) -> str:
     return s if len(s) <= max_w else s[: max_w - 1] + "…"
 
 
-def render_table(table: pa.Table, *, max_rows: int = 20, max_col_width: int = 40) -> str:
+def render_table(
+    table: pa.Table, *, max_rows: int = 20, max_col_width: int = 40
+) -> str:
     """A compact box-drawn table: column names, dtypes, the first *max_rows* rows, and a truncation
     note. Mirrors DuckDB's interactive feel without depending on it."""
     ncols = table.num_columns
@@ -53,7 +59,9 @@ def render_table(table: pa.Table, *, max_rows: int = 20, max_col_width: int = 40
     nrows = table.num_rows
     shown = min(nrows, max_rows)
     cols = [table.column(i).slice(0, shown).to_pylist() for i in range(ncols)]
-    body = [[_cell(cols[c][r], max_col_width) for c in range(ncols)] for r in range(shown)]
+    body = [
+        [_cell(cols[c][r], max_col_width) for c in range(ncols)] for r in range(shown)
+    ]
 
     widths = []
     for c in range(ncols):
@@ -66,7 +74,9 @@ def render_table(table: pa.Table, *, max_rows: int = 20, max_col_width: int = 40
         out = []
         for c in range(ncols):
             cell = cells[c]
-            out.append(cell.center(widths[c]) if align_center else cell.ljust(widths[c]))
+            out.append(
+                cell.center(widths[c]) if align_center else cell.ljust(widths[c])
+            )
         return "│ " + " │ ".join(out) + " │"
 
     def rule(left: str, mid: str, right: str) -> str:
@@ -81,7 +91,9 @@ def render_table(table: pa.Table, *, max_rows: int = 20, max_col_width: int = 40
         rule("└", "┴", "┘"),
     ]
     if nrows > shown:
-        lines.append(f"  … {nrows - shown} more row(s) ({nrows} total, {ncols} column(s))")
+        lines.append(
+            f"  … {nrows - shown} more row(s) ({nrows} total, {ncols} column(s))"
+        )
     elif nrows == 0:
         lines.append(f"  (0 rows, {ncols} column(s))")
     return "\n".join(lines)
@@ -91,16 +103,16 @@ def render_table(table: pa.Table, *, max_rows: int = 20, max_col_width: int = 40
 def speed_badge(speedup: float) -> str:
     """An emoji for how much faster the engine was than DuckDB."""
     if speedup >= 50:
-        return "\U0001f525"   # fire
+        return "\U0001f525"  # fire
     if speedup >= 10:
-        return "\U0001f680"   # rocket
+        return "\U0001f680"  # rocket
     if speedup >= 3:
-        return "⚡"       # high voltage
+        return "⚡"  # high voltage
     if speedup >= 1.2:
-        return "\U0001f642"   # slightly smiling
+        return "\U0001f642"  # slightly smiling
     if speedup >= 0.9:
-        return "➖"       # heavy minus (about the same)
-    return "\U0001f422"       # turtle (slower)
+        return "➖"  # heavy minus (about the same)
+    return "\U0001f422"  # turtle (slower)
 
 
 def format_footer(t: QueryTiming) -> str:
@@ -108,7 +120,9 @@ def format_footer(t: QueryTiming) -> str:
         head = f"⚡ synno engine · {t.engine_ms:.1f} ms"
         if t.duckdb_ms is not None and t.engine_ms and t.engine_ms > 0:
             sp = t.duckdb_ms / t.engine_ms
-            return f"{head} · {sp:.1f}× vs DuckDB ({t.duckdb_ms:.1f} ms) {speed_badge(sp)}"
+            return (
+                f"{head} · {sp:.1f}× vs DuckDB ({t.duckdb_ms:.1f} ms) {speed_badge(sp)}"
+            )
         if t.duckdb_ms_estimated is not None and t.engine_ms and t.engine_ms > 0:
             sp = t.duckdb_ms_estimated / t.engine_ms
             return f"{head} · ~{sp:.1f}× vs DuckDB {speed_badge(sp)} (est.)"
@@ -136,8 +150,14 @@ class Spinner:
 
     FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-    def __init__(self, stream: Any, *, delay: float = 0.15, interval: float = 0.08,
-                 message: str = "running query") -> None:
+    def __init__(
+        self,
+        stream: Any,
+        *,
+        delay: float = 0.15,
+        interval: float = 0.08,
+        message: str = "running query",
+    ) -> None:
         self._stream = stream
         self._delay = delay
         self._interval = interval
@@ -179,7 +199,9 @@ class Spinner:
         i = 0
         while not self._stop.is_set():
             try:
-                self._stream.write(f"\r{self.FRAMES[i % len(self.FRAMES)]} {self._message}…")
+                self._stream.write(
+                    f"\r{self.FRAMES[i % len(self.FRAMES)]} {self._message}…"
+                )
                 self._stream.flush()
                 self._drew = True
             except Exception:

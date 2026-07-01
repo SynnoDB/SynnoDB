@@ -8,6 +8,7 @@
   ``ORDER BY``); ordered when the query has a top-level ``ORDER BY``. Floats compare
   with a tolerance (engines and DuckDB may round differently).
 """
+
 from __future__ import annotations
 
 import math
@@ -83,8 +84,14 @@ _EXACT_MATCH_CAP = 64
 
 def _vec_sort_key(v: tuple):
     # Total order over float tuples with None/NaN handled deterministically (None < NaN < finite).
-    return tuple((x is None, isinstance(x, float) and x != x, x if isinstance(x, (int, float)) and x == x else 0.0)
-                 for x in v)
+    return tuple(
+        (
+            x is None,
+            isinstance(x, float) and x != x,
+            x if isinstance(x, (int, float)) and x == x else 0.0,
+        )
+        for x in v
+    )
 
 
 def _match_float_vecs(a: List[Row], b: List[Row], tol: float) -> bool:
@@ -106,11 +113,14 @@ def _match_float_vecs(a: List[Row], b: List[Row], tol: float) -> bool:
         sa = sorted(a, key=_vec_sort_key)
         sb = sorted(b, key=_vec_sort_key)
         return all(
-            all(_float_close(x, y, tol) for x, y in zip(va, vb)) for va, vb in zip(sa, sb)
+            all(_float_close(x, y, tol) for x, y in zip(va, vb))
+            for va, vb in zip(sa, sb)
         )
 
-    compat = [[all(_float_close(x, y, tol) for x, y in zip(a[i], b[j])) for j in range(n)]
-              for i in range(n)]
+    compat = [
+        [all(_float_close(x, y, tol) for x, y in zip(a[i], b[j])) for j in range(n)]
+        for i in range(n)
+    ]
     match = [-1] * n  # match[j] = the a-index assigned to b[j], or -1
 
     def augment(i: int, seen: List[bool]) -> bool:
@@ -252,7 +262,9 @@ def results_diff(
 
     def bucket(r: Row) -> tuple:
         return tuple(
-            ("f", None if v != v else round(v / float_tol)) if isinstance(v, float) else ("v", v)
+            ("f", None if v != v else round(v / float_tol))
+            if isinstance(v, float)
+            else ("v", v)
             for v in r
         )
 

@@ -4,6 +4,7 @@ inside egress. The vocabulary is wide - signed integers/HUGEINT, unsigned intege
 UBIGINT, decimal128/256, BOOLEAN, DOUBLE, VARCHAR, DATE, TIMESTAMP - so the guard is a deny-list
 of the genuinely unreachable (nested, blob, interval, time, uuid, unsigned 128-bit, ...).
 """
+
 from __future__ import annotations
 
 import duckdb
@@ -31,8 +32,10 @@ def test_supported_output_types_bind():
             "s VARCHAR, d DATE, ts TIMESTAMP, flag BOOLEAN, dbl DOUBLE)"
         )
         binding = make_binding(
-            conn, template_sql="SELECT a, big, h, b, wide, s, d, ts, flag, dbl FROM t",
-            engine=_Eng(), query_id="1",
+            conn,
+            template_sql="SELECT a, big, h, b, wide, s, d, ts, flag, dbl FROM t",
+            engine=_Eng(),
+            query_id="1",
         )
         assert binding is not None and len(binding.output_schema) == 10
     finally:
@@ -44,7 +47,12 @@ def test_nested_output_is_refused():
     try:
         conn.duckdb.execute("CREATE TABLE t(a INTEGER)")
         with pytest.raises(SynnoUnsupportedQuery) as ei:
-            make_binding(conn, template_sql="SELECT [a, a] AS arr FROM t", engine=_Eng(), query_id="7")
+            make_binding(
+                conn,
+                template_sql="SELECT [a, a] AS arr FROM t",
+                engine=_Eng(),
+                query_id="7",
+            )
         assert "nested" in str(ei.value).lower() and "arr" in str(ei.value)
     finally:
         conn.close()
@@ -55,7 +63,12 @@ def test_interval_output_is_refused():
     try:
         conn.duckdb.execute("CREATE TABLE t(a INTEGER)")
         with pytest.raises(SynnoUnsupportedQuery):
-            make_binding(conn, template_sql="SELECT INTERVAL 1 DAY AS iv FROM t", engine=_Eng(), query_id="8")
+            make_binding(
+                conn,
+                template_sql="SELECT INTERVAL 1 DAY AS iv FROM t",
+                engine=_Eng(),
+                query_id="8",
+            )
     finally:
         conn.close()
 
@@ -78,7 +91,9 @@ def test_reason_helper_handles_time_vs_timestamp_and_decimals():
 def test_reason_helper_closes_grammar_holes():
     # Array spelled with a size, a time-zone-bearing timestamp, and JSON were all wrongly ALLOWED
     # by a leading-token-only deny-list; the guard must catch DuckDB's full type grammar.
-    assert _unsupported_output_reasons([ColumnSpec("x", "INTEGER[3]")])             # fixed-size array
+    assert _unsupported_output_reasons(
+        [ColumnSpec("x", "INTEGER[3]")]
+    )  # fixed-size array
     assert _unsupported_output_reasons([ColumnSpec("x", "TIMESTAMP WITH TIME ZONE")])
     assert _unsupported_output_reasons([ColumnSpec("x", "TIMESTAMPTZ")])
     assert _unsupported_output_reasons([ColumnSpec("x", "JSON")])

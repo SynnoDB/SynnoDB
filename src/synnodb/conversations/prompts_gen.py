@@ -127,7 +127,7 @@ def base_planner_prompt(
     # value column as zero).
     ingest_hint = (
         " To populate the in-memory columns from the input ArrowTables, you MUST compose "
-        'the framework helpers in `column_ingest.hpp` (already on the include path: add '
+        "the framework helpers in `column_ingest.hpp` (already on the include path: add "
         '`#include "column_ingest.hpp"`). Do NOT decode Arrow buffers yourself '
         "(no raw_values()/GetValue()/Decimal128/endianness/scale handling — that is a "
         "frequent source of silent bugs like all aggregates coming out zero). `column_ingest.hpp` "
@@ -155,7 +155,10 @@ def base_planner_prompt(
         if persistent_storage:
             storage_hint = f"The storage plan is described in the file `{storage_plan_path}`. It describes the SSD-backed columnar storage layout: which columns to serialize to binary files, their sort order, and any zone-map or acceleration structures that fit within the RAM budget. Implement the ColumnHandle<T> and StringColumnHandle fields in the Database struct according to this plan, and make sure build() streams Parquet row groups and writes/registers every referenced persisted column. "
         else:
-            storage_hint = f"The storage plan is described in the file `{storage_plan_path}`. It describes how to store the parquet data in-memory for optimal query execution. Use this storage plan to implement the in-memory data structure accordingly. " + ingest_hint
+            storage_hint = (
+                f"The storage plan is described in the file `{storage_plan_path}`. It describes how to store the parquet data in-memory for optimal query execution. Use this storage plan to implement the in-memory data structure accordingly. "
+                + ingest_hint
+            )
     else:
         if persistent_storage:
             storage_hint = """Use ColumnHandle<T> (from column_handle.hpp) for page-safe fixed-width numeric columns and StringColumnHandle for variable-length string columns. The minimum should be one binary file per page-safe fixed-width column and offsets + bytes files for each string column, struct-of-arrays layout. Flat fixed-width storage is valid only when BP_PAGE_BYTES % sizeof(T) == 0; otherwise use StringColumnHandle or the page-aligned fixed-char helpers. The Database struct must declare a handle for every column needed by the queries, and build() must stream Parquet row groups, serialize, register, and assign each handle."""
@@ -263,13 +266,20 @@ def _detect_hardware_context(
     # resolution via get_cores_for_current_machine().
     try:
         from synnodb.utils.core_utils import get_cores_for_current_machine
-        usable_cores, _ = get_cores_for_current_machine(leave_core_0_out=False, allow_hyperthreading=True)
+
+        usable_cores, _ = get_cores_for_current_machine(
+            leave_core_0_out=False, allow_hyperthreading=True
+        )
     except Exception:
         usable_cores = physical_cores
 
     parts = [f"CPU: {cpu_model}"]
     if usable_cores > 0:
-        ht_str = "hyperthreading enabled" if logical_cores > physical_cores else "no hyperthreading"
+        ht_str = (
+            "hyperthreading enabled"
+            if logical_cores > physical_cores
+            else "no hyperthreading"
+        )
         parts.append(f"{usable_cores} cores available for build parallelism ({ht_str})")
     elif logical_cores > 0:
         parts.append(f"{logical_cores} logical cores")

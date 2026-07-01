@@ -7,6 +7,7 @@ things: loading an existing ``.db`` file into an in-memory connection (used by
 connection's tables to a parquet snapshot (the self-contained, portable parquet plane / ETL
 substrate).
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,7 +32,9 @@ def list_tables(inner: Any, *, schema: str = "main") -> List[str]:
     return [r[0] for r in rows]
 
 
-def load_database_into_memory(inner: Any, db_path: "str | Path", *, alias: str = "_synno_src") -> List[str]:
+def load_database_into_memory(
+    inner: Any, db_path: "str | Path", *, alias: str = "_synno_src"
+) -> List[str]:
     """Copy every base table of the DuckDB file *db_path* into *inner*'s in-memory catalog.
 
     Attaches the file read-only, materializes each ``main`` base table as an in-memory table,
@@ -51,19 +54,27 @@ def load_database_into_memory(inner: Any, db_path: "str | Path", *, alias: str =
         ).fetchall()
         tables = [r[0] for r in rows]
         for t in tables:
-            inner.execute(f'CREATE TABLE main."{t}" AS SELECT * FROM {alias}.main."{t}"')
-        log.info("loaded %d table(s) into memory from %s: %s", len(tables), db_path, tables)
+            inner.execute(
+                f'CREATE TABLE main."{t}" AS SELECT * FROM {alias}.main."{t}"'
+            )
+        log.info(
+            "loaded %d table(s) into memory from %s: %s", len(tables), db_path, tables
+        )
     finally:
         inner.execute(f"DETACH {alias}")
     return tables
 
 
-def export_tables_to_parquet(inner: Any, tables: Sequence[str], out_dir: "str | Path") -> Path:
+def export_tables_to_parquet(
+    inner: Any, tables: Sequence[str], out_dir: "str | Path"
+) -> Path:
     """Write each of *tables* to ``<out_dir>/<table>.parquet`` (the engine's snapshot layout)."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     for t in tables:
         dest = out / f"{t}.parquet"
-        inner.execute(f'COPY (SELECT * FROM "{t}") TO {_sql_str(dest)} (FORMAT PARQUET)')
+        inner.execute(
+            f'COPY (SELECT * FROM "{t}") TO {_sql_str(dest)} (FORMAT PARQUET)'
+        )
         log.debug("exported table %s -> %s", t, dest)
     return out

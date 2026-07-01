@@ -8,6 +8,7 @@ so a wrong engine is caught and quarantined on its first queries and never serve
 
 Run: .venv/bin/python -m pytest tests/test_burn_in.py -q
 """
+
 from __future__ import annotations
 
 import pyarrow as pa
@@ -31,7 +32,9 @@ def _con(**policy_kw):
         registry=TemplateRegistry(),
     )
     con.duckdb.execute("CREATE TABLE t(a INTEGER)")
-    con.duckdb.execute("INSERT INTO t VALUES (1),(2),(3),(4),(5)")  # DuckDB count(a>=2) = 4
+    con.duckdb.execute(
+        "INSERT INTO t VALUES (1),(2),(3),(4),(5)"
+    )  # DuckDB count(a>=2) = 4
     return con
 
 
@@ -53,13 +56,20 @@ def test_burn_in_catches_a_wrong_engine_on_the_first_query():
     quarantined, and never serves its wrong answer."""
     con = _con(cross_check_rate=1e-9, verify_first_n=5)
     _never_sample(con)
-    register_engine(con, template_sql=TEMPLATE,
-                    engine=LocalCallableEngine("synno-x", {"1": _wrong}),
-                    placeholders=[PlaceholderSpec("p0", "INTEGER")])
+    register_engine(
+        con,
+        template_sql=TEMPLATE,
+        engine=LocalCallableEngine("synno-x", {"1": _wrong}),
+        placeholders=[PlaceholderSpec("p0", "INTEGER")],
+    )
     try:
-        assert con.execute(TEMPLATE).fetchall() == [(4,)]   # correct DuckDB answer, not 999
+        assert con.execute(TEMPLATE).fetchall() == [
+            (4,)
+        ]  # correct DuckDB answer, not 999
         assert con._last["served_by"] == "duckdb"
-        assert con.why(TEMPLATE)["decision"] == "would-fall-back"  # quarantined after one query
+        assert (
+            con.why(TEMPLATE)["decision"] == "would-fall-back"
+        )  # quarantined after one query
         assert con.router_stats()["session"]["cross_check_mismatch"] >= 1
     finally:
         con.close()
@@ -70,15 +80,18 @@ def test_burn_in_checks_exactly_the_first_n_then_samples():
     later ones route without a check."""
     con = _con(cross_check_rate=1e-9, verify_first_n=3)
     _never_sample(con)
-    register_engine(con, template_sql=TEMPLATE,
-                    engine=LocalCallableEngine("synno-x", {"1": _right}),
-                    placeholders=[PlaceholderSpec("p0", "INTEGER")])
+    register_engine(
+        con,
+        template_sql=TEMPLATE,
+        engine=LocalCallableEngine("synno-x", {"1": _right}),
+        placeholders=[PlaceholderSpec("p0", "INTEGER")],
+    )
     try:
         for _ in range(10):
             assert con.execute(TEMPLATE).fetchall() == [(4,)]
         sess = con.router_stats()["session"]
-        assert sess["routed"] == 10           # every query served by the (correct) engine
-        assert sess["cross_checked"] == 3     # only the burn-in window was verified
+        assert sess["routed"] == 10  # every query served by the (correct) engine
+        assert sess["cross_checked"] == 3  # only the burn-in window was verified
     finally:
         con.close()
 
@@ -87,11 +100,16 @@ def test_rate_zero_opts_out_of_all_verification_including_burn_in():
     """``cross_check_rate == 0`` is an explicit, total opt-out: no checks at all, so burn-in does
     not run and an unverified engine result is served (the operator's stated choice)."""
     con = _con(cross_check_rate=0.0, verify_first_n=50)
-    register_engine(con, template_sql=TEMPLATE,
-                    engine=LocalCallableEngine("synno-x", {"1": _wrong}),
-                    placeholders=[PlaceholderSpec("p0", "INTEGER")])
+    register_engine(
+        con,
+        template_sql=TEMPLATE,
+        engine=LocalCallableEngine("synno-x", {"1": _wrong}),
+        placeholders=[PlaceholderSpec("p0", "INTEGER")],
+    )
     try:
-        assert con.execute(TEMPLATE).fetchall() == [(999,)]  # unverified engine result is served
+        assert con.execute(TEMPLATE).fetchall() == [
+            (999,)
+        ]  # unverified engine result is served
         assert con.router_stats()["session"]["cross_checked"] == 0
     finally:
         con.close()

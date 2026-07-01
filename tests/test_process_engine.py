@@ -3,6 +3,7 @@
 The full HotpatchProc execution path is integration-tested against a real generated
 engine separately (it requires a compiled engine + data).
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -24,10 +25,14 @@ def test_read_arrow_result_is_exact(tmp_path):
     # reads it back with the exact decimal128 - no CSV/double round-trip.
     results = tmp_path / "results"
     results.mkdir()
-    table = pa.table({
-        "sum_base_price": pa.array([Decimal("56586554400.73")], pa.decimal128(38, 2)),
-        "count_order": pa.array([1478493], pa.int64()),
-    })
+    table = pa.table(
+        {
+            "sum_base_price": pa.array(
+                [Decimal("56586554400.73")], pa.decimal128(38, 2)
+            ),
+            "count_order": pa.array([1478493], pa.int64()),
+        }
+    )
     path = results / "result_x.arrow"
     with pa.OSFile(str(path), "wb") as sink:
         with pa.ipc.new_file(sink, table.schema) as writer:

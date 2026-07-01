@@ -3,13 +3,19 @@
 Tests use a ``base_dir`` under ``tmp_path`` (not ``/dev/shm``) for portability; the
 zero-copy property holds for any ``mmap``-able file, so the assertions are valid.
 """
+
 from __future__ import annotations
 
 import os
 
 import pyarrow as pa
 
-from synnodb.router.shm_transport import SegmentRef, ShmWriter, read_table, sweep_orphans
+from synnodb.router.shm_transport import (
+    SegmentRef,
+    ShmWriter,
+    read_table,
+    sweep_orphans,
+)
 
 
 def test_roundtrip_equal(tmp_path):
@@ -68,9 +74,9 @@ def test_sweep_removes_dead_owner_keeps_live(tmp_path):
     removed = sweep_orphans(base_dir=tmp_path)
 
     assert removed == 1
-    assert not dead.exists()       # dead owner's segment reaped
-    assert live.exists()           # live owner's segment kept
-    assert unrelated.exists()      # files outside our convention untouched
+    assert not dead.exists()  # dead owner's segment reaped
+    assert live.exists()  # live owner's segment kept
+    assert unrelated.exists()  # files outside our convention untouched
 
 
 def test_segmentref_is_picklable():

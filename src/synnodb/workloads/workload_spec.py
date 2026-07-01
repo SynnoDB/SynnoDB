@@ -9,11 +9,12 @@ The heavy / context-dependent parts (SQL dict, schema DDL, per-query parameter
 generation) are supplied as factories, so importing a spec does not pull in the generator
 modules or require SYNNO_DATA_DIR until they are actually used.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Mapping
+from typing import TYPE_CHECKING, Callable
 
 from synnodb.tools.run_tool_mode import RunToolMode
 

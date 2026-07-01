@@ -22,6 +22,7 @@ Schema (v1):
       ]
     }
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -78,7 +79,9 @@ class QueryTemplate:
         return cls(
             query_id=str(d["query_id"]),
             sql_template=d["sql_template"],
-            placeholders=tuple(PlaceholderSpec(n, t) for n, t in d.get("placeholders", [])),
+            placeholders=tuple(
+                PlaceholderSpec(n, t) for n, t in d.get("placeholders", [])
+            ),
         )
 
 
@@ -278,7 +281,10 @@ def write_manifest_for_engine(
     queries: List[QueryTemplate] = []
     for query_id, sql_template, placeholders in query_metadata:
         if isinstance(placeholders, Mapping):
-            specs = tuple(PlaceholderSpec(name, infer_duckdb_type(val)) for name, val in placeholders.items())
+            specs = tuple(
+                PlaceholderSpec(name, infer_duckdb_type(val))
+                for name, val in placeholders.items()
+            )
         else:
             specs = tuple(placeholders)
         queries.append(QueryTemplate(str(query_id), sql_template, specs))
@@ -304,7 +310,6 @@ def check_compatibility(conn: Any, manifest: EngineManifest) -> List[str]:
     ``lineitem`` has the same columns/types. This is the registration-time gate that
     keeps an engine off an incompatible database.
     """
-    from .registration import describe_output  # local import: avoids cycle at import
 
     duck = getattr(conn, "duckdb", conn)
     problems: List[str] = []
@@ -336,7 +341,9 @@ def _norm_type(t: Any) -> str:
     return "".join(str(t).upper().split())
 
 
-def register_manifest(conn: Any, manifest: EngineManifest, engine: Any, *, strict: bool = True) -> list:
+def register_manifest(
+    conn: Any, manifest: EngineManifest, engine: Any, *, strict: bool = True
+) -> list:
     """Register every query in *manifest* against *conn*'s registry, bound to *engine*.
 
     Recomputes each query's output schema and table fingerprint from the live DuckDB
@@ -351,7 +358,9 @@ def register_manifest(conn: Any, manifest: EngineManifest, engine: Any, *, stric
             # A typed error (not a bare ValueError) so discovery surfaces this at WARNING and stops
             # retrying it: by the time we register, the tables are present, so a schema mismatch is
             # a real, non-transient incompatibility the operator should see - not "data not loaded".
-            raise SynnoError("engine incompatible with database: " + "; ".join(problems))
+            raise SynnoError(
+                "engine incompatible with database: " + "; ".join(problems)
+            )
 
     registry = conn.router.registry
     bindings = []

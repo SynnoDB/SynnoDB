@@ -9,6 +9,7 @@ the file does not grow unbounded when the stack is sitting idle.
 
 The deploy script pipes stdout into logs/<datetime>_telemetry.log via tee.
 """
+
 import logging
 import os
 import subprocess
@@ -119,7 +120,10 @@ def _emit(pids: dict[int, str], cpu_cores: dict[int, float]) -> None:
         parts = f.read().split()
     logger.info(
         "SYSSTAT load_1m=%s load_5m=%s load_15m=%s procs=%s",
-        parts[0], parts[1], parts[2], parts[3],
+        parts[0],
+        parts[1],
+        parts[2],
+        parts[3],
     )
     for pid, name in pids.items():
         cores = cpu_cores.get(pid)
@@ -131,7 +135,10 @@ def _emit(pids: dict[int, str], cpu_cores: dict[int, float]) -> None:
             continue
         logger.info(
             "PROCSTAT service=%s pid=%s cpu_cores=%.2f rss_kb=%s",
-            name, pid, cores, rss_kb,
+            name,
+            pid,
+            cores,
+            rss_kb,
         )
 
 

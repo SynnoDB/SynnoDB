@@ -4,6 +4,7 @@ the tutorial ``queries.json``) must mimic the authoritative imperative generator
 reachable values *and* the same joint distinctness/correlation. Date specs intentionally expose
 only an input constraint (closed ISO min/max range), not the generator's month/year snapping.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -23,7 +24,9 @@ N = 20000
 
 def _space(qid: str):
     section = TPCH_PARAM_SPECS[qid]
-    return parse_param_space(section.get("params"), section.get("param_groups"), tpc_h[f"Q{qid}"])
+    return parse_param_space(
+        section.get("params"), section.get("param_groups"), tpc_h[f"Q{qid}"]
+    )
 
 
 def _date_bounds(qid: str, placeholder: str):

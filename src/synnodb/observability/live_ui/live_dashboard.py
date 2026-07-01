@@ -15,7 +15,14 @@ _UI_DIR = Path(__file__).parent
 # Directories never surfaced by the code inspector — VCS metadata, caches and
 # dependency trees would only bury the generated code in noise.
 _WORKSPACE_SKIP_DIRS = frozenset(
-    {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
+    {
+        ".git",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "node_modules",
+    }
 )
 # Cap a single file's served content so a stray multi-MB artifact can't stall the browser.
 _WORKSPACE_MAX_BYTES = 2_000_000
@@ -83,6 +90,7 @@ def _local_file_payload(root: "Path | None", rel: str) -> "bytes | None":
         return None
     result = _read_workspace_file(root, rel)
     return json.dumps(result).encode() if result is not None else None
+
 
 # A single live-dashboard HTTP server is bound once per process and shared by every
 # stage, so the dashboard URL stays put (no 8765 -> 8766 -> ... hopping that would
@@ -566,10 +574,14 @@ class LiveDashboardDrain(DataDrain):
         self._data: dict[int, dict] = {}
         self._lock = threading.Lock()
         # Per-stage accumulation bookkeeping.
-        self._stage_base = 0                      # global-step offset for the active stage
-        self._carry: dict[str, float] = {}        # cumulative-metric baseline for the active stage
-        self._last_global: dict[str, float] = {}  # latest global value of each cumulative metric
-        self._stages: list[dict] = []             # one entry per stage, with its base step
+        self._stage_base = 0  # global-step offset for the active stage
+        self._carry: dict[
+            str, float
+        ] = {}  # cumulative-metric baseline for the active stage
+        self._last_global: dict[
+            str, float
+        ] = {}  # latest global value of each cumulative metric
+        self._stages: list[dict] = []  # one entry per stage, with its base step
         self._meta = {
             "run_name": run_name,
             "wandb_run_id": wandb_run_id,
@@ -704,7 +716,9 @@ class LiveDashboardDrain(DataDrain):
                 host,
                 start_port,
                 lambda: _ACTIVE_SNAPSHOT["fn"](),
-                file_list_fn=lambda: _local_files_payload(_ACTIVE_SNAPSHOT["workspace"]()),
+                file_list_fn=lambda: _local_files_payload(
+                    _ACTIVE_SNAPSHOT["workspace"]()
+                ),
                 file_read_fn=lambda rel: _local_file_payload(
                     _ACTIVE_SNAPSHOT["workspace"](), rel
                 ),

@@ -12,7 +12,10 @@ from openai import BadRequestError
 from openai.types.responses import Response
 
 from synnodb.llm.llm_caching.cached_llm_helper import LLMModelHelper
-from synnodb.observability.logging.run_stats_collector import RunStatsCollector, get_response_id
+from synnodb.observability.logging.run_stats_collector import (
+    RunStatsCollector,
+    get_response_id,
+)
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.runtime_tracker import RuntimeTracker
 from synnodb.utils.utils import create_dir_and_set_permissions

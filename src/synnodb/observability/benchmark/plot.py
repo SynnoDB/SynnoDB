@@ -8,7 +8,10 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from synnodb.observability.benchmark.plot_by_threads import _SYSTEM_MARKERS, plot_by_threads
+from synnodb.observability.benchmark.plot_by_threads import (
+    _SYSTEM_MARKERS,
+    plot_by_threads,
+)
 
 logger = logging.getLogger(__name__)
 

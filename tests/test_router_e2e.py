@@ -6,6 +6,7 @@ The ``LocalCallableEngine`` stands in for the future C++ worker behind the same
 ``BespokeEngine`` interface, so these tests exercise all the routing logic without
 any C++/IPC.
 """
+
 from __future__ import annotations
 
 import pyarrow as pa
@@ -41,20 +42,38 @@ def _engine(fn, engine_id="e"):
     return LocalCallableEngine(engine_id, {"1": wrapped}), calls
 
 
-def _setup(fn, *, mode=RouterMode.SAMPLED, cross_check_rate=1.0, breaker_threshold=3, engine_id="e"):
-    policy = RouterPolicy(mode=mode, cross_check_rate=cross_check_rate, breaker_threshold=breaker_threshold)
+def _setup(
+    fn,
+    *,
+    mode=RouterMode.SAMPLED,
+    cross_check_rate=1.0,
+    breaker_threshold=3,
+    engine_id="e",
+):
+    policy = RouterPolicy(
+        mode=mode,
+        cross_check_rate=cross_check_rate,
+        breaker_threshold=breaker_threshold,
+    )
     con = synnodb.connect(policy=policy, registry=TemplateRegistry())
     # Data setup goes through the escape hatch: writes are blocked on the routed surface.
     con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
     con.duckdb.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z'),(5,'z')")
     engine, calls = _engine(fn, engine_id)
-    binding = register_engine(con, template_sql=TEMPLATE, engine=engine, placeholders=[PlaceholderSpec("p0", "INTEGER")])
+    binding = register_engine(
+        con,
+        template_sql=TEMPLATE,
+        engine=engine,
+        placeholders=[PlaceholderSpec("p0", "INTEGER")],
+    )
     return con, calls, binding
 
 
 def _duckdb_answer(con, sql, params=None):
     raw = con.duckdb
-    return (raw.execute(sql, params) if params is not None else raw.execute(sql)).fetchall()
+    return (
+        raw.execute(sql, params) if params is not None else raw.execute(sql)
+    ).fetchall()
 
 
 # --------------------------------------------------------------------------- #
@@ -64,8 +83,8 @@ def test_matched_query_routes_and_equals_duckdb():
     con, calls, _ = _setup(_correct)
     sql = "SELECT count(*) AS c FROM t WHERE a >= 4"
     result = con.execute(sql).fetchall()
-    assert calls["n"] == 1                       # the engine actually ran
-    assert result == _duckdb_answer(con, sql)    # and matches DuckDB exactly
+    assert calls["n"] == 1  # the engine actually ran
+    assert result == _duckdb_answer(con, sql)  # and matches DuckDB exactly
 
 
 def test_routed_result_description_is_duckdb_typed():
@@ -73,7 +92,10 @@ def test_routed_result_description_is_duckdb_typed():
     con.execute("SELECT count(*) AS c FROM t WHERE a >= 3")
     # description carries DuckDB's canonical type captured at registration.
     assert con.description[0][0] == "c"
-    assert "INT" in con.description[0][1].upper() or "BIGINT" in con.description[0][1].upper()
+    assert (
+        "INT" in con.description[0][1].upper()
+        or "BIGINT" in con.description[0][1].upper()
+    )
 
 
 def test_parameterized_query_routes():
@@ -105,10 +127,12 @@ def test_cross_check_rate_zero_skips_duckdb():
 # Correctness net: cross-check catches a wrong engine
 # --------------------------------------------------------------------------- #
 def test_cross_check_mismatch_serves_duckdb_and_quarantines():
-    con, calls, binding = _setup(lambda ph: pa.table({"c": pa.array([999], pa.int64())}))
+    con, calls, binding = _setup(
+        lambda ph: pa.table({"c": pa.array([999], pa.int64())})
+    )
     sql = "SELECT count(*) AS c FROM t WHERE a >= 4"
     result = con.execute(sql).fetchall()
-    assert result == _duckdb_answer(con, sql)             # served DuckDB's truth, not 999
+    assert result == _duckdb_answer(con, sql)  # served DuckDB's truth, not 999
     assert binding.template_id in con.router.registry.stats()["quarantined"]
     # subsequent calls now silently fall back (no engine call)
     before = calls["n"]
@@ -150,7 +174,9 @@ def test_dirty_table_blocks_routing():
 
 def test_schema_drift_blocks_routing():
     con, calls, _ = _setup(_correct)
-    con.duckdb.execute("ALTER TABLE t ADD COLUMN c2 INTEGER")  # drift via the escape hatch
+    con.duckdb.execute(
+        "ALTER TABLE t ADD COLUMN c2 INTEGER"
+    )  # drift via the escape hatch
     con.execute("SELECT count(*) AS c FROM t WHERE a >= 4")
     assert calls["n"] == 0  # schema-fingerprint mismatch forced fallback
 

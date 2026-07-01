@@ -14,6 +14,7 @@ NOTE: ``gen_query`` remains the sampler used at run time today; this table curre
 its ranges. A future change can have ``gen_query`` consume these specs so there is a single
 source of truth (see plan).
 """
+
 from __future__ import annotations
 
 from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import (
@@ -119,7 +120,9 @@ TPCH_PARAM_SPECS: dict[str, dict] = {
     "15": {"params": {"DATE": _date("1993-01-01", "1997-12-01")}},
     "16": {
         "params": {"BRAND": _cat(BRANDS), "TYPE": _cat(TYPES_PREFIX)},
-        "param_groups": [_sample([f"SIZE{i}" for i in range(1, 9)], list(range(1, 51)))],
+        "param_groups": [
+            _sample([f"SIZE{i}" for i in range(1, 9)], list(range(1, 51)))
+        ],
     },
     "17": {"params": {"BRAND": _cat(BRANDS), "CONTAINER": _cat(CONTAINERS)}},
     "18": {"params": {"QUANTITY": _int(312, 315)}},

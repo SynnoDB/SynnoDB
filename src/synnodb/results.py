@@ -7,6 +7,7 @@ its provenance (the wandb ``run_id`` used to chain stages, and the workspace it
 was written to). They are immutable snapshots: the content is captured when the
 stage finishes, so a later stage reusing the same workspace cannot mutate them.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,9 +33,9 @@ class RunResult:
 class StageArtifact:
     """Provenance common to every stage output."""
 
-    run_id: str | None          # wandb run id: chaining token + provenance
-    workspace: Path             # directory the run wrote its output to
-    config: "SynnoConfig"       # the settings the stage ran with
+    run_id: str | None  # wandb run id: chaining token + provenance
+    workspace: Path  # directory the run wrote its output to
+    config: "SynnoConfig"  # the settings the stage ran with
     # Final git snapshot of the produced code. W&B-free chaining token: the next
     # stage can restore it directly from the local workspace repo. kw_only so the
     # existing positional constructors (and their subclass fields) are unaffected.
@@ -54,8 +55,8 @@ class StageArtifact:
 class StoragePlan(StageArtifact):
     """The storage layout document produced by ``createStoragePlan``."""
 
-    path: Path                  # storage_plan.txt on disk
-    text: str                   # its contents, captured when the stage finished
+    path: Path  # storage_plan.txt on disk
+    text: str  # its contents, captured when the stage finished
 
     def __str__(self) -> str:
         return self.text
@@ -71,7 +72,7 @@ class StoragePlan(StageArtifact):
 class GeneratedEngine(StageArtifact):
     """A generated C++ engine (base / optimized / multi-threaded variants)."""
 
-    files: Mapping[str, str]    # filename -> source, captured when the stage finished
+    files: Mapping[str, str]  # filename -> source, captured when the stage finished
 
     def file(self, name: str) -> str:
         """Source of a generated file (e.g. 'db_loader.cpp', 'query_impl.cpp')."""

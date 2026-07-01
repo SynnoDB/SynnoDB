@@ -8,6 +8,7 @@ engine. These tests pin the tie-aware comparison: ties permute freely, but a gen
 
 Run: .venv/bin/python -m pytest tests/test_cross_check_ordering.py -q
 """
+
 from __future__ import annotations
 
 import pyarrow as pa
@@ -17,7 +18,6 @@ from synnodb.router.adapt import results_equal
 from synnodb.router.normalize import order_by_key_indices
 from synnodb.router import (
     LocalCallableEngine,
-    PlaceholderSpec,
     RouterMode,
     RouterPolicy,
     TemplateRegistry,
@@ -28,17 +28,28 @@ from synnodb.router import (
 # ---- order_by_key_indices (unit) -------------------------------------------
 def test_order_keys_resolves_name_alias_and_ordinal():
     assert order_by_key_indices("SELECT a, b FROM t ORDER BY a", ["a", "b"]) == [0]
-    assert order_by_key_indices("SELECT a, b FROM t ORDER BY b, a", ["a", "b"]) == [1, 0]
+    assert order_by_key_indices("SELECT a, b FROM t ORDER BY b, a", ["a", "b"]) == [
+        1,
+        0,
+    ]
     assert order_by_key_indices("SELECT a AS k, b FROM t ORDER BY k", ["k", "b"]) == [0]
     assert order_by_key_indices("SELECT a, b FROM t ORDER BY 2", ["a", "b"]) == [1]
 
 
 def test_order_keys_returns_none_when_unresolvable():
-    assert order_by_key_indices("SELECT a, b FROM t", ["a", "b"]) is None          # no ORDER BY
-    assert order_by_key_indices("SELECT a FROM t ORDER BY a + 1", ["a"]) is None    # expression
-    assert order_by_key_indices("SELECT a FROM t ORDER BY t.a", ["a"]) is None      # qualified
-    assert order_by_key_indices("SELECT a FROM t ORDER BY hidden", ["a"]) is None   # not projected
-    assert order_by_key_indices("SELECT a, a FROM t ORDER BY a", ["a", "a"]) is None  # ambiguous
+    assert order_by_key_indices("SELECT a, b FROM t", ["a", "b"]) is None  # no ORDER BY
+    assert (
+        order_by_key_indices("SELECT a FROM t ORDER BY a + 1", ["a"]) is None
+    )  # expression
+    assert (
+        order_by_key_indices("SELECT a FROM t ORDER BY t.a", ["a"]) is None
+    )  # qualified
+    assert (
+        order_by_key_indices("SELECT a FROM t ORDER BY hidden", ["a"]) is None
+    )  # not projected
+    assert (
+        order_by_key_indices("SELECT a, a FROM t ORDER BY a", ["a", "a"]) is None
+    )  # ambiguous
 
 
 # ---- results_equal with order_keys (unit) ----------------------------------
@@ -86,15 +97,25 @@ def test_tie_permuting_engine_routes_and_is_not_quarantined():
     con = _con()
 
     def tie_engine(ph):
-        return pa.table({"a": pa.array([1, 1, 2], pa.int32()), "b": pa.array(["y", "x", "z"])})
+        return pa.table(
+            {"a": pa.array([1, 1, 2], pa.int32()), "b": pa.array(["y", "x", "z"])}
+        )
 
-    register_engine(con, template_sql=TC,
-                    engine=LocalCallableEngine("synno-t", {"1": tie_engine}), placeholders=[])
+    register_engine(
+        con,
+        template_sql=TC,
+        engine=LocalCallableEngine("synno-t", {"1": tie_engine}),
+        placeholders=[],
+    )
     try:
         rows = con.execute(TC).fetchall()
-        assert sorted(rows) == [(1, "x"), (1, "y"), (2, "z")]  # correct multiset, validly ordered
-        assert con._last["served_by"] == "engine"              # the engine result was trusted
-        assert con.why(TC)["decision"] == "would-route"        # NOT quarantined
+        assert sorted(rows) == [
+            (1, "x"),
+            (1, "y"),
+            (2, "z"),
+        ]  # correct multiset, validly ordered
+        assert con._last["served_by"] == "engine"  # the engine result was trusted
+        assert con.why(TC)["decision"] == "would-route"  # NOT quarantined
     finally:
         con.close()
 
@@ -106,13 +127,23 @@ def test_genuinely_misordered_engine_is_quarantined():
 
     def bad_order(ph):
         # Right multiset, but a=2 placed before a=1 - a genuine ORDER BY violation.
-        return pa.table({"a": pa.array([2, 1, 1], pa.int32()), "b": pa.array(["z", "x", "y"])})
+        return pa.table(
+            {"a": pa.array([2, 1, 1], pa.int32()), "b": pa.array(["z", "x", "y"])}
+        )
 
-    register_engine(con, template_sql=TC,
-                    engine=LocalCallableEngine("synno-bad", {"1": bad_order}), placeholders=[])
+    register_engine(
+        con,
+        template_sql=TC,
+        engine=LocalCallableEngine("synno-bad", {"1": bad_order}),
+        placeholders=[],
+    )
     try:
         rows = con.execute(TC).fetchall()
-        assert rows == [(1, "x"), (1, "y"), (2, "z")]   # served DuckDB's correctly ordered result
+        assert rows == [
+            (1, "x"),
+            (1, "y"),
+            (2, "z"),
+        ]  # served DuckDB's correctly ordered result
         assert con._last["served_by"] == "duckdb"
         assert con.why(TC)["decision"] == "would-fall-back"  # quarantined
     finally:

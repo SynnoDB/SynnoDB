@@ -19,7 +19,9 @@ import pandas as pd
 
 sys.path.append(Path(__file__).resolve().parents[2].as_posix())
 
-from synnodb.observability.plots.utils.per_stage_data_prep import _target_sf_for_benchmark
+from synnodb.observability.plots.utils.per_stage_data_prep import (
+    _target_sf_for_benchmark,
+)
 from synnodb.observability.plots.utils.wandb_utils import get_wandb_stats
 
 _WANDB_CACHE = Path("/mnt/labstore/bespoke_olap/wandb_cache")

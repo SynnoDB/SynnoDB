@@ -275,9 +275,6 @@ class DataCleaner:
                     idx = mask[mask].index[0]
                     section_starts[rule.label] = idx
 
-        if section_starts:
-            first_idx = min(section_starts.values())
-
         # Sorted list of (start_index, label) for range lookup.
         sorted_sections = sorted(section_starts.items(), key=lambda x: x[1])
 

@@ -11,11 +11,15 @@ Guards:
   reference that was removed).
 - _detect_hardware_context() returns a non-empty string.
 """
+
 from __future__ import annotations
 
 import re
 
-from synnodb.conversations.prompts_gen import _detect_hardware_context, base_optimize_build
+from synnodb.conversations.prompts_gen import (
+    _detect_hardware_context,
+    base_optimize_build,
+)
 from synnodb.workloads.workload_provider import ExecSettings
 
 _BUILDER_HPP = "db_loader.hpp"
@@ -50,12 +54,12 @@ def test_detect_hardware_context_non_empty():
 
 
 def test_hardware_context_core_count_comes_from_affinity():
-    import os
-    import psutil
     from synnodb.utils.core_utils import get_cores_for_current_machine
 
     # Compute what the affinity-based count should be (same call as prompts_gen uses).
-    usable_cores, _ = get_cores_for_current_machine(leave_core_0_out=False, allow_hyperthreading=True)
+    usable_cores, _ = get_cores_for_current_machine(
+        leave_core_0_out=False, allow_hyperthreading=True
+    )
     ctx = _detect_hardware_context()
     assert f"{usable_cores} cores available for build parallelism" in ctx
 
@@ -85,7 +89,10 @@ def test_hardware_context_frames_total_ram_as_ceiling_without_budget():
 def test_optimize_build_prompt_surfaces_threads_and_budget():
     for persistent in (False, True):
         prompt = _build(
-            persistent, allow_storage_restructuring=True, serving_threads=9, memory_budget_mb=8192
+            persistent,
+            allow_storage_restructuring=True,
+            serving_threads=9,
+            memory_budget_mb=8192,
         )
         assert "9 query worker threads" in prompt
         assert "8 GB memory budget" in prompt
@@ -96,7 +103,9 @@ def test_no_leftover_template_variables():
         for restructure in (False, True):
             prompt = _build(persistent, restructure)
             leftover = re.findall(r"\$\{[^}]+\}", prompt)
-            assert not leftover, f"Unsubstituted variables {leftover} in prompt (persistent={persistent}, restructure={restructure})"
+            assert not leftover, (
+                f"Unsubstituted variables {leftover} in prompt (persistent={persistent}, restructure={restructure})"
+            )
 
 
 def test_early_stage_has_no_storage_constraint(persistent_storage=False):
@@ -123,7 +132,9 @@ def test_no_phase_8_reference():
     for persistent in (False, True):
         for restructure in (False, True):
             prompt = _build(persistent, restructure)
-            assert "Phase 8" not in prompt, f"Tutorial-specific 'Phase 8' found (persistent={persistent}, restructure={restructure})"
+            assert "Phase 8" not in prompt, (
+                f"Tutorial-specific 'Phase 8' found (persistent={persistent}, restructure={restructure})"
+            )
 
 
 def test_single_edit_instrumentation_removal_instruction():
@@ -140,6 +151,6 @@ def test_plan_files_allowed_in_scope_constraint():
             # The constraint block must list both plan files so the agent is not
             # forced to violate scope in order to follow the "read before profiling"
             # instruction.
-            constraint_block = prompt[prompt.index("Constraints:"):]
+            constraint_block = prompt[prompt.index("Constraints:") :]
             assert _STORAGE_PLAN in constraint_block
             assert _TODO in constraint_block

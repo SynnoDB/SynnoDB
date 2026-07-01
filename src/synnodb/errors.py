@@ -18,6 +18,7 @@ Hierarchy::
 catches them, keeps the engine unregistered or quarantined, and serves DuckDB. They are surfaced to
 the user through logs and the ``why()`` API rather than raised into ``execute()``.
 """
+
 from __future__ import annotations
 
 from typing import Any, List, Optional, Sequence, Tuple
@@ -49,7 +50,9 @@ class SynnoUnsupportedQuery(SynnoError):
         self.reasons: List[str] = list(reasons)
         self.engine_id = engine_id
         self.query_id = query_id
-        who = " / ".join(p for p in (engine_id, f"query {query_id}" if query_id else None) if p)
+        who = " / ".join(
+            p for p in (engine_id, f"query {query_id}" if query_id else None) if p
+        )
         head = f"{who}: " if who else ""
         n = len(self.reasons)
         super().__init__(
@@ -81,7 +84,11 @@ class EngineExecutionError(SynnoError):
         self.stderr = stderr
         who = " / ".join(
             p
-            for p in (engine_id, f"query {query_id}" if query_id else None, f"req {req_id}" if req_id else None)
+            for p in (
+                engine_id,
+                f"query {query_id}" if query_id else None,
+                f"req {req_id}" if req_id else None,
+            )
             if p
         )
         head = f"{who}: " if who else ""
@@ -112,10 +119,13 @@ class EngineDivergedError(SynnoError):
         self.engine_id = engine_id
         self.query_id = query_id
         self.total = total if total is not None else len(self.diffs)
-        who = " / ".join(p for p in (engine_id, f"query {query_id}" if query_id else None) if p)
+        who = " / ".join(
+            p for p in (engine_id, f"query {query_id}" if query_id else None) if p
+        )
         head = f"{who} " if who else ""
         shown = "\n".join(
-            f"  - row {r}, column '{c}': engine={e!r} duckdb={d!r}" for (r, c, e, d) in self.diffs
+            f"  - row {r}, column '{c}': engine={e!r} duckdb={d!r}"
+            for (r, c, e, d) in self.diffs
         )
         more = ""
         if self.total > len(self.diffs):

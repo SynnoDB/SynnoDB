@@ -7,6 +7,7 @@ orphan sweep under PID reuse (PE5), the verbose result-read error (PE7), and the
 
 Run: .venv/bin/python -m pytest tests/test_process_engine_adversarial.py -q
 """
+
 from __future__ import annotations
 
 import os
@@ -43,7 +44,9 @@ def test_read_arrow_is_a_snapshot_under_inplace_overwrite(tmp_path):
 
     # Overwrite the same inode in place (as a fixed-path egress / same-name re-ingest would).
     _write_arrow(p, pa.table({"x": pa.array([777] * 64, pa.int64())}))
-    assert tbl.column("x").to_pylist()[0] == 111111, "returned Table must be an owned snapshot"
+    assert tbl.column("x").to_pylist()[0] == 111111, (
+        "returned Table must be an owned snapshot"
+    )
 
 
 def test_read_arrow_snapshot_survives_file_shrink(tmp_path):
@@ -55,7 +58,9 @@ def test_read_arrow_snapshot_survives_file_shrink(tmp_path):
     assert tbl.num_rows == 100
     _write_arrow(p, pa.table({"x": pa.array([1], pa.int64())}))  # shrink in place
     p.unlink()  # and remove entirely
-    assert tbl.column("x").to_pylist() == list(range(100)), "snapshot must be stable and owned"
+    assert tbl.column("x").to_pylist() == list(range(100)), (
+        "snapshot must be stable and owned"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +83,9 @@ def test_del_cleans_shm_dir_on_gc(tmp_path):
     # Drop the only reference without calling close(); __del__ must reclaim the shm dir.
     del eng
     gc.collect()
-    assert not d.exists(), "ingest dir leaked on GC: __del__ did not reclaim the shm segment"
+    assert not d.exists(), (
+        "ingest dir leaked on GC: __del__ did not reclaim the shm segment"
+    )
 
 
 def test_engine_context_manager_closes(tmp_path):
@@ -171,7 +178,9 @@ def test_zero_row_arrow_returns_empty_table_not_error(tmp_path):
         def run(self, *, timeout, query_lines, run_env):
             req = query_lines[0].split()[1]
             empty = pa.table({"x": pa.array([], pa.int64())})
-            _write_arrow(Path(run_env["SYNNODB_RESULT_DIR"]) / f"result_{req}.arrow", empty)
+            _write_arrow(
+                Path(run_env["SYNNODB_RESULT_DIR"]) / f"result_{req}.arrow", empty
+            )
             return FakeResult()
 
     eng = ProcessEngine("e", tmp_path, "/data")
@@ -225,4 +234,6 @@ def test_partial_arrow_surfaces_engine_execution_error(tmp_path):
     finally:
         wp.format_args_element = orig
     msg = str(ei.value)
-    assert "synno-x" in msg and "boom: segfault" in msg  # engine id + stderr carried through
+    assert (
+        "synno-x" in msg and "boom: segfault" in msg
+    )  # engine id + stderr carried through

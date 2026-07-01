@@ -3,6 +3,7 @@
 The central invariant: with no engines registered (the default), SynnoDB behaves
 byte-identically to DuckDB.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -28,7 +29,9 @@ def test_import_is_light():
         " or m.startswith('synnodb.llm') or m.startswith('synnodb.conversations')];"
         "print(repr(pulled)); print(repr(factory))"
     )
-    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
     pulled, factory = out.stdout.strip().splitlines()
     assert pulled == "[]", f"drop-in import pulled heavy deps: {pulled}"
     assert factory == "[]", f"drop-in import pulled factory modules: {factory}"
@@ -39,7 +42,9 @@ def test_lazy_factory_resolves_but_is_not_imported_eagerly():
     assert hasattr(synnodb, "SynnoDB")
     # ... but a fresh interpreter that only touches the drop-in never imports api.
     script = "import synnodb; import sys; print('synnodb.api' in sys.modules)"
-    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
     assert out.stdout.strip() == "False"
 
 
@@ -52,7 +57,12 @@ def test_namespace_parity():
 
 
 def test_exceptions_are_duckdbs_own_classes():
-    for name in ("CatalogException", "BinderException", "InvalidInputException", "Error"):
+    for name in (
+        "CatalogException",
+        "BinderException",
+        "InvalidInputException",
+        "Error",
+    ):
         assert getattr(synnodb, name) is getattr(duckdb, name)
 
 

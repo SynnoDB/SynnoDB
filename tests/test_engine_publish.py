@@ -1,4 +1,5 @@
 """Factory-side publishing: template derivation, manifest schema v2, and atomic publish."""
+
 from __future__ import annotations
 
 import json
@@ -7,7 +8,6 @@ import pytest
 
 from synnodb.router.manifest import EngineManifest, QueryTemplate
 from synnodb.router.normalize import normalize_sql, unify_and_bind
-from synnodb.router.registry import ColumnSpec, PlaceholderSpec
 from synnodb.workloads.engine_publish import (
     build_query_templates,
     derive_template,
@@ -38,19 +38,36 @@ def test_derive_single_placeholder():
 
 
 def test_derive_repeated_placeholder_gives_per_occurrence_specs():
-    marker, specs = derive_template(Q6, [{"DATE": "1994-01-01", "DISCOUNT": "0.06", "QUANTITY": "24"}])
+    marker, specs = derive_template(
+        Q6, [{"DATE": "1994-01-01", "DISCOUNT": "0.06", "QUANTITY": "24"}]
+    )
     # Q6 has 5 placeholder occurrences (DATE, DATE, DISCOUNT, DISCOUNT, QUANTITY).
-    assert [p.name for p in specs] == ["DATE", "DATE", "DISCOUNT", "DISCOUNT", "QUANTITY"]
-    concrete = substitute(Q6, {"DATE": "1994-01-01", "DISCOUNT": "0.06", "QUANTITY": "24"})
+    assert [p.name for p in specs] == [
+        "DATE",
+        "DATE",
+        "DISCOUNT",
+        "DISCOUNT",
+        "QUANTITY",
+    ]
+    concrete = substitute(
+        Q6, {"DATE": "1994-01-01", "DISCOUNT": "0.06", "QUANTITY": "24"}
+    )
     assert normalize_sql(marker) == normalize_sql(concrete)
     bound = unify_and_bind(marker, concrete, [p.name for p in specs])
-    assert bound == {"DATE": "1994-01-01", "DISCOUNT": 0.06, "QUANTITY": 24} or bound is not None
+    assert (
+        bound == {"DATE": "1994-01-01", "DISCOUNT": 0.06, "QUANTITY": 24}
+        or bound is not None
+    )
 
 
 def test_constant_query_is_shipped_as_is():
     q = "select count(*) as n from lineitem"
     templates = build_query_templates({"7": q}, {"7": []})
-    assert len(templates) == 1 and templates[0].sql_template == q and templates[0].placeholders == ()
+    assert (
+        len(templates) == 1
+        and templates[0].sql_template == q
+        and templates[0].placeholders == ()
+    )
 
 
 def test_unvalidatable_query_is_skipped():
@@ -91,7 +108,9 @@ def test_manifest_v1_still_loads():
 
 def test_manifest_unsupported_version_rejected():
     with pytest.raises(ValueError):
-        EngineManifest.from_dict({"schema_version": 99, "engine_id": "x", "queries": []})
+        EngineManifest.from_dict(
+            {"schema_version": 99, "engine_id": "x", "queries": []}
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -114,13 +133,18 @@ def test_publish_engine_copies_self_contained(tmp_path):
     ws = _fake_engine_workspace(tmp_path)
     engines = tmp_path / "engines"
     templates = [QueryTemplate("1", "select 1", ())]
-    dest = publish_engine(ws, query_templates=templates,
-                          receipt=passing_receipt(ws, ["1"], scale_factors=(1.0,)),
-                          parquet_dir="/data/sf1", engines_dir=str(engines), scale_factor=1.0)
+    dest = publish_engine(
+        ws,
+        query_templates=templates,
+        receipt=passing_receipt(ws, ["1"], scale_factors=(1.0,)),
+        parquet_dir="/data/sf1",
+        engines_dir=str(engines),
+        scale_factor=1.0,
+    )
     assert dest is not None
     assert (dest / "db").exists() and (dest / "query1.cpp").exists()
-    assert not (dest / "obj").exists()        # compile intermediates skipped
-    assert not (dest / "results").exists()    # scratch skipped
+    assert not (dest / "obj").exists()  # compile intermediates skipped
+    assert not (dest / "results").exists()  # scratch skipped
     manifest = json.loads((dest / "manifest.json").read_text())
     assert manifest["parquet_dir"] == "/data/sf1"
     # No leftover staging dirs.
@@ -131,15 +155,30 @@ def test_publish_no_engines_dir_returns_none(tmp_path, monkeypatch):
     monkeypatch.delenv("SYNNO_ENGINES_DIR", raising=False)
     monkeypatch.delenv("SYNNO_DATA_DIR", raising=False)
     ws = _fake_engine_workspace(tmp_path)
-    assert publish_engine(ws, query_templates=[QueryTemplate("1", "select 1", ())],
-                          receipt=passing_receipt(ws, ["1"]),
-                          parquet_dir="/d", engines_dir=None) is None
+    assert (
+        publish_engine(
+            ws,
+            query_templates=[QueryTemplate("1", "select 1", ())],
+            receipt=passing_receipt(ws, ["1"]),
+            parquet_dir="/d",
+            engines_dir=None,
+        )
+        is None
+    )
 
 
 def test_publish_no_templates_returns_none(tmp_path):
     ws = _fake_engine_workspace(tmp_path)
-    assert publish_engine(ws, query_templates=[], receipt=passing_receipt(ws, ["1"]),
-                          parquet_dir="/d", engines_dir=str(tmp_path / "engines")) is None
+    assert (
+        publish_engine(
+            ws,
+            query_templates=[],
+            receipt=passing_receipt(ws, ["1"]),
+            parquet_dir="/d",
+            engines_dir=str(tmp_path / "engines"),
+        )
+        is None
+    )
 
 
 def test_publish_is_idempotent_on_same_engine(tmp_path):
@@ -147,6 +186,18 @@ def test_publish_is_idempotent_on_same_engine(tmp_path):
     engines = tmp_path / "engines"
     templates = [QueryTemplate("1", "select 1", ())]
     rc = passing_receipt(ws, ["1"])
-    a = publish_engine(ws, query_templates=templates, receipt=rc, parquet_dir="/d", engines_dir=str(engines))
-    b = publish_engine(ws, query_templates=templates, receipt=rc, parquet_dir="/d", engines_dir=str(engines))
+    a = publish_engine(
+        ws,
+        query_templates=templates,
+        receipt=rc,
+        parquet_dir="/d",
+        engines_dir=str(engines),
+    )
+    b = publish_engine(
+        ws,
+        query_templates=templates,
+        receipt=rc,
+        parquet_dir="/d",
+        engines_dir=str(engines),
+    )
     assert a == b and len(list(engines.iterdir())) == 1

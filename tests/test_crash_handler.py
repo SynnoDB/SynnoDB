@@ -9,6 +9,7 @@ backtrace, and that the validator's symbolizer resolves a frame back to file:lin
 
 Skips without a C++ toolchain.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -33,8 +34,16 @@ def crash_run(tmp_path_factory):
     # -O0 keeps the null deref a real load (not folded to a trap); -g + -rdynamic give the
     # handler real symbols, matching how the engine `db` binary is linked.
     compile_cmd = [
-        "g++", "-std=c++20", "-O0", "-g", "-rdynamic",
-        "-I", str(CPP_HELPERS), str(DRIVER), "-o", str(out),
+        "g++",
+        "-std=c++20",
+        "-O0",
+        "-g",
+        "-rdynamic",
+        "-I",
+        str(CPP_HELPERS),
+        str(DRIVER),
+        "-o",
+        str(out),
     ]
     proc = subprocess.run(compile_cmd, capture_output=True, text=True)
     if proc.returncode != 0:

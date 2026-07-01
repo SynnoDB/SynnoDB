@@ -248,7 +248,6 @@ def plot_turns_vs_speedup(
     ax.spines["right"].set_visible(False)
     ax.set_axisbelow(True)
 
-    n_series = len(ax.get_lines()) + len(ax.collections)
     ax.legend(
         loc="upper center",
         bbox_to_anchor=(0.5, -0.18),

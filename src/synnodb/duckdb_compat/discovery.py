@@ -10,6 +10,7 @@ DuckDB (the source of truth) and is refused for an engine whose tables are absen
 A not-yet-registerable engine (for example, the user has not loaded its tables yet) is left
 for the next scan rather than recorded as done, so it registers once the data is in place.
 """
+
 from __future__ import annotations
 
 import logging
@@ -73,7 +74,9 @@ def _tables_present(conn: Any, tables: "list") -> set:
     if not tables:
         return set()
     duck = getattr(conn, "duckdb", conn)
-    rows = duck.execute("SELECT DISTINCT lower(table_name) FROM information_schema.tables").fetchall()
+    rows = duck.execute(
+        "SELECT DISTINCT lower(table_name) FROM information_schema.tables"
+    ).fetchall()
     have = {r[0] for r in rows}
     return {t for t in tables if t.lower() in have}
 
@@ -107,7 +110,9 @@ def _resolve_parquet_dir(
     return p
 
 
-def _engine_extra_env(manifest: EngineManifest, threads_override: Optional[int]) -> dict:
+def _engine_extra_env(
+    manifest: EngineManifest, threads_override: Optional[int]
+) -> dict:
     """The env an engine subprocess runs under, fixing its thread count to the parallelism it
     was built/validated for (``manifest.threads``), or a connect-time override
     (``config={'threads': N}``). Resolved against this machine through the same helper the
@@ -125,7 +130,10 @@ def _engine_extra_env(manifest: EngineManifest, threads_override: Optional[int])
 
 
 def _build_engine(
-    manifest: EngineManifest, engine_dir: Path, *, threads_override: Optional[int] = None
+    manifest: EngineManifest,
+    engine_dir: Path,
+    *,
+    threads_override: Optional[int] = None,
 ) -> Any:
     """Construct a ``ProcessEngine`` over the engine's snapshot (the parquet/standalone plane).
     Kept as the construction seam so a test can substitute an in-process engine.
@@ -153,7 +161,9 @@ def _mount_snapshot_views(conn: Any, tables: "list", parquet_dir: Path) -> None:
             # The path is inlined (a view stores its query text, so it cannot hold a runtime
             # bind parameter); it is engine-controlled, escaped defensively.
             lit = "'" + str(pf).replace("'", "''") + "'"
-            duck.execute(f'CREATE OR REPLACE VIEW {_quote_ident(t)} AS SELECT * FROM read_parquet({lit})')
+            duck.execute(
+                f"CREATE OR REPLACE VIEW {_quote_ident(t)} AS SELECT * FROM read_parquet({lit})"
+            )
 
 
 def _aligned_arrow(conn: Any, tables: "list") -> dict:
@@ -161,7 +171,10 @@ def _aligned_arrow(conn: Any, tables: "list") -> dict:
     reads columns by name and canonicalizes their types, so ``SELECT *`` is sufficient and
     safest - no projection (which could drop a column) or cast (which could narrow a value)."""
     duck = getattr(conn, "duckdb", conn)
-    return {t: duck.execute(f"SELECT * FROM {_quote_ident(t)}").to_arrow_table() for t in tables}
+    return {
+        t: duck.execute(f"SELECT * FROM {_quote_ident(t)}").to_arrow_table()
+        for t in tables
+    }
 
 
 def _shm_schema_ok(conn: Any, manifest: EngineManifest) -> bool:
@@ -189,7 +202,8 @@ def _shm_schema_ok(conn: Any, manifest: EngineManifest) -> bool:
     if problems:
         log.info(
             "engine %s: live schema incompatible with the shm hot-load build, not ingesting: %s",
-            manifest.engine_id, "; ".join(problems),
+            manifest.engine_id,
+            "; ".join(problems),
         )
         return False
     return True
@@ -217,7 +231,11 @@ def _bind_engine(
     tables = _engine_tables(manifest)
     present = _tables_present(conn, tables)
 
-    if manifest.shm_capable and set(tables) <= present and _shm_schema_ok(conn, manifest):
+    if (
+        manifest.shm_capable
+        and set(tables) <= present
+        and _shm_schema_ok(conn, manifest)
+    ):
         engine = ShmHotLoadEngine(
             manifest.engine_id,
             engine_dir,
@@ -232,8 +250,11 @@ def _bind_engine(
             _close_quietly(engine)
             if not manifest.parquet_dir:
                 raise
-            log.warning("engine %s: shm hot-load did not fit; serving from the disk-backed parquet "
-                        "plane instead", manifest.engine_id)
+            log.warning(
+                "engine %s: shm hot-load did not fit; serving from the disk-backed parquet "
+                "plane instead",
+                manifest.engine_id,
+            )
         else:
             return engine
 
@@ -275,14 +296,20 @@ def _promote_to_shm(
     if registry is None:
         return False
     current = next(
-        (b.engine for b in registry.bindings()
-         if b.engine_id == manifest.engine_id and Path(getattr(b.engine, "workspace", "")) == engine_dir),
+        (
+            b.engine
+            for b in registry.bindings()
+            if b.engine_id == manifest.engine_id
+            and Path(getattr(b.engine, "workspace", "")) == engine_dir
+        ),
         None,
     )
     if current is None or isinstance(current, ShmHotLoadEngine):
         return False  # not bound here, or already on the shm plane
     tables = _engine_tables(manifest)
-    if not (set(tables) <= _tables_present(conn, tables) and _shm_schema_ok(conn, manifest)):
+    if not (
+        set(tables) <= _tables_present(conn, tables) and _shm_schema_ok(conn, manifest)
+    ):
         return False
     engine = ShmHotLoadEngine(
         manifest.engine_id,
@@ -291,13 +318,22 @@ def _promote_to_shm(
     )
     engine.ingest(_aligned_arrow(conn, tables))
     try:
-        register_manifest(conn, manifest, engine, strict=True)  # replaces the package's bindings
+        register_manifest(
+            conn, manifest, engine, strict=True
+        )  # replaces the package's bindings
     except Exception as exc:
         _close_quietly(engine)
-        log.debug("engine %s shm promotion failed, keeping current plane: %s", manifest.engine_id, exc)
+        log.debug(
+            "engine %s shm promotion failed, keeping current plane: %s",
+            manifest.engine_id,
+            exc,
+        )
         return False
     _close_quietly(current)  # release the superseded parquet-plane engine
-    log.info("engine %s promoted to the shm hot-load plane (live data now present)", manifest.engine_id)
+    log.info(
+        "engine %s promoted to the shm hot-load plane (live data now present)",
+        manifest.engine_id,
+    )
     return True
 
 
@@ -362,7 +398,12 @@ def discover_engines(
             # A permanent refusal (a query's output types are outside the exact envelope), not a
             # transient "data not loaded yet". Surface it loudly and record the package so it is
             # neither retried nor re-logged each scan; the query is correctly served by DuckDB.
-            log.warning("engine %s at %s will not be routed - %s", manifest.engine_id, child, exc)
+            log.warning(
+                "engine %s at %s will not be routed - %s",
+                manifest.engine_id,
+                child,
+                exc,
+            )
             registered.add(key)
             continue
         except SynnoError as exc:
@@ -374,11 +415,18 @@ def discover_engines(
         except Exception as exc:
             # Not compatible with this DB yet (or not buildable). Skip without recording it,
             # so it is retried on a later scan; a query never crashes over discovery.
-            log.debug("engine %s at %s not registered (will retry): %s", manifest.engine_id, child, exc)
+            log.debug(
+                "engine %s at %s not registered (will retry): %s",
+                manifest.engine_id,
+                child,
+                exc,
+            )
             continue
         registered.add(key)
         log.info(
             "registered bespoke engine %s (%d queries) from %s",
-            manifest.engine_id, len(manifest.queries), child,
+            manifest.engine_id,
+            len(manifest.queries),
+            child,
         )
     return registered

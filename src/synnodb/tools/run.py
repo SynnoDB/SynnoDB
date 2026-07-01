@@ -9,7 +9,10 @@ from typing import Dict, List, Optional, Tuple
 
 from synnodb.cpp_runner.compiler.compiler_cached import CachedCompiler
 from synnodb.cpp_runner.hotpatch.elf_build_id import read_build_id
-from synnodb.cpp_runner.hotpatch.hotpatch_proc import HotpatchProc, HotpatchProcRunResult
+from synnodb.cpp_runner.hotpatch.hotpatch_proc import (
+    HotpatchProc,
+    HotpatchProcRunResult,
+)
 from synnodb.cpp_runner.hotpatch.pool import HotpatchPool
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 from synnodb.tools.run_tool_mode import RunToolMode
@@ -30,7 +33,13 @@ def _env_bool(name: str) -> bool:
     """Parse a boolean environment variable. Unset, empty, "0", "false", "no",
     and "off" (any case) are False; everything else is True. Avoids the trap where
     ``SYNNO_X=0`` reads as truthy under a bare ``os.environ.get``."""
-    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no", "off")
+    return os.environ.get(name, "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def _cgroup_launch_policy(memory_limit_bytes: int) -> Tuple[Dict[str, object], str]:
@@ -415,7 +424,9 @@ class RunTool:
         )
 
         snapshotter = getattr(self.query_validator, "git_snapshotter", None)
-        snapshot_id = getattr(snapshotter, "current_hash", None) if snapshotter else None
+        snapshot_id = (
+            getattr(snapshotter, "current_hash", None) if snapshotter else None
+        )
 
         return ValidationReceipt(
             snapshot_id=snapshot_id,

@@ -10,6 +10,7 @@ dies - the only thing that can then reap it is PR_SET_PDEATHSIG firing, which is
 test checks. When the test SIGKILLs this process, the engine must die and the death must cascade
 down the stage tree.
 """
+
 import ctypes
 import os
 import signal

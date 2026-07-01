@@ -1,6 +1,7 @@
 """The cgroup launch policy is gated on env booleans that feed the HotpatchPool key;
 a sloppy truthiness check (`SYNNO_ENABLE_CGROUP=0` reading as on) would both enable
 the path unexpectedly and pollute the pool key. Pin the parser."""
+
 import pytest
 
 from synnodb.tools.run import _cgroup_launch_policy, _env_bool
@@ -12,7 +13,7 @@ _BUDGET = 64 << 20
 @pytest.mark.parametrize(
     "value,expected",
     [
-        (None, False),   # unset
+        (None, False),  # unset
         ("", False),
         ("0", False),
         ("false", False),

@@ -3,10 +3,10 @@ ships the planes that validation actually proved. Generation runs over parquet, 
 engine publishes the parquet plane and the shm hot-load plane is withheld (downgraded) until it is
 validated in its own right - an unvalidated serving plane must never ride on a parquet-only receipt.
 """
+
 from __future__ import annotations
 
 import types
-from pathlib import Path
 
 import duckdb
 import pytest
@@ -64,7 +64,9 @@ def _tpch_available() -> bool:
         return False
 
 
-needs_tpch = pytest.mark.skipif(not _tpch_available(), reason="DuckDB tpch extension unavailable")
+needs_tpch = pytest.mark.skipif(
+    not _tpch_available(), reason="DuckDB tpch extension unavailable"
+)
 
 
 # ── the shm-capability probe (reads the compiled loader) ───────────────────
@@ -74,7 +76,9 @@ def test_loader_is_shm_capable_reads_the_emitted_loader(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     assert _loader_is_shm_capable(ws) is False  # no parquet_reader.cpp at all
-    (ws / "parquet_reader.cpp").write_text("tables->x = ReadParquetTable(path + \"x.parquet\");")
+    (ws / "parquet_reader.cpp").write_text(
+        'tables->x = ReadParquetTable(path + "x.parquet");'
+    )
     assert _loader_is_shm_capable(ws) is False  # disk-only loader (SSD plane)
     (ws / "parquet_reader.cpp").write_text(
         "if (synnodb::shm_ingest_enabled()) { /* shm branch */ } else { /* parquet */ }"
@@ -122,7 +126,10 @@ def test_factory_publish_downgrades_shm_to_parquet_only(tmp_path, monkeypatch):
     parquet plane - generation does not validate shm, so the shm plane is withheld (not shipped
     unverified). The engine publishes and serves; it just does not advertise the shm hot-load."""
     from synnodb.utils.utils import DBStorage
-    from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+    from synnodb.workloads.workload_provider_olap import (
+        OLAPWorkload,
+        OLAPWorkloadProvider,
+    )
 
     data = tmp_path / "data"
     sf_dir = data / "sf0.01"
@@ -130,8 +137,11 @@ def test_factory_publish_downgrades_shm_to_parquet_only(tmp_path, monkeypatch):
     con = duckdb.connect()
     con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
     prov = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH, base_parquet_dir=data,
-        db_storage=DBStorage.IN_MEMORY, bespoke_ssd_storage_dir=None, query_ids=["1"],
+        benchmark=OLAPWorkload.TPCH,
+        base_parquet_dir=data,
+        db_storage=DBStorage.IN_MEMORY,
+        bespoke_ssd_storage_dir=None,
+        query_ids=["1"],
     )
     for t in prov.dataset_tables:
         con.execute(f"COPY {t} TO '{sf_dir / (t + '.parquet')}' (FORMAT parquet)")
@@ -140,14 +150,22 @@ def test_factory_publish_downgrades_shm_to_parquet_only(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     ws.mkdir()
     write_fake_engine_db(ws / "db")  # engine-producing-run guard, with a real build-id
-    (ws / "parquet_reader.cpp").write_text("if (synnodb::shm_ingest_enabled()) {} else {}")
+    (ws / "parquet_reader.cpp").write_text(
+        "if (synnodb::shm_ingest_enabled()) {} else {}"
+    )
 
     engines = tmp_path / "engines"
     monkeypatch.setenv("SYNNO_ENGINES_DIR", str(engines))
 
     _publish_generated_engine(
-        ws, prov, ["1"], data, types.SimpleNamespace(benchmark_sf=0.01), "run-x",
-        run_tool=_FakeRunTool(ws, 0.01), threads=4,
+        ws,
+        prov,
+        ["1"],
+        data,
+        types.SimpleNamespace(benchmark_sf=0.01),
+        "run-x",
+        run_tool=_FakeRunTool(ws, 0.01),
+        threads=4,
     )
 
     manifest_path = next(engines.glob("*/manifest.json"))
@@ -161,7 +179,10 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
     """The whole point of the gate: a final validation that does not pass means the engine is not
     published, even though everything else (db binary, parquet, engines dir) is in place."""
     from synnodb.utils.utils import DBStorage
-    from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+    from synnodb.workloads.workload_provider_olap import (
+        OLAPWorkload,
+        OLAPWorkloadProvider,
+    )
 
     data = tmp_path / "data"
     sf_dir = data / "sf0.01"
@@ -169,8 +190,11 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
     con = duckdb.connect()
     con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
     prov = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH, base_parquet_dir=data,
-        db_storage=DBStorage.IN_MEMORY, bespoke_ssd_storage_dir=None, query_ids=["1"],
+        benchmark=OLAPWorkload.TPCH,
+        base_parquet_dir=data,
+        db_storage=DBStorage.IN_MEMORY,
+        bespoke_ssd_storage_dir=None,
+        query_ids=["1"],
     )
     for t in prov.dataset_tables:
         con.execute(f"COPY {t} TO '{sf_dir / (t + '.parquet')}' (FORMAT parquet)")
@@ -179,13 +203,20 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     ws.mkdir()
     write_fake_engine_db(ws / "db")
-    (ws / "parquet_reader.cpp").write_text("if (synnodb::shm_ingest_enabled()) {} else {}")
+    (ws / "parquet_reader.cpp").write_text(
+        "if (synnodb::shm_ingest_enabled()) {} else {}"
+    )
 
     engines = tmp_path / "engines"
     monkeypatch.setenv("SYNNO_ENGINES_DIR", str(engines))
 
     _publish_generated_engine(
-        ws, prov, ["1"], data, types.SimpleNamespace(benchmark_sf=0.01), "run-x",
+        ws,
+        prov,
+        ["1"],
+        data,
+        types.SimpleNamespace(benchmark_sf=0.01),
+        "run-x",
         run_tool=_FakeRunTool(ws, 0.01, verdict="fail"),
     )
 
@@ -195,7 +226,10 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
 @needs_tpch
 def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch):
     from synnodb.utils.utils import DBStorage
-    from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+    from synnodb.workloads.workload_provider_olap import (
+        OLAPWorkload,
+        OLAPWorkloadProvider,
+    )
 
     data = tmp_path / "data"
     sf_dir = data / "sf0.01"
@@ -203,8 +237,11 @@ def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch)
     con = duckdb.connect()
     con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
     prov = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH, base_parquet_dir=data,
-        db_storage=DBStorage.IN_MEMORY, bespoke_ssd_storage_dir=None, query_ids=["1"],
+        benchmark=OLAPWorkload.TPCH,
+        base_parquet_dir=data,
+        db_storage=DBStorage.IN_MEMORY,
+        bespoke_ssd_storage_dir=None,
+        query_ids=["1"],
     )
     for t in prov.dataset_tables:
         con.execute(f"COPY {t} TO '{sf_dir / (t + '.parquet')}' (FORMAT parquet)")
@@ -214,13 +251,18 @@ def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch)
     ws.mkdir()
     write_fake_engine_db(ws / "db")
     # A persistent/SSD loader has no shm branch -> must not be advertised as shm-capable.
-    (ws / "parquet_reader.cpp").write_text("tables->x_path = path + \"x.parquet\";")
+    (ws / "parquet_reader.cpp").write_text('tables->x_path = path + "x.parquet";')
 
     engines = tmp_path / "engines"
     monkeypatch.setenv("SYNNO_ENGINES_DIR", str(engines))
 
     _publish_generated_engine(
-        ws, prov, ["1"], data, types.SimpleNamespace(benchmark_sf=0.01), "run-x",
+        ws,
+        prov,
+        ["1"],
+        data,
+        types.SimpleNamespace(benchmark_sf=0.01),
+        "run-x",
         run_tool=_FakeRunTool(ws, 0.01),
     )
 

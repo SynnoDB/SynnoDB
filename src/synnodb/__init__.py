@@ -12,6 +12,7 @@ Two faces, one package:
   These names are imported **lazily** (PEP 562 ``__getattr__``) so the drop-in stays
   light and importable without the LLM stack.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

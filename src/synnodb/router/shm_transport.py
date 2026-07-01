@@ -21,11 +21,11 @@ Ownership & lifecycle (the hard, mandatory part):
   removes segments whose owner pid is dead — orphans are a silent RAM leak.
 * ``SegmentRef`` is a small, picklable handle (segment name + byte length) — never data.
 """
+
 from __future__ import annotations
 
 import logging
 import os
-import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -54,8 +54,8 @@ def _pid_alive(pid: int) -> bool:
 class SegmentRef:
     """A picklable handle to a shm segment (carried over the control plane)."""
 
-    name: str            # file name under SHM_DIR
-    nbytes: int          # payload length
+    name: str  # file name under SHM_DIR
+    nbytes: int  # payload length
 
     @property
     def path(self) -> Path:
@@ -69,7 +69,9 @@ class ShmWriter:
     error. The owner pid is baked into every name for the orphan sweep.
     """
 
-    def __init__(self, *, base_dir: Optional[Path] = None, owner_pid: Optional[int] = None) -> None:
+    def __init__(
+        self, *, base_dir: Optional[Path] = None, owner_pid: Optional[int] = None
+    ) -> None:
         self._dir = Path(base_dir) if base_dir is not None else SHM_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
         # The pid baked into names for the orphan sweep. A worker passes the *parent*
@@ -94,7 +96,9 @@ class ShmWriter:
             os.chmod(path, 0o600)
         except OSError:
             pass
-        log.debug("wrote shm segment %s (%d rows, %d bytes)", name, table.num_rows, nbytes)
+        log.debug(
+            "wrote shm segment %s (%d rows, %d bytes)", name, table.num_rows, nbytes
+        )
         return SegmentRef(name=name, nbytes=nbytes)
 
     def unlink(self, ref: SegmentRef) -> None:
@@ -131,7 +135,7 @@ def read_table(ref_or_path, *, base_dir: Optional[Path] = None) -> pa.Table:
         path = (Path(base_dir) if base_dir is not None else SHM_DIR) / ref_or_path.name
     else:
         path = Path(ref_or_path)
-    source = pa.memory_map(str(path), "r")          # zero-copy mmap
+    source = pa.memory_map(str(path), "r")  # zero-copy mmap
     reader = ipc.open_file(source)
     return reader.read_all()
 
@@ -147,7 +151,7 @@ def sweep_orphans(*, base_dir: Optional[Path] = None) -> int:
         return 0
     removed = 0
     for path in directory.glob(f"{_PREFIX}*"):
-        parts = path.name[len(_PREFIX):].split("-", 1)
+        parts = path.name[len(_PREFIX) :].split("-", 1)
         if not parts or not parts[0].isdigit():
             continue
         if _pid_alive(int(parts[0])):
@@ -155,7 +159,9 @@ def sweep_orphans(*, base_dir: Optional[Path] = None) -> int:
         try:
             path.unlink()
             removed += 1
-            log.debug("swept orphaned shm segment %s (dead owner pid %s)", path.name, parts[0])
+            log.debug(
+                "swept orphaned shm segment %s (dead owner pid %s)", path.name, parts[0]
+            )
         except FileNotFoundError:
             pass
     if removed:

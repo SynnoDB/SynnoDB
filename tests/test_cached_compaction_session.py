@@ -19,7 +19,9 @@ from synnodb.llm.llm_caching.cached_compaction_session import (
 )
 
 
-def _session(response_id=None, model="openai/unsloth/MiniMax-M3", cache_dir=Path("/tmp")):
+def _session(
+    response_id=None, model="openai/unsloth/MiniMax-M3", cache_dir=Path("/tmp")
+):
     inst = CachedOpenAIResponsesCompactionSession.__new__(
         CachedOpenAIResponsesCompactionSession
     )
@@ -78,7 +80,9 @@ def test_different_reanchor_prompt_does_not_collide():
 
 def test_mode_participates():
     s = _session()
-    assert _key(s, _ITEMS_A, mode="input") != _key(s, _ITEMS_A, mode="previous_response_id")
+    assert _key(s, _ITEMS_A, mode="input") != _key(
+        s, _ITEMS_A, mode="previous_response_id"
+    )
 
 
 def test_model_participates():

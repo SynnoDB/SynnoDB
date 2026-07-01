@@ -4,6 +4,7 @@ No engine workers exist yet, so every routable query still falls back — but th
 *reasons* and the supporting machinery (normalization, guards, dirty-tracking,
 quarantine, the typed result container) are all exercised here.
 """
+
 from __future__ import annotations
 
 import pyarrow as pa
@@ -104,7 +105,10 @@ def test_extract_literals_in_order():
 
 
 def test_tables_in():
-    assert set(tables_in("SELECT * FROM lineitem JOIN orders ON x")) == {"lineitem", "orders"}
+    assert set(tables_in("SELECT * FROM lineitem JOIN orders ON x")) == {
+        "lineitem",
+        "orders",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +207,12 @@ def test_router_unparseable_falls_back():
 # --------------------------------------------------------------------------- #
 def test_guards_stop_at_first_failure():
     b = _binding(engine=None)
-    ctx = GuardContext(sql="SELECT a FROM t WHERE a = 1", binding=b, conn=None, registry=TemplateRegistry())
+    ctx = GuardContext(
+        sql="SELECT a FROM t WHERE a = 1",
+        binding=b,
+        conn=None,
+        registry=TemplateRegistry(),
+    )
     ok, results = evaluate(ctx)
     assert ok is False
     # engine_ready is first and fails, so only one result recorded.
@@ -236,4 +245,7 @@ def test_synnoresult_bulk_egress_independent_of_cursor():
 
 def test_synnoresult_description_uses_duckdb_types_when_given():
     res = SynnoResult(_table(), duckdb_types=["BIGINT", "VARCHAR"])
-    assert [(d[0], d[1]) for d in res.description] == [("a", "BIGINT"), ("b", "VARCHAR")]
+    assert [(d[0], d[1]) for d in res.description] == [
+        ("a", "BIGINT"),
+        ("b", "VARCHAR"),
+    ]

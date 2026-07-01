@@ -8,6 +8,7 @@ and overrides **only** the eager SQL-text entry points ``connect`` / ``sql`` /
 With the default policy (``mode=off`` until engines exist), this is byte-identical
 to DuckDB — the router is inert and adds no behavior.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -70,7 +71,9 @@ def connect(
     DuckDB of your own.
     """
     config = config or {}
-    inner = _duckdb.connect(database=database, read_only=read_only, config=config, **kwargs)
+    inner = _duckdb.connect(
+        database=database, read_only=read_only, config=config, **kwargs
+    )
     router = QueryRouter(policy or RouterPolicy.from_env(), registry)
     # ``config={'threads': N}`` configures inner DuckDB (above, unchanged) AND fixes the thread
     # count of every routed bespoke engine, so a query served by the engine runs at the same

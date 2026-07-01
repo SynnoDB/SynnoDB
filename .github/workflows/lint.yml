@@ -1,0 +1,31 @@
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. rapid force-pushes to a PR).
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned so CI is reproducible and doesn't break on a new ruff release.
+      # Keep this in sync with the ruff version developers run locally.
+      - name: Ruff lint
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.15.20"
+          args: "check"
+
+      - name: Ruff format check
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.15.20"
+          args: "format --check"

@@ -4,7 +4,10 @@ from pathlib import Path
 import numpy as np
 
 from synnodb.observability.plots.utils.wandb_trace_preprocessor import SECTION_RULES
-from synnodb.observability.plots.utils.wandb_utils import combine_histories, get_wandb_stats
+from synnodb.observability.plots.utils.wandb_utils import (
+    combine_histories,
+    get_wandb_stats,
+)
 
 # ---------------------------------------------------------------------------
 # Stage configuration

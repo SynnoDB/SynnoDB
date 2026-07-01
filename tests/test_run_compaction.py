@@ -82,7 +82,9 @@ def _claude_helper_simulating_llm():
 @pytest.mark.asyncio
 async def test_proactive_default_reanchors_from_stage_prompt(tmp_path, monkeypatch):
     # SDK proactive call shape: force=True, NO reanchor kwarg -> default reanchor=True.
-    s, debug_logger = _make_session(tmp_path, monkeypatch, current_stage_prompt="TASK X")
+    s, debug_logger = _make_session(
+        tmp_path, monkeypatch, current_stage_prompt="TASK X"
+    )
     s.claude_compaction_helper = _claude_helper_simulating_llm()
 
     await s.run_compaction({"force": True, "compaction_mode": "input"})
@@ -107,12 +109,12 @@ async def test_proactive_default_reanchors_from_stage_prompt(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_caller_path_does_not_reanchor(tmp_path, monkeypatch):
     # caller (marker / reactive): reanchor=False, even though a stage prompt exists.
-    s, debug_logger = _make_session(tmp_path, monkeypatch, current_stage_prompt="TASK X")
+    s, debug_logger = _make_session(
+        tmp_path, monkeypatch, current_stage_prompt="TASK X"
+    )
     s.claude_compaction_helper = _claude_helper_simulating_llm()
 
-    await s.run_compaction(
-        {"force": True, "compaction_mode": "input"}, reanchor=False
-    )
+    await s.run_compaction({"force": True, "compaction_mode": "input"}, reanchor=False)
 
     assert (
         s.claude_compaction_helper.compact_with_claude.call_args.kwargs["resume_prompt"]
@@ -152,7 +154,9 @@ async def test_openai_path_never_reanchors(tmp_path, monkeypatch):
     )
     # `client` is a lazy read-only property backed by `_client`
     s._client = MagicMock()
-    s._client.responses.compact = AsyncMock(return_value=SimpleNamespace(output=["raw"]))
+    s._client.responses.compact = AsyncMock(
+        return_value=SimpleNamespace(output=["raw"])
+    )
 
     # even with reanchor defaulting True, the OpenAI path must ignore it
     await s.run_compaction({"force": True, "compaction_mode": "input"})

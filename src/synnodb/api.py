@@ -9,6 +9,7 @@ Each call runs one stage to completion (blocking) and returns the stage's domain
 artifact (StoragePlan, BaseImplementation, ...) — carrying the produced content
 plus the wandb run id used to chain stages.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -74,7 +75,9 @@ def _as_arg(v: Any) -> str:
     return str(v)
 
 
-def _resolve_chain(stage: str, source: Any, source_wandb_id: Any) -> tuple[str | None, str | None]:
+def _resolve_chain(
+    stage: str, source: Any, source_wandb_id: Any
+) -> tuple[str | None, str | None]:
     """Resolve the chaining tokens for a stage that consumes a previous stage's
     output. Returns ``(snapshot_hash, wandb_run_id)`` with exactly one set:
       - ``source`` -> its ``.snapshot_hash`` (or a raw hash str): W&B-free path.
@@ -105,16 +108,16 @@ class SynnoConfig:
     # wandb is opt-in and has no separate on/off flag: it is enabled iff a
     # ``wandb_entity`` or ``wandb_project`` is set. With neither set nothing
     # wandb-related runs — no login, init, or logging.
-    wandb_entity: str | None = None    # None -> the user's own default W&B entity
-    wandb_project: str | None = None   # None -> the default "SynnoDB" project
-    auto_confirm: bool = True          # --auto_u
+    wandb_entity: str | None = None  # None -> the user's own default W&B entity
+    wandb_project: str | None = None  # None -> the default "SynnoDB" project
+    auto_confirm: bool = True  # --auto_u
     auto_finish: bool = True
     disable_openai_tracing: bool = True
     disable_repo_sync: bool = False
     notify: bool = False
     do_not_cache: bool = False
-    verbose: bool = False              # stream DEBUG logs to the console (logfile is always DEBUG)
-    workspace: str | None = None       # run output dir; None -> local ./output
+    verbose: bool = False  # stream DEBUG logs to the console (logfile is always DEBUG)
+    workspace: str | None = None  # run output dir; None -> local ./output
     # DuckDB-style engine config options, with defaults. `threads` is the target degree
     # of parallelism the generated engine is designed, validated, and served at (the
     # DuckDB config={'threads': N}); None -> 1 (single-threaded, the default), 0 -> all
@@ -165,26 +168,50 @@ def _build_artifact(run_id, snapshot_hash, workspace, config, inputs) -> StageAr
     return StageArtifact(run_id, workspace, config, snapshot_hash=snapshot_hash)
 
 
-def _build_storage_plan(run_id, snapshot_hash, workspace, config, inputs) -> StoragePlan:
+def _build_storage_plan(
+    run_id, snapshot_hash, workspace, config, inputs
+) -> StoragePlan:
     path = workspace / "storage_plan.txt"
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    return StoragePlan(run_id, workspace, config, path, text, snapshot_hash=snapshot_hash)
+    return StoragePlan(
+        run_id, workspace, config, path, text, snapshot_hash=snapshot_hash
+    )
 
 
-def _build_base_impl(run_id, snapshot_hash, workspace, config, inputs) -> BaseImplementation:
-    return BaseImplementation(run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash)
+def _build_base_impl(
+    run_id, snapshot_hash, workspace, config, inputs
+) -> BaseImplementation:
+    return BaseImplementation(
+        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+    )
 
 
-def _build_optimized(run_id, snapshot_hash, workspace, config, inputs) -> OptimizedImplementation:
-    return OptimizedImplementation(run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash)
+def _build_optimized(
+    run_id, snapshot_hash, workspace, config, inputs
+) -> OptimizedImplementation:
+    return OptimizedImplementation(
+        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+    )
 
 
-def _build_multithreaded(run_id, snapshot_hash, workspace, config, inputs) -> MultiThreadedImplementation:
-    return MultiThreadedImplementation(run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash)
+def _build_multithreaded(
+    run_id, snapshot_hash, workspace, config, inputs
+) -> MultiThreadedImplementation:
+    return MultiThreadedImplementation(
+        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+    )
 
 
-def _build_correctness(run_id, snapshot_hash, workspace, config, inputs) -> CorrectnessReport:
-    return CorrectnessReport(run_id, workspace, config, float(inputs["target_sf"]), snapshot_hash=snapshot_hash)
+def _build_correctness(
+    run_id, snapshot_hash, workspace, config, inputs
+) -> CorrectnessReport:
+    return CorrectnessReport(
+        run_id,
+        workspace,
+        config,
+        float(inputs["target_sf"]),
+        snapshot_hash=snapshot_hash,
+    )
 
 
 # --------------------------------- stages -----------------------------------
@@ -195,14 +222,14 @@ def _build_correctness(run_id, snapshot_hash, workspace, config, inputs) -> Corr
 # synnodb/stages.py, imported lazily by run() so plain ``import synnodb`` stays light.
 @dataclass(frozen=True)
 class Stage:
-    name: str                                  # "createStoragePlan" — the run-type identity
+    name: str  # "createStoragePlan" — the run-type identity
     usecases: frozenset[Usecase]
     build_config: "Callable[[SynnoConfig, dict[str, Any]], RunConfig]"
     prepare: "Callable[[PrepareContext], str]"
     needs_parallelism: bool
     be_relaxed_supervision: bool
     factory: "Callable[[FrameworkContext], AbstractConversation]"
-    result: ResultBuilder = _build_artifact    # builds the typed domain object
+    result: ResultBuilder = _build_artifact  # builds the typed domain object
 
 
 _REGISTRY: dict[str, Stage] = {}
@@ -264,7 +291,7 @@ class SynnoDB:
         # begins a clean pipeline (prior accumulated timeline is reset); every stage
         # chained on this driver then streams onto this one continuous dashboard.
         self._start_live_dashboard()
-        
+
         # Fail fast on a missing API key: .env is loaded by now, so check up front
         # rather than several stages later when the SDK session is first built.
         from synnodb.utils.model_setup import validate_model_credentials
@@ -302,7 +329,10 @@ class SynnoDB:
 
                 def _handler(signum: int, frame: Any, _prev: Any = previous) -> None:
                     _clean()
-                    if callable(_prev) and _prev not in (signal.SIG_DFL, signal.SIG_IGN):
+                    if callable(_prev) and _prev not in (
+                        signal.SIG_DFL,
+                        signal.SIG_IGN,
+                    ):
                         _prev(signum, frame)
                     else:
                         raise SystemExit(128 + signum)
@@ -315,7 +345,10 @@ class SynnoDB:
         """Delete this run's workspace now (idempotent)."""
         import shutil
 
-        shutil.rmtree(Path(settings.get_workspace_dir(self.config.workspace)).resolve(), ignore_errors=True)
+        shutil.rmtree(
+            Path(settings.get_workspace_dir(self.config.workspace)).resolve(),
+            ignore_errors=True,
+        )
 
     def _start_live_dashboard(self) -> None:
         """Start the shared live dashboard and print its URL so the user can open it
@@ -331,7 +364,9 @@ class SynnoDB:
             )
 
             reset_live_dashboard()  # fresh, clean timeline for this pipeline
-            workspace_dir = Path(settings.get_workspace_dir(self.config.workspace)).resolve()
+            workspace_dir = Path(
+                settings.get_workspace_dir(self.config.workspace)
+            ).resolve()
             start_live_dashboard(
                 system_name=socket.gethostname(), workspace_dir=workspace_dir
             )
@@ -422,7 +457,9 @@ class SynnoDB:
 
         result = run_conv_wrapper(args=None, run_config=run_config, spec=st)
         workspace = settings.get_workspace_dir(cfg.workspace)
-        artifact = st.result(result.run_id, result.snapshot_hash, workspace, cfg, inputs)
+        artifact = st.result(
+            result.run_id, result.snapshot_hash, workspace, cfg, inputs
+        )
         # Stamp the producing stage onto the artifact so a downstream consumer (e.g.
         # checkSfCorrectness) can recover which stage's prepare to replay without a
         # hardcoded artifact-class -> stage-name map.
@@ -451,8 +488,14 @@ class SynnoDB:
             ``createStoragePlan`` run (a ``str``, or a ``StoragePlan`` artifact
             whose ``.run_id`` is used). The plan is recovered from W&B.
         """
-        text = storage_plan.text if isinstance(storage_plan, StoragePlan) else storage_plan
-        wandb_id = _as_arg(storage_plan_wandb_id) if storage_plan_wandb_id is not None else None
+        text = (
+            storage_plan.text if isinstance(storage_plan, StoragePlan) else storage_plan
+        )
+        wandb_id = (
+            _as_arg(storage_plan_wandb_id)
+            if storage_plan_wandb_id is not None
+            else None
+        )
         if (text is None) == (wandb_id is None):
             raise ValueError(
                 "createBaseImpl requires exactly one of `storage_plan` (the plan "
@@ -471,10 +514,10 @@ class SynnoDB:
         self, base_impl: Any = None, *, base_impl_wandb_id: Any = None, **inputs: Any
     ) -> OptimizedImplementation:
         """Optimize a base implementation. Provide exactly one of:
-          - ``base_impl``: a ``BaseImplementation`` artifact (or raw git snapshot
-            hash) — W&B-free; the snapshot is restored from the local repo.
-          - ``base_impl_wandb_id``: the W&B run id of the base-impl run (or an
-            artifact whose ``.run_id`` is used)."""
+        - ``base_impl``: a ``BaseImplementation`` artifact (or raw git snapshot
+          hash) — W&B-free; the snapshot is restored from the local repo.
+        - ``base_impl_wandb_id``: the W&B run id of the base-impl run (or an
+          artifact whose ``.run_id`` is used)."""
         snap, wid = _resolve_chain("runOptimLoop", base_impl, base_impl_wandb_id)
         return self.run(  # type: ignore[return-value]
             "runOptimLoop", base_impl_snapshot=snap, base_impl=wid, **inputs
@@ -510,7 +553,11 @@ class SynnoDB:
         'createBaseImpl', 'runOptimLoop', 'addMultiThreading') when ``source`` is
         a raw snapshot hash."""
         snap, wid = _resolve_chain("checkSfCorrectness", source, source_wandb_id)
-        if snap is not None and source_stage is None and isinstance(source, StageArtifact):
+        if (
+            snap is not None
+            and source_stage is None
+            and isinstance(source, StageArtifact)
+        ):
             source_stage = source.source_stage_name
         return self.run(  # type: ignore[return-value]
             "checkSfCorrectness",

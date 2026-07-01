@@ -6,6 +6,7 @@ its Arrow output to DuckDB's - exactly the router's live cross-check - and refus
 divergence or execution failure. These tests drive ``_validate_engine_against_source`` with a fake
 engine over a real in-memory DuckDB, so the cross-check wiring is covered without compiling C++.
 """
+
 from __future__ import annotations
 
 import duckdb
@@ -33,6 +34,7 @@ class _Provider:
     def _get_query_gen_fn(self):
         def gen(query_name, rnd):
             return None, None, ({"LO": "2"} if query_name == "Q1" else {})
+
         return gen
 
 
@@ -78,9 +80,15 @@ def test_crosscheck_passes_for_a_correct_engine(tmp_path, monkeypatch):
     inner = _inner()
     _patch_engines(monkeypatch, inner, "correct")
     receipt = _validate_engine_against_source(
-        tmp_path, _Provider(), ["1", "7"], inner,
-        planes=[PLANE_PARQUET], bundle=tmp_path / "bundle",
-        expected_tables={"t": ()}, dataset="tpch", scale_factor=1.0,
+        tmp_path,
+        _Provider(),
+        ["1", "7"],
+        inner,
+        planes=[PLANE_PARQUET],
+        bundle=tmp_path / "bundle",
+        expected_tables={"t": ()},
+        dataset="tpch",
+        scale_factor=1.0,
     )
     assert receipt.verdict == PASS and receipt.live_run is True
     assert receipt.data_planes == (PLANE_PARQUET,)
@@ -93,9 +101,15 @@ def test_crosscheck_refuses_a_diverging_engine(tmp_path, monkeypatch):
     _patch_engines(monkeypatch, inner, "broken")
     with pytest.raises(RuntimeError, match="does not match the source database"):
         _validate_engine_against_source(
-            tmp_path, _Provider(), ["1"], inner,
-            planes=[PLANE_PARQUET], bundle=tmp_path / "bundle",
-            expected_tables={"t": ()}, dataset="tpch", scale_factor=1.0,
+            tmp_path,
+            _Provider(),
+            ["1"],
+            inner,
+            planes=[PLANE_PARQUET],
+            bundle=tmp_path / "bundle",
+            expected_tables={"t": ()},
+            dataset="tpch",
+            scale_factor=1.0,
         )
 
 
@@ -103,9 +117,15 @@ def test_crosscheck_covers_the_shm_plane_when_requested(tmp_path, monkeypatch):
     inner = _inner()
     _patch_engines(monkeypatch, inner, "correct")
     receipt = _validate_engine_against_source(
-        tmp_path, _Provider(), ["7"], inner,
-        planes=["parquet", "shm"], bundle=tmp_path / "bundle",
-        expected_tables={"t": ()}, dataset="tpch", scale_factor=None,
+        tmp_path,
+        _Provider(),
+        ["7"],
+        inner,
+        planes=["parquet", "shm"],
+        bundle=tmp_path / "bundle",
+        expected_tables={"t": ()},
+        dataset="tpch",
+        scale_factor=None,
     )
     assert receipt.verdict == PASS
     assert set(receipt.data_planes) == {"parquet", "shm"}

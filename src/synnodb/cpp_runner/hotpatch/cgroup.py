@@ -38,6 +38,7 @@ When delegation is unavailable, :func:`delegation_available` returns ``False`` a
 :meth:`RunnerCgroup.create` raises :class:`CgroupUnavailable`; the caller decides
 whether to fail closed (production) or fall back to ``RLIMIT_AS`` only (dev/test).
 """
+
 from __future__ import annotations
 
 import logging
@@ -196,12 +197,19 @@ def _configure_parent_budget(parent: Path) -> None:
                     ) from exc
                 logger.warning(
                     "could not set %s/memory.max to %d (%s); existing limit %d is already "
-                    "tighter, keeping it", parent, want, exc, current,
+                    "tighter, keeping it",
+                    parent,
+                    want,
+                    exc,
+                    current,
                 )
             else:
                 if current is not None:
                     logger.info(
-                        "changed shared parent %s memory.max %d -> %d", parent, current, want
+                        "changed shared parent %s memory.max %d -> %d",
+                        parent,
+                        current,
+                        want,
                     )
     if _read_memory_max(parent) is None:
         raise CgroupUnavailable(
@@ -218,7 +226,8 @@ def _warn_if_parent_kills_all(parent: Path) -> None:
         if (parent / "memory.oom.group").read_text().strip() == "1":
             logger.warning(
                 "shared parent %s has memory.oom.group=1: an aggregate breach will kill "
-                "ALL runners under it (kill-all), not a single victim", parent,
+                "ALL runners under it (kill-all), not a single victim",
+                parent,
             )
     except OSError:
         pass
@@ -325,7 +334,9 @@ def _prepare_runner_parent() -> Path:
 
     # If the delegated cgroup already distributes memory and holds no processes of
     # its own, it is ready to parent runner cgroups directly.
-    if "memory" in _read_list(base / "cgroup.subtree_control") and not _live_procs(base):
+    if "memory" in _read_list(base / "cgroup.subtree_control") and not _live_procs(
+        base
+    ):
         _runner_parent = base
         return base
 
@@ -417,7 +428,9 @@ class RunnerCgroup:
         # Reclaim cgroups abandoned by a previously-crashed/SIGTERM'd orchestrator before adding a
         # new one, so empty runner cgroups do not accumulate under the slice.
         _sweep_stale_runner_cgroups(parent)
-        safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name) or "runner"
+        safe = (
+            "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name) or "runner"
+        )
         # The "synno-runner-" prefix is dedicated to per-runner cgroups so the stale-cgroup sweep
         # can target them exactly, never the sibling "synno-leader" (which holds a live orchestrator
         # process) or any shared-parent structure.
@@ -444,7 +457,9 @@ class RunnerCgroup:
             except OSError:
                 pass
             raise CgroupUnavailable(f"cannot configure cgroup {child}: {exc}") from exc
-        logger.debug("created runner cgroup %s (memory.max=%d)", child, memory_max_bytes)
+        logger.debug(
+            "created runner cgroup %s (memory.max=%d)", child, memory_max_bytes
+        )
         return cls(child)
 
     @property

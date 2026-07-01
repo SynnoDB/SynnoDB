@@ -27,7 +27,11 @@ from synnodb.observability.live_ui.live_dashboard import get_or_create_live_drai
 from synnodb.observability.logging import notify
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
-from synnodb.observability.logging.run_stats_drain import DataDrain, DuckDBDrain, WandbDrain
+from synnodb.observability.logging.run_stats_drain import (
+    DataDrain,
+    DuckDBDrain,
+    WandbDrain,
+)
 from synnodb.observability.logging.weave_cache import configure_weave_cache_dirs
 from synnodb.results import RunResult
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
@@ -56,7 +60,6 @@ from synnodb.workloads.query_execution_cache import QueryExecutionCache
 from synnodb.workloads.system_factory import System
 from synnodb.workloads.system_factory_olap import OLAPSystemFactory
 from synnodb.workloads.workload_provider_olap import (
-    OLAPWorkload,
     OLAPWorkloadProvider,
 )
 from synnodb.workloads.workload_spec import get_workload_spec
@@ -206,7 +209,6 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
         # in gen_code mode, we want to keep them around in case of major issues with ensuring correctness while generating the base implementation.
         extra_gitignore.append("*.csv")
 
-
     snapshotter = GitSnapshotter(
         cache_repo=snapshotter_cache_repo,
         working_dir=workspace_path,
@@ -349,7 +351,9 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     # served engine all agree on the same number. The storage/base/optim stages still
     # VALIDATE serially (CORE_IDS=1, byte-identical) but are TOLD this target so they
     # design a layout/implementation that partitions cleanly across it.
-    target_threads, target_core_ids = resolve_target_cores(getattr(args, "threads", None))
+    target_threads, target_core_ids = resolve_target_cores(
+        getattr(args, "threads", None)
+    )
     assert target_threads >= 1 and len(target_core_ids) == target_threads, (
         f"could not resolve any usable core for threads={getattr(args, 'threads', None)}"
     )
@@ -597,7 +601,11 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
 
     # Publish the finished engine so the drop-in router auto-discovers and routes to it.
     _publish_generated_engine(
-        workspace_path, workload_provider, query_list, parquet_dir, workload_spec,
+        workspace_path,
+        workload_provider,
+        query_list,
+        parquet_dir,
+        workload_spec,
         getattr(args, "wandb_run_id", None),
         run_tool=run_tool,
         threads=getattr(args, "target_threads", None),
@@ -699,7 +707,12 @@ def _derive_expected_tables(sf_dir, tables):
 
 
 def _publish_generated_engine(
-    workspace_path, workload_provider, query_list, base_parquet_dir, workload_spec, run_id,
+    workspace_path,
+    workload_provider,
+    query_list,
+    base_parquet_dir,
+    workload_spec,
+    run_id,
     run_tool,
     threads=None,
 ):
@@ -728,12 +741,17 @@ def _publish_generated_engine(
         from synnodb.workloads.validation_receipt import PASS
 
         if resolve_engines_dir(None) is None:
-            logger.info("publish: no engines dir (SYNNO_ENGINES_DIR / SYNNO_DATA_DIR); skipping")
+            logger.info(
+                "publish: no engines dir (SYNNO_ENGINES_DIR / SYNNO_DATA_DIR); skipping"
+            )
             return
         sf = workload_spec.benchmark_sf
         sf_dir = _resolve_sf_dir(base_parquet_dir, sf)
         if sf_dir is None:
-            logger.info("publish: no parquet under %s; skipping engine publish", base_parquet_dir)
+            logger.info(
+                "publish: no parquet under %s; skipping engine publish",
+                base_parquet_dir,
+            )
             return
 
         # Final cache-bypassed live validation. Its receipt is the publish precondition; a failing
@@ -742,30 +760,48 @@ def _publish_generated_engine(
         if receipt.verdict != PASS:
             logger.warning(
                 "publish: final live validation did not pass (verdict=%s); NOT publishing the "
-                "engine in %s", receipt.verdict, workspace_path,
+                "engine in %s",
+                receipt.verdict,
+                workspace_path,
             )
             return
 
         shm_capable = False
         expected_tables = None
         if _loader_is_shm_capable(workspace_path):
-            expected_tables = _derive_expected_tables(sf_dir, list(workload_provider.dataset_tables))
+            expected_tables = _derive_expected_tables(
+                sf_dir, list(workload_provider.dataset_tables)
+            )
             shm_capable = expected_tables is not None
             if not shm_capable:
-                logger.info("publish: loader is shm-capable but a table parquet is missing under "
-                            "%s; publishing the parquet plane only", sf_dir)
+                logger.info(
+                    "publish: loader is shm-capable but a table parquet is missing under "
+                    "%s; publishing the parquet plane only",
+                    sf_dir,
+                )
         dest = publish_from_provider(
-            workspace_path, workload_provider, query_list,
+            workspace_path,
+            workload_provider,
+            query_list,
             receipt=receipt,
-            parquet_dir=sf_dir, scale_factor=sf, source_run_id=run_id,
-            shm_capable=shm_capable, expected_tables=expected_tables,
+            parquet_dir=sf_dir,
+            scale_factor=sf,
+            source_run_id=run_id,
+            shm_capable=shm_capable,
+            expected_tables=expected_tables,
             threads=threads,
         )
         if dest is not None:
-            logger.info("published bespoke engine for auto-discovery -> %s (shm_capable=%s)",
-                        dest, shm_capable)
+            logger.info(
+                "published bespoke engine for auto-discovery -> %s (shm_capable=%s)",
+                dest,
+                shm_capable,
+            )
     except Exception:
-        logger.warning("publish: could not publish the generated engine (continuing)", exc_info=True)
+        logger.warning(
+            "publish: could not publish the generated engine (continuing)",
+            exc_info=True,
+        )
 
 
 def _setup() -> None:

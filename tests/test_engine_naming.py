@@ -1,5 +1,6 @@
 """Publishing under a friendly ``synno-<db>`` name, bundling a self-contained snapshot, and
 resolving a relative ``parquet_dir`` against the engine directory."""
+
 from __future__ import annotations
 
 import duckdb
@@ -21,15 +22,21 @@ def _shm_receipt(ws):
 def _fake_workspace(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
-    write_fake_engine_db(ws / "db")  # a real build-id so the publish gate's identity check runs
-    (ws / "engine.cpp").write_text("int main(){return 0;}")  # a source for the content hash
+    write_fake_engine_db(
+        ws / "db"
+    )  # a real build-id so the publish gate's identity check runs
+    (ws / "engine.cpp").write_text(
+        "int main(){return 0;}"
+    )  # a source for the content hash
     return ws
 
 
 def _snapshot(tmp_path):
     snap = tmp_path / "snap"
     snap.mkdir()
-    duckdb.connect().execute(f"COPY (SELECT 1 AS x) TO '{snap}/t.parquet' (FORMAT PARQUET)")
+    duckdb.connect().execute(
+        f"COPY (SELECT 1 AS x) TO '{snap}/t.parquet' (FORMAT PARQUET)"
+    )
     return snap
 
 
@@ -37,9 +44,12 @@ def test_publish_named_with_bundled_snapshot(tmp_path):
     ws = _fake_workspace(tmp_path)
     engines = tmp_path / "engines"
     dest = publish_engine(
-        ws, query_templates=[QueryTemplate("1", "SELECT * FROM t", ())],
+        ws,
+        query_templates=[QueryTemplate("1", "SELECT * FROM t", ())],
         receipt=_shm_receipt(ws),
-        engines_dir=str(engines), name="synno-foo", shm_capable=True,
+        engines_dir=str(engines),
+        name="synno-foo",
+        shm_capable=True,
         bundle_parquet_dir=str(_snapshot(tmp_path)),
     )
     assert dest is not None and dest.name == "synno-foo"
@@ -53,16 +63,28 @@ def test_named_republish_replaces(tmp_path):
     ws = _fake_workspace(tmp_path)
     engines = tmp_path / "engines"
     snap = _snapshot(tmp_path)
-    first = publish_engine(ws, query_templates=[QueryTemplate("1", "SELECT * FROM t", ())],
-                           receipt=_shm_receipt(ws),
-                           engines_dir=str(engines), name="synno-foo", shm_capable=True,
-                           bundle_parquet_dir=str(snap))
-    second = publish_engine(ws, query_templates=[QueryTemplate("1", "SELECT * FROM t", ())],
-                            receipt=_shm_receipt(ws),
-                            engines_dir=str(engines), name="synno-foo", shm_capable=False,
-                            bundle_parquet_dir=str(snap))
+    first = publish_engine(
+        ws,
+        query_templates=[QueryTemplate("1", "SELECT * FROM t", ())],
+        receipt=_shm_receipt(ws),
+        engines_dir=str(engines),
+        name="synno-foo",
+        shm_capable=True,
+        bundle_parquet_dir=str(snap),
+    )
+    second = publish_engine(
+        ws,
+        query_templates=[QueryTemplate("1", "SELECT * FROM t", ())],
+        receipt=_shm_receipt(ws),
+        engines_dir=str(engines),
+        name="synno-foo",
+        shm_capable=False,
+        bundle_parquet_dir=str(snap),
+    )
     assert second == first  # same friendly directory
-    assert EngineManifest.read(first / "manifest.json").shm_capable is False  # replaced in place
+    assert (
+        EngineManifest.read(first / "manifest.json").shm_capable is False
+    )  # replaced in place
     # The only discoverable entry is the engine itself; publish infrastructure (.versions, .locks)
     # is '.'-prefixed and skipped by discovery, and no '.tmp-*'/'.link-*' staging leaks remain.
     entries = sorted(p.name for p in engines.iterdir())
@@ -75,9 +97,14 @@ def test_named_republish_replaces(tmp_path):
 def test_shm_only_publish_has_no_snapshot(tmp_path):
     ws = _fake_workspace(tmp_path)
     engines = tmp_path / "engines"
-    dest = publish_engine(ws, query_templates=[QueryTemplate("1", "SELECT * FROM t", ())],
-                          receipt=_shm_receipt(ws),
-                          engines_dir=str(engines), name="synno-shm", shm_capable=True)
+    dest = publish_engine(
+        ws,
+        query_templates=[QueryTemplate("1", "SELECT * FROM t", ())],
+        receipt=_shm_receipt(ws),
+        engines_dir=str(engines),
+        name="synno-shm",
+        shm_capable=True,
+    )
     man = EngineManifest.read(dest / "manifest.json")
     assert man.shm_capable is True
     assert man.parquet_dir is None
@@ -89,10 +116,15 @@ def test_resolve_relative_and_absolute_parquet_dir(tmp_path):
     (engine_dir / "data").mkdir(parents=True)
     rel = EngineManifest(engine_id="e", queries=(), parquet_dir="data")
     assert _resolve_parquet_dir(rel, engine_dir) == engine_dir / "data"
-    absolute = EngineManifest(engine_id="e", queries=(), parquet_dir=str(engine_dir / "data"))
+    absolute = EngineManifest(
+        engine_id="e", queries=(), parquet_dir=str(engine_dir / "data")
+    )
     assert _resolve_parquet_dir(absolute, engine_dir) == engine_dir / "data"
     none = EngineManifest(engine_id="e", queries=())
     assert _resolve_parquet_dir(none, engine_dir) is None
     missing = EngineManifest(engine_id="e", queries=(), parquet_dir="absent")
     assert _resolve_parquet_dir(missing, engine_dir) is None
-    assert _resolve_parquet_dir(missing, engine_dir, require_exists=False) == engine_dir / "absent"
+    assert (
+        _resolve_parquet_dir(missing, engine_dir, require_exists=False)
+        == engine_dir / "absent"
+    )

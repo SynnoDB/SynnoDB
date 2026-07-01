@@ -15,9 +15,9 @@ Two layers are tested:
 2. The publish API itself: it requires a :class:`ValidationReceipt` and refuses (writing nothing)
    on a missing/non-live/failed/mismatched receipt or an unvalidated serving plane.
 """
+
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -25,7 +25,6 @@ import pytest
 from synnodb.tools.validate.query_validator_class import (
     ExecValidateResult,
     QueryValidator,
-    _cache_path_for_hash,
 )
 from synnodb.utils import utils
 from synnodb.workloads.validation_receipt import (
@@ -98,8 +97,12 @@ def test_cache_replay_blesses_a_stale_success_without_force_live(tmp_path):
         query_batch=batch,
         force_live=False,
     )
-    assert result is not None and result.success is True  # the stale success is replayed
-    assert snap.restored == ["earlier-success-snapshot"]  # and it overwrote the current build
+    assert (
+        result is not None and result.success is True
+    )  # the stale success is replayed
+    assert snap.restored == [
+        "earlier-success-snapshot"
+    ]  # and it overwrote the current build
 
 
 def test_force_live_bypasses_the_cache_and_does_not_restore(tmp_path):
@@ -121,8 +124,12 @@ def test_force_live_bypasses_the_cache_and_does_not_restore(tmp_path):
         force_live=True,
     )
     assert result is None  # no replay: the caller must run live
-    assert snap.restored == []  # the current build is left in place (no stale snapshot restored)
-    assert returned_path == cache_path  # path still returned so the live result refreshes the cache
+    assert (
+        snap.restored == []
+    )  # the current build is left in place (no stale snapshot restored)
+    assert (
+        returned_path == cache_path
+    )  # path still returned so the live result refreshes the cache
 
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +138,9 @@ def test_force_live_bypasses_the_cache_and_does_not_restore(tmp_path):
 def _ws(tmp_path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
-    write_fake_engine_db(ws / "db")  # a real build-id so the gate's identity check is exercised
+    write_fake_engine_db(
+        ws / "db"
+    )  # a real build-id so the gate's identity check is exercised
     return ws
 
 
@@ -178,7 +187,10 @@ def test_verify_refuses(tmp_path, over, needle):
     ws = _ws(tmp_path)
     with pytest.raises(ReceiptRejected) as ei:
         verify_receipt_for_publish(
-            _receipt(ws, **over), workspace=ws, published_query_ids=["1"], scale_factor=1.0
+            _receipt(ws, **over),
+            workspace=ws,
+            published_query_ids=["1"],
+            scale_factor=1.0,
         )
     assert needle in str(ei.value)
 
@@ -200,11 +212,20 @@ def test_verify_refuses_an_unidentifiable_build(tmp_path):
     with pytest.raises(ReceiptRejected, match="cannot be identified"):
         verify_receipt_for_publish(
             ValidationReceipt(
-                snapshot_id="s", build_ids={}, validated_queries=(ValidatedQuery("1", ()),),
-                coverage_policy="x", data_planes=(PLANE_PARQUET,), dataset="tpch",
-                validated_scale_factors=(1.0,), mode="m", live_run=True, verdict=PASS,
+                snapshot_id="s",
+                build_ids={},
+                validated_queries=(ValidatedQuery("1", ()),),
+                coverage_policy="x",
+                data_planes=(PLANE_PARQUET,),
+                dataset="tpch",
+                validated_scale_factors=(1.0,),
+                mode="m",
+                live_run=True,
+                verdict=PASS,
             ),
-            workspace=ws, published_query_ids=["1"], scale_factor=1.0,
+            workspace=ws,
+            published_query_ids=["1"],
+            scale_factor=1.0,
         )
 
 
@@ -294,7 +315,9 @@ def test_passing_receipt_helper_matches_real_build_ids(tmp_path):
     # The shared helper computes build-ids from the workspace, so it always matches on-disk.
     ws = _ws(tmp_path)
     rc = passing_receipt(ws, ["1"], scale_factors=(1.0,))
-    verify_receipt_for_publish(rc, workspace=ws, published_query_ids=["1"], scale_factor=1.0)
+    verify_receipt_for_publish(
+        rc, workspace=ws, published_query_ids=["1"], scale_factor=1.0
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -319,8 +342,15 @@ class _Provider:
     def produce_workload(self, run_mode, num_threads, core_ids, query_ids):
         # Two scale factors; query 1 with two distinct bindings (one duplicated), query 6 constant.
         return [
-            _Batch(1.0, [_Entry("1", {"DELTA": "90"}), _Entry("1", {"DELTA": "90"}),
-                         _Entry("1", {"DELTA": "60"}), _Entry("6", {})]),
+            _Batch(
+                1.0,
+                [
+                    _Entry("1", {"DELTA": "90"}),
+                    _Entry("1", {"DELTA": "90"}),
+                    _Entry("1", {"DELTA": "60"}),
+                    _Entry("6", {}),
+                ],
+            ),
             _Batch(10.0, [_Entry("1", {"DELTA": "90"}), _Entry("6", {})]),
         ]
 
@@ -328,7 +358,9 @@ class _Provider:
 def _make_run_tool(ws, success):
     from synnodb.tools.run import RunTool
 
-    rt = object.__new__(RunTool)  # bypass __init__: validate_for_publish needs only a few attrs
+    rt = object.__new__(
+        RunTool
+    )  # bypass __init__: validate_for_publish needs only a few attrs
     rt.cwd = ws
     rt.dataset_name = "tpch"
     rt.workload_provider = _Provider()
@@ -349,7 +381,10 @@ def test_validate_for_publish_builds_a_pass_receipt(tmp_path):
     assert set(receipt.validated_scale_factors) == {1.0, 10.0}
     by_qid = {vq.query_id: vq.bindings for vq in receipt.validated_queries}
     assert set(by_qid) == {"1", "6"}
-    assert by_qid["1"] == ({"DELTA": "90"}, {"DELTA": "60"})  # deduplicated, order preserved
+    assert by_qid["1"] == (
+        {"DELTA": "90"},
+        {"DELTA": "60"},
+    )  # deduplicated, order preserved
     assert by_qid["6"] == ({},)  # constant query: one empty binding
 
 

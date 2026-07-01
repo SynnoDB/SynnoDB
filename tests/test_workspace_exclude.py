@@ -1,5 +1,6 @@
 """Generated run workspaces are nested git repos; they must be auto-excluded from any
 enclosing repo (the SynnoDB checkout) so a `git add -A` never embeds/pushes them."""
+
 from __future__ import annotations
 
 import subprocess
@@ -8,7 +9,9 @@ from synnodb.utils.utils import exclude_workspace_from_enclosing_repo
 
 
 def _git(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True
+    )
 
 
 def test_workspace_excluded_from_enclosing_repo(tmp_path):

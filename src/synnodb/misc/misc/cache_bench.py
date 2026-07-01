@@ -28,7 +28,7 @@ import statistics as stats
 import sys
 import time
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import List, Tuple
 
 try:
     import redis  # pip install redis
