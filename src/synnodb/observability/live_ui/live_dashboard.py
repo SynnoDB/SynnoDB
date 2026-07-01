@@ -9,7 +9,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from synnodb.observability.logging.run_stats_drain import DataDrain, _duckdb_col_value
-from synnodb.settings import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT
 
 _UI_DIR = Path(__file__).parent
 
@@ -389,8 +388,8 @@ class StandaloneDashboard:
         db_path: str | Path | None = None,
         wandb_run_id: str | None = None,
         api_url: str | None = None,
-        wandb_entity: str | None = DEFAULT_WANDB_ENTITY,
-        wandb_project: str = DEFAULT_WANDB_PROJECT,
+        wandb_entity: str | None = None,
+        wandb_project: str | None = None,
     ) -> None:
         import logging
         import threading

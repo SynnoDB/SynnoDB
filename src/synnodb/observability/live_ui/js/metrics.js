@@ -78,11 +78,17 @@ function getEffectiveScaleFactor(steps, data) {
 
 // Cumulative cross-query speedup at each step. Pinned to the effective scale
 // factor (user pick, or largest observed) so the line stays consistent.
+//
+// Each entry is {value, complete, nQueries, total}: `value` is the speedup (or
+// null when we lack runtimes for every query seen so far). `total` is the full
+// set of benchmark queries the run ever covers, and `nQueries` is how many this
+// point covers. A point is preliminary (drawn dashed) while it covers fewer
+// than `total` queries, and final (solid) once it covers them all.
 function computeSpeedupSeries(steps, data) {
   const targetSf = getEffectiveScaleFactor(steps, data);
   const currentRuntimes = new Map(); // qid -> {impl, duck}
   const expectedQueries = new Set();
-  const speedup = [];
+  const series = [];
 
   for (const step of steps) {
     const row = data[step] || {};
@@ -105,7 +111,10 @@ function computeSpeedupSeries(steps, data) {
       }
     }
 
-    if (!expectedQueries.size) { speedup.push(null); continue; }
+    if (!expectedQueries.size) {
+      series.push({value: null, nQueries: 0});
+      continue;
+    }
 
     let totalImpl = 0, totalDuck = 0, haveAll = true;
     for (const qid of expectedQueries) {
@@ -114,9 +123,21 @@ function computeSpeedupSeries(steps, data) {
       totalImpl += runtimes.impl;
       totalDuck += runtimes.duck;
     }
-    speedup.push(haveAll && totalImpl > 0 ? totalDuck / totalImpl : null);
+    const value = haveAll && totalImpl > 0 ? totalDuck / totalImpl : null;
+    series.push({value, nQueries: expectedQueries.size});
   }
-  return speedup;
+
+  // The full benchmark suite for this run is the largest set of queries we ever
+  // accumulate (expectedQueries grows monotonically, so this is its final size).
+  // Any point covering fewer queries than that is preliminary. Derived purely
+  // from the runtimes already logged — no dedicated "total queries" metric.
+  const total = series.reduce((m, s) => Math.max(m, s.nQueries), 0) || null;
+  return series.map(s => ({
+    value: s.value,
+    nQueries: s.nQueries,
+    total,
+    complete: s.value != null && (total == null || s.nQueries >= total),
+  }));
 }
 
 // Latest impl/duck per query across all steps (sorted numerically when ids are integers).
