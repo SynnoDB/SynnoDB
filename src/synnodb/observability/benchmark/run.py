@@ -140,15 +140,15 @@ def _resolve_snapshots(
     snapshots: list[str],
     wandb_run_ids: list[str],
     workload: Workload,
-) -> tuple[list[str], list[bool]]:
-    """Return (snapshot_hashes, is_mt flags) for the bespoke system."""
+) -> tuple[list[str], list[Parallelism]]:
+    """Return (snapshot_hashes, parallelism modes) for the bespoke system."""
     if snapshots:
         # Direct hashes: prepare mode (mt vs optim) is unknown -> default to
         # single-thread prep.
-        return snapshots, [False] * len(snapshots)
+        return snapshots, [Parallelism.SINGLE_THREADED] * len(snapshots)
 
     run_snapshots: list[str] = []
-    is_mt: list[bool] = []
+    parallelisms: list[Parallelism] = []
     for wandb_id in wandb_run_ids:
         statistics, config, _ = wandb_retrieve_metrics_for_run(
             workload, wandb_id, fetch_latest_runtimes=False
@@ -161,8 +161,11 @@ def _resolve_snapshots(
         # Runs predating the Parallelism enum logged a bool; newer runs log the
         # enum's string value.
         recorded = config.get("needs_parallelism", False)
-        is_mt.append(recorded is True or recorded == Parallelism.MULTI_THREADED.value)
-    return run_snapshots, is_mt
+        is_mt = recorded is True or recorded == Parallelism.MULTI_THREADED.value
+        parallelisms.append(
+            Parallelism.MULTI_THREADED if is_mt else Parallelism.SINGLE_THREADED
+        )
+    return run_snapshots, parallelisms
 
 
 def _build_runner(
@@ -171,7 +174,6 @@ def _build_runner(
     num_threads: int,
     snapshotter: GitSnapshotter | None,
     workspace_dir: Path,
-    prepare_cache_dir: Path,
     disk_db_dir: Path | None,
     scale_factors: list[float],
 ):
@@ -188,7 +190,6 @@ def _build_runner(
             dataset_name=track_cfg.dataset_name,
             db_storage=track_cfg.bespoke_db_storage,
             memory_budget_mb=track_cfg.bespoke_memory_budget_mb,
-            prepare_cache_dir=prepare_cache_dir,
         )
 
     if system_name == "duckdb":
@@ -330,7 +331,6 @@ def run_benchmark(args) -> None:
             synno / "workloads" / workload.value / f"{dataset_name}_parquet"
         )
         bespoke_ssd_storage_dir = workspace_path.absolute() / "tmp"
-        prepare_cache_dir = synno / "cache" / "prepare_workspace"
 
         track_cfg = track.build_track(
             usecase=usecase,
@@ -365,12 +365,12 @@ def run_benchmark(args) -> None:
                 extra_gitignore=[],
             )
             snapshotter.fetch_snapshots()
-            run_snapshots, is_mt_list = _resolve_snapshots(
+            run_snapshots, parallelism_list = _resolve_snapshots(
                 args, snapshots, wandb_run_ids, workload
             )
         else:
             run_snapshots = [""]
-            is_mt_list = [False]
+            parallelism_list = [Parallelism.SINGLE_THREADED]
 
         disk_db_dir = (
             bespoke_ssd_storage_dir
@@ -395,7 +395,6 @@ def run_benchmark(args) -> None:
                     num_threads,
                     snapshotter,
                     workspace_path,
-                    prepare_cache_dir,
                     disk_db_dir,
                     scale_factors,
                 )
@@ -405,9 +404,9 @@ def run_benchmark(args) -> None:
                 )
                 core_ids = _core_ids_for(num_threads)
 
-                for snapshot, is_mt in zip(run_snapshots, is_mt_list):
+                for snapshot, parallelism in zip(run_snapshots, parallelism_list):
                     if use_snapshots:
-                        runner.restore_snapshot(snapshot, is_mt=is_mt)
+                        runner.restore_snapshot(snapshot, parallelism=parallelism)
 
                     for scale_factor in scale_factors:
                         logger.info(

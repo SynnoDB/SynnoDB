@@ -28,6 +28,7 @@ from synnodb.cpp_runner.prepare_repo.prepare_features import (
 )
 from synnodb.plan import ConversationPlan, SupervisionPolicy
 from synnodb.results import RunResult, StageArtifact, StoragePlan
+from synnodb.utils.utils import DBStorage
 
 
 def _trivial_plan(**overrides) -> ConversationPlan:
@@ -98,7 +99,7 @@ def _fake_backend(tmp_path):
         calls["plan"] = plan
         write_prepare_metadata(
             tmp_path / "ws",
-            PrepareFeatures.optim().resolve(True),
+            PrepareFeatures.optim().resolve(DBStorage.IN_MEMORY),
             parallelism=plan.parallelism,
         )
         return RunResult(run_id=None, snapshot_hash="newsnap")
@@ -121,7 +122,9 @@ def test_run_synthesis_plumbs_plan_and_start(tmp_path, monkeypatch):
     assert rc.query_list == "1"  # default queries="1"
     # the artifact mirrors the workspace prepare record
     assert artifact.snapshot_hash == "newsnap"
-    assert artifact.prepare_features == PrepareFeatures.optim().resolve(True)
+    assert artifact.prepare_features == PrepareFeatures.optim().resolve(
+        DBStorage.IN_MEMORY
+    )
     assert artifact.parallelism is Parallelism.SINGLE_THREADED
 
 

@@ -46,7 +46,7 @@ class BespokePrep:
 
     make_compiler: Callable[[Path], CachedCompiler]
     make_prepare_workspace: Callable[
-        [WorkloadProvider, Path, GitSnapshotter, Path | None], PrepareWorkspace
+        [WorkloadProvider, Path, GitSnapshotter], PrepareWorkspace
     ]
 
 
@@ -117,12 +117,11 @@ def build_track(
             make_compiler=lambda cwd: OLAPCompilerFactory(
                 db_storage=cli_db_storage
             ).make_compiler(cwd=cwd, untracked_cpp_runner_content=""),
-            make_prepare_workspace=lambda wp, ws, snap, cache: OLAPPrepareWorkspace(
+            make_prepare_workspace=lambda wp, ws, snap: OLAPPrepareWorkspace(
                 db_storage=cli_db_storage,
                 workload_provider=wp,
                 workspace_dir=ws,
                 git_snapshotter=snap,
-                prepare_cache_dir=cache,
             ),
         )
         return TrackConfig(

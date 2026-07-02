@@ -83,7 +83,11 @@ def test_scaffolding_from_byo_data(myshop):
         workspace_dir=ws,
         git_snapshotter=None,
     )
-    files = prep._assemble_usecase_files()
+    from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
+
+    files = prep.build_scaffold_files(
+        PrepareFeatures.base().resolve(DBStorage.IN_MEMORY)
+    )
 
     # the BYO query scaffolded from its SQL; no phantom queries
     assert "query1.cpp" in files and "query2.cpp" not in files
