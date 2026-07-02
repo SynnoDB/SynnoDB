@@ -178,6 +178,12 @@ MODELS = {
         "output": 15.00 / 1_000_000,
         "context_window": 200_000,
     },
+    "anthropic/claude-sonnet-5": {
+        "input": 2.00 / 1_000_000,
+        "cached_input": 0.20 / 1_000_000,
+        "output": 10.00 / 1_000_000,
+        "context_window": 1_000_000,
+    },
 }
 
 logger = logging.getLogger(__name__)
