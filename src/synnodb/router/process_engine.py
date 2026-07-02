@@ -87,9 +87,11 @@ class ProcessEngine:
         scratch = Path(tempfile.gettempdir()) / f"synnodb-{uid}" / self.engine_id
         scratch.mkdir(parents=True, exist_ok=True)
 
-        # Symlink every top-level item except build/ itself.
+        # Symlink every top-level item except build/ and results/: both must be real,
+        # writable dirs in the scratch workspace (a symlinked results/ would point the
+        # engine's Arrow result writes at the read-only published dir -> EACCES).
         for name in os.listdir(self.workspace):
-            if name == "build":
+            if name in ("build", "results"):
                 continue
             dst = scratch / name
             if not dst.exists():
@@ -108,8 +110,13 @@ class ProcessEngine:
                 if not dst.exists():
                     dst.symlink_to(build_dir / name)
 
-        # Also give this user a writable results dir in the scratch workspace.
-        (scratch / "results").mkdir(exist_ok=True)
+        # Also give this user a writable results dir in the scratch workspace. An earlier
+        # version symlinked the published results/ dir here; replace such a stale symlink
+        # with a real dir (mkdir(exist_ok=True) would silently keep it).
+        scratch_results = scratch / "results"
+        if scratch_results.is_symlink():
+            scratch_results.unlink()
+        scratch_results.mkdir(exist_ok=True)
 
         log.debug(
             "engine=%s: workspace not writable by uid=%d; using scratch cwd=%s",

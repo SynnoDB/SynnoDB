@@ -50,6 +50,10 @@ class _DynamicQueryCompiler(CachedCompiler):
         self._refresh_query_sources()
         return super().build_cached(**kwargs)
 
+    def build_plain(self, **kwargs):
+        self._refresh_query_sources()
+        return super().build_plain(**kwargs)
+
 
 def make_compiler(
     cwd: Path,

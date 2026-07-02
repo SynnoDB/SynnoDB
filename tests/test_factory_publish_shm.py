@@ -269,3 +269,61 @@ def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch)
     man = EngineManifest.read(next(engines.glob("*/manifest.json")))
     assert man.shm_capable is False
     assert not man.expected_tables
+
+
+@needs_tpch
+def test_factory_publish_survives_a_cache_elided_binary(tmp_path, monkeypatch):
+    """A fully compile-cache-hit run leaves query sources but no `db` binary (binaries are
+    never cached). Publish must still recognize the engine-producing run and proceed: the
+    publish validation force-recompiles the binary, exactly as validate_for_publish's
+    force_compile=True does live."""
+    from synnodb.utils.utils import DBStorage
+    from synnodb.workloads.workload_provider_olap import (
+        OLAPWorkload,
+        OLAPWorkloadProvider,
+    )
+
+    data = tmp_path / "data"
+    sf_dir = data / "sf0.01"
+    sf_dir.mkdir(parents=True)
+    con = duckdb.connect()
+    con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
+    prov = OLAPWorkloadProvider(
+        benchmark=OLAPWorkload.TPCH,
+        base_parquet_dir=data,
+        db_storage=DBStorage.IN_MEMORY,
+        bespoke_ssd_storage_dir=None,
+        query_ids=["1"],
+    )
+    for t in prov.dataset_tables:
+        con.execute(f"COPY {t} TO '{sf_dir / (t + '.parquet')}' (FORMAT parquet)")
+    con.close()
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    # No `db` binary: only the sources the cache-replayed run leaves behind.
+    (ws / "query1.cpp").write_text("// q1 impl")
+    (ws / "parquet_reader.cpp").write_text('tables->x_path = path + "x.parquet";')
+
+    class _RecompilingRunTool(_FakeRunTool):
+        def validate_for_publish(self, query_ids, **kw):
+            write_fake_engine_db(
+                self._workspace / "db"
+            )  # force_compile materializes it
+            return super().validate_for_publish(query_ids, **kw)
+
+    engines = tmp_path / "engines"
+    monkeypatch.setenv("SYNNO_ENGINES_DIR", str(engines))
+
+    _publish_generated_engine(
+        ws,
+        prov,
+        ["1"],
+        data,
+        types.SimpleNamespace(benchmark_sf=0.01),
+        "run-x",
+        run_tool=_RecompilingRunTool(ws, 0.01),
+    )
+
+    man = EngineManifest.read(next(engines.glob("*/manifest.json")))
+    assert {q.query_id for q in man.queries} == {"1"}

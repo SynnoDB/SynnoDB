@@ -718,9 +718,9 @@ def _publish_generated_engine(
 ):
     """Publish the engine produced by this run for the drop-in router to auto-discover.
 
-    Best-effort: only base/optimized runs leave a ``db`` binary, an engines directory must be
-    configured, and the parquet the engine serves must exist. Any failure is logged and
-    swallowed so it never fails a generation run.
+    Best-effort: only base/optimized runs leave per-query sources (``query<QID>.cpp``), an
+    engines directory must be configured, and the parquet the engine serves must exist. Any
+    failure is logged and swallowed so it never fails a generation run.
 
     The publish is gated on a cache-bypassed live re-validation of the queries being published:
     *run_tool* re-compiles and re-runs them with the validation cache disabled, producing a
@@ -733,36 +733,58 @@ def _publish_generated_engine(
     fallback plane. The shm plane is not exercised by generation (which runs over parquet), so the
     parquet-only receipt downgrades it to parquet-only at publish time.
     """
+
+    def _not_published(reason: str) -> None:
+        # One consistent, prominent line for every "stage finished but nothing shipped"
+        # exit, so a missing engine is never silent again.
+        logger.warning(
+            "stage finished but the engine in %s was NOT published: %s",
+            workspace_path,
+            reason,
+        )
+
     try:
-        if not (workspace_path / "db").exists():
+        # An engine-producing run is recognized by its `db` binary or its per-query
+        # sources. The binary alone is not a reliable signal: a fully compile-cache-hit
+        # run never materializes it (the cache stores compiler output only, never
+        # binaries), and validate_for_publish below force-recompiles it anyway, so its
+        # absence must not skip the publish when the sources are there.
+        has_binary = (workspace_path / "db").exists()
+        has_sources = any(
+            (workspace_path / name).exists()
+            for qid in query_list
+            for name in (f"query{qid}.cpp", f"query_q{qid}.cpp")
+        )
+        if not (has_binary or has_sources):
             return  # not an engine-producing run (e.g. storage plan)
+        if not has_binary:
+            logger.info(
+                "publish: no `db` binary in %s (compile was cache-elided); the publish "
+                "validation recompiles it live",
+                workspace_path,
+            )
         from synnodb.duckdb_compat.discovery import resolve_engines_dir
         from synnodb.workloads.engine_publish import publish_from_provider
         from synnodb.workloads.validation_receipt import PASS
 
         if resolve_engines_dir(None) is None:
-            logger.info(
-                "publish: no engines dir (SYNNO_ENGINES_DIR / SYNNO_DATA_DIR); skipping"
+            _not_published(
+                "no engines dir configured (set SYNNO_ENGINES_DIR or SYNNO_DATA_DIR)"
             )
             return
         sf = workload_spec.benchmark_sf
         sf_dir = _resolve_sf_dir(base_parquet_dir, sf)
         if sf_dir is None:
-            logger.info(
-                "publish: no parquet under %s; skipping engine publish",
-                base_parquet_dir,
-            )
+            _not_published(f"no parquet under {base_parquet_dir}")
             return
 
         # Final cache-bypassed live validation. Its receipt is the publish precondition; a failing
         # verdict means the current build is broken, so we refuse to publish rather than ship it.
         receipt = run_tool.validate_for_publish(query_list)
         if receipt.verdict != PASS:
-            logger.warning(
-                "publish: final live validation did not pass (verdict=%s); NOT publishing the "
-                "engine in %s",
-                receipt.verdict,
-                workspace_path,
+            _not_published(
+                f"final live validation did not pass (verdict={receipt.verdict}); "
+                "refusing to ship a broken build"
             )
             return
 
@@ -793,13 +815,20 @@ def _publish_generated_engine(
         )
         if dest is not None:
             logger.info(
-                "published bespoke engine for auto-discovery -> %s (shm_capable=%s)",
+                "published bespoke engine '%s' for auto-discovery -> %s (shm_capable=%s)",
+                dest.name,
                 dest,
                 shm_capable,
             )
+        else:
+            _not_published(
+                "no routable templates derived (see synnodb.engine_publish logs above)"
+            )
     except Exception:
         logger.warning(
-            "publish: could not publish the generated engine (continuing)",
+            "stage finished but the engine in %s was NOT published: unexpected error "
+            "(continuing)",
+            workspace_path,
             exc_info=True,
         )
 

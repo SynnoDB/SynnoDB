@@ -275,10 +275,16 @@ class RunTool:
 
         logger.info(f"build_cached: starting compilation (trace={trace_mode})")
         _compile_start = _time.monotonic()
-        err, compile_used_cache, compile_key_hash = self.compiler.build_cached(
-            skip_cache=force_compile,
-            current_git_snapshot=current_git_snapshot,
-        )
+        if force_compile:
+            # The publish gate's live re-validation must compile for real without
+            # touching the caching chain: plain compiler, no cache read or write.
+            err, compile_used_cache, compile_key_hash = self.compiler.build_plain(
+                current_git_snapshot=current_git_snapshot,
+            )
+        else:
+            err, compile_used_cache, compile_key_hash = self.compiler.build_cached(
+                current_git_snapshot=current_git_snapshot,
+            )
         logger.info(
             f"build_cached: done in {_time.monotonic() - _compile_start:.1f}s (cached={compile_used_cache})"
         )

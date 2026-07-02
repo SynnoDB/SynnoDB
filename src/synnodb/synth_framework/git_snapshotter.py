@@ -371,7 +371,7 @@ class GitSnapshotter:
         if self.cache_repo is None:
             return
 
-        logger.debug(f"Fetching snapshots from cache repo '{self.cache_repo}'...")
+        logger.info(f"Fetching snapshots from cache repo '{self.cache_repo}'...")
         self._git_run(
             ["fetch", self.cache_repo, f"{SNAPSHOT_REF_GLOB}:{SNAPSHOT_REF_GLOB}"]
         )

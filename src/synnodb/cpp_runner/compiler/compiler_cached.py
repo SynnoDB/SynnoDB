@@ -74,7 +74,9 @@ class CachedCompiler(Compiler):
             self._check_answer_from_cache(current_git_snapshot)
         )
         if is_cached and not skip_cache:
-            # restore compiled binary from binary cache
+            # Cache hit: return the recorded compiler output. Binaries are intentionally
+            # never cached (too large), so a cache hit leaves no `db` in the workspace -
+            # anything that needs the binary (e.g. publish) must force a live compile.
             assert cached_compile is not None
 
             if self.runtime_tracker is not None:
@@ -111,34 +113,37 @@ class CachedCompiler(Compiler):
 
         return output, False, compile_key_hash
 
-    def _check_answer_from_cache(
+    def build_plain(
         self, current_git_snapshot: Optional[str] = None
-    ) -> Tuple[bool, Optional[CompileCacheType], Optional[Path], str, str]:
-        if self.git_snapshotter is None and current_git_snapshot is None:
-            logger.warning(
-                "Can't determine current code version (GitSnapshotter is None); "
-                "skipping compile cache lookup."
-            )
-            return False, None, None, "", ""
+    ) -> Tuple[Optional[str], bool, str]:
+        """A plain, cache-free build: the compile cache is neither consulted nor written.
 
-        # fetch git hash
+        For callers that must compile for real without touching the caching chain (the
+        publish gate's live re-validation). Same ``(output, from_cache, compile_key_hash)``
+        shape as :meth:`build_cached`; the key identifies this build for downstream
+        consumers whether or not a compile cache entry for it exists.
+        """
+        git_hash = self._resolve_git_hash(current_git_snapshot)
+        key = self._compile_key(git_hash)[0] if git_hash is not None else ""
+        return super().build(), False, key
+
+    def _resolve_git_hash(
+        self, current_git_snapshot: Optional[str] = None
+    ) -> Optional[str]:
+        """The code-version hash for the compile key, from the explicit snapshot or the
+        snapshotter; ``None`` when neither is available."""
         if current_git_snapshot is not None:
             assert self.git_snapshotter is None, (
                 "Cannot provide current_git_snapshot if git_snapshotter is set"
             )
-            git_hash = current_git_snapshot
-        else:
-            assert self.git_snapshotter is not None, (
-                "git_snapshotter must be set to fetch git hash"
-            )
-            git_hash = self.git_snapshotter.current_hash
+            return current_git_snapshot
+        if self.git_snapshotter is not None:
+            return self.git_snapshotter.current_hash
+        return None
 
-        if self.cache_dir is None:
-            logger.info(
-                "Cache directory not configured; skipping compile cache lookup."
-            )
-            return False, None, None, "", ""
-
+    def _compile_key(self, git_hash: str) -> Tuple[str, str]:
+        """``(compile_key_hash, stable_payload)`` for the current sources/options - a pure
+        computation, no cache I/O."""
         hash_payload = dict(self.args)
         hash_payload.pop("working_dir", None)
 
@@ -152,8 +157,26 @@ class CachedCompiler(Compiler):
             }
         )
         stable_payload = utils.stable_json(hash_payload)
+        return utils.sha256(stable_payload), stable_payload
 
-        compile_key_hash = utils.sha256(stable_payload)
+    def _check_answer_from_cache(
+        self, current_git_snapshot: Optional[str] = None
+    ) -> Tuple[bool, Optional[CompileCacheType], Optional[Path], str, str]:
+        git_hash = self._resolve_git_hash(current_git_snapshot)
+        if git_hash is None:
+            logger.warning(
+                "Can't determine current code version (GitSnapshotter is None); "
+                "skipping compile cache lookup."
+            )
+            return False, None, None, "", ""
+
+        if self.cache_dir is None:
+            logger.info(
+                "Cache directory not configured; skipping compile cache lookup."
+            )
+            return False, None, None, "", ""
+
+        compile_key_hash, stable_payload = self._compile_key(git_hash)
         cache_path = _cache_path_for_hash(self.cache_dir, compile_key_hash)
 
         if not cache_path.exists():

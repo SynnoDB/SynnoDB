@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..duckdb_compat.discovery import resolve_engines_dir
+from ..utils.utils import create_dir_and_set_permissions
 
 if TYPE_CHECKING:
     from .validation_receipt import ValidationReceipt
@@ -203,7 +204,7 @@ def _publish_lock(engines_dir: Path, name: str):
     import fcntl  # POSIX; the publish/runtime stack is Linux
 
     locks = engines_dir / ".locks"
-    locks.mkdir(parents=True, exist_ok=True)
+    create_dir_and_set_permissions(locks)  # shared across publishing users
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name) or "engine"
     handle = open(locks / f"{safe}.lock", "w")
     try:
@@ -284,7 +285,7 @@ def _publish_named(
     serializes concurrent republishes.
     """
     versions = engines_dir / ".versions"
-    versions.mkdir(parents=True, exist_ok=True)
+    create_dir_and_set_permissions(versions)  # shared across publishing users
     dest = engines_dir / name
     with _publish_lock(engines_dir, name):
         # 1. Materialize the new version: staging dir -> atomic rename into .versions/<name>@<id>.
@@ -336,7 +337,10 @@ def _atomic_publish(
     its ``*.parquet`` are copied into ``<version>/data/`` and recorded as the relative
     ``parquet_dir="data"`` so the package is portable.
     """
-    engines_dir.mkdir(parents=True, exist_ok=True)
+    # The engines dir is shared across users (like cache/ and conversations/), so create it
+    # world-writable: a default-mode dir created by one user makes every other user's publish
+    # fail with EACCES. Best-effort - an existing dir owned by someone else cannot be chmod'd.
+    create_dir_and_set_permissions(engines_dir)
     if name is None:
         return _publish_content_addressed(
             workspace, manifest, engines_dir, bundle_parquet_dir
@@ -452,9 +456,10 @@ def publish_engine(
         workspace, manifest, target, name=name, bundle_parquet_dir=bundle_parquet_dir
     )
     log.info(
-        "published engine %s (%d queries, shm=%s, snapshot=%s) -> %s",
+        "published engine %s under name '%s' (queries %s, shm=%s, snapshot=%s) -> %s",
         manifest.engine_id,
-        len(manifest.queries),
+        dest.name,
+        ",".join(q.query_id for q in manifest.queries),
         shm_capable,
         bundle_parquet_dir is not None or parquet_dir is not None,
         dest,
