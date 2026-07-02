@@ -92,7 +92,7 @@ def _fake_backend(tmp_path):
     write a prepare record like a real run would."""
     calls = {}
 
-    def _fake_run_conv_wrapper(args, run_config, plan):
+    def _fake_run_conv_wrapper(run_config, plan):
         calls["run_config"] = run_config
         calls["plan"] = plan
         write_prepare_metadata(

@@ -1,8 +1,13 @@
-"""Golden guardrail for the conversation stage lists and their prompt bytes.
+"""Golden guardrail for the example conversations and their prompt bytes.
+
+Scope: this test covers only the example conversations - the stage-list
+builders in ``synnodb.conversations.examples`` that back the built-in
+ConversationPlans (storage_plan, base_impl, optim, add_mt, check_sf). It does
+not exercise user-defined plans.
 
 Every LLM/tool cache keys on prompt bytes: an accidental one-character prompt
-change silently invalidates every cache. This test builds the stage list of
-each built-in conversation via its builder (with a fixed, synthetic
+change silently invalidates every cache. This test builds each example
+conversation's stage list via its builder (with a fixed, synthetic
 ConvContext), renders every ``get_prompt`` / ``get_prompt_with_tracing`` with
 fixed arguments, and compares descriptors, ordering, markers, and prompt text
 against committed fixture files.
@@ -12,7 +17,7 @@ byte-identical prompt text. Where a refactor legitimately changes structure
 (e.g. stage numbering or item kinds), only the structural header lines of the
 fixtures may change - never the text between ``--- prompt ---`` markers.
 
-Regenerate fixtures with:  UPDATE_GOLDEN=1 .venv/bin/python -m pytest tests/test_golden_stage_lists.py
+Regenerate fixtures with:  UPDATE_GOLDEN=1 .venv/bin/python -m pytest tests/test_example_conversations_golden.py
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import ExecSettings
 from synnodb.workloads.workload_provider_olap import OLAPExecSettings, OLAPWorkload
 
-GOLDEN_DIR = Path(__file__).parent / "golden_stage_lists"
+GOLDEN_DIR = Path(__file__).parent / "golden_example_conversations"
 UPDATE_GOLDEN = os.environ.get("UPDATE_GOLDEN") == "1"
 
 # ---------------------------- fixed synthetic inputs -------------------------
@@ -243,7 +248,7 @@ def _assert_matches_golden(name: str, doc: str) -> None:
     )
 
 
-# ---------------------------------- documents --------------------------------
+# ------------------- rendered documents, one per example conversation --------
 def _storage_plan_doc() -> str:
     from synnodb.conversations.examples import storage_plan
 

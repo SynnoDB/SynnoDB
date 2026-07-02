@@ -55,9 +55,6 @@ The run output dir defaults to a local `./output`; set `workspace=` (or
 `SYNNO_WORKSPACE`). Any `RunConfig` setting the typed config does not model can be
 forced through the `extra_config={...}` escape hatch.
 
-For low-level debugging there is still `python -m synnodb.main manual
---conv_mode <mode> …` (explicit args; not the supported entry point).
-
 ## Define your own conversation
 
 The built-in stages are ordinary `ConversationPlan`s; you can assemble and run

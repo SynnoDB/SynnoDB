@@ -494,7 +494,7 @@ class SynnoDB:
 
         from synnodb.main import run_conv_wrapper  # heavy import, lazy
 
-        result = run_conv_wrapper(args=None, run_config=run_config, plan=plan)
+        result = run_conv_wrapper(run_config=run_config, plan=plan)
         workspace = settings.get_workspace_dir(cfg.workspace)
         artifact = plan.result(result.run_id, result.snapshot_hash, workspace, cfg)
         # Mirror the workspace's prepare record onto the artifact (the workspace
