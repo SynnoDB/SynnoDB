@@ -144,7 +144,6 @@ def main() -> None:
         workload_provider=workload_provider,
         workspace_dir=OUTPUT_DIR,
         git_snapshotter=snapshotter,
-        prepare_cache_dir=None,
     )
     prepare_repo_and_load_snapshot(
         snapshotter=snapshotter,
@@ -152,7 +151,6 @@ def main() -> None:
         features=None,  # replay the snapshot's own prepare record
         prepare_workspace_provider=prepare_ws,
         parallelism=Parallelism.SINGLE_THREADED,  # ignored on the replay path
-        do_not_cache=True,
     )
 
     zip_name = args.wandb_id or git_snapshot

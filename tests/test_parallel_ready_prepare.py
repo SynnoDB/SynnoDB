@@ -17,27 +17,36 @@ from synnodb.utils.utils import DBStorage
 def test_in_memory_base_prepare_enables_thread_pool_but_ssd_base_does_not():
     calls = []
 
-    def fake_prepare(**kwargs):
-        calls.append(kwargs)
-        return ""
+    def fake_assemble(features, **kwargs):
+        calls.append(features)
+        return SimpleNamespace(
+            artifacts_str="",
+            tracked_files={},
+            readonly_files_not_git_tracked={},
+            tracked_artifacts_str="",
+            readonly_artifacts_str="",
+        )
 
-    provider = SimpleNamespace(prepare=fake_prepare)
+    provider = SimpleNamespace(
+        assemble=fake_assemble,
+        write_prepared_files=lambda _part, write_tracked=True: None,
+    )
 
     # base features leave parallel_ready_impl on "auto": in-memory resolves to
     # a parallel-ready scaffold, SSD does not
     apply_prepare_features(
-        PrepareFeatures.base().resolve(in_memory_storage=True),
+        PrepareFeatures.base().resolve(DBStorage.IN_MEMORY),
         provider,
         source_features=None,
     )
-    assert calls[-1]["usecase_args"]["add_thread_pool_to_query_impl"] is True
+    assert calls[-1].parallel_ready_impl is True
 
     apply_prepare_features(
-        PrepareFeatures.base().resolve(in_memory_storage=False),
+        PrepareFeatures.base().resolve(DBStorage.SSD),
         provider,
         source_features=None,
     )
-    assert calls[-1]["usecase_args"]["add_thread_pool_to_query_impl"] is False
+    assert calls[-1].parallel_ready_impl is False
 
 
 def test_thread_pool_headers_are_readonly_workspace_artifacts():
@@ -55,6 +64,7 @@ def test_thread_pool_headers_are_readonly_workspace_artifacts():
 def test_query_impl_pool_wiring_does_not_enable_trace_by_itself():
     query_impl = assemble_query_impl_file(
         add_thread_pool_to_query_impl=True,
+        tracing=False,
         add_sample_trace_to_query_impl=False,
         query_list=["1"],
         pin_to_core=3,
@@ -72,7 +82,8 @@ def test_query_impl_pool_wiring_does_not_enable_trace_by_itself():
 def test_query_impl_pool_wiring_remains_trace_compatible():
     query_impl = assemble_query_impl_file(
         add_thread_pool_to_query_impl=True,
-        add_sample_trace_to_query_impl=True,
+        tracing=False,
+        add_sample_trace_to_query_impl=True,  # sample counting implies the wiring
         query_list=["1"],
         pin_to_core=3,
         drop_os_caches_for_each_query=False,
@@ -83,6 +94,23 @@ def test_query_impl_pool_wiring_remains_trace_compatible():
     assert "TRACE_RESET();" in query_impl
     assert "TRACE_FLUSH();" in query_impl
     assert "trace_get_and_clear()" in query_impl
+
+
+def test_query_impl_tracing_wires_instrumentation_without_sample_counts():
+    query_impl = assemble_query_impl_file(
+        add_thread_pool_to_query_impl=False,
+        tracing=True,
+        add_sample_trace_to_query_impl=False,
+        query_list=["1"],
+        pin_to_core=3,
+        drop_os_caches_for_each_query=False,
+    )
+
+    assert '#include "trace.hpp"' in query_impl
+    assert "TRACE_RESET();" in query_impl
+    assert "TRACE_FLUSH();" in query_impl
+    assert "trace_get_and_clear()" in query_impl
+    assert "SAMPLE_TRACE_" not in query_impl
 
 
 def test_in_memory_query_template_teaches_parallel_ready_arrow_output():
