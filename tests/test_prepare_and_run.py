@@ -15,7 +15,10 @@ from synnodb.cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactor
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
-from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
+from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    Parallelism,
+    PrepareFeatures,
+)
 from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
@@ -99,7 +102,9 @@ def main(args):
             ),
             conv_name=f"test_conv_{rnd_str}",
             prepare_workspace_provider=prepare_workspace_provider,
-            parallelism=parallelism,
+            parallelism=Parallelism.MULTI_THREADED
+            if parallelism
+            else Parallelism.SINGLE_THREADED,
         )
 
     compiler = OLAPCompilerFactory(db_storage=db_storage).make_compiler(

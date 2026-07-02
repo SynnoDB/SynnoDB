@@ -4,6 +4,7 @@ from pathlib import Path
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
+from synnodb.cpp_runner.prepare_repo.prepare_features import Parallelism
 from synnodb.observability.benchmark.systems.track import BespokePrep
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.tools.run import RunTool, RunWorkerResult
@@ -85,7 +86,9 @@ class BespokeRunner:
             snapshot=snapshot,
             features=None,
             prepare_workspace_provider=prepare_workspace,
-            parallelism=is_mt,  # ignored on the replay path
+            parallelism=Parallelism.MULTI_THREADED
+            if is_mt
+            else Parallelism.SINGLE_THREADED,  # ignored on the replay path
             do_not_cache=True,
         )
 

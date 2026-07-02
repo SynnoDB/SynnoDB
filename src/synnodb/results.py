@@ -16,7 +16,10 @@ from typing import TYPE_CHECKING, Callable, Mapping
 
 if TYPE_CHECKING:
     from synnodb.api import SynnoConfig
-    from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
+    from synnodb.cpp_runner.prepare_repo.prepare_features import (
+        Parallelism,
+        PrepareFeatures,
+    )
 
 
 @dataclass(frozen=True)
@@ -46,7 +49,7 @@ class StageArtifact:
     # this artifact, is the source of truth. kw_only so the positional subclass
     # constructors are unaffected.
     prepare_features: "PrepareFeatures | None" = field(default=None, kw_only=True)
-    parallelism: bool | None = field(default=None, kw_only=True)
+    parallelism: "Parallelism | None" = field(default=None, kw_only=True)
 
     def __bool__(self) -> bool:
         """Truthy when there is a wandb run id to chain off."""

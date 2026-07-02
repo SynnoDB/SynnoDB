@@ -22,6 +22,7 @@ from synnodb.builtin_plans import (
 )
 from synnodb.conversations.stage_items import PromptStage
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    Parallelism,
     PrepareFeatures,
     write_prepare_metadata,
 )
@@ -121,7 +122,7 @@ def test_run_synthesis_plumbs_plan_and_start(tmp_path, monkeypatch):
     # the artifact mirrors the workspace prepare record
     assert artifact.snapshot_hash == "newsnap"
     assert artifact.prepare_features == PrepareFeatures.optim().resolve(True)
-    assert artifact.parallelism is False
+    assert artifact.parallelism is Parallelism.SINGLE_THREADED
 
 
 def test_run_synthesis_uses_artifact_snapshot_as_start(tmp_path, monkeypatch):
@@ -175,6 +176,23 @@ def test_builtin_methods_resolve_to_run_synthesis(tmp_path, monkeypatch):
     assert check_call["plan"].prepare is None
 
 
+def test_run_optim_loop_bakes_plan_source_into_the_plan(tmp_path, monkeypatch):
+    """The reference-plan source (umbra/duckdb) stays selectable per call and is
+    baked into the constructed plan, not passed through the runner."""
+    db = _db(tmp_path, monkeypatch)
+    seen: list = []
+    monkeypatch.setattr(
+        db, "run_synthesis", lambda plan, **kw: seen.append(plan) or MagicMock()
+    )
+
+    db.runOptimLoop("basehash")  # default source
+    db.runOptimLoop("basehash", plan_source="duckdb")
+
+    assert seen[0].stages.keywords == {"plan_source": "umbra"}
+    assert seen[1].stages.keywords == {"plan_source": "duckdb"}
+    assert optim_plan("duckdb").stages.keywords == {"plan_source": "duckdb"}
+
+
 def test_builtin_plans_have_the_expected_shapes():
     assert storage_plan_plan().supervision == SupervisionPolicy.OFF
     assert storage_plan_plan().finish_interactive is False
@@ -188,7 +206,7 @@ def test_builtin_plans_have_the_expected_shapes():
     assert optim.prepare == PrepareFeatures.optim()
 
     mt = mt_plan()
-    assert mt.parallelism is True
+    assert mt.parallelism is Parallelism.MULTI_THREADED
     assert mt.prepare == PrepareFeatures.mt()
 
     check = check_sf_plan(100)

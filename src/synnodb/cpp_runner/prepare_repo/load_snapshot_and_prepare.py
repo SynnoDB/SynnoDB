@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    Parallelism,
     PrepareFeatures,
     apply_prepare_features,
     read_prepare_metadata,
@@ -24,7 +25,7 @@ class PrepareResult:
 
     artifacts_str: str
     features: PrepareFeatures
-    parallelism: bool
+    parallelism: Parallelism
 
 
 def prepare_repo_and_load_snapshot(
@@ -32,7 +33,7 @@ def prepare_repo_and_load_snapshot(
     snapshot: str | None,
     features: PrepareFeatures | None,
     prepare_workspace_provider: PrepareWorkspace,
-    parallelism: bool,
+    parallelism: Parallelism,
     do_not_cache: bool = True,
     conv_name: str | None = None,
     only_from_cache: bool = False,

@@ -21,6 +21,7 @@ from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
 )
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
     PREPARE_METADATA_FILENAME,
+    Parallelism,
     PrepareFeatures,
     apply_prepare_features,
     read_prepare_metadata,
@@ -238,20 +239,24 @@ def test_disabling_a_recorded_feature_raises():
 # ------------------------------ metadata file ---------------------------------
 def test_metadata_serialization_is_deterministic(tmp_path):
     features = PrepareFeatures.optim().resolve(True)
-    write_prepare_metadata(tmp_path, features, parallelism=False)
+    write_prepare_metadata(tmp_path, features, parallelism=Parallelism.SINGLE_THREADED)
     first = (tmp_path / PREPARE_METADATA_FILENAME).read_bytes()
-    write_prepare_metadata(tmp_path, features, parallelism=False)
+    write_prepare_metadata(tmp_path, features, parallelism=Parallelism.SINGLE_THREADED)
     assert (tmp_path / PREPARE_METADATA_FILENAME).read_bytes() == first
     assert first.endswith(b"\n")
+    # the enum is recorded as its plain string value
+    assert b'"parallelism": "single_threaded"' in first
 
     features2, parallelism = read_prepare_metadata(tmp_path)
     assert features2 == dataclasses.replace(features, storage_plan_text=None)
-    assert parallelism is False
+    assert parallelism is Parallelism.SINGLE_THREADED
 
 
 def test_metadata_requires_resolved_parallel_ready():
     with pytest.raises(AssertionError, match="resolve parallel_ready_impl"):
-        write_prepare_metadata(None, PrepareFeatures.base(), parallelism=False)
+        write_prepare_metadata(
+            None, PrepareFeatures.base(), parallelism=Parallelism.SINGLE_THREADED
+        )
 
 
 def test_missing_metadata_raises_clear_error(tmp_path):
@@ -291,7 +296,7 @@ def test_metadata_survives_snapshot_restore_round_trip(tmp_path):
     snapshotter.create_empty_snapshot("metadata-round-trip")
 
     features = PrepareFeatures.mt().resolve(True)
-    write_prepare_metadata(workspace, features, parallelism=True)
+    write_prepare_metadata(workspace, features, parallelism=Parallelism.MULTI_THREADED)
     (workspace / "somefile.txt").write_text("content")
     _, commit = snapshotter.snapshot("with-metadata")
     assert commit is not None
@@ -304,7 +309,7 @@ def test_metadata_survives_snapshot_restore_round_trip(tmp_path):
 
     restored, parallelism = read_prepare_metadata(workspace)
     assert restored == dataclasses.replace(features, storage_plan_text=None)
-    assert parallelism is True
+    assert parallelism is Parallelism.MULTI_THREADED
 
 
 # ------------------------- checkSf replay resolution ---------------------------
@@ -317,7 +322,9 @@ def test_replay_resolves_features_and_parallelism_from_snapshot(tmp_path):
     snapshotter.create_empty_snapshot("replay-source")
 
     source_features = PrepareFeatures.mt().resolve(True)
-    write_prepare_metadata(workspace, source_features, parallelism=True)
+    write_prepare_metadata(
+        workspace, source_features, parallelism=Parallelism.MULTI_THREADED
+    )
     _, commit = snapshotter.snapshot("source-run")
     assert commit is not None
 
@@ -327,13 +334,13 @@ def test_replay_resolves_features_and_parallelism_from_snapshot(tmp_path):
         snapshot=commit,
         features=None,  # replay
         prepare_workspace_provider=ws_spy,
-        parallelism=False,  # ignored on the replay path
+        parallelism=Parallelism.SINGLE_THREADED,  # ignored on the replay path
     )
 
     assert result.features == dataclasses.replace(
         source_features, storage_plan_text=None
     )
-    assert result.parallelism is True
+    assert result.parallelism is Parallelism.MULTI_THREADED
     # every recorded feature refreshes untracked support files only
     calls = dict(ws_spy.calls)
     assert calls["prepare"]["write_non_tracked_only"] is True
@@ -344,4 +351,4 @@ def test_replay_resolves_features_and_parallelism_from_snapshot(tmp_path):
     ) in ws_spy.calls
     # the replay re-records the source's parallelism in the fresh metadata
     _, recorded_parallelism = read_prepare_metadata(workspace)
-    assert recorded_parallelism is True
+    assert recorded_parallelism is Parallelism.MULTI_THREADED

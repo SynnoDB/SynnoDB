@@ -16,7 +16,10 @@ from synnodb.conversations.examples import base_impl as _base_impl_builder
 from synnodb.conversations.examples import check_sf as _check_sf_builder
 from synnodb.conversations.examples import optim as _optim_builder
 from synnodb.conversations.examples import storage_plan as _storage_plan_builder
-from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
+from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    Parallelism,
+    PrepareFeatures,
+)
 from synnodb.plan import ConversationPlan, SupervisionPolicy
 from synnodb.results import (
     build_base_impl,
@@ -32,6 +35,9 @@ def storage_plan_plan() -> ConversationPlan:
         name="createStoragePlan",
         prepare=PrepareFeatures.storage_plan(),
         stages=_storage_plan_builder.build,
+        # A single document-writing stage with nothing to measure or revert;
+        # there is no outcome for a supervisor to review.
+        supervision=SupervisionPolicy.OFF,
         result=build_storage_plan,
     )
 
@@ -63,7 +69,7 @@ def mt_plan() -> ConversationPlan:
         name="addMultiThreading",
         prepare=PrepareFeatures.mt(),
         stages=_mt_builder.build,
-        parallelism=True,
+        parallelism=Parallelism.MULTI_THREADED,
         supervision=SupervisionPolicy.RELAXED,
         finish_interactive=True,
         offer_trace_option=True,

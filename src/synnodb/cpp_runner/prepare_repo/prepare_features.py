@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, replace
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -28,7 +29,21 @@ if TYPE_CHECKING:
     from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 
 PREPARE_METADATA_FILENAME = ".synnodb_prepare.json"
-_METADATA_FORMAT_VERSION = 1
+_METADATA_FORMAT_VERSION = 2
+
+
+class Parallelism(str, Enum):
+    """Whether the generated engine executes queries multi-threaded.
+
+    Recorded in the workspace prepare metadata (and thus in every snapshot), so
+    chained and replayed runs know what execution mode the engine was built
+    for. The ``str`` mixin makes members JSON/W&B-serializable as their value;
+    never rely on truthiness - both members are truthy.
+    """
+
+    SINGLE_THREADED = "single_threaded"
+    MULTI_THREADED = "multi_threaded"
+
 
 # Feature fields recorded in the workspace metadata file. storage_plan_text is
 # deliberately not recorded: the injected storage_plan.txt is itself a tracked
@@ -103,7 +118,7 @@ class PrepareFeatures:
 
 # ---------------------------- workspace metadata ------------------------------
 def write_prepare_metadata(
-    workspace_dir: Path, features: PrepareFeatures, parallelism: bool
+    workspace_dir: Path, features: PrepareFeatures, parallelism: Parallelism
 ) -> None:
     """Write the workspace's prepare record.
 
@@ -119,7 +134,7 @@ def write_prepare_metadata(
     payload = {
         "features": {k: getattr(features, k) for k in _RECORDED_FEATURES},
         "format_version": _METADATA_FORMAT_VERSION,
-        "parallelism": parallelism,
+        "parallelism": parallelism.value,
     }
     path = workspace_dir / PREPARE_METADATA_FILENAME
     # Unlink before writing: a hard-killed prior run can leave the file at mode
@@ -128,7 +143,9 @@ def write_prepare_metadata(
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
 
 
-def read_prepare_metadata(workspace_dir: Path) -> tuple[PrepareFeatures, bool]:
+def read_prepare_metadata(
+    workspace_dir: Path,
+) -> tuple[PrepareFeatures, Parallelism]:
     """Read the workspace's prepare record: ``(features, parallelism)``.
 
     Raises with a clear message when the file is absent - snapshots produced
@@ -150,7 +167,7 @@ def read_prepare_metadata(workspace_dir: Path) -> tuple[PrepareFeatures, bool]:
             f"(expected {_METADATA_FORMAT_VERSION})."
         )
     features = PrepareFeatures(**payload["features"])
-    return features, bool(payload["parallelism"])
+    return features, Parallelism(payload["parallelism"])
 
 
 # -------------------------------- interpreter ---------------------------------

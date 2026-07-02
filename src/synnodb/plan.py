@@ -6,7 +6,7 @@ A plan is the single, self-contained description of one synthesis run:
         name="myTuningPass",                    # run identity: naming, logging, caching
         prepare=PrepareFeatures(tracing=True),  # what the workspace must provide
         stages=my_stages,                       # ConvContext -> list[StageItem]
-        parallelism=False,
+        parallelism=Parallelism.SINGLE_THREADED,
     )
     result = db.run_synthesis(plan, start=base_impl)
 
@@ -25,7 +25,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Callable
 
-from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
+from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    Parallelism,
+    PrepareFeatures,
+)
 from synnodb.results import ResultBuilder, build_artifact
 
 if TYPE_CHECKING:
@@ -56,10 +59,10 @@ class ConversationPlan:
     prepare: PrepareFeatures | None
     # Builds the declarative stage list this conversation executes.
     stages: "Callable[[ConvContext], list[StageItem]]" = field(repr=False)
-    # Whether the generated engine executes queries with parallelism (drives
+    # Whether the generated engine executes queries multi-threaded (drives
     # core pinning and is recorded in the workspace prepare metadata).
-    parallelism: bool = False
-    supervision: SupervisionPolicy = SupervisionPolicy.OFF
+    parallelism: Parallelism = Parallelism.SINGLE_THREADED
+    supervision: SupervisionPolicy = SupervisionPolicy.RELAXED
     # Whether the run ends with the interactive add-more-prompts loop (a no-op
     # under auto_finish).
     finish_interactive: bool = False

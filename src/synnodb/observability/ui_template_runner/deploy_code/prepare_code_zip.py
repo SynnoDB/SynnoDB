@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent.parent))
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
+from synnodb.cpp_runner.prepare_repo.prepare_features import Parallelism
 from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.observability.logging.wandb_api_helper import (
@@ -150,7 +151,7 @@ def main() -> None:
         snapshot=git_snapshot,
         features=None,  # replay the snapshot's own prepare record
         prepare_workspace_provider=prepare_ws,
-        parallelism=False,  # ignored on the replay path
+        parallelism=Parallelism.SINGLE_THREADED,  # ignored on the replay path
         do_not_cache=True,
     )
 

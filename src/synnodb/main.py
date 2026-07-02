@@ -8,17 +8,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.conversation_engine import Conversation
 from synnodb.conversations.filenames import Filenames, get_filenames, get_plan_filename
 from synnodb.conversations.prompts_gen import gen_incorrect_output_prompt
 from synnodb.conversations.supervision_agent import SupervisionAgent
-from synnodb.plan import ConversationPlan, SupervisionPolicy
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
-from synnodb.cpp_runner.prepare_repo.prepare_features import features_metadata_dict
+from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    Parallelism,
+    features_metadata_dict,
+)
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
@@ -35,6 +36,7 @@ from synnodb.observability.logging.run_stats_drain import (
     WandbDrain,
 )
 from synnodb.observability.logging.weave_cache import configure_weave_cache_dirs
+from synnodb.plan import ConversationPlan, SupervisionPolicy
 from synnodb.results import RunResult
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.handle_prompt import handle_prompt
@@ -44,7 +46,7 @@ from synnodb.tools.run import RunTool
 from synnodb.tools.shell_executor import ShellExecutor
 from synnodb.tools.validate.query_validator_class import QueryValidator
 from synnodb.tools.workspace_editor import WorkspaceEditor
-from synnodb.utils.cli_config import RunConfig, Usecase, add_common_args
+from synnodb.utils.cli_config import RunConfig, Usecase
 from synnodb.utils.confirm_dialog import await_user_confirmation
 from synnodb.utils.conv_name_utils import generate_conv_name
 from synnodb.utils.core_utils import resolve_target_cores
@@ -324,7 +326,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         wandb.config.update(
             {
                 "prepare_features": features_metadata_dict(prepare_result.features),
-                "parallelism": prepare_result.parallelism,
+                "parallelism": prepare_result.parallelism.value,
             },
             allow_val_change=True,
         )
@@ -385,8 +387,9 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
 
     # Parallelism need (args.needs_parallelism): plan.parallelism, except for
     # replay stages, where it was overridden above from the source run's recorded
-    # parallelism.
-    if args.needs_parallelism:
+    # parallelism. The run tool takes it as a bool paired with the pinned cores;
+    # this is the single enum -> bool boundary.
+    if args.needs_parallelism is Parallelism.MULTI_THREADED:
         parallelism = True
         core_ids = target_core_ids
     else:
@@ -563,13 +566,6 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         "without user interaction."
     )
 
-    # The autonomy master prompt is prepended to every stage prompt when enabled
-    # (a manual-CLI escape hatch; the API never sets it).
-    if getattr(args, "use_autonomy_master_prompt", False):
-        prompt_pretext = "# MASTER PROMPT:\n You are an autonomous agent - solve your task without asking questions! Do everything that is necessary to solve your task (including invoking Shell, Apply-Patch, Compile and Run Tools). You will not get external feedback. Solve your task.\n\nYour task:\n"
-    else:
-        prompt_pretext = None
-
     # manually traced conversation - otherwise will produce multiple separate traces (for each Runner.run() invocation)
     async def _conv_run():
         ctx = ConvContext(
@@ -612,7 +608,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
             ),
             finish_interactive=plan.finish_interactive,
             debug_category=plan.name,
-            prompt_pretext=prompt_pretext,
+            prompt_pretext=None,
             notify=args.notify,
             auto_finish=args.auto_finish,
             auto_u=args.auto_u,
@@ -866,27 +862,22 @@ def _run_coroutine(coro):
 
 
 def run_conv_wrapper(
-    args: argparse.Namespace | None,
-    run_config: RunConfig | None,
+    run_config: RunConfig,
     plan: ConversationPlan,
 ) -> RunResult:
-    # assemble args from run_config if main.py is started from run scripts
-    if args is None and run_config is None:
-        raise Exception("Either args or run_config must be provided.")
-    elif args is None:
-        # convert run_config to args for conv wrapper
-        args = argparse.Namespace(**vars(run_config))
-    else:
-        pass
+    # The pipeline operates on an argparse.Namespace; the RunConfig the API
+    # builds is expanded into one here.
+    args = argparse.Namespace(**vars(run_config))
 
     args.db_storage = get_effective_db_storage(args.usecase, args.db_storage)
     args.log_to_wandb = getattr(args, "log_to_wandb", False)
     # The plan identity drives run naming and is logged to W&B.
     args.stage_name = plan.name
 
-    # Whether this run executes queries with parallelism. Logged to W&B as a stable,
-    # stage-name-independent property so downstream consumers (e.g. benchmark replay)
-    # can tell multi-threaded runs apart without matching on the user-defined stage
+    # Whether this run executes queries multi-threaded (a Parallelism enum).
+    # Logged to W&B (as the enum's string value) as a stable, stage-name-independent
+    # property so downstream consumers (e.g. benchmark replay) can tell
+    # multi-threaded runs apart without matching on the user-defined stage
     # name. For a replay stage (checkSfCorrectness) main() overrides this after
     # restoring the source snapshot, from the parallelism recorded in the
     # workspace prepare metadata.
@@ -923,9 +914,9 @@ def run_conv_wrapper(
     if args.log_to_wandb:
         # add weave (wandb) tracing in addition to openai tracing
         configure_weave_cache_dirs()
-        import wandb
         import weave
 
+        import wandb
         from synnodb.settings import get_wandb_entity_project
 
         entity, project = get_wandb_entity_project(
@@ -1051,63 +1042,3 @@ def test_deps():
             raise ImportError
     except ImportError:
         raise Exception("pyarrow Python package is not installed. Run: uv sync")
-
-
-# Run manually e.g. with:
-# python main.py manual --model gpt-5.4 --conv_name debugq1-22v1 --start_snapshot eb0d178ebc7be2cacec11ea474823daecf7eb013 --benchmark tpch --bespoke_storage --query_list 1,2 --do_not_cache
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    manual = subparsers.add_parser(
-        "manual",
-        help="Run a conversation using explicit mode/query args.",
-    )
-    add_common_args(
-        manual,
-        include_model=True,
-        include_benchmark=True,
-        include_replay=True,
-        include_disable_openai_tracing=True,
-        include_log_to_wandb=True,
-        include_query_list=True,
-        include_continue_run=True,
-        include_no_preload=True,
-        include_notify=True,
-        include_start_snapshot=True,
-        include_disable_repo_sync=True,
-        include_replay_cache=True,
-        include_auto_u=True,
-        include_auto_finish=True,
-        include_keep_csv=True,
-        include_disable_valtool=True,
-        include_stage=True,
-        include_run_tool_offer_trace_option=True,
-        include_bespoke_storage=True,
-        include_only_from_llm_cache=True,
-        include_only_from_cache=True,
-        include_do_not_cache=True,
-        include_tool_search_tool=True,
-        include_use_autonomy_master_prompt=True,
-        include_sdk=True,
-        include_optimize_sample_plan_source=True,
-        include_memory_budget_mb=True,
-        include_include_mem_budget_for_in_mem_in_hashes=True,
-        include_db_storage=True,
-        include_threads=True,
-        include_max_turns=True,
-        include_model_extra_body=True,
-    )
-    args = parser.parse_args()
-    args.write_query_and_args_files = True
-
-    if args.command == "manual":
-        # the manual debug entry point resolves a plan by name; the SynnoDB API
-        # constructs its plans directly.
-        from synnodb.conversations.manual_specs import get_plan
-
-        plan = get_plan(args.stage, args)
-        run_conv_wrapper(args, run_config=None, plan=plan)
-    else:
-        raise Exception(f"Unknown {args.command}")
