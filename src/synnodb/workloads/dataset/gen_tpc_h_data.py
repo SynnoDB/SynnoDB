@@ -46,9 +46,14 @@ def ensure_tpch_parquet(
     Idempotent: tables already on disk are skipped, so re-running is cheap. Generation runs on
     an on-disk DuckDB connection with a memory cap and a spill directory, and drops each table
     right after export, so even large scale factors do not OOM.
+
+    ``spill_dir`` selects *where* spill files live (e.g. a large scratch mount); we always nest
+    a private ``_duckdb_spill`` subdirectory under it and only that subdirectory is removed on
+    cleanup, so a shared ``spill_dir`` holding other jobs' files is never clobbered.
     """
     parquet_dir = Path(parquet_dir)
-    spill = Path(spill_dir) if spill_dir is not None else parquet_dir / "_duckdb_spill"
+    spill_root = Path(spill_dir) if spill_dir is not None else parquet_dir
+    spill = spill_root / "_duckdb_spill"
     for sf in scale_factors:
         out = parquet_dir / f"sf{sf}"
         out.mkdir(parents=True, exist_ok=True)
