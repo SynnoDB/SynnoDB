@@ -52,13 +52,21 @@ def get_wandb_entity_project(
 
 
 def configure(
-    *, data_dir: str | os.PathLike[str] | None = None, env_file: str | None = None
+    *,
+    data_dir: str | os.PathLike[str] | None = None,
+    engines_dir: str | os.PathLike[str] | None = None,
+    env_file: str | None = None,
 ) -> None:
     """Explicit, idempotent process configuration.
 
-    An explicit ``data_dir`` wins over a value from ``.env``/the environment. A
-    second, conflicting ``configure()`` is a fail-fast error rather than a silent
-    clobber.
+    Sets the process-wide folders SynnoDB derives everything else from. Each may
+    instead come from ``.env``/the environment (``SYNNO_DATA_DIR``,
+    ``SYNNO_ENGINES_DIR``); an explicit argument here wins over that. A second,
+    conflicting ``data_dir`` is a fail-fast error rather than a silent clobber.
+
+    ``engines_dir`` is left to default to ``<data_dir>/engines`` when unset - it
+    is resolved lazily by ``resolve_engines_dir`` - so configuring only
+    ``data_dir`` is enough for the common case.
     """
     global _our_data_dir
     load_dotenv(env_file)
@@ -71,6 +79,8 @@ def configure(
             )
         os.environ["SYNNO_DATA_DIR"] = data_dir
         _our_data_dir = data_dir
+    if engines_dir is not None:
+        os.environ["SYNNO_ENGINES_DIR"] = os.fspath(engines_dir)
     get_data_dir.cache_clear()
 
 
