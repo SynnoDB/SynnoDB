@@ -101,6 +101,17 @@ const _futurePrompts = new Set();
 // descriptor. Off-plan sections (correctness retries, supervisor feedback) never
 // match and so never advance the pointer. Everything past the last match is
 // still upcoming.
+//
+// A `dynamic` planned entry (a PerQueryLoop) is special: it emits its concrete
+// work as many inner per-query sections under runtime descriptors we cannot
+// predict, so none of them ever equals the loop's own descriptor. Matching by
+// descriptor alone would leave the loop entry stranded in "Scheduled" for the
+// whole time it is actually running (and forever if no later planned stage
+// follows to sweep the pointer past it). So when the pointer sits on a dynamic
+// entry and a section arrives that matches nothing from here on, we treat that
+// as the dynamic stage having started and consume its entry - its inner
+// sections carry the live display from then on, while any planned stage after
+// the loop stays scheduled until its own descriptor executes.
 function getFutureStages(steps, sections) {
   const planned = _lastMeta && _lastMeta.planned_stages;
   const stages  = planned && Array.isArray(planned.stages) ? planned.stages : [];
@@ -116,6 +127,7 @@ function getFutureStages(steps, sections) {
     let m = p;
     while (m < stages.length && stages[m].descriptor !== sec.desc) m++;
     if (m < stages.length) p = m + 1;
+    else if (p < stages.length && stages[p].dynamic) p += 1;
   }
   return stages.slice(p);
 }
