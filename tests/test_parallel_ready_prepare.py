@@ -113,6 +113,42 @@ def test_query_impl_tracing_wires_instrumentation_without_sample_counts():
     assert "SAMPLE_TRACE_" not in query_impl
 
 
+def test_query_impl_flush_caches_wires_drop_before_each_run():
+    query_impl = assemble_query_impl_file(
+        add_thread_pool_to_query_impl=False,
+        tracing=False,
+        add_sample_trace_to_query_impl=False,
+        query_list=["1"],
+        pin_to_core=3,
+        drop_os_caches_for_each_query=True,
+    )
+
+    # the helper is defined, called per run, and clears the buffer pool too
+    assert "void drop_buffer_and_os_caches(Database* db)" in query_impl
+    assert "drop_buffer_and_os_caches(db);" in query_impl
+    assert "db->pool->clear();" in query_impl
+    # no leftover template placeholders
+    assert "<<drop_buffer_and_os_caches" not in query_impl
+    assert "<<clear_buffer_pool_call>>" not in query_impl
+
+
+def test_query_impl_without_flush_caches_omits_drop_helper_entirely():
+    query_impl = assemble_query_impl_file(
+        add_thread_pool_to_query_impl=False,
+        tracing=False,
+        add_sample_trace_to_query_impl=False,
+        query_list=["1"],
+        pin_to_core=3,
+        drop_os_caches_for_each_query=False,
+    )
+
+    # the whole helper definition and its call are stripped, not just left dormant
+    assert "drop_buffer_and_os_caches" not in query_impl
+    assert "db->pool->clear();" not in query_impl
+    assert "<<drop_buffer_and_os_caches" not in query_impl
+    assert "<<clear_buffer_pool_call>>" not in query_impl
+
+
 def test_in_memory_query_template_teaches_parallel_ready_arrow_output():
     template = Path(
         "src/synnodb/cpp_runner/prepare_repo/templates/olap/queryX.cpp"

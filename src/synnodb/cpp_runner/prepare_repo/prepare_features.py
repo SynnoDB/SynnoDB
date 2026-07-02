@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 
 PREPARE_METADATA_FILENAME = ".synnodb_prepare.json"
-_METADATA_FORMAT_VERSION = 3
+_METADATA_FORMAT_VERSION = 4
 
 
 class Parallelism(str, Enum):
@@ -80,6 +80,12 @@ class PrepareFeatures:
       todo list) from the workspace.
     - ``sample_trace``: emit a sample TRACE_COUNT per query (implies the trace
       wiring in query_impl.cpp, but is recorded separately).
+    - ``flush_caches_after_each_run``: assemble query_impl.cpp so the engine
+      drops the OS page cache and clears its buffer pool before each query run,
+      for cold-cache measurements. SSD/persistent storage only - the in-memory
+      plane has no buffer pool (:meth:`resolve` rejects it otherwise). Unlike the
+      capability flags above it is orthogonal to the additive chain: later stages
+      do not progressively enable it, so it is freely toggled per stage.
     - ``storage_plan_text``: inject this text as the storage plan file into the
       clean workspace (per-run input, not recorded in the metadata).
     """
@@ -89,6 +95,7 @@ class PrepareFeatures:
     parallel_ready_impl: bool | Literal["auto"] = "auto"
     tracing: bool = False
     sample_trace: bool = False
+    flush_caches_after_each_run: bool = False
     storage_plan_text: str | None = None
 
     # ---- the built-in stages' feature sets ----
@@ -135,6 +142,13 @@ class PrepareFeatures:
                 f"Prepare features request storage {self.storage!r}, but the "
                 f"run's storage backend is {db_storage.value!r} "
                 f"({storage!r} scaffold)."
+            )
+        if self.flush_caches_after_each_run and storage != "ssd":
+            raise ValueError(
+                "flush_caches_after_each_run drops the OS page cache and clears the "
+                "engine buffer pool between query runs, both of which only exist on "
+                f"the SSD/persistent plane; it cannot be used with {db_storage.value!r} "
+                "(in-memory) storage."
             )
         parallel_ready_impl = self.parallel_ready_impl
         if parallel_ready_impl == "auto":

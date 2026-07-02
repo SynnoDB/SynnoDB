@@ -39,13 +39,23 @@ void drop_buffer_and_os_caches(Database* db) {
         }
     }
 
-    // fall back to sudo tee
+    // fall back to sudo tee. `-n` never prompts for a password, so a missing right
+    // fails immediately rather than blocking the run on interactive input.
     int rc = std::system("echo 3 | sudo -n tee /proc/sys/vm/drop_caches > /dev/null 2>&1");
     if (rc != 0) {
-        throw std::runtime_error(
-            "drop_buffer_and_os_caches: failed to drop caches (not root and sudo -n tee failed). "
-            "Add to sudoers: 'youruser ALL=(ALL) NOPASSWD: /usr/bin/tee /proc/sys/vm/drop_caches'"
-        );
+        // Dropping the OS page cache only sharpens cold-cache timings; it is never
+        // required for correctness. Warn once and continue rather than aborting the run.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            std::cerr
+                << "drop_buffer_and_os_caches: could not drop OS page caches (not root "
+                   "and passwordless sudo unavailable); continuing with caches intact. "
+                   "Query timings may reflect warm OS caches. To drop caches, run as root "
+                   "or add to sudoers: "
+                   "'youruser ALL=(ALL) NOPASSWD: /usr/bin/tee /proc/sys/vm/drop_caches'"
+                << std::endl;
+        }
     }
 }
 // <<drop_buffer_and_os_caches_def_end>>

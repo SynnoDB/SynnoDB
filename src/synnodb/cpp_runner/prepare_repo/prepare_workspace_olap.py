@@ -126,7 +126,9 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             add_sample_trace_to_query_impl=features.sample_trace,
             query_list=self.workload_provider.query_ids,
             pin_to_core=3,
-            drop_os_caches_for_each_query=False,
+            # Only SSD/persistent storage reaches here with the flag set; resolve()
+            # rejects it for in-memory (which has no buffer pool to clear).
+            drop_os_caches_for_each_query=features.flush_caches_after_each_run,
         )
 
         general_files["args_parser.hpp"] = assemble_args_parser_file(

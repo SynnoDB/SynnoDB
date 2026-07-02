@@ -97,6 +97,7 @@ def test_prepare_features_json_round_trip():
         PrepareFeatures.optim(),
         PrepareFeatures.mt(),
         PrepareFeatures(parallel_ready_impl=True, sample_trace=True),
+        PrepareFeatures(flush_caches_after_each_run=True),
         PrepareFeatures.mt().resolve(DBStorage.SSD),
     ]:
         assert PrepareFeatures.from_json(features.to_json()) == dataclasses.replace(
@@ -134,6 +135,16 @@ def test_resolve_rejects_storage_backend_mismatch():
         ssd_features.resolve(DBStorage.IN_MEMORY)
     # resolving against the same backend again is a no-op
     assert ssd_features.resolve(DBStorage.SSD) == ssd_features
+
+
+def test_resolve_rejects_flush_caches_on_in_memory():
+    # Cache flushing clears the SSD buffer pool, which the in-memory plane lacks.
+    flush = PrepareFeatures(flush_caches_after_each_run=True)
+    with pytest.raises(ValueError, match="flush_caches_after_each_run"):
+        flush.resolve(DBStorage.IN_MEMORY)
+    # ... but it is allowed on the persistent planes (SSD and LABSTORE).
+    assert flush.resolve(DBStorage.SSD).flush_caches_after_each_run is True
+    assert flush.resolve(DBStorage.LABSTORE).flush_caches_after_each_run is True
 
 
 # ------------------------- feature-to-builder mapping --------------------------
