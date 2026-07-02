@@ -85,7 +85,11 @@ def test_scaffolding_only_emits_scoped_query_files(tmp_path):
         workspace_dir=tmp_path,
         git_snapshotter=None,
     )
-    files = prep._assemble_usecase_files()
+    from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
+
+    files = prep.build_scaffold_files(
+        PrepareFeatures.base().resolve(DBStorage.IN_MEMORY)
+    )
 
     # exactly the in-scope query files; none of the other 21
     assert "query1.cpp" in files and "query1.hpp" in files

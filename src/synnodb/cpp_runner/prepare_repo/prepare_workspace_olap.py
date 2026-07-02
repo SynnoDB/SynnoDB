@@ -7,30 +7,32 @@ from synnodb.cpp_runner.prepare_repo.assemble_args_parser import (
     assemble_args_parser_file,
 )
 from synnodb.cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
+from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from synnodb.utils.cli_config import Usecase
-from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 
 class OLAPPrepareWorkspace(PrepareWorkspace):
-    def __init__(self, db_storage: DBStorage, **kwargs):
-        self.db_storage = db_storage
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
         assert isinstance(self.workload_provider, OLAPWorkloadProvider), (
             f"Expected workload_provider to be an instance of OLAPWorkloadProvider, got {type(self.workload_provider)}"
         )
 
-    def _assemble_usecase_files(
-        self, storage_plan: str | None = None, **usecase_args
-    ) -> dict[str, str]:
+    @property
+    def plan_filename(self) -> str:
+        return get_plan_filename(Usecase.OLAP)
+
+    def build_scaffold_files(self, features: PrepareFeatures) -> dict[str, str]:
         """Build template file contents without writing to disk."""
         project_dir = Path(__file__).parent
         src_dir = project_dir / "templates"
         ssd_dir = src_dir / "olap" / "ssd"
 
-        if self.db_storage in [DBStorage.LABSTORE, DBStorage.SSD]:
+        persistent_storage = features.storage == "ssd"
+        if persistent_storage:
             file_sources: list[tuple[str, Path]] = [
                 ("parquet_reader.hpp", ssd_dir / "parquet_reader.hpp"),
                 ("parquet_reader.cpp", ssd_dir / "parquet_reader.cpp"),
@@ -40,10 +42,11 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
                 ("file_loader_utils.cpp", ssd_dir / "file_loader_utils.cpp"),
                 ("buffer_pool.hpp", ssd_dir / "buffer_pool.hpp"),
                 ("column_handle.hpp", ssd_dir / "column_handle.hpp"),
-                ("query_impl.hpp", ssd_dir / "query_impl.hpp"),
+                # query_impl.hpp is storage-agnostic (the per-variant types come
+                # in through db_loader.hpp); there is no ssd-specific copy.
+                ("query_impl.hpp", src_dir / "query_impl.hpp"),
             ]
-            persistent_storage = True
-        elif self.db_storage == DBStorage.IN_MEMORY:
+        else:
             file_sources = [
                 ("parquet_reader.hpp", src_dir / "parquet_reader.hpp"),
                 ("parquet_reader.cpp", src_dir / "parquet_reader.cpp"),
@@ -51,9 +54,6 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
                 ("db_loader.cpp", src_dir / "db_loader.cpp"),
                 ("query_impl.hpp", src_dir / "query_impl.hpp"),
             ]
-            persistent_storage = False
-        else:
-            raise ValueError(f"Unsupported db source: {self.db_storage}")
 
         # Copy the ingress/egress helpers into the workspace (they are also on the compiler include
         # path). This lets the agent READ exactly what each helper does - and, since they are not in
@@ -65,11 +65,15 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
             ("column_ingest.hpp", cpp_helpers_dir / "column_ingest.hpp"),
             ("column_egress.hpp", cpp_helpers_dir / "column_egress.hpp"),
         ]
-        if not persistent_storage:
-            file_sources += [
-                ("thread_pool.hpp", src_dir / "thread_pool.hpp"),
-                ("query_pool.hpp", src_dir / "query_pool.hpp"),
-            ]
+        # The pool headers are scaffold prerequisites for both storage variants:
+        # the generated queryX.cpp includes query_pool.hpp unconditionally (and
+        # query_pool.hpp includes thread_pool.hpp). Both are read-only untracked
+        # support files; whether query_impl.cpp actually *uses* the pool is the
+        # parallel_ready_impl feature.
+        file_sources += [
+            ("thread_pool.hpp", src_dir / "thread_pool.hpp"),
+            ("query_pool.hpp", src_dir / "query_pool.hpp"),
+        ]
 
         assert isinstance(self.workload_provider, OLAPWorkloadProvider), (
             f"Expected workload_provider to be an instance of OLAPWorkloadProvider, got {type(self.workload_provider)}"
@@ -104,9 +108,6 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
 
             result[filename] = file_content
 
-        if storage_plan is not None:
-            result[get_plan_filename(Usecase.OLAP)] = storage_plan
-
         sql_template_list = [
             f"# Query **{q}**:\n```\n{self.workload_provider.sql_dict[f'Q{q}']}\n```\n\n---\n"
             for q in self.workload_provider.query_ids
@@ -120,10 +121,9 @@ class OLAPPrepareWorkspace(PrepareWorkspace):
         # assemble
         general_files = dict()
         general_files["query_impl.cpp"] = assemble_query_impl_file(
-            add_thread_pool_to_query_impl=usecase_args.get(
-                "add_thread_pool_to_query_impl", False
-            ),
-            add_sample_trace_to_query_impl=usecase_args.get("add_sample_trace", False),
+            add_thread_pool_to_query_impl=features.parallel_ready_impl,
+            tracing=features.tracing,
+            add_sample_trace_to_query_impl=features.sample_trace,
             query_list=self.workload_provider.query_ids,
             pin_to_core=3,
             drop_os_caches_for_each_query=False,

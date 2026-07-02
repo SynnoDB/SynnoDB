@@ -38,7 +38,6 @@ class BespokeRunner:
         dataset_name: str,
         db_storage: DBStorage,
         memory_budget_mb: int | None,
-        prepare_cache_dir: Path | None = None,
     ) -> None:
         self._provider = provider
         self._prep = bespoke_prep
@@ -48,14 +47,13 @@ class BespokeRunner:
         self._dataset_name = dataset_name
         self._db_storage = db_storage
         self._memory_budget_mb = memory_budget_mb
-        self._prepare_cache_dir = prepare_cache_dir
         self._active_snapshot: str | None = None
         self._db_engine: RunTool | None = None
 
     def restore_snapshot(
         self,
         snapshot: str,
-        is_mt: bool,
+        parallelism: Parallelism,
     ) -> None:
         if self._active_snapshot == snapshot and self._db_engine is not None:
             return
@@ -64,7 +62,6 @@ class BespokeRunner:
             self._provider,
             self._workspace_dir,
             self._snapshotter,
-            self._prepare_cache_dir,
         )
 
         # The benchmarker owns this workspace, so clean it non-interactively
@@ -80,16 +77,13 @@ class BespokeRunner:
 
         # Replay the snapshot's own prepare record (features=None): the
         # workspace metadata file committed with the snapshot says what its
-        # files were prepared with, so no is_mt-dependent prepare fn is needed.
+        # files were prepared with, so no parallelism-dependent prepare fn is needed.
         prepare_repo_and_load_snapshot(
             snapshotter=self._snapshotter,
             snapshot=snapshot,
             features=None,
             prepare_workspace_provider=prepare_workspace,
-            parallelism=Parallelism.MULTI_THREADED
-            if is_mt
-            else Parallelism.SINGLE_THREADED,  # ignored on the replay path
-            do_not_cache=True,
+            parallelism=parallelism,  # ignored on the replay path
         )
 
         compiler = self._prep.make_compiler(self._workspace_dir)
