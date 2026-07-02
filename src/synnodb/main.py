@@ -8,14 +8,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
-from synnodb.api import Stage
-from synnodb.conversations.conversation_spec import FrameworkContext
-from synnodb.conversations.filenames import get_filenames, get_plan_filename
+from synnodb.conversations.conv_context import ConvContext
+from synnodb.conversations.conversation_engine import Conversation
+from synnodb.conversations.filenames import Filenames, get_filenames, get_plan_filename
 from synnodb.conversations.prompts_gen import gen_incorrect_output_prompt
 from synnodb.conversations.supervision_agent import SupervisionAgent
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
+)
+from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    Parallelism,
+    features_metadata_dict,
 )
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
@@ -33,6 +36,7 @@ from synnodb.observability.logging.run_stats_drain import (
     WandbDrain,
 )
 from synnodb.observability.logging.weave_cache import configure_weave_cache_dirs
+from synnodb.plan import ConversationPlan, SupervisionPolicy
 from synnodb.results import RunResult
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.handle_prompt import handle_prompt
@@ -42,7 +46,7 @@ from synnodb.tools.run import RunTool
 from synnodb.tools.shell_executor import ShellExecutor
 from synnodb.tools.validate.query_validator_class import QueryValidator
 from synnodb.tools.workspace_editor import WorkspaceEditor
-from synnodb.utils.cli_config import RunConfig, Usecase, add_common_args
+from synnodb.utils.cli_config import RunConfig, Usecase
 from synnodb.utils.confirm_dialog import await_user_confirmation
 from synnodb.utils.conv_name_utils import generate_conv_name
 from synnodb.utils.core_utils import resolve_target_cores
@@ -75,7 +79,7 @@ def get_effective_db_storage(usecase: Usecase, db_storage: DBStorage) -> DBStora
     return db_storage
 
 
-async def main(args: argparse.Namespace, spec: Stage) -> str | None:
+async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     # check all dependencies exist
     test_deps()
 
@@ -265,11 +269,6 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
 
     framework_code_content = get_framework_version_artifacts_str()
 
-    # Stage name of the source run, only set for CHECK_SF (where the prepare
-    # steps and parallelism are replayed from the source run's stage). None for
-    # every other stage.
-    source_stage_name = getattr(args, "source_stage_name", None)
-
     if usecase == Usecase.OLAP:
         prepare_ws = OLAPPrepareWorkspace(
             db_storage=db_storage,
@@ -282,6 +281,7 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
         raise Exception(f"Unsupported usecase: {usecase}")
 
     # setup snapshot / workspace according to mode
+    prepare_result = None
     if args.start_snapshot is None and args.continue_run:
         # continue from current ./output state - nothing to set up
         pass
@@ -289,20 +289,46 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
         if args.start_snapshot is not None:
             assert not args.continue_run
 
-        usecase_prepare_args = dict()
-        if storage_plan is not None:
-            usecase_prepare_args["storage_plan"] = storage_plan
+        # plan.prepare is the run's PrepareFeatures; None selects the replay
+        # path (checkSfCorrectness), which reuses the features recorded in the
+        # restored snapshot's workspace metadata.
+        features = plan.prepare
+        if features is not None and storage_plan is not None:
+            import dataclasses
 
-        framework_code_content += prepare_repo_and_load_snapshot(
+            features = dataclasses.replace(features, storage_plan_text=storage_plan)
+
+        prepare_result = prepare_repo_and_load_snapshot(
             snapshotter=snapshotter,
             snapshot=args.start_snapshot,
-            prepare_fn=spec.prepare,
-            source_stage_name=source_stage_name,
-            usecase_prepare_args=usecase_prepare_args,
+            features=features,
+            prepare_workspace_provider=prepare_ws,
+            parallelism=args.needs_parallelism,
             do_not_cache=args.do_not_cache,
             conv_name=args.conv_name,
             only_from_cache=args.only_from_cache,
-            prepare_workspace_provider=prepare_ws,
+        )
+        framework_code_content += prepare_result.artifacts_str
+
+    if plan.prepare is None:
+        # Replay stage (checkSfCorrectness): the run's parallelism is the source
+        # run's recorded parallelism, read from the restored workspace metadata.
+        assert prepare_result is not None, (
+            "a replay-prepare stage cannot run with --continue_run"
+        )
+        args.needs_parallelism = prepare_result.parallelism
+
+    if args.log_to_wandb and prepare_result is not None:
+        # Mirror the workspace's prepare record into the W&B config - a
+        # convenience for downstream consumers, not a second source of truth.
+        import wandb
+
+        wandb.config.update(
+            {
+                "prepare_features": features_metadata_dict(prepare_result.features),
+                "parallelism": prepare_result.parallelism.value,
+            },
+            allow_val_change=True,
         )
 
     ###############
@@ -337,8 +363,8 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
         runtime_tracker=runtime_tracker,
         do_not_cache=args.do_not_cache,
         drains=data_drains,
-        # Stage identity, so every metric row is stage-tagged generically.
-        stage_name=spec.name,
+        # Plan identity, so every metric row is stage-tagged generically.
+        stage_name=plan.name,
     )
     run_stats_collector = RunStatsCollector(**collector_args)
 
@@ -359,9 +385,11 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     )
     args.target_threads = target_threads
 
-    # Parallelism need is resolved in run_conv_wrapper (args.needs_parallelism): for
-    # CHECK_SF it reflects the replayed source run's stage, otherwise spec.needs_parallelism.
-    if args.needs_parallelism:
+    # Parallelism need (args.needs_parallelism): plan.parallelism, except for
+    # replay stages, where it was overridden above from the source run's recorded
+    # parallelism. The run tool takes it as a bool paired with the pinned cores;
+    # this is the single enum -> bool boundary.
+    if args.needs_parallelism is Parallelism.MULTI_THREADED:
         parallelism = True
         core_ids = target_core_ids
     else:
@@ -516,11 +544,13 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     ##############
     # Supervisor Agent
     ##############
-    if args.use_supervision_agent:
+    if plan.supervision != SupervisionPolicy.OFF:
         supervision_agent = SupervisionAgent(
             agent_sdk_wrapper=agent_sdk_wrapper,
             run_stats_collector=run_stats_collector,
-            be_relaxed_if_runtime_goal_not_reached=spec.be_relaxed_supervision,
+            be_relaxed_if_runtime_goal_not_reached=(
+                plan.supervision == SupervisionPolicy.RELAXED
+            ),
         )
     else:
         supervision_agent = None
@@ -531,28 +561,33 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
     builder_path = filenames_dict["builder_path"]
     query_impl_path = filenames_dict["query_impl_path"]
 
+    assert not args.replay, (
+        "Replay mode is not supported. Use replay_cache to replay from cache "
+        "without user interaction."
+    )
+
     # manually traced conversation - otherwise will produce multiple separate traces (for each Runner.run() invocation)
     async def _conv_run():
-        conv_args = dict(
+        ctx = ConvContext(
+            query_ids=query_list,
+            filenames=Filenames.for_usecase(usecase),
+            workspace_path=workspace_path,
+            db_storage=db_storage,
+            threads=target_threads,
+            model=args.model,
+            run_tool=run_tool,
+            workload_provider=workload_provider,
+            sql_dict=workload_provider.sql_dict,
+            workload=args.benchmark,
+            bespoke_storage=args.bespoke_storage,
+            max_turns=args.max_turns,
+            query_validator=query_validator,
             conversation_json_path=conversations_dir
             / f"{args.conv_name_withdatetime}.json",
-            callback=functools.partial(
-                handle_prompt,
-                run_tool=run_tool,
-                run_stats_collector=run_stats_collector,
-                query_validator=query_validator,
-                agent_sdk_wrapper=agent_sdk_wrapper,
-            ),
-            auto_finish=args.auto_finish,
-            replay_cache=args.replay_cache,
-            auto_u=args.auto_u,
-            replay=args.replay,
-            notify=args.notify,
-            runtime_tracker=runtime_tracker,
-            agent_sdk_wrapper=agent_sdk_wrapper,
-            all_query_ids=query_list,
         )
-        auto_conversation_args = dict(
+        conv = Conversation(
+            plan_stages=plan.stages,
+            conv_context=ctx,
             run_tool=run_tool,
             git_snapshotter=snapshotter,
             run_stats_collector=run_stats_collector,
@@ -563,25 +598,23 @@ async def main(args: argparse.Namespace, spec: Stage) -> str | None:
                 builder_path=builder_path,
                 persistent_storage=db_storage in [DBStorage.SSD, DBStorage.LABSTORE],
             ),
-        )
-        ctx = FrameworkContext(
-            args=args,
-            workload_provider=workload_provider,
-            workspace_path=workspace_path,
-            db_storage=db_storage,
-            query_list=query_list,
-            run_tool=run_tool,
-            compile_tool=compile_tool,
             agent_sdk_wrapper=agent_sdk_wrapper,
-            snapshotter=snapshotter,
-            run_stats_collector=run_stats_collector,
-            supervision_agent=supervision_agent,
-            query_validator=query_validator,
-            conv_args=conv_args,
-            auto_conversation_args=auto_conversation_args,
-            spec=spec,
+            callback=functools.partial(
+                handle_prompt,
+                run_tool=run_tool,
+                run_stats_collector=run_stats_collector,
+                query_validator=query_validator,
+                agent_sdk_wrapper=agent_sdk_wrapper,
+            ),
+            finish_interactive=plan.finish_interactive,
+            debug_category=plan.name,
+            prompt_pretext=None,
+            notify=args.notify,
+            auto_finish=args.auto_finish,
+            auto_u=args.auto_u,
+            replay_cache=args.replay_cache,
+            runtime_tracker=runtime_tracker,
         )
-        conv = spec.factory(ctx)
         await conv.run()
 
     # run conversation with sdk tracing
@@ -829,36 +862,26 @@ def _run_coroutine(coro):
 
 
 def run_conv_wrapper(
-    args: argparse.Namespace | None,
-    run_config: RunConfig | None,
-    spec: Stage,
+    run_config: RunConfig,
+    plan: ConversationPlan,
 ) -> RunResult:
-    # assemble args from run_config if main.py is started from run scripts
-    if args is None and run_config is None:
-        raise Exception("Either args or run_config must be provided.")
-    elif args is None:
-        # convert run_config to args for conv wrapper
-        args = argparse.Namespace(**vars(run_config))
-    else:
-        pass
+    # The pipeline operates on an argparse.Namespace; the RunConfig the API
+    # builds is expanded into one here.
+    args = argparse.Namespace(**vars(run_config))
 
     args.db_storage = get_effective_db_storage(args.usecase, args.db_storage)
     args.log_to_wandb = getattr(args, "log_to_wandb", False)
-    # The stage identity drives run naming and is logged to W&B (CHECK_SF reads it
-    # back off a source run to replay that stage's prepare).
-    args.stage_name = spec.name
+    # The plan identity drives run naming and is logged to W&B.
+    args.stage_name = plan.name
 
-    # Whether this run executes queries with parallelism. Logged to W&B as a stable,
-    # stage-name-independent property so downstream consumers (e.g. benchmark replay)
-    # can tell multi-threaded runs apart without matching on the user-defined stage
-    # name. For CHECK_SF it is the source run's stage that determines this.
-    source_stage_name = getattr(args, "source_stage_name", None)
-    if source_stage_name is not None:
-        from synnodb.api import get_stage
-
-        args.needs_parallelism = get_stage(source_stage_name).needs_parallelism
-    else:
-        args.needs_parallelism = spec.needs_parallelism
+    # Whether this run executes queries multi-threaded (a Parallelism enum).
+    # Logged to W&B (as the enum's string value) as a stable, stage-name-independent
+    # property so downstream consumers (e.g. benchmark replay) can tell
+    # multi-threaded runs apart without matching on the user-defined stage
+    # name. For a replay stage (checkSfCorrectness) main() overrides this after
+    # restoring the source snapshot, from the parallelism recorded in the
+    # workspace prepare metadata.
+    args.needs_parallelism = plan.parallelism
 
     _setup()
     if args.continue_run:
@@ -868,7 +891,7 @@ def run_conv_wrapper(
 
     # assemble conv name
     conv_name, conv_name_withdatetime = generate_conv_name(
-        stage_name=spec.name,
+        stage_name=plan.name,
         benchmark=args.benchmark,
         queries_str=args.queries_str,
         model=args.model,
@@ -891,9 +914,9 @@ def run_conv_wrapper(
     if args.log_to_wandb:
         # add weave (wandb) tracing in addition to openai tracing
         configure_weave_cache_dirs()
-        import wandb
         import weave
 
+        import wandb
         from synnodb.settings import get_wandb_entity_project
 
         entity, project = get_wandb_entity_project(
@@ -964,7 +987,7 @@ def run_conv_wrapper(
 
     snapshot_hash: str | None = None
     try:
-        snapshot_hash = _run_coroutine(main(args, spec))
+        snapshot_hash = _run_coroutine(main(args, plan))
 
         if args.notify:
             # notify about successful completion
@@ -1019,64 +1042,3 @@ def test_deps():
             raise ImportError
     except ImportError:
         raise Exception("pyarrow Python package is not installed. Run: uv sync")
-
-
-# Run manually e.g. with:
-# python main.py manual --model gpt-5.4 --conv_name debugq1-22v1 --start_snapshot eb0d178ebc7be2cacec11ea474823daecf7eb013 --benchmark tpch --bespoke_storage --query_list 1,2 --do_not_cache
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    manual = subparsers.add_parser(
-        "manual",
-        help="Run a conversation using explicit mode/query args.",
-    )
-    add_common_args(
-        manual,
-        include_model=True,
-        include_benchmark=True,
-        include_replay=True,
-        include_disable_openai_tracing=True,
-        include_log_to_wandb=True,
-        include_query_list=True,
-        include_continue_run=True,
-        include_no_preload=True,
-        include_notify=True,
-        include_start_snapshot=True,
-        include_disable_repo_sync=True,
-        include_replay_cache=True,
-        include_auto_u=True,
-        include_auto_finish=True,
-        include_keep_csv=True,
-        include_disable_valtool=True,
-        include_stage=True,
-        include_run_tool_offer_trace_option=True,
-        include_bespoke_storage=True,
-        include_only_from_llm_cache=True,
-        include_only_from_cache=True,
-        include_do_not_cache=True,
-        include_tool_search_tool=True,
-        include_use_autonomy_master_prompt=True,
-        include_sdk=True,
-        include_optimize_sample_plan_source=True,
-        include_use_supervision_agent=True,
-        include_memory_budget_mb=True,
-        include_include_mem_budget_for_in_mem_in_hashes=True,
-        include_db_storage=True,
-        include_threads=True,
-        include_max_turns=True,
-        include_model_extra_body=True,
-    )
-    args = parser.parse_args()
-    args.write_query_and_args_files = True
-
-    if args.command == "manual":
-        # the manual debug entry point resolves a stage by name; the SynnoDB API
-        # passes its stage directly.
-        from synnodb.conversations.manual_specs import get_spec
-
-        spec = get_spec(args.stage)
-        run_conv_wrapper(args, run_config=None, spec=spec)
-    else:
-        raise Exception(f"Unknown {args.command}")

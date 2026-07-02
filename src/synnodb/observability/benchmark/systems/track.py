@@ -16,8 +16,6 @@ from typing import Callable
 
 from synnodb.cpp_runner.compiler.compiler_cached import CachedCompiler
 from synnodb.cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
-from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareFn
-from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_mt, prepare_optim
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
@@ -50,7 +48,6 @@ class BespokePrep:
     make_prepare_workspace: Callable[
         [WorkloadProvider, Path, GitSnapshotter, Path | None], PrepareWorkspace
     ]
-    prepare_fn_for: Callable[[bool], PrepareFn]  # is_mt -> prepare fn
 
 
 @dataclass
@@ -127,7 +124,6 @@ def build_track(
                 git_snapshotter=snap,
                 prepare_cache_dir=cache,
             ),
-            prepare_fn_for=lambda is_mt: prepare_mt if is_mt else prepare_optim,
         )
         return TrackConfig(
             usecase=usecase,

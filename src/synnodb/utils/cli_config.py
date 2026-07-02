@@ -24,9 +24,6 @@ class RunConfig:
     query_list: str
     queries_str: str
     notify: bool
-    # The source run's stage name, only set for checkSfCorrectness (it replays
-    # that stage's prepare).
-    source_stage_name: str | None = None
     verbose: bool = False  # stream DEBUG logs to the console (logfile is always DEBUG)
     start_snapshot: str | None = None
     storage_plan_snapshot: str | None = None
@@ -58,10 +55,6 @@ class RunConfig:
     only_from_cache: bool = False  # whether to only answer from cache and not call the LLM / run tool. Will raise an error if a cache miss occurs.
     do_not_cache: bool = False  # whether to not cache any new entries
     tool_search_tool: bool = False  # whether to include the tool search tool in the agent's toolbox (for collecting training data for the tool search tool, and set functionl tools to deferred loading)
-    use_supervision_agent: bool = False  # whether to use a supervision agent to guide the implementation agent - this became necessary after openai introduced gpt5.4 - then the agents suddenly all ask for user confirmation
-    use_autonomy_master_prompt: bool = (
-        False  # whether to prefix all prompts with an autonomy master prompt
-    )
     sdk: str = "openai"
     optimize_sample_plan_source: str | None = (
         None  # "umbra" or "duckdb" - determines where the initial sample plans are sourced from for the optimization conversation; this only affects the first optimization stage and does not impact the overall conversation structure
@@ -118,7 +111,6 @@ def add_common_args(
     include_auto_finish: bool = False,
     include_keep_csv: bool = False,
     include_disable_valtool: bool = False,
-    include_stage: bool = False,
     include_run_tool_offer_trace_option: bool = False,
     include_bespoke_storage: bool = False,
     include_storage_plan_snapshot: bool = False,
@@ -126,10 +118,8 @@ def add_common_args(
     include_only_from_cache: bool = False,
     include_do_not_cache: bool = False,
     include_tool_search_tool: bool = False,
-    include_use_autonomy_master_prompt: bool = False,
     include_sdk: bool = False,
     include_optimize_sample_plan_source: bool = False,
-    include_use_supervision_agent: bool = False,
     include_threads: bool = False,
     include_max_turns: bool = False,
     include_api_base: bool = False,
@@ -312,14 +302,6 @@ def add_common_args(
             help="Disable validate tool if set",
         )
 
-    if include_stage:
-        parser.add_argument(
-            "--stage",
-            type=str,
-            default="scripted",  # any registered stage name, or 'scripted'
-            help="Stage to run (e.g. 'createBaseImpl', 'runOptimLoop', 'scripted').",
-        )
-
     if include_run_tool_offer_trace_option:
         parser.add_argument(
             "--run_tool_offer_trace_option",
@@ -372,13 +354,6 @@ def add_common_args(
             default=False,
             help="Whether to include the tool search tool in the agent's toolbox. This is needed for collecting training data for the tool search tool.",
         )
-    if include_use_autonomy_master_prompt:
-        parser.add_argument(
-            "--use_autonomy_master_prompt",
-            action="store_true",
-            default=False,
-            help="Prefix all prompts with an autonomy master prompt.",
-        )
     if include_sdk:
         parser.add_argument(
             "--sdk",
@@ -393,14 +368,6 @@ def add_common_args(
             type=str,
             default="duckdb",
             help="For the optimization conversation mode: where to source the initial sample plans from for the first optimization stage. Options are 'umbra' or 'duckdb'. ",
-        )
-
-    if include_use_supervision_agent:
-        parser.add_argument(
-            "--use_supervision_agent",
-            action="store_true",
-            default=False,
-            help="Whether to use a supervision agent to guide the implementation agent. This became necessary after openai introduced gpt5.4 - then the agents suddenly all ask for user confirmation. The supervision agent will provide feedback to the implementation agent and only ask for user confirmation for critical decisions.",
         )
 
     if include_threads:

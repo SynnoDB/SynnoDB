@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 import logging
 import os
 import random
@@ -14,7 +15,10 @@ from synnodb.cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactor
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
-from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
+from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    Parallelism,
+    PrepareFeatures,
+)
 from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
@@ -92,13 +96,15 @@ def main(args):
         prepare_repo_and_load_snapshot(
             snapshotter=snapshotter,
             snapshot=None,
-            prepare_fn=prepare_base,
-            conv_name=f"test_conv_{rnd_str}",
-            add_sample_trace=True,
-            prepare_workspace_provider=prepare_workspace_provider,
-            usecase_prepare_args=dict(
-                storage_plan="DEMO STORAGE PLAN CONTENT",
+            features=dataclasses.replace(
+                PrepareFeatures.base(storage_plan_text="DEMO STORAGE PLAN CONTENT"),
+                sample_trace=True,
             ),
+            conv_name=f"test_conv_{rnd_str}",
+            prepare_workspace_provider=prepare_workspace_provider,
+            parallelism=Parallelism.MULTI_THREADED
+            if parallelism
+            else Parallelism.SINGLE_THREADED,
         )
 
     compiler = OLAPCompilerFactory(db_storage=db_storage).make_compiler(

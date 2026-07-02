@@ -48,7 +48,7 @@ def driver(tmp_path_factory) -> Path:
 
     out_bin = tmp_path_factory.mktemp("cpp") / "shm_io_test"
     cmd = (
-        [cc, "-std=c++17", "-O2", "-I", str(CPP_HELPERS)]
+        [cc, "-std=c++20", "-O2", "-I", str(CPP_HELPERS)]
         + _pkgconfig("--cflags")
         + [str(DRIVER_SRC)]
         + _pkgconfig("--libs")

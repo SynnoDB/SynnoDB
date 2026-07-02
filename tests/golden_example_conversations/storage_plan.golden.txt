@@ -1,0 +1,42 @@
+########## section: stages ##########
+===== entry 0 =====
+kind: prompt-stage
+descriptor: generate storage plan
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Your task is to analyze the workload and produce a creative in-memory storage-layout summary for the tables accessed by the query. You have the flexibility to return detailed, free-form text that explores not only conventional storage-layout recommendations but also unconventional, novel, and even 'crazy' storage designs.
+You are encouraged to include additional ideas, new partitioning strategies, speculative encoding techniques, or experimental ways of grouping and organizing columns or data.
+For each accessed table, feel free to be inventive and elaborate on possibilities such as hybrid layouts, speculative SoA/AoS (Array of Structures/Structure of Arrays) approaches, novel column encodings, or adaptive partitioning.
+Use this as an opportunity to push beyond current norms and propose storage techniques that might be futuristic or outlandish.
+Output the storage layout for each table. Output only the final storage layout.
+
+Important:
+- store all the data, and store them in a way that it could be flattened back to the original data
+- do not store data redundantly, but you can use compression or encoding, meta data, or special datastructures
+- optimized for in-memory (single-node) analytical query processing
+- the engine builds its in-memory columns from the Arrow inputs via typed, per-column helpers (decimals/money/quantity -> exact fixed-point integers value*10^scale; dates -> integer days; strings -> std::string; integers and floats -> their native types). Frame your layout as an organization or transformation OF these typed columns - partitioning, ordering, lossless encodings (RLE / dictionary / bit-packing), pre-aggregates - rather than raw Arrow-buffer or byte-level manipulation.
+- the engine must reproduce the reference (DuckDB) results bit-for-bit. Every encoding you propose must therefore be exactly and losslessly reconstructable: prefer exact fixed-point over floating point, and do not use lossy or approximate compression for any value that can appear in a query result.
+- keep the engine's peak in-memory footprint small: aim for no more than ~10-15% above the size of the data it loads. Measure that against the DECOMPRESSED, in-memory size of the columns you load (roughly rows x the natural width of each typed value), NOT the Parquet file size, which is compressed on disk. Dictionary-encoding low-cardinality columns and choosing the narrowest correct types should pull the footprint toward or below that raw column size; spend the ~10-15% headroom on indexes, zone maps and other auxiliary structures. Any layout that needs materially more than the loaded data (large hash indexes, per-row heap allocations, duplicate full-column copies) must be justified by a large, measured query speedup - extra memory is not free.
+
+Execution model: the generated engine runs each query on a single thread. Optimize for sequential scan locality; no cross-thread partitioning is needed.
+
+The queries are listed in the file: `queries.md`.
+The schema is:
+CREATE TABLE lineitem (l_orderkey BIGINT, l_quantity DECIMAL(15,2));
+
+Based on the given queries and schema, provide a detailed and creative storage layout summary for the tables accessed by the query. Feel free to explore unconventional and novel storage designs, including speculative encoding techniques or experimental ways of organizing data. Write it to the file: `storage_plan.txt`.
+
+Do not read build scripts, system paths, or tool internals. Limit inspection to `queries.md` and the provided schema. Do not use broad `find`, repo-wide `grep`, or directory scans.
+
+
+
+--- end prompt ---
+

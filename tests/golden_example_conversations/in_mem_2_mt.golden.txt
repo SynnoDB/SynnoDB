@@ -1,0 +1,241 @@
+########## section: stages ##########
+===== entry 0 =====
+kind: assert-correct
+query_ids: None
+===== entry 1 =====
+kind: marker
+marker: <<VALIDATE_ON>>
+benchmark_sf: None
+===== entry 2 =====
+kind: marker
+marker: <<VALIDATE_OUTPUT_STDOUT_ON>>
+benchmark_sf: None
+===== entry 3 =====
+kind: measure-baselines
+into: single_threaded_rt_ms
+===== entry 4 =====
+kind: per-query-loop
+conversation_branching: True
+end_of_ring_benchmark: True
+branch_anchor: True
+benchmark_sf: None
+--- branch anchor (descriptor: Branch Anchor, max_turns: 5) ---
+--- prompt ---
+We are about to create one conversation branch per query for the multi-threading tuning loop. The base implementation is already parallel-ready through the shared query pool. Do not inspect files, do not use tools, and do not change code. Reply exactly: Ready for per-query branches.
+--- end prompt ---
+----- loop stage 0 (query 1) -----
+kind: prompt-stage
+descriptor: Optimize Parallel-Ready MT w. Trace (1)
+max_turns: 175
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the multi-threaded implementation of query 1 using the tracing/profiling data collected with the run tool:
+
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+Focus on multi-threading specific bottlenecks:
+- Load imbalance: threads finishing at different times (idle cores while work remains).
+- Synchronization overhead: lock contention, spin-waits, or barriers that serialize execution.
+- False sharing: threads writing to adjacent cache lines, causing cache invalidations.
+- Memory bandwidth saturation: too many threads contending for the same memory regions.
+- Remaining sequential sections that limit parallel speedup (Amdahl's law).
+
+The base implementation should already run through the shared query pool (`get_query_pool()`,
+`parallel_for`, `parallel_reduce<T>`) and be correct at both CORE_IDS=1 and multiple threads. Do
+not introduce a separate single-threaded/multi-threaded code path. Preserve the same semantics for
+every thread count: private per-thread/per-slice state in the hot loop, deterministic merges after
+the parallel region, exact integer/fixed-point accumulation for DECIMAL/INT aggregates, no nested
+pool calls, and no shared mutable accumulator/map/output vector in the hot loop.
+
+After making changes, validate correctness and confirm performance improved.
+Target: reduce runtime further from 1234ms (OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None)). Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: 4321ms).
+
+Turn off trace instrumentation in the run-tool for reliable benchmarking. Call run-tool with trace to gather updated statistics for bottleneck identification.
+Make sure the performance improved. Otherwise, try again or remove your changes.
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+--- end prompt ---
+----- loop stage 0 (query 6) -----
+kind: prompt-stage
+descriptor: Optimize Parallel-Ready MT w. Trace (6)
+max_turns: 175
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the multi-threaded implementation of query 6 using the tracing/profiling data collected with the run tool:
+
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+Focus on multi-threading specific bottlenecks:
+- Load imbalance: threads finishing at different times (idle cores while work remains).
+- Synchronization overhead: lock contention, spin-waits, or barriers that serialize execution.
+- False sharing: threads writing to adjacent cache lines, causing cache invalidations.
+- Memory bandwidth saturation: too many threads contending for the same memory regions.
+- Remaining sequential sections that limit parallel speedup (Amdahl's law).
+
+The base implementation should already run through the shared query pool (`get_query_pool()`,
+`parallel_for`, `parallel_reduce<T>`) and be correct at both CORE_IDS=1 and multiple threads. Do
+not introduce a separate single-threaded/multi-threaded code path. Preserve the same semantics for
+every thread count: private per-thread/per-slice state in the hot loop, deterministic merges after
+the parallel region, exact integer/fixed-point accumulation for DECIMAL/INT aggregates, no nested
+pool calls, and no shared mutable accumulator/map/output vector in the hot loop.
+
+After making changes, validate correctness and confirm performance improved.
+Target: reduce runtime further from 1234ms (OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None)). Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: 4321ms).
+
+Turn off trace instrumentation in the run-tool for reliable benchmarking. Call run-tool with trace to gather updated statistics for bottleneck identification.
+Make sure the performance improved. Otherwise, try again or remove your changes.
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+--- end prompt ---
+===== entry 5 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 6 =====
+kind: prompt-stage
+descriptor: Check large SF
+max_turns: 125
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: large_check
+prompt_source: get_prompt
+--- prompt ---
+Verify the implementation is correct at the benchmark scale. Call the run tool in
+BENCHMARK mode (optimize=True, trace=False) and fix any scaling issues you find.
+
+If it produces errors, the most common causes when scaling to a larger dataset are:
+
+- int32 overflow in row counts, offsets, or array indices (use int64/size_t)
+- int32 overflow in aggregation accumulators (e.g. SUM into int32)
+- Hardcoded or statically-sized buffers that were large enough at smaller SF
+- Hash table capacity not scaling with data size, causing OOM or rehash loops
+- Arrow/Parquet int32 column offset overflow when a column exceeds 2 GiB
+- Join build side exceeding available memory with no spill path
+- mmap or allocation sizes computed through int32 arithmetic that wraps
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+
+- Call run-tool only after significant edits. A single call is sufficient to evaluate a batch of changes.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+--- end prompt ---
+===== entry 7 =====
+kind: marker
+marker: <<BENCHMARK>>
+benchmark_sf: large_check
+

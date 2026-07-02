@@ -1,0 +1,260 @@
+########## section: stages ##########
+===== entry 0 =====
+kind: assert-correct
+query_ids: None
+===== entry 1 =====
+kind: marker
+marker: <<VALIDATE_ON>>
+benchmark_sf: None
+===== entry 2 =====
+kind: marker
+marker: <<BENCHMARK>>
+benchmark_sf: None
+===== entry 3 =====
+kind: prompt-stage
+descriptor: Add Timings for Queries 1, 6
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+# Objective
+Add comprehensive tracing instrumentation to measure query execution timing and row flow. The goal is to produce actionable data that identifies bottlenecks and validates optimizations.
+
+# Tracing Infrastructure
+The file `trace.hpp` is already present in the workspace. Include it in any file that needs instrumentation:
+```cpp
+#include "trace.hpp"
+```
+
+All tracing code is compiled away to nothing unless `-DTRACE` is set. `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+## Available Macros
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+## Output Format
+Stable, machine-parsable output with two line types:
+```
+PROFILE <section_name> <nanoseconds>
+COUNT <counter_name> <value>
+```
+Names should reflect the specific query and phase. E.g. `q1_titlescan_decode`, ...
+
+# Instrumentation Requirements
+## Timing
+Use `PROFILE_SCOPE` to time each major operator and sub-phase (scan, decode, join build/probe, aggregation, sort, etc.).
+
+## Row Count Instrumentation
+Track data flow through each operator using `TRACE_COUNT`:
+
+Scan counters:
+- rows_scanned - Total rows read
+- rows_emitted - Rows passing filter (rows_scanned - rows_filtered_out)
+
+Join counters:
+- build_rows_in - Build side input rows
+- probe_rows_in - Probe side input rows
+- join_rows_emitted - Output rows
+
+Aggregation counters:
+- agg_rows_in - Input rows
+- groups_created - Distinct groups
+- agg_rows_emitted - Output rows (usually equals groups_created)
+
+Sort counters:
+- sort_rows_in
+- sort_rows_out
+
+General:
+- query_output_rows - Final result count
+
+# YOUR TASK
+Instrument the execution code of all queries to collect the tracing statistics. Use the macros from `trace.hpp` to add timing and counting instrumentation to all major operators (scan, join, aggregation, sort, etc.) and wherever else it seems helpful. Ensure that the output is stable and parsable, and that there is no overhead when TRACE is disabled.
+
+Add timing instrumentation to the execution code of the following queries: 1, 6. Verify your tracing implementation by using the RUN tool with tracing enabled and mode FAST_CHECK.
+Check that the tracing output returned by the run tool contains all required timing and counting information for these queries, and that the numbers make sense given the data size and query logic. If output is empty/null/0 where it shouldn't be, investigate and fix the instrumentation.
+
+--- end prompt ---
+===== entry 4 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 5 =====
+kind: marker
+marker: <<SUPERVISION_STAGE_VISIBILITY_MARKER>>
+benchmark_sf: None
+===== entry 6 =====
+kind: marker
+marker: <<BENCHMARK>>
+benchmark_sf: None
+===== entry 7 =====
+kind: per-query-loop
+conversation_branching: True
+end_of_ring_benchmark: True
+branch_anchor: False
+benchmark_sf: None
+----- loop stage 0 (query 1) -----
+kind: prompt-stage
+descriptor: Optim w. Sample Plan (1)
+max_turns: None
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the implementation of query 1 using this sample execution plan collected from umbra (exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None)):
+SYNTHETIC REFERENCE PLAN for query 1 (fixed for golden test)
+
+Study the query plan to understand join order, cardinalities, operator choices, and data access patterns that the umbra optimizer arrived at. Use this structural insight to align the current implementation with the plan's information (e.g. build/probe sides, filter selectivity, aggregation grouping).
+
+Initial tracing/profiling output (single-threaded):
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+
+# Scope of this stage
+
+This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
+- Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
+- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Filter ordering and selectivity-driven predicate evaluation.
+- Storage access pattern alignment (which columns to scan, in what order, with what zone-map pruning).
+Choose algorithms that will parallelize cleanly later (prefer sort-merge or partitioned hash over shared-mutable-hash designs; prefer per-row-range processing that can be split across threads).
+
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format. They enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+
+# Final Instructions
+
+Before editing: make a 3-step plan: (1) what algorithmic bottleneck the plan reveals, (2) what structural change you will make, (3) expected effect.
+
+Make at most 2 optimization rounds:
+1. Apply one batched change set.
+2. Measure runtime (trace=off).
+3. Only do a second round if you have a new concrete hypothesis.
+
+Stop when: correctness is preserved AND performance improves measurably, OR two rounds fail to improve. If a change does not help, revert it immediately instead of stacking further edits. Verify correctness using the run tool in EXHAUSTIVE mode and benchmark using BENCHMARK mode.
+
+--- end prompt ---
+----- loop stage 0 (query 6) -----
+kind: prompt-stage
+descriptor: Optim w. Sample Plan (6)
+max_turns: None
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the implementation of query 6 using this sample execution plan collected from umbra (exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None)):
+SYNTHETIC REFERENCE PLAN for query 6 (fixed for golden test)
+
+Study the query plan to understand join order, cardinalities, operator choices, and data access patterns that the umbra optimizer arrived at. Use this structural insight to align the current implementation with the plan's information (e.g. build/probe sides, filter selectivity, aggregation grouping).
+
+Initial tracing/profiling output (single-threaded):
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+
+# Scope of this stage
+
+This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
+- Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
+- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Filter ordering and selectivity-driven predicate evaluation.
+- Storage access pattern alignment (which columns to scan, in what order, with what zone-map pruning).
+Choose algorithms that will parallelize cleanly later (prefer sort-merge or partitioned hash over shared-mutable-hash designs; prefer per-row-range processing that can be split across threads).
+
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format. They enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+
+# Final Instructions
+
+Before editing: make a 3-step plan: (1) what algorithmic bottleneck the plan reveals, (2) what structural change you will make, (3) expected effect.
+
+Make at most 2 optimization rounds:
+1. Apply one batched change set.
+2. Measure runtime (trace=off).
+3. Only do a second round if you have a new concrete hypothesis.
+
+Stop when: correctness is preserved AND performance improves measurably, OR two rounds fail to improve. If a change does not help, revert it immediately instead of stacking further edits. Verify correctness using the run tool in EXHAUSTIVE mode and benchmark using BENCHMARK mode.
+
+--- end prompt ---
+

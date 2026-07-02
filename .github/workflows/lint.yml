@@ -29,3 +29,18 @@ jobs:
         with:
           version: "0.15.20"
           args: "format --check"
+
+  notebook-outputs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tutorial notebooks must be committed without outputs/execution counts:
+      # stored outputs bloat diffs by thousands of lines and cause merge
+      # conflicts. Scoped to tutorials/ - the internal research notebooks under
+      # src/ keep their outputs (they are excluded from the lint gates too).
+      # Strip locally with: uvx nbstripout <notebook.ipynb>
+      # Pinned so CI is reproducible and doesn't break on a new release.
+      - name: Verify tutorial notebooks are stripped
+        run: |
+          git ls-files 'tutorials/*.ipynb' | xargs --no-run-if-empty pipx run nbstripout==0.8.1 --verify

@@ -1,0 +1,742 @@
+########## section: stages ##########
+===== entry 0 =====
+kind: assert-correct
+query_ids: None
+===== entry 1 =====
+kind: marker
+marker: <<VALIDATE_ON>>
+benchmark_sf: None
+===== entry 2 =====
+kind: marker
+marker: <<BENCHMARK>>
+benchmark_sf: None
+===== entry 3 =====
+kind: prompt-stage
+descriptor: Add Timings for Queries 1, 6
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+# Objective
+Add comprehensive tracing instrumentation to measure query execution timing and row flow. The goal is to produce actionable data that identifies bottlenecks and validates optimizations.
+
+# Tracing Infrastructure
+The file `trace.hpp` is already present in the workspace. Include it in any file that needs instrumentation:
+```cpp
+#include "trace.hpp"
+```
+
+All tracing code is compiled away to nothing unless `-DTRACE` is set. `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+## Available Macros
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+## Output Format
+Stable, machine-parsable output with two line types:
+```
+PROFILE <section_name> <nanoseconds>
+COUNT <counter_name> <value>
+```
+Names should reflect the specific query and phase. E.g. `q1_titlescan_decode`, ...
+
+# Instrumentation Requirements
+## Timing
+Use `PROFILE_SCOPE` to time each major operator and sub-phase (scan, decode, join build/probe, aggregation, sort, etc.).
+
+## Row Count Instrumentation
+Track data flow through each operator using `TRACE_COUNT`:
+
+Scan counters:
+- rows_scanned - Total rows read
+- rows_emitted - Rows passing filter (rows_scanned - rows_filtered_out)
+
+Join counters:
+- build_rows_in - Build side input rows
+- probe_rows_in - Probe side input rows
+- join_rows_emitted - Output rows
+
+Aggregation counters:
+- agg_rows_in - Input rows
+- groups_created - Distinct groups
+- agg_rows_emitted - Output rows (usually equals groups_created)
+
+Sort counters:
+- sort_rows_in
+- sort_rows_out
+
+General:
+- query_output_rows - Final result count
+
+# YOUR TASK
+Instrument the execution code of all queries to collect the tracing statistics. Use the macros from `trace.hpp` to add timing and counting instrumentation to all major operators (scan, join, aggregation, sort, etc.) and wherever else it seems helpful. Ensure that the output is stable and parsable, and that there is no overhead when TRACE is disabled.
+
+Add timing instrumentation to the execution code of the following queries: 1, 6. Verify your tracing implementation by using the RUN tool with tracing enabled and mode FAST_CHECK.
+Check that the tracing output returned by the run tool contains all required timing and counting information for these queries, and that the numbers make sense given the data size and query logic. If output is empty/null/0 where it shouldn't be, investigate and fix the instrumentation.
+
+--- end prompt ---
+===== entry 4 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 5 =====
+kind: marker
+marker: <<SUPERVISION_STAGE_VISIBILITY_MARKER>>
+benchmark_sf: None
+===== entry 6 =====
+kind: marker
+marker: <<BENCHMARK>>
+benchmark_sf: None
+===== entry 7 =====
+kind: per-query-loop
+conversation_branching: True
+end_of_ring_benchmark: True
+branch_anchor: False
+benchmark_sf: None
+----- loop stage 0 (query 1) -----
+kind: prompt-stage
+descriptor: Optim w. Sample Plan (1)
+max_turns: None
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the implementation of query 1 using this sample execution plan collected from umbra (exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None)):
+SYNTHETIC REFERENCE PLAN for query 1 (fixed for golden test)
+
+Study the query plan to understand join order, cardinalities, operator choices, and data access patterns that the umbra optimizer arrived at. Use this structural insight to align the current implementation with the plan's information (e.g. build/probe sides, filter selectivity, aggregation grouping).
+
+
+# Scope of this stage
+
+This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
+- Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
+- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Filter ordering and selectivity-driven predicate evaluation.
+
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+
+# Final Instructions
+
+Before editing: make a 3-step plan: (1) what algorithmic bottleneck the plan reveals, (2) what structural change you will make, (3) expected effect.
+
+Make at most 2 optimization rounds:
+1. Apply one batched change set.
+2. Measure runtime (trace=off).
+3. Only do a second round if you have a new concrete hypothesis.
+
+Stop when: correctness is preserved AND performance improves measurably, OR two rounds fail to improve. If a change does not help, revert it immediately instead of stacking further edits. Verify correctness using the run tool in EXHAUSTIVE mode and benchmark using BENCHMARK mode.
+
+--- end prompt ---
+----- loop stage 1 (query 1) -----
+kind: prompt-stage
+descriptor: Optim w. Tracing Stats (1)
+max_turns: 125
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the implementation of query 1 using the tracing/profiling data collected with the run tool:
+
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+Analyze the tracing/profiling data to identify bottlenecks in the query execution, e.g. operators which consume the most time, cardinalities that require significant processing and optimized code implementation.
+
+Before editing, think about a plan first: which scope or counter dominates, what bottleneck class it represents (skew / I/O / CPU / contention), and what change addresses that specific class.
+Then implement the optimization by editing the query implementation files (`query1.hpp/cpp`). Focus on the scope that is the bottleneck.
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail.
+
+--- end prompt ---
+----- loop stage 2 (query 1) -----
+kind: prompt-stage
+descriptor: Optim w. Expert Knowledge (1)
+max_turns: 150
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Optimize query 1 using the expert knowledge on high-performance in-memory OLAP systems:
+
+# Expert Knowledge & Best Practices for High-Performance Data Processing
+
+## Memory Access & Data Movement
+
+1. Ensure sequential memory access patterns
+Traverse memory linearly whenever possible. Seuquential access maximizes cache line utilization and hardware prefetch efficiency.
+
+2. Prefer pointer iteration over indexed access in tight loops - ensure sequential memory access patterns
+Sequential pointer traversal reduces address recomputation and improves auto-vectorization.
+
+3. Prefetch data when accessing through indices
+If you access arrays indirectly through an index list, the CPU cannot predict what memory will be needed next. Manually prefetching upcoming elements helps hide memory latency and reduces cache misses.
+
+4. Copy small records into local variables
+When repeatedly accessing multiple fields of a small struct, copy the struct into a local variable first. This allows the compiler to keep values in registers instead of reloading them from memory.
+
+5. Avoid unnecessary move or copy operations
+Use in-place construction and rely on compiler elision where possible.
+
+## Loop Structure & Invariants
+
+6. Hoist invariant work out of loops
+Any computation, lookup, or reference that does not change per iteration must be moved outside the loop.
+
+7. Eliminate repeated structural checks
+Do not repeatedly verify conditions that are constant or guaranteed.
+Compute once, cache once, or rely on established invariants.
+Also, if different conditions require different processing strategies, determine the strategy before the loop starts and then run the appropriate version. Avoid checking the same conditions repeatedly while scanning data.
+
+8. Decide execution strategy before entering the loop
+If multiple processing modes exist, select the mode once and run a dedicated loop variant.
+
+9. Avoid duplicating large loop bodies
+If several branches run almost identical loops with only small differences in filtering, combine them into one loop and control behavior with flags. This keeps code smaller, improves instruction cache usage, and helps the compiler optimize better.
+
+## Control Flow
+
+10. Minimize branching in inner loops
+Use early-continue filtering or direct predicate-based accumulation.
+Avoid auxiliary state flags if results can be inferred.
+
+11. Consider branchless computation when branch prediction is poor
+If control flow is unpredictable, replace branches with arithmetic masking.
+Computing a boolean condition and using it to control arithmetic (e.g., multiply by 0 or 1) can be faster than branching, especially in large scans.
+
+## Arithmetic & Computation Cost
+
+12. Remove expensive arithmetic from hot loops
+Avoid division or other high-latency operations per element.
+Precompute constants or perform normalization after aggregation.
+
+13. Avoid expensive general-purpose parsing in hot paths
+Do not use high-level string conversions or substring allocation inside tight loops (e.g. std::stoi, std::stod, substr).
+Prefer fixed-format, allocation-free parsing directly from raw memory.
+
+## Containers & Lookup Struktures
+
+14. Pre-size output containers using realistic estimates
+Estimate result size from selectivity or statistics to avoid dynamic growth.
+
+15. Replace repeated linear searches with indexed lookup structures
+Use hash-based or constant-time lookup instead of scanning collections repeatedly.
+
+## Algorithm Selection
+
+16. Use algorithms specialized for data characteristics
+For fixed-width numeric keys or sortable primitives, prefer non-comparison-based or domain-specific algorithms.
+
+## Compiler Optimization Signals
+
+17. Communicate aliasing guarantees
+Tell the compiler when memory regions do not overlap (e.g. restrict semantics).
+
+18. Inline hot functions when beneficial
+Reduces call overhead and exposes optimization opportunities.
+
+## Vectorizaton & Hardware Utilization
+
+19. Exploit SIMD parallelism where applicable
+Process multiple elements per iteration using vectorized comparisons and masked arithmetic.
+
+Use this expert knowledge to speedup the implementation of query 1. 
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail. 
+--- end prompt ---
+----- loop stage 3 (query 1) -----
+kind: prompt-stage
+descriptor: Optim w. Human Reference (1)
+max_turns: 125
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize query 1 as Prof. Thomas Neumann or Matthias Jasny would: apply every low-level technique available, leave nothing on the table. Focus on the bottlenecks identified in the tracing output, but also reconsider the overall approach if it unlocks significantly larger speedups.
+First output a short plan with candidate strategies, expected bottleneck addressed, and files to edit. Then implement and evaluate the most 1-2 promising candidates.
+
+Tracing/profiling data collected for query 1:
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+- You have only 125 turns available, so prioritize the most promising strategies.
+
+
+You may try at most 2 candidate implementations total. Each candidate may include one batched edit set and one evaluation.
+--- end prompt ---
+----- loop stage 0 (query 6) -----
+kind: prompt-stage
+descriptor: Optim w. Sample Plan (6)
+max_turns: None
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the implementation of query 6 using this sample execution plan collected from umbra (exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None)):
+SYNTHETIC REFERENCE PLAN for query 6 (fixed for golden test)
+
+Study the query plan to understand join order, cardinalities, operator choices, and data access patterns that the umbra optimizer arrived at. Use this structural insight to align the current implementation with the plan's information (e.g. build/probe sides, filter selectivity, aggregation grouping).
+
+
+# Scope of this stage
+
+This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
+- Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
+- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Filter ordering and selectivity-driven predicate evaluation.
+
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+
+# Final Instructions
+
+Before editing: make a 3-step plan: (1) what algorithmic bottleneck the plan reveals, (2) what structural change you will make, (3) expected effect.
+
+Make at most 2 optimization rounds:
+1. Apply one batched change set.
+2. Measure runtime (trace=off).
+3. Only do a second round if you have a new concrete hypothesis.
+
+Stop when: correctness is preserved AND performance improves measurably, OR two rounds fail to improve. If a change does not help, revert it immediately instead of stacking further edits. Verify correctness using the run tool in EXHAUSTIVE mode and benchmark using BENCHMARK mode.
+
+--- end prompt ---
+----- loop stage 1 (query 6) -----
+kind: prompt-stage
+descriptor: Optim w. Tracing Stats (6)
+max_turns: 125
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the implementation of query 6 using the tracing/profiling data collected with the run tool:
+
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+Analyze the tracing/profiling data to identify bottlenecks in the query execution, e.g. operators which consume the most time, cardinalities that require significant processing and optimized code implementation.
+
+Before editing, think about a plan first: which scope or counter dominates, what bottleneck class it represents (skew / I/O / CPU / contention), and what change addresses that specific class.
+Then implement the optimization by editing the query implementation files (`query6.hpp/cpp`). Focus on the scope that is the bottleneck.
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail.
+
+--- end prompt ---
+----- loop stage 2 (query 6) -----
+kind: prompt-stage
+descriptor: Optim w. Expert Knowledge (6)
+max_turns: 150
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Optimize query 6 using the expert knowledge on high-performance in-memory OLAP systems:
+
+# Expert Knowledge & Best Practices for High-Performance Data Processing
+
+## Memory Access & Data Movement
+
+1. Ensure sequential memory access patterns
+Traverse memory linearly whenever possible. Seuquential access maximizes cache line utilization and hardware prefetch efficiency.
+
+2. Prefer pointer iteration over indexed access in tight loops - ensure sequential memory access patterns
+Sequential pointer traversal reduces address recomputation and improves auto-vectorization.
+
+3. Prefetch data when accessing through indices
+If you access arrays indirectly through an index list, the CPU cannot predict what memory will be needed next. Manually prefetching upcoming elements helps hide memory latency and reduces cache misses.
+
+4. Copy small records into local variables
+When repeatedly accessing multiple fields of a small struct, copy the struct into a local variable first. This allows the compiler to keep values in registers instead of reloading them from memory.
+
+5. Avoid unnecessary move or copy operations
+Use in-place construction and rely on compiler elision where possible.
+
+## Loop Structure & Invariants
+
+6. Hoist invariant work out of loops
+Any computation, lookup, or reference that does not change per iteration must be moved outside the loop.
+
+7. Eliminate repeated structural checks
+Do not repeatedly verify conditions that are constant or guaranteed.
+Compute once, cache once, or rely on established invariants.
+Also, if different conditions require different processing strategies, determine the strategy before the loop starts and then run the appropriate version. Avoid checking the same conditions repeatedly while scanning data.
+
+8. Decide execution strategy before entering the loop
+If multiple processing modes exist, select the mode once and run a dedicated loop variant.
+
+9. Avoid duplicating large loop bodies
+If several branches run almost identical loops with only small differences in filtering, combine them into one loop and control behavior with flags. This keeps code smaller, improves instruction cache usage, and helps the compiler optimize better.
+
+## Control Flow
+
+10. Minimize branching in inner loops
+Use early-continue filtering or direct predicate-based accumulation.
+Avoid auxiliary state flags if results can be inferred.
+
+11. Consider branchless computation when branch prediction is poor
+If control flow is unpredictable, replace branches with arithmetic masking.
+Computing a boolean condition and using it to control arithmetic (e.g., multiply by 0 or 1) can be faster than branching, especially in large scans.
+
+## Arithmetic & Computation Cost
+
+12. Remove expensive arithmetic from hot loops
+Avoid division or other high-latency operations per element.
+Precompute constants or perform normalization after aggregation.
+
+13. Avoid expensive general-purpose parsing in hot paths
+Do not use high-level string conversions or substring allocation inside tight loops (e.g. std::stoi, std::stod, substr).
+Prefer fixed-format, allocation-free parsing directly from raw memory.
+
+## Containers & Lookup Struktures
+
+14. Pre-size output containers using realistic estimates
+Estimate result size from selectivity or statistics to avoid dynamic growth.
+
+15. Replace repeated linear searches with indexed lookup structures
+Use hash-based or constant-time lookup instead of scanning collections repeatedly.
+
+## Algorithm Selection
+
+16. Use algorithms specialized for data characteristics
+For fixed-width numeric keys or sortable primitives, prefer non-comparison-based or domain-specific algorithms.
+
+## Compiler Optimization Signals
+
+17. Communicate aliasing guarantees
+Tell the compiler when memory regions do not overlap (e.g. restrict semantics).
+
+18. Inline hot functions when beneficial
+Reduces call overhead and exposes optimization opportunities.
+
+## Vectorizaton & Hardware Utilization
+
+19. Exploit SIMD parallelism where applicable
+Process multiple elements per iteration using vectorized comparisons and masked arithmetic.
+
+Use this expert knowledge to speedup the implementation of query 6. 
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail. 
+--- end prompt ---
+----- loop stage 3 (query 6) -----
+kind: prompt-stage
+descriptor: Optim w. Human Reference (6)
+max_turns: 125
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize query 6 as Prof. Thomas Neumann or Matthias Jasny would: apply every low-level technique available, leave nothing on the table. Focus on the bottlenecks identified in the tracing output, but also reconsider the overall approach if it unlocks significantly larger speedups.
+First output a short plan with candidate strategies, expected bottleneck addressed, and files to edit. Then implement and evaluate the most 1-2 promising candidates.
+
+Tracing/profiling data collected for query 6:
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+# Overall System
+
+During load, the database engine reads data from Arrow-Tables into a main-memory storage layout (in-memory database system). You can change data structures, storage layout, algorithms, compression, execution strategies, and the db_loader pipeline.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`) and `db_loader.hpp/db_loader.cpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_titlescan_decode`, `rows_scanned`, `join_rows_emitted`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Single-threaded C++ only.
+- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always load all data from Parquet during ingestion (do not skip rows or columns).
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+- You have only 125 turns available, so prioritize the most promising strategies.
+
+
+You may try at most 2 candidate implementations total. Each candidate may include one batched edit set and one evaluation.
+--- end prompt ---
+

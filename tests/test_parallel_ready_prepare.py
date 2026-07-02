@@ -3,11 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from synnodb.conversations.examples import add_mt as mt_builder
+from synnodb.conversations.filenames import Filenames
 from synnodb.cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
-from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
+from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    PrepareFeatures,
+    apply_prepare_features,
+)
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
-from synnodb.conversations.in_mem_2_mt_conv import InMem2MTConversation
-from synnodb.conversations.ssd_2_mt_conv import SSD2MTOptConv
 from synnodb.utils.utils import DBStorage
 
 
@@ -18,22 +21,22 @@ def test_in_memory_base_prepare_enables_thread_pool_but_ssd_base_does_not():
         calls.append(kwargs)
         return ""
 
-    ctx = SimpleNamespace(
-        prepare_workspace_provider=SimpleNamespace(
-            db_storage=DBStorage.IN_MEMORY,
-            prepare=fake_prepare,
-        ),
-        usecase_prepare_args={},
-        write_non_tracked_only=False,
-        only_from_cache=False,
-        do_not_cache=True,
-        add_sample_trace=False,
+    provider = SimpleNamespace(prepare=fake_prepare)
+
+    # base features leave parallel_ready_impl on "auto": in-memory resolves to
+    # a parallel-ready scaffold, SSD does not
+    apply_prepare_features(
+        PrepareFeatures.base().resolve(in_memory_storage=True),
+        provider,
+        source_features=None,
     )
-    prepare_base(ctx)
     assert calls[-1]["usecase_args"]["add_thread_pool_to_query_impl"] is True
 
-    ctx.prepare_workspace_provider.db_storage = DBStorage.SSD
-    prepare_base(ctx)
+    apply_prepare_features(
+        PrepareFeatures.base().resolve(in_memory_storage=False),
+        provider,
+        source_features=None,
+    )
     assert calls[-1]["usecase_args"]["add_thread_pool_to_query_impl"] is False
 
 
@@ -94,15 +97,21 @@ def test_in_memory_query_template_teaches_parallel_ready_arrow_output():
     assert "decimal_column" in template
 
 
-def test_in_memory_mt_conversation_tunes_instead_of_introducing_mt():
-    conv = object.__new__(InMem2MTConversation)
-    conv.bespoke_storage = True
-    conv.persistent_storage = False
-    conv.file_paths = {"thread_pool_filename": "thread_pool.hpp"}
-    conv.single_threaded_rt_ms = {"1": 100.0}
+def _mt_ctx(db_storage: DBStorage):
+    ctx = SimpleNamespace(
+        bespoke_storage=True,
+        persistent_storage=db_storage == DBStorage.SSD,
+        filenames=Filenames.for_usecase(),
+        single_threaded_rt_ms={"1": 100.0},
+        sample_exec_settings=lambda: None,
+    )
+    return ctx
 
-    assert conv._assemble_pre_stages("constraints", "pretext") == []
-    stages = conv._build_stages("1", "constraints", "pretext")
+
+def test_in_memory_mt_conversation_tunes_instead_of_introducing_mt():
+    ctx = _mt_ctx(DBStorage.IN_MEMORY)
+    assert mt_builder._assemble_pre_stages(ctx, "constraints", "pretext") == []
+    stages = mt_builder.build_query_stages(ctx, "1", "constraints", "pretext")
     descriptors = [s.descriptor for s in stages]
     assert descriptors == ["Optimize Parallel-Ready MT w. Trace (1)"]
     assert all("Introduce Multi-Threading" not in d for d in descriptors)
@@ -110,13 +119,7 @@ def test_in_memory_mt_conversation_tunes_instead_of_introducing_mt():
 
 
 def test_ssd_mt_conversation_keeps_legacy_threadpool_intro():
-    conv = object.__new__(SSD2MTOptConv)
-    conv.bespoke_storage = True
-    conv.file_paths = {
-        "builder_hpp_path": "db_loader.hpp",
-        "thread_pool_filename": "thread_pool.hpp",
-    }
-
-    stages = conv._assemble_pre_stages("constraints", "pretext")
+    ctx = _mt_ctx(DBStorage.SSD)
+    stages = mt_builder._assemble_pre_stages(ctx, "constraints", "pretext")
     descriptors = [s.descriptor for s in stages if hasattr(s, "descriptor")]
     assert descriptors == ["Add ThreadPool"]

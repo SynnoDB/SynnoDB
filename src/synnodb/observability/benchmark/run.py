@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
+from synnodb.cpp_runner.prepare_repo.prepare_features import Parallelism
 from synnodb.observability.benchmark.systems import track
 from synnodb.observability.benchmark.writer import BenchmarkWriter
 from synnodb.observability.logging.logger import setup_logging
@@ -157,7 +158,10 @@ def _resolve_snapshots(
             f"Could not resolve a snapshot hash from wandb run {wandb_id}: {snapshot_hash}"
         )
         run_snapshots.append(snapshot_hash)
-        is_mt.append(bool(config.get("needs_parallelism", False)))
+        # Runs predating the Parallelism enum logged a bool; newer runs log the
+        # enum's string value.
+        recorded = config.get("needs_parallelism", False)
+        is_mt.append(recorded is True or recorded == Parallelism.MULTI_THREADED.value)
     return run_snapshots, is_mt
 
 
