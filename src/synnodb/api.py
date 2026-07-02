@@ -17,6 +17,7 @@ pipeline.
 from __future__ import annotations
 
 import dataclasses
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -286,13 +287,24 @@ class SynnoDB:
         /,
         *,
         data_dir: str | Path | None = None,
+        engines_dir: str | Path | None = None,
+        workspace: str | Path | None = None,
         env_file: str | None = None,
         cleanup_workspace: bool = False,
         **overrides: Any,
     ):
-        # The pipeline modules (imported lazily in run_synthesis()) still need
-        # SYNNO_DATA_DIR; configure it now so the first call doesn't fail at import.
-        settings.configure(data_dir=data_dir, env_file=env_file)
+        # The three project folders, resolved here so the whole pipeline agrees.
+        # Each falls back to .env then a default, with an explicit argument winning:
+        #   data_dir    -> SYNNO_DATA_DIR    (the one root everything else derives from)
+        #   engines_dir -> SYNNO_ENGINES_DIR (default: <data_dir>/engines)
+        #   workspace   -> SYNNO_WORKSPACE   (default: ./output; must be relative)
+        # data_dir/engines_dir become environment for the lazily-imported pipeline
+        # modules; workspace rides on the config and is read via get_workspace_dir.
+        settings.configure(
+            data_dir=data_dir, engines_dir=engines_dir, env_file=env_file
+        )
+        if workspace is not None:
+            overrides = {**overrides, "workspace": os.fspath(workspace)}
         base = config or SynnoConfig()
         self.config = dataclasses.replace(base, **overrides) if overrides else base
         # Start the live dashboard now, at driver construction, and show its URL so

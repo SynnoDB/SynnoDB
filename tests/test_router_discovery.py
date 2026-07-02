@@ -77,6 +77,27 @@ def test_resolve_engines_dir_precedence(monkeypatch, tmp_path):
     assert resolve_engines_dir("/explicit").as_posix() == "/explicit"  # explicit wins
 
 
+def test_configure_owns_engines_dir(monkeypatch, tmp_path):
+    """settings.configure(engines_dir=...) is the writer behind resolve_engines_dir:
+    unset it falls back to <data_dir>/engines; an explicit argument wins over .env/env."""
+    from synnodb import settings
+
+    # Hermetic: reset the one-shot data-dir guard and ignore any real .env.
+    monkeypatch.setattr(settings, "_our_data_dir", None)
+    monkeypatch.setattr(settings, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.delenv("SYNNO_ENGINES_DIR", raising=False)
+    data = tmp_path / "data"
+
+    # No engines_dir -> default <data_dir>/engines.
+    settings.configure(data_dir=data)
+    assert resolve_engines_dir(None) == data / "engines"
+
+    # An explicit engines_dir wins, even over a value already in the env (the .env case).
+    monkeypatch.setenv("SYNNO_ENGINES_DIR", str(tmp_path / "from_env"))
+    settings.configure(engines_dir=tmp_path / "explicit")
+    assert resolve_engines_dir(None) == tmp_path / "explicit"
+
+
 def test_discovers_and_routes(patched_engine, tmp_path):
     engines = tmp_path / "engines"
     _write_manifest(engines)
