@@ -164,8 +164,11 @@ async def handle_prompt(
             raise e
 
     except UserError as e:
-        if "invalid json" in str(e).lower() or "eof while parsing" in str(e).lower():
-            logger.warning(f"Model generated malformed tool call JSON: {e}. Retrying.")
+        err_str = str(e).lower()
+        is_malformed_json = "invalid json" in err_str or "eof while parsing" in err_str
+        is_invalid_tool_args = "validation error for" in err_str or "field required" in err_str
+        if is_malformed_json or is_invalid_tool_args:
+            logger.warning(f"Model generated an invalid tool call: {e}. Retrying.")
             last_args = getattr(agent_sdk_wrapper.model, "last_tool_call_args", None)
             log_tool_call_error(
                 error_type="UserError",
@@ -174,8 +177,16 @@ async def handle_prompt(
                 turn=run_stats_collector.last_turn,
                 raw_tool_calls=last_args,
             )
+            reprompt = (
+                "Your previous tool call had malformed/truncated JSON arguments. Please retry the operation with valid JSON."
+                if is_malformed_json
+                else (
+                    f"Your previous tool call failed argument validation:\n{e}\n"
+                    "Please retry the operation with all required arguments filled in correctly."
+                )
+            )
             final_output = await agent_sdk_wrapper.run_agent(
-                "Your previous tool call had malformed/truncated JSON arguments. Please retry the operation with valid JSON.",
+                reprompt,
                 max_turns,
                 run_stats_collector,
                 short_desc=short_desc,
