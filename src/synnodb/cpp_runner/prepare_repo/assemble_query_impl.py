@@ -6,11 +6,18 @@ _QUERY_IMPL_TEMPLATE = Path(__file__).parent / "templates" / "query_impl.cpp"
 
 def assemble_query_impl_file(
     add_thread_pool_to_query_impl: bool,
+    tracing: bool,
     add_sample_trace_to_query_impl: bool,
     query_list: list[str],
     pin_to_core: int,
     drop_os_caches_for_each_query: bool,
 ):
+    # ``tracing`` wires the trace instrumentation (trace.hpp include, per-query
+    # TRACE_RESET/FLUSH, trace emission into the query result). ``add_sample_
+    # trace_to_query_impl`` additionally emits a sample TRACE_COUNT per query;
+    # counting requires the wiring, so it implies it.
+    wire_tracing = tracing or add_sample_trace_to_query_impl
+
     # read query impl file
     assert _QUERY_IMPL_TEMPLATE.is_file(), (
         f"Query impl template not found: {_QUERY_IMPL_TEMPLATE}"
@@ -62,9 +69,9 @@ ThreadPool& get_query_pool() {
         query_impl = query_impl.replace(thread_pool_include_kw, "")
         query_impl = query_impl.replace(thread_pool_placeholder_kw, "")
 
-    if add_sample_trace_to_query_impl:
+    if wire_tracing:
         query_impl = query_impl.replace(trace_include_kw, '#include "trace.hpp"')
-        # replace trace stuff
+        # emit the collected trace into the query result
         trace_kw = 'results.push_back(QueryResult{req.query_id, req.req_id, "", elapsed_ms, error});'
         trace_target = "results.push_back(QueryResult{req.query_id, req.req_id, trace_get_and_clear(), elapsed_ms, error});"
         assert trace_kw in query_impl, (
@@ -72,7 +79,7 @@ ThreadPool& get_query_pool() {
         )
         query_impl = query_impl.replace(trace_kw, trace_target)
 
-        # remove comments
+        # activate the per-query TRACE_RESET/FLUSH the template carries commented
         trace_kw_list = ["TRACE_FLUSH();", "TRACE_RESET();"]
         for kw in trace_kw_list:
             query_impl = query_impl.replace(f"// {kw}", kw)

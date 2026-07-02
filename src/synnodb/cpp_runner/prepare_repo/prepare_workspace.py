@@ -1,19 +1,33 @@
 import logging
 from abc import abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 
 from synnodb.conversations.filenames import PLAN_FILENAME_BY_USECASE
-from synnodb.cpp_runner.prepare_repo.prepare_features import PREPARE_METADATA_FILENAME
+from synnodb.cpp_runner.prepare_repo.prepare_features import (
+    PREPARE_METADATA_FILENAME,
+    PrepareFeatures,
+    assert_resolved,
+)
 from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     extract_version_id,
 )
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
-from synnodb.utils import utils
+from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import WorkloadProvider
 
 logger = logging.getLogger(__name__)
 
 DELETE_KW = "<<DELETE>>"
+
+
+@dataclass(frozen=True)
+class PreparedWorkspaceFiles:
+    tracked_files: dict[str, str]
+    readonly_files_not_git_tracked: dict[str, str]
+    tracked_artifacts_str: str
+    readonly_artifacts_str: str
+    artifacts_str: str
 
 
 class PrepareCacheType:
@@ -32,11 +46,13 @@ class PrepareWorkspace:
         workload_provider: WorkloadProvider,
         workspace_dir: Path,
         git_snapshotter: GitSnapshotter | None,
+        db_storage: DBStorage,
         prepare_cache_dir: Path | None = None,
     ):
         self.workload_provider = workload_provider
         self.workspace_dir = workspace_dir.resolve()
         self.git_snapshotter = git_snapshotter
+        self.db_storage = db_storage
         self.prepare_cache_dir = prepare_cache_dir
 
         (
@@ -50,12 +66,45 @@ class PrepareWorkspace:
                 f"Git snapshotter working dir {self.git_snapshotter.working_dir} does not match workspace dir {self.workspace_dir}"
             )
 
+    # ------------------------- per-feature builders ---------------------------
+    # Each builder maps to exactly one PrepareFeatures field (see the module
+    # docstring of prepare_features.py) and returns file contents without
+    # writing to disk.
+
     @abstractmethod
-    def _assemble_usecase_files(self) -> dict[str, str]:
-        """Build template file contents without writing to disk."""
+    def build_scaffold_files(self, features: PrepareFeatures) -> dict[str, str]:
+        """The ``scaffold``/``storage`` feature: framework files for the storage
+        variant, queries.md, per-query files, and ``query_impl.cpp`` shaped by
+        the query-impl flags (parallel_ready_impl / tracing / sample_trace)."""
         raise NotImplementedError(
-            "assemble_usecase_files is not implemented in the base PrepareWorkspace. Use a specific implementation like OLAPPrepareWorkspace."
+            "build_scaffold_files is not implemented in the base PrepareWorkspace. Use a specific implementation like OLAPPrepareWorkspace."
         )
+
+    @property
+    @abstractmethod
+    def plan_filename(self) -> str:
+        """The usecase's storage-plan filename inside the workspace."""
+        raise NotImplementedError
+
+    def build_storage_plan_files(self, features: PrepareFeatures) -> dict[str, str]:
+        """The ``storage_plan_text`` feature: inject the plan text as a file."""
+        if features.storage_plan_text is None:
+            return {}
+        return {self.plan_filename: features.storage_plan_text}
+
+    def build_cleanup_deletes(self) -> dict[str, str]:
+        """The base-impl inputs to drop when a chain moves past the base impl
+        (tracing newly enabled): plan file, todo list, and the workspace-local
+        trace.hpp old snapshot versions carried."""
+        files: dict[str, str] = {}
+        for filename in [
+            *PLAN_FILENAME_BY_USECASE.values(),
+            "base_impl_todo.txt",
+            "trace.hpp",
+        ]:
+            if (self.workspace_dir / filename).exists():
+                files[filename] = DELETE_KW
+        return files
 
     @staticmethod
     def _get_readonly_files() -> tuple[set[str], set[str]]:
@@ -79,109 +128,77 @@ class PrepareWorkspace:
 
         return readonly_files_not_git_tracked, readonly_files_to_be_git_tracked
 
+    # ------------------------ interpreter entry points -------------------------
     def prepare(
         self,
-        only_query_md: bool = False,
+        features: PrepareFeatures,
         write_non_tracked_only: bool = False,
-        only_from_cache: bool = False,
-        do_not_cache: bool = False,
-        usecase_args: dict[str, str] = dict(),
     ) -> str:
-        """Main method to prepare the workspace. Returns a dict of filename to file content."""
+        """Write the scaffold (with the storage plan, if any) for the resolved
+        ``features``. Returns the artifacts string of the written files."""
+        prepared = self.assemble(features, write_non_tracked_only)
+        self.write_prepared_files(prepared)
+        return prepared.artifacts_str
 
-        # assemble per usecase files
-        usecase_files = self._assemble_usecase_files(**usecase_args)
+    def prepare_cleanup(self) -> str:
+        """Drop the base-impl inputs from the workspace (see
+        :meth:`build_cleanup_deletes`)."""
+        prepared = self.assemble_cleanup()
+        self.write_prepared_files(prepared)
+        return prepared.artifacts_str
 
-        file_ids_in_context = self._write_files(
-            usecase_files,
-            only_query_md=only_query_md,
-            write_non_tracked_only=write_non_tracked_only,
-            only_from_cache=only_from_cache,
-            do_not_cache=do_not_cache,
-        )
-
-        return file_ids_in_context
-
-    def prepare_optim(
+    def assemble(
         self,
+        features: PrepareFeatures,
         write_non_tracked_only: bool = False,
-        only_from_cache: bool = False,
-        do_not_cache: bool = False,
-    ) -> str:
-        # query_impl.cpp: read current on-disk version
-        # Per-query TRACE_RESET/FLUSH are already emitted by the template generator
-        # (assemble_query_and_args.py). We only need to ensure trace.hpp is included.
-        query_impl_path = self.workspace_dir / "query_impl.cpp"
-        query_impl_str = query_impl_path.read_text()
-
-        # add #include "trace.hpp" only if not already present:
-        if '#include "trace.hpp"' not in query_impl_str:
-            include_pos = query_impl_str.find("#include")
-            assert include_pos != -1, f"Could not find #include in {query_impl_path}"
-            query_impl_str = (
-                query_impl_str[:include_pos]
-                + '#include "trace.hpp"\n'
-                + query_impl_str[include_pos:]
-            )
-
-        # replace trace stuff. This is intentionally idempotent because base
-        # workspaces may already be assembled with a thread pool, and callers may
-        # request sample tracing during base preparation.
-        trace_kw = 'results.push_back(QueryResult{req.query_id, req.req_id, "", elapsed_ms, error});'
-        trace_target = "results.push_back(QueryResult{req.query_id, req.req_id, trace_get_and_clear(), elapsed_ms, error});"
-        if trace_kw in query_impl_str:
-            query_impl_str = query_impl_str.replace(trace_kw, trace_target)
-        else:
-            assert trace_target in query_impl_str, (
-                f"Could not find trace result emission in {query_impl_path}"
-            )
-
-        # remove comments
-        trace_kw_list = ["TRACE_FLUSH();", "TRACE_RESET();"]
-        for kw in trace_kw_list:
-            query_impl_str = query_impl_str.replace(f"// {kw}", kw)
-
-        files: dict[str, str] = {
-            "query_impl.cpp": query_impl_str,
-        }
-
-        # delete base impl files:
-        delete_kw = "<<DELETE>>"
-        for filename in [
-            *PLAN_FILENAME_BY_USECASE.values(),
-            "base_impl_todo.txt",
-            "trace.hpp",  # in old snapshot versions trace.hpp was in llm workspace
-        ]:
-            path = self.workspace_dir / filename
-            if path.exists():
-                files[filename] = delete_kw
-
-        return self._write_files(
+    ) -> PreparedWorkspaceFiles:
+        """Assemble the scaffold files and artifact identifier without touching
+        the workspace."""
+        assert_resolved(features, "preparing the workspace")
+        files = self.build_scaffold_files(features)
+        files.update(self.build_storage_plan_files(features))
+        return self._assemble_files(
             files,
+            only_query_md=features.scaffold == "queries_md_only",
             write_non_tracked_only=write_non_tracked_only,
-            only_from_cache=only_from_cache,
-            do_not_cache=do_not_cache,
         )
 
-    def prepare_mt(
-        self, do_not_cache: bool = True, only_from_cache: bool = False
-    ) -> str:
-        # thread_pool.hpp: copy from prepare_repo/templates
-        thread_pool_hpp_path = Path(__file__).parent / "templates" / "thread_pool.hpp"
-        thread_pool_str = thread_pool_hpp_path.read_text()
+    def assemble_cleanup(self) -> PreparedWorkspaceFiles:
+        """Assemble the cleanup deletes without touching the workspace."""
+        return self._assemble_files(self.build_cleanup_deletes())
 
-        query_pool_hpp_path = Path(__file__).parent / "templates" / "query_pool.hpp"
-        query_pool_str = query_pool_hpp_path.read_text()
+    def write_prepared_files(
+        self,
+        prepared: PreparedWorkspaceFiles,
+        write_tracked: bool = True,
+    ) -> None:
+        """Write assembled files into the workspace.
 
-        files: dict[str, str] = {
-            "thread_pool.hpp": thread_pool_str,
-            "query_pool.hpp": query_pool_str,
-        }
+        Read-only files excluded from git are always written because git
+        snapshots cannot restore them. Tracked files are written only on a cache
+        miss; a cache hit restores them from the prepared snapshot.
+        """
+        logger.info(
+            f"Writing {len(prepared.readonly_files_not_git_tracked)} read-only artifact files to `{self.workspace_dir}` for benchmark {self.workload_provider.benchmark_name}"
+        )
+        _write_files(
+            prepared.readonly_files_not_git_tracked,
+            self.workspace_dir,
+            delete_kw=DELETE_KW,
+            require_delete_targets=False,
+        )
 
-        return self._write_files(
-            files,
-            do_not_cache=do_not_cache,
-            only_from_cache=only_from_cache,
+        if not write_tracked:
+            return
+
+        logger.info(
+            f"Writing {len(prepared.tracked_files)} artifact files to `{self.workspace_dir}` for benchmark {self.workload_provider.benchmark_name}"
+        )
+        _write_files(
+            prepared.tracked_files,
+            self.workspace_dir,
+            delete_kw=DELETE_KW,
+            require_delete_targets=True,
         )
 
     def _write_files(
@@ -189,9 +206,23 @@ class PrepareWorkspace:
         files: dict[str, str],
         only_query_md: bool = False,
         write_non_tracked_only: bool = False,
-        only_from_cache: bool = False,
-        do_not_cache: bool = False,
     ) -> str:
+        prepared = self._assemble_files(
+            files,
+            only_query_md=only_query_md,
+            write_non_tracked_only=write_non_tracked_only,
+        )
+        self.write_prepared_files(prepared)
+        return prepared.artifacts_str
+
+    def _assemble_files(
+        self,
+        files: dict[str, str],
+        only_query_md: bool = False,
+        write_non_tracked_only: bool = False,
+    ) -> PreparedWorkspaceFiles:
+        """Split the given files into tracked/untracked groups and compute the
+        artifacts string without touching the workspace."""
         # check files
         for filename, content in files.items():
             assert content is not None, f"Content for file {filename} is None"
@@ -202,6 +233,8 @@ class PrepareWorkspace:
                 "queries.md must be generated to use only_query_md mode"
             )
             files = {"queries.md": files["queries.md"]}
+        else:
+            files = dict(files)
 
         # split into read-only and regular files
         ro_files_not_git: dict[str, str] = {}
@@ -215,84 +248,22 @@ class PrepareWorkspace:
             ro_files_not_git, must_be_version=True
         )
 
-        # always write non-tracked ro files
-        logger.info(
-            f"Writing {len(ro_files_not_git)} read-only artifact files to `{self.workspace_dir}` for benchmark {self.workload_provider.benchmark_name}"
-        )
-        _write_files(
-            ro_files_not_git,
-            self.workspace_dir,
-            delete_kw=DELETE_KW,
-            require_delete_targets=False,
-        )
-
         if write_non_tracked_only:
-            # early return
-            return ro_files_not_git_id_str
-
-        #####
-        # Check if we can restore prepare from git snapshotter - otherwise have to create new snapshot
-        #####
-        if self.git_snapshotter is not None:
-            # Compute cache key
-            payload = {
-                "snapshotter_hash": self.git_snapshotter.current_hash
-                if self.git_snapshotter
-                else None,
-                "files_id_str": files_id_str,  # exclude ro files excluded from git
-            }
-            hash_payload = utils.stable_json(payload)
-            cache_hash = utils.sha256(hash_payload)
-            cache_path = (
-                self.prepare_cache_dir / f"{cache_hash}.pkl"
-                if self.prepare_cache_dir is not None
-                else None
+            return PreparedWorkspaceFiles(
+                tracked_files={},
+                readonly_files_not_git_tracked=ro_files_not_git,
+                tracked_artifacts_str="",
+                readonly_artifacts_str=ro_files_not_git_id_str,
+                artifacts_str=ro_files_not_git_id_str,
             )
 
-            if self.prepare_cache_dir is not None:
-                utils.create_dir_and_set_permissions(self.prepare_cache_dir)
-        else:
-            cache_path = None
-
-        # Load checkpoint or write files
-        if cache_path is not None and cache_path.exists():
-            cached = utils.load_pickle(cache_path, PrepareCacheType)
-            assert cached is not None
-            logger.info(f"Restoring prepared repo from cache: {cache_path.name}")
-            assert self.git_snapshotter is not None
-            self.git_snapshotter.restore(cached.snapshot_hash)
-        else:
-            if only_from_cache:
-                raise ValueError(
-                    f"Prepared repo not found in cache and only_from_cache is enabled. Cache path: {cache_path}\nPayload: {hash_payload}"
-                )
-            logger.info(
-                f"Writing {len(files)} artifact files to `{self.workspace_dir}` for benchmark {self.workload_provider.benchmark_name}"
-            )
-            # write artifact files
-            _write_files(
-                files,
-                self.workspace_dir,
-                delete_kw=DELETE_KW,
-                require_delete_targets=True,
-            )
-
-            if cache_path is not None and not do_not_cache:
-                assert self.git_snapshotter is not None
-                _, commit = self.git_snapshotter.snapshot(cache_hash)
-                assert commit is not None, (
-                    "Failed to create git snapshot for prepare_repo"
-                )
-                utils.dump_pickle(
-                    cache_path,
-                    PrepareCacheType(
-                        hash_payload=hash_payload,
-                        snapshot_hash=commit,
-                    ),
-                    do_not_cache=do_not_cache,
-                )
-
-        return files_id_str + "\n" + ro_files_not_git_id_str
+        return PreparedWorkspaceFiles(
+            tracked_files=files,
+            readonly_files_not_git_tracked=ro_files_not_git,
+            tracked_artifacts_str=files_id_str,
+            readonly_artifacts_str=ro_files_not_git_id_str,
+            artifacts_str=files_id_str + "\n" + ro_files_not_git_id_str,
+        )
 
 
 def _write_files(

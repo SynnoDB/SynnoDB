@@ -4,15 +4,19 @@ from dataclasses import dataclass
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
     Parallelism,
     PrepareFeatures,
-    apply_prepare_features,
+    assemble_prepare_features,
+    prepare_metadata_content,
     read_prepare_metadata,
     write_prepare_metadata,
 )
-from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from synnodb.cpp_runner.prepare_repo.prepare_workspace import (
+    PrepareCacheType,
+    PrepareWorkspace,
+)
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.tools.run import delete_result_files
+from synnodb.utils import utils
 from synnodb.utils.confirm_dialog import await_user_confirmation
-from synnodb.utils.utils import DBStorage
 
 logger = logging.getLogger(__name__)
 
@@ -89,22 +93,90 @@ def prepare_repo_and_load_snapshot(
 
     delete_result_files(workspace_path=snapshotter.working_dir)
 
-    in_memory_storage = (
-        getattr(prepare_workspace_provider, "db_storage", None) == DBStorage.IN_MEMORY
-    )
-    features = features.resolve(in_memory_storage=in_memory_storage)
+    # Resolve the "auto" values against the run's storage backend. On the
+    # replay path the record's concrete storage must match the backend;
+    # resolve() raises otherwise.
+    features = features.resolve(prepare_workspace_provider.db_storage)
 
-    artifacts_str = apply_prepare_features(
+    # The snapshot the prepare starts from. Assembled files are not written
+    # until after the prepared-snapshot cache lookup, so HEAD stays at this
+    # base and a cache miss becomes a single commit on top.
+    base_snapshot = snapshotter.current_hash
+
+    artifacts_str, prepared_parts = assemble_prepare_features(
         features,
         prepare_workspace_provider,
         source_features,
-        do_not_cache=do_not_cache,
-        only_from_cache=only_from_cache,
     )
 
-    # Written after all features applied, before the run's first snapshot
-    # commit, so the record travels with every snapshot of this workspace.
-    write_prepare_metadata(snapshotter.working_dir, features, parallelism=parallelism)
+    # Commit the prepared workspace as one content-addressed snapshot carrying
+    # both the prepared files and the prepare record (.synnodb_prepare.json).
+    # The prepare cache mirrors the legacy implementation: a stable payload is
+    # hashed to a .pkl file, and that file stores the prepared snapshot commit.
+    # Git-excluded read-only support files are not part of the cache key because
+    # they are refreshed on every prepare and cannot be restored from git.
+    metadata_content = prepare_metadata_content(features, parallelism)
+    tracked_artifacts_str = "".join(
+        part.tracked_artifacts_str for part in prepared_parts
+    )
+    hash_payload = utils.stable_json(
+        {
+            "snapshotter_hash": base_snapshot,
+            "files_id_str": tracked_artifacts_str,
+            "metadata_content": metadata_content,
+        }
+    )
+    cache_hash = utils.sha256(hash_payload)
+    cache_path = (
+        prepare_workspace_provider.prepare_cache_dir / f"{cache_hash}.pkl"
+        if prepare_workspace_provider.prepare_cache_dir is not None
+        else None
+    )
+    if prepare_workspace_provider.prepare_cache_dir is not None:
+        utils.create_dir_and_set_permissions(
+            prepare_workspace_provider.prepare_cache_dir
+        )
+
+    if cache_path is not None and cache_path.exists():
+        cached = utils.load_pickle(cache_path, PrepareCacheType)
+        assert cached is not None
+        # An identical prepared state is already committed: reload it. Clear
+        # untracked first so checkout is not blocked by stale files.
+        logger.info("Restoring prepared repo from cache: %s", cache_path.name)
+        snapshotter.clear_untracked()
+        snapshotter.restore(cached.snapshot_hash)
+        # The prepared snapshot restores git-tracked files. Read-only
+        # support files excluded from git must still be refreshed.
+        for part in prepared_parts:
+            prepare_workspace_provider.write_prepared_files(part, write_tracked=False)
+    elif only_from_cache:
+        raise ValueError(
+            "Prepared workspace not found in cache and only_from_cache is "
+            f"enabled. Cache path: {cache_path}\nPayload: {hash_payload}"
+        )
+    else:
+        for part in prepared_parts:
+            prepare_workspace_provider.write_prepared_files(part)
+        write_prepare_metadata(snapshotter.working_dir, features, parallelism)
+        if not do_not_cache:
+            assert not snapshotter.do_not_snapshot, (
+                "prepare_repo_and_load_snapshot was asked to cache, but "
+                "snapshotting is disabled on the GitSnapshotter"
+            )
+            assert base_snapshot is not None, (
+                "prepared workspace has no base snapshot to commit the record onto"
+            )
+            _, commit = snapshotter.snapshot(cache_hash)
+            assert commit is not None, "Failed to create git snapshot for prepare_repo"
+            if cache_path is not None:
+                utils.dump_pickle(
+                    cache_path,
+                    PrepareCacheType(
+                        hash_payload=hash_payload,
+                        snapshot_hash=commit,
+                    ),
+                    do_not_cache=False,
+                )
 
     return PrepareResult(
         artifacts_str=artifacts_str, features=features, parallelism=parallelism

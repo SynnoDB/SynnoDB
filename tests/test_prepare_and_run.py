@@ -105,6 +105,7 @@ def main(args):
             parallelism=Parallelism.MULTI_THREADED
             if parallelism
             else Parallelism.SINGLE_THREADED,
+            do_not_cache=query_do_not_cache,
         )
 
     compiler = OLAPCompilerFactory(db_storage=db_storage).make_compiler(

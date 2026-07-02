@@ -245,7 +245,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
 
     # Plan extraction is decoupled from the workspace prepare below: it only
     # produces the plan *text* (from one of two sources), which prepare then
-    # writes into the clean workspace via usecase_prepare_args["storage_plan"].
+    # writes into the clean workspace via the storage_plan_text feature.
     if getattr(args, "storage_plan_text", None) is not None:
         # Direct text (W&B-free): no run to look up, no snapshot to restore.
         storage_plan = args.storage_plan_text
