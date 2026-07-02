@@ -59,7 +59,9 @@ def ensure_tpch_parquet(
 
         print(f"sf{sf}: generating {missing} ...")
         spill.mkdir(parents=True, exist_ok=True)
-        temp_db = out / f"_gen_sf{sf}.duckdb"  # on-disk so large SFs can spill instead of OOM
+        temp_db = (
+            out / f"_gen_sf{sf}.duckdb"
+        )  # on-disk so large SFs can spill instead of OOM
         con = duckdb.connect(str(temp_db))
         try:
             con.execute("INSTALL tpch; LOAD tpch;")
