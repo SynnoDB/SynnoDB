@@ -8,6 +8,8 @@
 document.getElementById('prompt-list').addEventListener('mouseover', e => {
   const item = e.target.closest('.pl-item[data-desc]');
   if (!item) return;
+  // Scheduled stages have no timeline span to cross-highlight.
+  if (item.dataset.future) { setHoveredSection(null, null, null); return; }
   setHoveredSection(item.dataset.desc, +item.dataset.first, +item.dataset.last);
 });
 document.getElementById('prompt-list').addEventListener('mouseleave', () => {
@@ -86,7 +88,10 @@ function openPromptModal(desc) {
 
   _promptModalText = text || '';
   promptModalTitle.textContent = desc;
-  promptModalBody.innerHTML    = text ? renderMarkdown(text) : '<p style="color:var(--muted)">No prompt text recorded.</p>';
+  const futureBanner = _futurePrompts.has(desc)
+    ? '<div class="prompt-preview-banner">Scheduled stage - not executed yet. This is a preview; values known only at runtime appear as «placeholders».</div>'
+    : '';
+  promptModalBody.innerHTML    = futureBanner + (text ? renderMarkdown(text) : '<p style="color:var(--muted)">No prompt text recorded.</p>');
   promptModalBody.scrollTop    = 0;
   promptModalConfig.innerHTML  = renderAgentConfig(config || null);
   promptModalCopy.textContent  = 'Copy';

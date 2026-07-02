@@ -54,6 +54,16 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 
 ```json
 {
+  "meta": {
+    "run_name": "...", "stages": [{"run_name": "...", "base_step": 0}, ...],
+    "planned_stages": {
+      "base_step": 12, "stage_name": "runOptimLoop",
+      "stages": [
+        {"descriptor": "Optim w. Sample Plan (Q1)", "prompt_preview": "...«tracing...»...",
+         "has_runtime_placeholder": true, "dynamic": false}
+      ]
+    }
+  },
   "steps": [0, 1, 2, ...],
   "data": {
     "0": { "type": "llm", "input_tokens": 1234, ... },
@@ -63,6 +73,12 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 ```
 
 `steps` is a sorted list of integer turn indices. `data` keys are step numbers as strings.
+
+## Scheduled (future) stages in the prompts pane
+
+`meta.planned_stages` carries the **currently-running conversation's** full stage list, published the moment `Conversation.build_items` returns (backend: `stage_preview.build_stage_previews` → `RunStatsCollector.register_planned_stages` → `LiveDashboardDrain.register_planned_stages`). Only prompt-bearing stages appear (markers and the silent composites run no LLM turn and so never become a pane section). `prompt_preview` is best-effort: it is rendered ahead of time with runtime-only values (the tracing/profiling blob) left as `«placeholders»`; `dynamic` stages (`DynamicStageConfig`, `PerQueryLoop`) carry no preview because their prompts are decided while they run.
+
+`updatePrompts` (`js/cards.js`) renders the executed sections, then `getFutureStages` aligns those sections (filtered to `step >= base_step`) against `planned_stages` by walking a monotonic pointer over matching descriptors; everything past the last match is appended as dimmed white `.pl-future` items under a "Scheduled" header. The last executed section keeps the `.active` highlight as the running stage. `begin_stage` clears `planned_stages` so the next conversation starts blank until it registers its own.
 
 ## Code inspector endpoints
 

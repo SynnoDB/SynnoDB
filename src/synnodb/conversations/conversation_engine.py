@@ -268,6 +268,13 @@ class Conversation:
         if self.supervision_agent is not None:
             self.supervision_agent.register_workload_info(items)
 
+    def _register_planned_stages(self, items: List[StageItem]) -> None:
+        """Publish previews of the whole scheduled stage list to the drains so
+        the dashboard can show the upcoming (not-yet-executed) prompts."""
+        from synnodb.conversations.stage_preview import build_stage_previews
+
+        self.run_stats_collector.register_planned_stages(build_stage_previews(items))
+
     def _next_stage_nr(self) -> int:
         """The runner-owned monotonic stage counter: one number per executed
         item, composites increment through it. Feeds only logging/dashboard."""
@@ -301,6 +308,7 @@ class Conversation:
         with self._debug_logging():
             items = self.build_items()
             self._register_supervision(items)
+            self._register_planned_stages(items)
             await self._run_stages(items, prompt_pretext=self.prompt_pretext)
         if self.finish_interactive:
             return await self.ask_to_finish_and_save()

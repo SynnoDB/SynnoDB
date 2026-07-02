@@ -76,6 +76,18 @@ class DataDrain(ABC):
     @abstractmethod
     def emit(self, metrics: dict, step: int) -> None: ...
 
+    def register_planned_stages(
+        self, previews: list[dict], stage_name: str | None = None
+    ) -> None:
+        """Record the not-yet-executed stage previews for the current stage.
+
+        Optional forward-looking hook: a conversation registers the previews of
+        its whole (scheduled) stage list the moment it is built. Sinks that
+        cannot surface future stages ignore it; the live dashboard uses it to
+        show upcoming prompts in the prompts pane. No-op by default.
+        """
+        return None
+
 
 class WandbDrain(DataDrain):
     """Emits metrics to Weights & Biases."""
