@@ -26,7 +26,10 @@ from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
 )
 from synnodb.llm.sdk.agents_sdk.openai_sdk import OpenAIAgentsSDKWrapper
-from synnodb.observability.live_ui.live_dashboard import get_or_create_live_drain
+from synnodb.observability.live_ui.live_dashboard import (
+    get_or_create_live_drain,
+    report_live_dashboard_error,
+)
 from synnodb.observability.logging import notify
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
@@ -993,14 +996,28 @@ def run_conv_wrapper(
                 f"Conversation completed successfully (*{run_name}*))"
             )
     except Exception as e:
+        import traceback
+
+        stacktrace = traceback.format_exc()
+
+        # Surface the failure on the live dashboard so a watcher sees the run
+        # aborted (banner + frozen timer) instead of a timer that keeps ticking
+        # forever on a dead run. Best-effort: never let reporting mask the
+        # original error.
+        try:
+            report_live_dashboard_error(
+                str(e),
+                traceback_text=stacktrace,
+                log_file=str(settings.log_dir() / log_filename),
+            )
+        except Exception:
+            logger.warning("could not report error to live dashboard", exc_info=True)
+
         if args.notify:
             # send notification about the error (e.g. via email or slack - not implemented here, just a placeholder)
             logger.error(f"An error occurred: {e}. Sending notification...")
 
-            # get exception and stacktrace info
-            import traceback
-
-            notify_msg = f"Error in conversation (*{run_name}*):\n```quote\n{str(e)}\n```\n\nStacktrace:\n```shell\n{traceback.format_exc()}\n```"
+            notify_msg = f"Error in conversation (*{run_name}*):\n```quote\n{str(e)}\n```\n\nStacktrace:\n```shell\n{stacktrace}\n```"
 
             notify.send_notification(notify_msg, check_tmux=False)
 
