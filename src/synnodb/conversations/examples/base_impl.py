@@ -1,14 +1,14 @@
-"""Stage list of the createBaseImpl conversation, plus its dynamic stages
+"""Stage list to create a basic implementation, plus its dynamic stages
 (OptimizeBuildStage / ValidateAndFixStage)."""
 
 import functools
 import logging
 from typing import Optional
 
+from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.conversation_engine import (
     extract_speedup_of_last_snapshot,
 )
-from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.prompts_gen import (
     base_check_correctness_all_prompt,
     base_exec_validate_for_query_prompt,

@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import functools
 
-from synnodb.conversations.builders import base_impl as _base_impl_builder
-from synnodb.conversations.builders import check_sf as _check_sf_builder
-from synnodb.conversations.builders import mt as _mt_builder
-from synnodb.conversations.builders import optim as _optim_builder
-from synnodb.conversations.builders import storage_plan as _storage_plan_builder
+from synnodb.conversations.examples import add_mt as _mt_builder
+from synnodb.conversations.examples import base_impl as _base_impl_builder
+from synnodb.conversations.examples import check_sf as _check_sf_builder
+from synnodb.conversations.examples import optim as _optim_builder
+from synnodb.conversations.examples import storage_plan as _storage_plan_builder
 from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
 from synnodb.plan import ConversationPlan, SupervisionPolicy
 from synnodb.results import (

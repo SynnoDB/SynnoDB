@@ -1,10 +1,4 @@
-"""Stage list of the manual `scripted` conversation.
-
-Re-expresses the legacy ScriptedConversation as a plan builder: the JSON prompt
-array persisted at the conversation path becomes a list of PromptStages
-(compaction markers map to Compact items). New prompts can be appended through
-the plan's finish_interactive loop.
-"""
+"""Stage list that follows a JSON prompt array."""
 
 import json
 import logging

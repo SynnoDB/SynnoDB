@@ -130,7 +130,7 @@ class: ValidateAndFixStage
 descriptor: exec & validate
 max_turns: None
 --- prompt ---
-Execute and check termination without error. First call the compile tool, then check the run tool. If there are errors, fix the implementation accordingly.
+Execute and check termination without error. First call the compile tool, then check the run tool (mode: EXHAUSTIVE). If there are errors, fix the implementation accordingly.
 
 If errors occur: first assume the bug is in the target query file, `query_impl.cpp`,  `args_parser.hpp`, or `db_loader.hpp/db_loader.cpp`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
 

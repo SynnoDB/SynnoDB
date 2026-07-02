@@ -3,14 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from synnodb.conversations.examples import add_mt as mt_builder
+from synnodb.conversations.filenames import Filenames
 from synnodb.cpp_runner.prepare_repo.assemble_query_impl import assemble_query_impl_file
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
     PrepareFeatures,
     apply_prepare_features,
 )
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
-from synnodb.conversations.builders import mt as mt_builder
-from synnodb.conversations.filenames import Filenames
 from synnodb.utils.utils import DBStorage
 
 

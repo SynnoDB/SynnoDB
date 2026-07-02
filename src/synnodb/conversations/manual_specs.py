@@ -16,7 +16,7 @@ from synnodb.builtin_plans import (
     optim_plan,
     storage_plan_plan,
 )
-from synnodb.conversations.builders import scripted as _scripted_builder
+from synnodb.conversations.examples import scripted_json as _scripted_builder
 from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
 from synnodb.plan import ConversationPlan
 

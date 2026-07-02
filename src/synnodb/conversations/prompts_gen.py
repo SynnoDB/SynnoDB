@@ -202,24 +202,6 @@ def base_impl_storage(
     )
 
 
-def base_storage_invariant_check_prompt(
-    sf_verify_str: str,
-    builder_path: str,
-    persistent_storage: bool,
-) -> str:
-    if persistent_storage:
-        prompt_path = _PROMPTS_DIR / "ssd" / "base_storage_invariant_check_ssd.txt"
-    else:
-        return ""
-
-    template_str = _load_txt(prompt_path)
-    template = Template(template_str)
-    return template.substitute(
-        sf_verify_str=sf_verify_str,
-        builder_path=builder_path,
-    )
-
-
 def _detect_hardware_context(
     serving_threads: int | None = None,
     memory_budget_mb: int | None = None,

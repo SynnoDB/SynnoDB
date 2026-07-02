@@ -1,4 +1,4 @@
-Execute and check termination without error. First call the compile tool, then check the run tool. If there are errors, fix the implementation accordingly.
+Execute and check termination without error. First call the compile tool, then check the run tool (mode: ${run_tool_mode}). If there are errors, fix the implementation accordingly.
 
 If errors occur: first assume the bug is in the target query file, `${query_impl_path}`,  `${args_parser}`, or `${builder_path}`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
 

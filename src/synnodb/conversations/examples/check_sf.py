@@ -1,9 +1,4 @@
-"""Stage list of the checkSfCorrectness conversation.
-
-Single-stage conversation that reuses ``optim2_prompt_check_large_sf`` to ask
-the agent to validate the existing implementation at ``target_sf`` and fix any
-scaling issues (e.g. int32 overflow) found along the way.
-"""
+"""Stage list to check correctness at a target scale factor, and fix any scaling issues found along the way."""
 
 from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.prompts_gen import (

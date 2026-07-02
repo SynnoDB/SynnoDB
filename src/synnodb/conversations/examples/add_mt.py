@@ -1,4 +1,4 @@
-"""Stage list of the addMultiThreading conversation (second optimization round).
+"""Stage list to add multi-threading (second optimization round).
 
 In-memory: base implementations are generated parallel-ready through the shared
 query pool, so this round simply runs the same code with more CORE_IDS and

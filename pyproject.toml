@@ -109,9 +109,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["synnodb*"]
-exclude = [
-    "synnodb.cpp_runner.test*",  # test code + scratch output
-]
 
 [tool.setuptools.package-data]
 "*" = ["*.cpp", "*.hpp", "*.h", "*.txt", "*.sh", "*.html", "*.css", "*.js", "*.jpeg", "*.jpg", "*.json", "*.sql"]

@@ -245,35 +245,35 @@ def _assert_matches_golden(name: str, doc: str) -> None:
 
 # ---------------------------------- documents --------------------------------
 def _storage_plan_doc() -> str:
-    from synnodb.conversations.builders import storage_plan
+    from synnodb.conversations.examples import storage_plan
 
     ctx = _make_ctx(DBStorage.IN_MEMORY)
     return _render_doc([("stages", storage_plan.build(ctx))], ctx)
 
 
 def _base_impl_doc() -> str:
-    from synnodb.conversations.builders import base_impl
+    from synnodb.conversations.examples import base_impl
 
     ctx = _make_ctx(DBStorage.IN_MEMORY)
     return _render_doc([("stages", base_impl.build(ctx))], ctx)
 
 
 def _optim_round1_doc(db_storage: DBStorage) -> str:
-    from synnodb.conversations.builders import optim
+    from synnodb.conversations.examples import optim
 
     ctx = _make_ctx(db_storage)
     return _render_doc([("stages", optim.build(ctx, plan_source="umbra"))], ctx)
 
 
 def _mt_round2_doc(db_storage: DBStorage) -> str:
-    from synnodb.conversations.builders import mt
+    from synnodb.conversations.examples import add_mt
 
     ctx = _make_ctx(db_storage)
-    return _render_doc([("stages", mt.build(ctx))], ctx)
+    return _render_doc([("stages", add_mt.build(ctx))], ctx)
 
 
 def _check_sf_doc() -> str:
-    from synnodb.conversations.builders import check_sf
+    from synnodb.conversations.examples import check_sf
 
     ctx = _make_ctx(DBStorage.IN_MEMORY)
     return _render_doc([("stages", check_sf.build(ctx, target_sf=100))], ctx)
