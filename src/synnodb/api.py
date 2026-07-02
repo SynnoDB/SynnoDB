@@ -5,9 +5,13 @@
     plan = db.createStoragePlan(queries="1")        # -> StoragePlan; plan.text is the doc
     impl = db.createBaseImpl(storage_plan=plan.text) # -> BaseImplementation; impl.files
 
-Each call runs one stage to completion (blocking) and returns the stage's domain
-artifact (StoragePlan, BaseImplementation, ...) — carrying the produced content
-plus the wandb run id used to chain stages.
+``run_synthesis`` is the single entry point for executing a conversation: it
+takes a complete :class:`~synnodb.plan.ConversationPlan` (predefined or
+user-assembled) plus the chain token (``start``) and runs it to completion.
+The named stage methods (``createStoragePlan`` ... ``checkSfCorrectness``) are
+thin wrappers that resolve their chain inputs, construct their parameterized
+built-in plan, and call ``run_synthesis`` - one entry point, one execution
+pipeline.
 """
 
 from __future__ import annotations
@@ -15,13 +19,13 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from synnodb import settings
 
 # These enums resolve without SYNNO_DATA_DIR (the module-level assert was made
-# lazy), so importing synnodb stays config-free. The heavy stage modules
-# (synnodb.main, synnodb.run_*) are imported lazily inside run().
+# lazy), so importing synnodb stays config-free. The heavy pipeline modules
+# (synnodb.main, the builders) are imported lazily inside run_synthesis().
 from synnodb.results import (
     BaseImplementation,
     CorrectnessReport,
@@ -30,18 +34,15 @@ from synnodb.results import (
     StageArtifact,
     StoragePlan,
 )
-from synnodb.utils.cli_config import DEFAULT_MODEL, Usecase
+from synnodb.utils.cli_config import DEFAULT_MODEL, RunConfig, Usecase
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import Workload, WorkloadId
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
 if TYPE_CHECKING:
-    from synnodb.conversations.conversation_spec import FrameworkContext
-    from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import PrepareContext
-    from synnodb.conversations.conversation import AbstractConversation
-    from synnodb.utils.cli_config import RunConfig
+    from synnodb.plan import ConversationPlan
 
-__all__ = ["SynnoDB", "SynnoConfig", "Stage", "register_stage"]
+__all__ = ["SynnoDB", "SynnoConfig"]
 
 
 # ----------------------------- coercion helpers -----------------------------
@@ -62,7 +63,7 @@ def _as_usecase(v: Usecase | str) -> Usecase:
     return v if isinstance(v, Usecase) else Usecase(str(v))
 
 
-def _as_arg(v: Any) -> str:
+def _as_run_id(v: Any) -> str:
     """A stage artifact collapses to its run id; everything else stringifies."""
     if isinstance(v, StageArtifact):
         if v.run_id is None:
@@ -84,7 +85,7 @@ def _resolve_chain(
       - ``source_wandb_id`` -> its ``.run_id`` (or a raw id str): W&B path.
     """
     snap = source.snapshot_hash if isinstance(source, StageArtifact) else source
-    wid = _as_arg(source_wandb_id) if source_wandb_id is not None else None
+    wid = _as_run_id(source_wandb_id) if source_wandb_id is not None else None
     if (snap is None) == (wid is None):
         raise ValueError(
             f"{stage} requires exactly one of `source` (an artifact or git snapshot "
@@ -130,7 +131,7 @@ class SynnoConfig:
     # None -> falls back to the $MODEL_EXTRA_BODY env var.
     model_extra_body: dict[str, Any] | None = None
     # escape hatch for any unmodelled RunConfig field: applied (dataclasses.replace)
-    # onto the RunConfig a stage's build_config produces, just before execution.
+    # onto the RunConfig run_synthesis produces, just before execution.
     extra_config: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -144,132 +145,140 @@ class SynnoConfig:
         return self.wandb_entity is not None or self.wandb_project is not None
 
 
-# ---------------------- result builders (workspace -> artifact) -------------
-# Each reads the stage's produced artifact out of the run's workspace and wraps
-# it with provenance (run_id, snapshot_hash, workspace, config). Signature is
-# uniform so the generic run() can dispatch on the Stage.
-
-ResultBuilder = Callable[
-    ["str | None", "str | None", Path, "SynnoConfig", "dict[str, Any]"], StageArtifact
-]
-
-
-def _engine_files(workspace: Path) -> dict[str, str]:
-    files: dict[str, str] = {}
-    for p in sorted(workspace.glob("*.cpp")) + sorted(workspace.glob("*.hpp")):
-        try:
-            files[p.name] = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            pass
-    return files
-
-
-def _build_artifact(run_id, snapshot_hash, workspace, config, inputs) -> StageArtifact:
-    return StageArtifact(run_id, workspace, config, snapshot_hash=snapshot_hash)
-
-
-def _build_storage_plan(
-    run_id, snapshot_hash, workspace, config, inputs
-) -> StoragePlan:
-    path = workspace / "storage_plan.txt"
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    return StoragePlan(
-        run_id, workspace, config, path, text, snapshot_hash=snapshot_hash
+# --------------------------- chain-input resolution --------------------------
+def _base_run_config(cfg: SynnoConfig) -> dict[str, Any]:
+    """Map the typed ``SynnoConfig`` onto the RunConfig kwargs every run shares.
+    Settings the API does not model take ``RunConfig``'s own field defaults."""
+    return dict(
+        model=cfg.model,
+        benchmark=cfg.workload,
+        db_storage=cfg.db_storage,
+        usecase=cfg.usecase,
+        queries_str=cfg.queries,
+        notify=cfg.notify,
+        disable_openai_tracing=cfg.disable_openai_tracing,
+        auto_u=cfg.auto_confirm,
+        auto_finish=cfg.auto_finish,
+        log_to_wandb=cfg.wandb_enabled,
+        wandb_entity=cfg.wandb_entity,
+        wandb_project=cfg.wandb_project,
+        disable_repo_sync=cfg.disable_repo_sync,
+        do_not_cache=cfg.do_not_cache,
+        workspace_dir=cfg.workspace,
+        verbose=cfg.verbose,
+        threads=cfg.threads,
+        max_turns=cfg.max_turns,
+        model_extra_body=cfg.model_extra_body,
     )
 
 
-def _build_base_impl(
-    run_id, snapshot_hash, workspace, config, inputs
-) -> BaseImplementation:
-    return BaseImplementation(
-        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+def _parse_queries(cfg: SynnoConfig) -> list[str]:
+    from synnodb.utils.gen_common import parse_query_ids
+
+    query_ids = parse_query_ids(cfg.queries, benchmark=cfg.workload)
+    assert query_ids is not None, f"Failed to parse query ids from {cfg.queries!r}"
+    return query_ids
+
+
+def _memory_budget(cfg: SynnoConfig) -> int | None:
+    """Pick a RAM budget only for persistent storage (in-memory uses all RAM)."""
+    if cfg.db_storage in (DBStorage.LABSTORE, DBStorage.SSD):
+        return 50 * 1024
+    return None
+
+
+def validate_snapshot(
+    snapshot_config, benchmark, queries_str, query_ids, db_storage, model
+):
+    """Validate that a previous run's logged config matches this run's settings."""
+    from synnodb.utils.confirm_dialog import await_user_confirmation
+    from synnodb.utils.gen_common import parse_query_ids
+
+    snapshot_benchmark: str = snapshot_config["benchmark"]
+    snapshot_queries_str = snapshot_config["queries_str"]
+    snapshot_model = snapshot_config["model"]
+    snapshot_db_storage = snapshot_config["db_storage"]
+
+    # .value works for both built-in enum members and a WorkloadId (bring-your-own)
+    assert snapshot_benchmark.upper() == benchmark.value.upper(), (
+        f"Expected benchmark {benchmark.value.upper()} in storage plan run, got {snapshot_benchmark}"
+    )
+    if queries_str is not None:
+        assert snapshot_queries_str == queries_str, (
+            f"Expected queries str {queries_str} in storage plan run, got {snapshot_queries_str}"
+        )
+    assert query_ids == parse_query_ids(snapshot_queries_str, benchmark=benchmark), (
+        f"Expected query ids {query_ids} in storage plan run, got {parse_query_ids(snapshot_queries_str, benchmark=benchmark)}"
     )
 
+    if db_storage is not None:
+        assert snapshot_db_storage.lower() == db_storage.value.lower(), (
+            f"Expected db_storage {db_storage.value.lower()} in storage plan run, got {snapshot_db_storage.lower()}"
+        )
 
-def _build_optimized(
-    run_id, snapshot_hash, workspace, config, inputs
-) -> OptimizedImplementation:
-    return OptimizedImplementation(
-        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+    if model is not None and snapshot_model != model:
+        response = await_user_confirmation(
+            f"Model in storage plan run is {snapshot_model}, but current model is {model}. Do you want to continue?"
+        )
+        if not response:
+            print("Aborting run.")
+            import sys
+
+            sys.exit(0)
+
+
+def resolve_source_snapshot(
+    cfg: SynnoConfig,
+    *,
+    snapshot: str | None,
+    wandb_id: str | None,
+    source_kind: str,
+) -> str:
+    """Resolve the git snapshot hash of a previous stage's output. Provide exactly
+    one of ``snapshot`` (the git hash directly, W&B-free) or ``wandb_id`` (a W&B run
+    id resolved to its logged snapshot and validated against this run's config).
+
+    This is the one generic chain-input resolver every built-in wrapper uses."""
+    if (snapshot is None) == (wandb_id is None):
+        raise ValueError(
+            f"Provide exactly one of a snapshot (git snapshot hash, W&B-free) "
+            f"or a W&B run id to load the {source_kind} snapshot — got "
+            + ("both" if snapshot is not None else "neither")
+            + "."
+        )
+    if snapshot is not None:
+        return snapshot
+
+    from synnodb.observability.logging.wandb_api_helper import (
+        wandb_retrieve_metrics_for_run,
     )
 
-
-def _build_multithreaded(
-    run_id, snapshot_hash, workspace, config, inputs
-) -> MultiThreadedImplementation:
-    return MultiThreadedImplementation(
-        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+    statistics, config, _ = wandb_retrieve_metrics_for_run(
+        cfg.workload,
+        wandb_id,
+        entity=cfg.wandb_entity,
+        project=cfg.wandb_project,
+        fetch_latest_runtimes=False,
     )
-
-
-def _build_correctness(
-    run_id, snapshot_hash, workspace, config, inputs
-) -> CorrectnessReport:
-    return CorrectnessReport(
-        run_id,
-        workspace,
+    validate_snapshot(
         config,
-        float(inputs["target_sf"]),
-        snapshot_hash=snapshot_hash,
+        cfg.workload,
+        cfg.queries,
+        _parse_queries(cfg),
+        db_storage=cfg.db_storage,
+        model=cfg.model,
     )
-
-
-# --------------------------------- stages -----------------------------------
-# One descriptor per pipeline stage, end to end. ``build_config`` assembles the
-# RunConfig directly from the typed SynnoConfig + per-call inputs (no argv); the
-# remaining fields are the execution-backend contract main.py consumes (prepare /
-# parallelism / factory) plus the result builder. The concrete instances live in
-# synnodb/stages.py, imported lazily by run() so plain ``import synnodb`` stays light.
-@dataclass(frozen=True)
-class Stage:
-    name: str  # "createStoragePlan" — the run-type identity
-    usecases: frozenset[Usecase]
-    build_config: "Callable[[SynnoConfig, dict[str, Any]], RunConfig]"
-    prepare: "Callable[[PrepareContext], str]"
-    needs_parallelism: bool
-    be_relaxed_supervision: bool
-    factory: "Callable[[FrameworkContext], AbstractConversation]"
-    result: ResultBuilder = _build_artifact  # builds the typed domain object
-
-
-_REGISTRY: dict[str, Stage] = {}
-
-
-def register_stage(stage: Stage) -> None:
-    if stage.name in _REGISTRY:
-        raise ValueError(f"stage {stage.name!r} already registered")
-    _REGISTRY[stage.name] = stage
-
-
-_stages_loaded = False
-
-
-def _load_stages() -> None:
-    """Import the stage catalog once, populating ``_REGISTRY`` as a side effect."""
-    global _stages_loaded
-    if not _stages_loaded:
-        import synnodb.stages  # noqa: F401  (registers stages on import)
-
-        _stages_loaded = True
-
-
-def all_stages() -> tuple[Stage, ...]:
-    """Every registered stage (loads the catalog on first call)."""
-    _load_stages()
-    return tuple(_REGISTRY.values())
-
-
-def get_stage(name: str) -> Stage:
-    """Look up a registered stage by name (loads the catalog on first call)."""
-    _load_stages()
-    if name not in _REGISTRY:
-        raise ValueError(f"Unknown stage {name!r}. Known stages: {sorted(_REGISTRY)}")
-    return _REGISTRY[name]
+    commit_hash = statistics["code/snapshot_hash"]
+    assert commit_hash != "N/A", (
+        f"Could not retrieve a valid commit hash from wandb for run {wandb_id} in "
+        f"benchmark {cfg.workload}. Got {commit_hash}."
+    )
+    return commit_hash
 
 
 # --------------------------------- facade -----------------------------------
 class SynnoDB:
-    """Programmatic pipeline driver. Each call runs one stage to completion."""
+    """Programmatic pipeline driver. Each call runs one conversation to completion."""
 
     def __init__(
         self,
@@ -281,8 +290,8 @@ class SynnoDB:
         cleanup_workspace: bool = False,
         **overrides: Any,
     ):
-        # The stage modules (imported lazily in run()) still need SYNNO_DATA_DIR;
-        # configure it now so the first stage call doesn't fail at import.
+        # The pipeline modules (imported lazily in run_synthesis()) still need
+        # SYNNO_DATA_DIR; configure it now so the first call doesn't fail at import.
         settings.configure(data_dir=data_dir, env_file=env_file)
         base = config or SynnoConfig()
         self.config = dataclasses.replace(base, **overrides) if overrides else base
@@ -429,25 +438,55 @@ class SynnoDB:
         """A new driver with a derived config (immutable; e.g. per-call SF/storage)."""
         return SynnoDB(dataclasses.replace(self.config, **overrides))
 
-    # ---- generic engine -------------------------------------------------
-    def run(
-        self, stage: str | Stage, /, *, verbose: bool | None = None, **inputs: Any
+    # ---- the single entry point ------------------------------------------
+    def run_synthesis(
+        self,
+        plan: "ConversationPlan",
+        *,
+        start: StageArtifact | str | None = None,
+        storage_plan_snapshot: str | None = None,
+        verbose: bool | None = None,
     ) -> StageArtifact:
-        _load_stages()
-        st = stage if isinstance(stage, Stage) else _REGISTRY[stage]
+        """Execute a :class:`~synnodb.plan.ConversationPlan` to completion.
+
+        The plan is the single, self-contained description of the run - no
+        kwargs assembly, no field overriding. ``start`` is the per-invocation
+        chain token: a stage artifact (its ``.snapshot_hash`` is used), a raw
+        git snapshot hash, or None for a fresh workspace.
+
+        ``storage_plan_snapshot`` is the second chain token used only by
+        ``createBaseImpl``'s W&B path: the storage-plan text is recovered from
+        that snapshot inside the run and injected into the workspace.
+        ``verbose`` streams DEBUG logs to the console for this call (a logging
+        toggle, not a run-semantic override).
+
+        Returns the plan's typed artifact, stamped with the workspace's prepare
+        record (``prepare_features`` / ``parallelism``) so the run chains into
+        ``checkSfCorrectness`` or further custom runs with no extra ceremony.
+        """
         cfg = self.config
-        if cfg.usecase not in st.usecases:
-            allowed = sorted(u.value for u in st.usecases)
-            raise ValueError(
-                f"stage {st.name!r} serves usecases {allowed}, not {cfg.usecase.value!r}"
-            )
-        # Assemble the RunConfig straight from the typed config + inputs — no argv,
-        # no argparse round-trip. extra_config is the escape hatch for any field the
-        # typed SynnoConfig does not model.
-        run_config = st.build_config(cfg, inputs)
+        if isinstance(start, StageArtifact):
+            if start.snapshot_hash is None:
+                raise ValueError(
+                    f"cannot chain from a {type(start).__name__} without a "
+                    "snapshot_hash (was the producing run snapshotted?)"
+                )
+            start_snapshot: str | None = start.snapshot_hash
+        else:
+            start_snapshot = start
+
+        run_config = RunConfig(
+            **_base_run_config(cfg),
+            query_list=",".join(map(str, _parse_queries(cfg))),
+            bespoke_storage=True,
+            start_snapshot=start_snapshot,
+            storage_plan_snapshot=storage_plan_snapshot,
+            run_tool_offer_trace_option=plan.offer_trace_option,
+            memory_budget_mb=_memory_budget(cfg),
+        )
         # Per-call verbose overrides the driver default (cfg.verbose, already baked
-        # into run_config by build_config); either streams DEBUG logs to the console
-        # (the logfile is always DEBUG regardless).
+        # into run_config); either streams DEBUG logs to the console (the logfile is
+        # always DEBUG regardless).
         if verbose is not None:
             run_config = dataclasses.replace(run_config, verbose=verbose)
         if cfg.extra_config:
@@ -455,28 +494,33 @@ class SynnoDB:
 
         from synnodb.main import run_conv_wrapper  # heavy import, lazy
 
-        result = run_conv_wrapper(args=None, run_config=run_config, spec=st)
+        result = run_conv_wrapper(run_config=run_config, plan=plan)
         workspace = settings.get_workspace_dir(cfg.workspace)
-        artifact = st.result(
-            result.run_id, result.snapshot_hash, workspace, cfg, inputs
+        artifact = plan.result(result.run_id, result.snapshot_hash, workspace, cfg)
+        # Mirror the workspace's prepare record onto the artifact (the workspace
+        # metadata file is the source of truth; this is a convenience copy so
+        # chained/custom runs can inspect what they start from).
+        from synnodb.cpp_runner.prepare_repo.prepare_features import (
+            read_prepare_metadata,
         )
-        # Stamp the producing stage onto the artifact so a downstream consumer (e.g.
-        # checkSfCorrectness) can recover which stage's prepare to replay without a
-        # hardcoded artifact-class -> stage-name map.
-        return dataclasses.replace(artifact, source_stage_name=st.name)
 
-    # ---- ergonomic named methods (OLAP) --------------------------------
-    def createStoragePlan(
-        self, *, verbose: bool | None = None, **inputs: Any
-    ) -> StoragePlan:
-        return self.run("createStoragePlan", verbose=verbose, **inputs)  # type: ignore[return-value]
+        features, parallelism = read_prepare_metadata(workspace)
+        return dataclasses.replace(
+            artifact, prepare_features=features, parallelism=parallelism
+        )
+
+    # ---- ergonomic named methods (thin wrappers over run_synthesis) -------
+    def createStoragePlan(self, *, verbose: bool | None = None) -> StoragePlan:
+        from synnodb.builtin_plans import storage_plan_plan
+
+        return self.run_synthesis(storage_plan_plan(), verbose=verbose)  # type: ignore[return-value]
 
     def createBaseImpl(
         self,
         storage_plan: Any = None,
         *,
         storage_plan_wandb_id: Any = None,
-        **inputs: Any,
+        verbose: bool | None = None,
     ) -> BaseImplementation:
         """Build a base implementation from a storage plan.
 
@@ -488,11 +532,13 @@ class SynnoDB:
             ``createStoragePlan`` run (a ``str``, or a ``StoragePlan`` artifact
             whose ``.run_id`` is used). The plan is recovered from W&B.
         """
+        from synnodb.builtin_plans import base_impl_plan
+
         text = (
             storage_plan.text if isinstance(storage_plan, StoragePlan) else storage_plan
         )
         wandb_id = (
-            _as_arg(storage_plan_wandb_id)
+            _as_run_id(storage_plan_wandb_id)
             if storage_plan_wandb_id is not None
             else None
         )
@@ -503,35 +549,78 @@ class SynnoDB:
                 + ("both" if text is not None else "neither")
                 + "."
             )
-        return self.run(  # type: ignore[return-value]
-            "createBaseImpl",
-            storage_plan_text=text,
-            storage_plan_wandb_id=wandb_id,
-            **inputs,
+
+        storage_plan_snapshot = None
+        if wandb_id is not None:
+            # W&B path: resolve the storage-plan run to its snapshot; the plan
+            # text is recovered from that snapshot inside the run.
+            storage_plan_snapshot = resolve_source_snapshot(
+                self.config,
+                snapshot=None,
+                wandb_id=wandb_id,
+                source_kind="storage plan",
+            )
+
+        return self.run_synthesis(  # type: ignore[return-value]
+            base_impl_plan(storage_plan_text=text),
+            storage_plan_snapshot=storage_plan_snapshot,
+            verbose=verbose,
         )
 
     def runOptimLoop(
-        self, base_impl: Any = None, *, base_impl_wandb_id: Any = None, **inputs: Any
+        self,
+        base_impl: Any = None,
+        *,
+        base_impl_wandb_id: Any = None,
+        plan_source: str = "umbra",
+        verbose: bool | None = None,
     ) -> OptimizedImplementation:
         """Optimize a base implementation. Provide exactly one of:
         - ``base_impl``: a ``BaseImplementation`` artifact (or raw git snapshot
           hash) — W&B-free; the snapshot is restored from the local repo.
         - ``base_impl_wandb_id``: the W&B run id of the base-impl run (or an
           artifact whose ``.run_id`` is used)."""
+        from synnodb.builtin_plans import optim_plan
+
+        # validate model format (provider/model) for non gpt-/anthropic ids
+        model = self.config.model
+        if not (model.startswith("anthropic/") or model.startswith("gpt-")):
+            assert "/" in model, (
+                f"Model name {model} is not in the expected format <provider>/<model_name>"
+            )
+
         snap, wid = _resolve_chain("runOptimLoop", base_impl, base_impl_wandb_id)
-        return self.run(  # type: ignore[return-value]
-            "runOptimLoop", base_impl_snapshot=snap, base_impl=wid, **inputs
+        commit_hash = resolve_source_snapshot(
+            self.config,
+            snapshot=snap,
+            wandb_id=wid,
+            source_kind="base implementation",
+        )
+        return self.run_synthesis(  # type: ignore[return-value]
+            optim_plan(plan_source=plan_source), start=commit_hash, verbose=verbose
         )
 
     def addMultiThreading(
-        self, optimized: Any = None, *, optimized_wandb_id: Any = None, **inputs: Any
+        self,
+        optimized: Any = None,
+        *,
+        optimized_wandb_id: Any = None,
+        verbose: bool | None = None,
     ) -> MultiThreadedImplementation:
         """Add multi-threading to an optimized implementation. Provide exactly one
         of ``optimized`` (an ``OptimizedImplementation`` artifact / raw snapshot
         hash, W&B-free) or ``optimized_wandb_id`` (the optim run's W&B id)."""
+        from synnodb.builtin_plans import mt_plan
+
         snap, wid = _resolve_chain("addMultiThreading", optimized, optimized_wandb_id)
-        return self.run(  # type: ignore[return-value]
-            "addMultiThreading", optim_snapshot=snap, optimized=wid, **inputs
+        commit_hash = resolve_source_snapshot(
+            self.config,
+            snapshot=snap,
+            wandb_id=wid,
+            source_kind="optimized implementation",
+        )
+        return self.run_synthesis(  # type: ignore[return-value]
+            mt_plan(), start=commit_hash, verbose=verbose
         )
 
     def checkSfCorrectness(
@@ -540,30 +629,27 @@ class SynnoDB:
         *,
         target_sf: float,
         source_wandb_id: Any = None,
-        source_stage: str | None = None,
-        **inputs: Any,
+        verbose: bool | None = None,
     ) -> CorrectnessReport:
         """Validate an engine at a larger scale factor. Provide exactly one of
         ``source`` (any engine artifact / raw snapshot hash, W&B-free) or
         ``source_wandb_id`` (the producing run's W&B id).
 
-        On the W&B-free path the source run's stage is needed to replay its
-        prepare steps: it is read from the ``source`` artifact's stamped
-        ``source_stage_name``, or pass ``source_stage`` explicitly (e.g.
-        'createBaseImpl', 'runOptimLoop', 'addMultiThreading') when ``source`` is
-        a raw snapshot hash."""
+        The source run's prepare is replayed from the prepare record committed
+        into the source snapshot itself (.synnodb_prepare.json), so no extra
+        provenance needs to be passed."""
+        from synnodb.builtin_plans import check_sf_plan
+
         snap, wid = _resolve_chain("checkSfCorrectness", source, source_wandb_id)
-        if (
-            snap is not None
-            and source_stage is None
-            and isinstance(source, StageArtifact)
-        ):
-            source_stage = source.source_stage_name
-        return self.run(  # type: ignore[return-value]
-            "checkSfCorrectness",
-            source_snapshot=snap,
-            source=wid,
-            source_stage=source_stage,
-            target_sf=target_sf,
-            **inputs,
+        commit_hash = resolve_source_snapshot(
+            self.config,
+            snapshot=snap,
+            wandb_id=wid,
+            source_kind="implementation to validate",
+        )
+        # whole numbers format nicer in prompts (100.0 -> 100)
+        if float(target_sf).is_integer():
+            target_sf = int(target_sf)
+        return self.run_synthesis(  # type: ignore[return-value]
+            check_sf_plan(target_sf), start=commit_hash, verbose=verbose
         )

@@ -1,0 +1,463 @@
+########## section: stages ##########
+===== entry 0 =====
+kind: marker
+marker: <<VALIDATE_OFF>>
+benchmark_sf: None
+===== entry 1 =====
+kind: prompt-stage
+descriptor: base impl planner
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+You are an expert database engineer and skilled programmer.
+
+# Context
+You will implement a specialized high-performance database engine in C++ that is optimized to only execute a predefined set of SQL queries.  The engine has two phases:
+
+1. Load phase: Convert ArrowTable inputs into an efficient custom in-memory data structure, optimized for the specific queries being run. Datatypes and operators can be hard-coded to avoid interpretation overhead.
+2. Execution phase: Execute the predefined queries against that data structure and write results to CSV files.
+
+# System Overview
+Queries: Defined in queries.md (2 queries).
+
+Load phase is implemented in db_loader.hpp/db_loader.cpp, which predefines a Database struct. Your job is to populate it from ArrowTable inputs using an efficient in-memory representation. The storage plan is described in the file `storage_plan.txt`. It describes how to store the parquet data in-memory for optimal query execution. Use this storage plan to implement the in-memory data structure accordingly.  To populate the in-memory columns from the input ArrowTables, you MUST compose the framework helpers in `column_ingest.hpp` (already on the include path: add `#include "column_ingest.hpp"`). Do NOT decode Arrow buffers yourself (no raw_values()/GetValue()/Decimal128/endianness/scale handling — that is a frequent source of silent bugs like all aggregates coming out zero). `column_ingest.hpp` is the sanctioned extension point for generic ingest behavior: if a flat scalar column needs handling the current helpers do not cover, extend that helper once while preserving Arrow safe-cast, null-mask, scale, and range-check semantics, then call it from the loader. Each helper takes the table and column name, accepts Arrow physical representations through Arrow casts, and returns a std::vector you index positionally into your struct-of-arrays. Use Arrow casts to decode correctly, then store the narrowest correct C++ representation chosen by the storage plan:
+  - DECIMAL / money / quantity -> `synnodb::ingest::scaled_integer<T>(*tables->TBL, "COL", DECIMALS)` (std::vector<T> of value*10^DECIMALS, exact fixed-point; choose T as the narrowest safe integer such as int16_t/int32_t/int64_t, and use the column's decimal scale);
+  - integer/code/key columns -> `synnodb::ingest::as_integer<T>(*tables->TBL, "COL")` (choose T from int8_t/uint8_t/.../int64_t/uint64_t based on the declared/ranged domain; do not default to int64_t when the plan proves a narrower type is correct);
+  - string columns  -> `synnodb::ingest::as_string(*tables->TBL, "COL")`;
+  - date columns    -> `synnodb::ingest::as_date_days(*tables->TBL, "COL")` (int32 days since 1970-01-01);
+  - floating columns -> `synnodb::ingest::as_double(*tables->TBL, "COL")`.
+`as_int64` and `scaled_int64` remain compatibility aliases, not a storage-layout default. Declare each Database column with the matching narrow element type.
+
+Execution phase interface is predefined in query_impl.cpp. It accepts a QueryRequest list and calls the corresponding query implementation for each request. 
+Sample query implementations are provided in e.g., `query1.cpp/hpp`.
+The output of each query should be written to `result<RUN_NR>.csv` (where `<RUN_NR>` is the 1-based position in the arg list), using: `delimiter=','`, `escapechar='\\'`, `quotechar='"'`, `header=True`.
+
+Table schemas can be inspected with: parquet-dump-schema `/golden/data/tpch_parquet/sf20/lineitem.parquet`
+
+# Your Task
+Create a TODO plan for implementing this database engine. Write your plan to `base_impl_todo.txt`. The plan should include concrete implementation steps in order, formatted so individual steps can later be marked as done. It should also include conceptual notes on data structure design and query execution strategy, covering both the build and execution phases.
+
+Do not start executing any of your todo steps yet.
+
+Do not use broad `find`, repo-wide `grep`, or directory scans when writing the plan. Limit inspection to `queries.md`, `db_loader.hpp/db_loader.cpp`, `query_impl.cpp`, `args_parser.hpp`, and the parquet schema output of `parquet-dump-schema`. Do not read build scripts, framework internals, or system paths.
+
+Note: `parquet-dump-schema` reports logical types; at runtime Arrow may expose a different physical type (e.g. DECIMAL128 instead of INT64, or DOUBLE instead of DECIMAL). You do NOT need to handle this yourself - the `column_ingest.hpp` helpers used in the build phase delegate to Arrow's safe cast. Plan the storage layout in terms of the logical column types and value ranges: use Arrow casts to decode correctly, then store the narrowest correct C++ representation in `Database`. Pick `scaled_integer<T>` for decimals/money/quantity, `as_integer<T>` for integer/code/key columns (T may be int8_t/uint8_t/.../int64_t/uint64_t), `as_string`, `as_date_days`, and `as_double`. Do not default to int64_t when the plan proves a narrower type is correct. If a needed flat scalar ingest case is missing, the implementation phase should extend `column_ingest.hpp` generically rather than adding ad hoc Arrow decoding to the loader.
+
+--- end prompt ---
+===== entry 2 =====
+kind: prompt-stage
+descriptor: base impl storage
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Finish all todos from previous interaction outlined in `base_impl_todo.txt`.
+Focus on the build logic to convert ArrowTable into an efficient in-memory data structure.
+Implement the build logic in `db_loader.hpp/db_loader.cpp`.
+
+Before editing, plan your approach and implementation steps.
+
+IMPORTANT - populate the in-memory columns using the framework helpers in `column_ingest.hpp`. A copy of `column_ingest.hpp` is in your workspace (and it is also on the include path), so READ it to see exactly what each helper does. This helper header is the sanctioned extension point for generic ingest behavior: if a flat scalar column needs handling the current helpers do not cover, extend `column_ingest.hpp` once while preserving Arrow safe-cast, null-mask, scale, and range-check semantics, then call the helper from `db_loader.hpp/db_loader.cpp`. Add `#include "column_ingest.hpp"`. Do NOT hand-roll Arrow decoding in `db_loader.cpp` - no `chunk->type_id()` switch, no `static_cast` to `ArrowNumericArray<T>`, no `raw_values()`/`GetValue`/manual decimal/endianness/scale handling.
+
+Use Arrow casts to decode correctly, then store the narrowest correct C++ representation chosen by the storage plan. Use: `synnodb::ingest::scaled_integer<T>(*tables->TBL, "COL", DECIMALS)` for decimal/money/quantity columns (returns std::vector<T> of value*10^DECIMALS; choose T as the narrowest safe integer such as int16_t/int32_t/int64_t and use the column's decimal scale), `as_integer<T>` for integer/code/key columns (choose T from int8_t/uint8_t/.../int64_t/uint64_t based on schema/range/domain; do not default to int64_t when a narrower type is correct), `as_string` for strings, `as_date_days` for dates (int32 days since 1970-01-01), `as_double` for floating columns. `as_int64` and `scaled_int64` are compatibility aliases, not the default storage policy. These helpers accept Arrow physical representations by delegating to `arrow::compute::Cast`, so you do not handle the physical-vs-logical type difference, and a cast or range conversion that cannot be done raises.
+
+Limit file inspection to: `base_impl_todo.txt`, `db_loader.hpp/db_loader.cpp`, `query_impl.cpp`, `args_parser.hpp`, the query implementation files (`query<QID>.cpp/hpp`) and the parquet schema. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+
+IMPORTANT: Focus on producing a correct build implementation. Prefer simple and efficient build code.
+
+For the query execution logic in `query_impl.cpp` and the individual query files (`query<QID>.cpp/hpp`) keep the stubs for now. The full query-implementation will be done later.
+
+After implementing, call compile tool to check for errors. If there are errors, fix them.
+
+--- end prompt ---
+===== entry 3 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 4 =====
+kind: dynamic-stage
+class: OptimizeBuildStage
+descriptor: optimize build
+max_turns: None
+--- prompt ---
+Optimize `db_loader.hpp` and `db_loader.cpp` build (ingest) time. The current build time is 12345 ms (ExecSettings()).
+Hardware: SYNTHETIC HARDWARE CONTEXT (fixed for golden test).
+
+Note: the reported build time includes ALL work inside your `build()` function - Arrow column decoding via `column_ingest.hpp` helpers (`as_integer`, `as_string`, `scaled_integer`, `as_date_days`), sorting, index construction, and gather passes. There is no separate Parquet-read phase before `build()` is called. When adding timing instrumentation, place the first timestamp at the very first line of `build()` to capture the full cost.
+
+Before profiling, read `storage_plan.txt` and `base_impl_todo.txt` to understand the intended storage layout and optimization goals.
+
+For each optimization attempt (up to 2 major attempts and 1 refinement), follow these steps:
+
+**Profile** - Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `db_loader.hpp` and `db_loader.cpp`. Compile once, call the run tool with mode "INGEST", and report the per-phase breakdown. Then remove all timing instrumentation from the source files in a single edit (rewrite the instrumented section, do not remove markers one at a time) before proceeding.
+
+**Plan** - Based on the profiling data, identify the top 3 bottlenecks. Consult the hints below for common patterns. Write a short plan with the optimizations you will implement.
+
+**Implement** - Implement the planned optimizations in a batch. Before compiling, re-read every changed section and verify: (a) all variables declared before use, (b) no use-after-move/use-after-clear, (c) no duplicate variable names across scopes. Then compile once and validate correctness and the performance improvement by calling the run tool.
+
+Constraints:
+- Limit inspection to `db_loader.hpp`, `db_loader.cpp`, directly included headers, `storage_plan.txt`, and `base_impl_todo.txt` only. Do not inspect validator/compile/cache/tool internals unless an error explicitly indicates an interface mismatch. No broad grep/find/ls.
+- No compile or run after individual edits. Only validate after a complete batch implementing one coherent optimization strategy.
+- If the bottleneck is memory-bandwidth bound, stop and report.
+- Keep the engine's peak in-memory footprint within about 10-15% of the decompressed size of the loaded column data (roughly rows x the natural width of each typed value, NOT the compressed Parquet size). Do not trade memory for speed beyond that headroom unless it buys a large, measured speedup; a modest speedup does not justify a multiplied footprint.
+
+
+Hints - common optimization patterns:
+- **Parallelism**: Independent table builds can run concurrently in `std::thread`; the largest table dominates, so overlapping all smaller ones is free. Calibrate nested thread counts against the hardware above to avoid oversubscription.
+- **Sort strategy**: For a sort key with low cardinality (thousands of distinct values across millions of rows), use counting sort / bucket sort instead of `std::sort`. Sort the permutation array, then apply it in a single gather pass over all columns simultaneously.
+- **`as_string()` heap cost**: allocates one `std::string` per row. For single-character or low-cardinality string columns, prefer `char` or `uint8_t` with dict encoding - eliminates heap allocation and reduces scatter memory footprint.
+- **Large `unordered_map` indexes**: building an `unordered_map<int64_t, int32_t>` with millions of entries is slow due to cache-unfriendly separate chaining. If the key domain is dense integers, a flat `vector<int32_t>` indexed directly by key value is much faster - both to build and to probe.
+
+
+--- end prompt ---
+===== entry 5 =====
+kind: dynamic-stage
+class: ValidateAndFixStage
+descriptor: exec & validate
+max_turns: None
+--- prompt ---
+Execute and check termination without error. First call the compile tool, then check the run tool (mode: EXHAUSTIVE). If there are errors, fix the implementation accordingly.
+
+If errors occur: first assume the bug is in the target query file, `query_impl.cpp`,  `args_parser.hpp`, or `db_loader.hpp/db_loader.cpp`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+
+Batch all code edits. Compile only once after a coherent set of changes, or after a concrete compile error. Not after every individual edit.
+--- end prompt ---
+===== entry 6 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 7 =====
+kind: marker
+marker: <<VALIDATE_ON>>
+benchmark_sf: None
+===== entry 8 =====
+kind: marker
+marker: <<VALIDATE_OUTPUT_STDOUT_OFF>>
+benchmark_sf: None
+===== entry 9 =====
+kind: prompt-stage
+descriptor: base impl Q1
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Start implementing the query execution logic. Implement ONLY query 1. 
+The SQL query template to implement is:
+SELECT l_returnflag FROM lineitem WHERE l_shipdate <= DATE ':1';
+
+Add the query execution logic to `query1.cpp`.
+Align with the existing storage layout and value-encoding implementation in `db_loader.hpp/db_loader.cpp`.
+To generate speedups over DuckDB you need to leverage the storage plan implementation fully. Since we are a bespoke system we expect large speedups.
+You may use utmost optimizations like SIMD, later materialization etc.
+
+Limit file inspection to: `db_loader.hpp/db_loader.cpp`, `query_impl.cpp`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+
+Focus on correctness first! The implementation can be optimized later.
+
+Execution model: the generated engine runs each query on a single thread. Optimize for sequential scan locality; no cross-thread partitioning is needed.
+
+Parallel-ready execution structure: the in-memory workspace already provides the shared query pool
+through `query_pool.hpp` / `thread_pool.hpp` (`get_query_pool()`, `parallel_for`, and
+`parallel_reduce<T>`). Non-parallel base validation runs with CORE_IDS=1, so these primitives take
+their serial fast path and should be byte-identical to a plain loop; later MT stages can scale the
+same code by raising the thread count. Write the base implementation so changing CORE_IDS alone
+keeps the query correct - no separate ST/MT code path should be needed. For the dominant scan/aggregation in this query, prefer
+`parallel_reduce<T>(get_query_pool(), n_morsels_or_rows, identity, fold, combine)` now instead of
+writing a serial loop you intend to parallelize later. Keep the shape workload-agnostic:
+- partition by logical row ranges or morsels of the dominant input table;
+- fold each slice into private per-thread/per-slice state only - no shared hot-loop map, output
+  vector, counter, or mutex-protected accumulator;
+- build shared lookup/hash structures before the parallel region and treat them as read-only inside;
+- merge partials deterministically after the region. For aggregates, use associative/commutative
+  integer or exact fixed-point merges (`+`, min, max, bit-or, element-wise bucket add). For ordered
+  projections, merge earlier logical slices before later slices, then apply SQL ORDER BY/LIMIT;
+- do not nest `parallel_for` / `parallel_reduce`, and do not reduce DECIMAL/INT aggregates through
+  floating point. If a query genuinely cannot benefit from the pool, keep the accumulator shape
+  private-and-mergeable so it can be parallelized safely later.
+
+Output contract (CRITICAL for exactness): run_q1 returns std::shared_ptr<arrow::Table>
+built with cpp_helpers/column_egress.hpp (`using namespace synnodb::egress;`). Each output column
+must reproduce DuckDB's type AND value exactly:
+- `column_egress.hpp` is the sanctioned extension point for generic output behavior. READ it before
+  emitting results. If a supported flat scalar output family or exact target type is missing, extend
+  `column_egress.hpp` once with a reusable builder that preserves exact values, null masks, and
+  Arrow safe casts, then call that builder from `query1.cpp`. Do NOT format values as
+  strings, route exact values through DOUBLE, or build ad hoc Arrow arrays in the query file to work
+  around a missing helper. If the result type is truly unsupported by the framework (for example a
+  nested value or unsigned 128-bit value), fail explicitly instead of returning a lossy table.
+- A DECIMAL output column (a SUM of decimals, or a decimal expression) MUST be accumulated as the
+  exact unscaled integer in __int128 - never through double or a formatted string - and emitted
+  with decimal_column(values, precision, scale), where scale is DuckDB's column scale (e.g.
+  SUM(l_extendedprice) -> DECIMAL(38,2), scale 2; a product of two DECIMAL(_,2) -> scale 4).
+  precision>38 emits decimal256 automatically. A HUGEINT output is the same exact-integer family:
+  emit it with hugeint_column(values) or decimal_column(values, 38, 0), not double/string.
+- Only genuinely DOUBLE columns (AVG, ...) use double_column. Pick the builder that matches the
+  output column's value family and your C++ accumulator/storage type: integer_column(v, ..., target)
+  for signed/unsigned integer vectors of any C++ width, uint64_column for UBIGINT values that may
+  exceed INT64_MAX, bool_column for BOOLEAN, string_column for text, date_column for DATE, and
+  timestamp_column for TIMESTAMP. Pass an Arrow target like arrow::int32()/arrow::uint16() when
+  the DuckDB output type is narrower than the canonical family. The builder casts to the column's
+  exact Arrow type and THROWS on an impossible/overflowing cast, so feed it the matching type.
+  Build the result with make_table({{name, column}, ...}) in DuckDB's column order.
+- NULLs are first class and must follow SQL semantics, never null->0/"". If an output cell can be
+  NULL (a LEFT JOIN miss, MIN/MAX/AVG over an empty/all-null group, NULLIF, a NULL-propagating
+  expression, a value derived from a nullable input column), build a Validity mask (valid[i]==0
+  marks row i NULL) and pass it to the builder, e.g. integer_column(values, valid). For a NULLABLE
+  input column, read its nulls with the ingest helper's out-param - as_integer<T>(*tbl, "c", &valid),
+  scaled_integer<T>(*tbl, "c", scale, &valid), as_string(..., &valid), etc. - and honour them
+  (COUNT(col)/AVG skip NULL; NULL=NULL is not equality; arithmetic on NULL is NULL). A column with
+  no NULLs needs no mask.
+The correctness check compares DECIMAL/INT/DATE/STRING/BOOL/TIMESTAMP columns for EXACT equality
+and a NULL as distinct from any value (only DOUBLE columns are tolerant), so a decimal routed
+through double, a wrong type, or a NULL emitted as 0 will all fail.
+
+ Example instantiation of the query placeholders are:
+('1998-09-02')
+NULL values might appear in IN-Lists and are represented with the string '<<NULL>>'.
+
+--- end prompt ---
+===== entry 10 =====
+kind: prompt-stage
+descriptor: base impl exec & validate Q1
+max_turns: None
+measure_performance_after_stage: True
+measure_perf_qid: 1
+auto_revert_on_regression: False
+feedback_on_incorrect: True
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Execute and check correctness by using the run tool. Run with query_id "1" and run mode  EXHAUSTIVE. If there are errors, fix the implementation accordingly.
+
+If errors occur: first assume the bug is in the target query file or `db_loader.hpp/db_loader.cpp`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+
+The SQL-template is:
+SELECT l_returnflag FROM lineitem WHERE l_shipdate <= DATE ':1';
+--- end prompt ---
+===== entry 11 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 12 =====
+kind: prompt-stage
+descriptor: base impl Q6
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Continue implementing the query execution logic. Implement ONLY query 6. 
+The SQL query template to implement is:
+SELECT sum(l_extendedprice) FROM lineitem WHERE l_quantity < :1;
+
+Add the query execution logic to `query6.cpp`.
+Align with the existing storage layout and value-encoding implementation in `db_loader.hpp/db_loader.cpp`.
+To generate speedups over DuckDB you need to leverage the storage plan implementation fully. Since we are a bespoke system we expect large speedups.
+You may use utmost optimizations like SIMD, later materialization etc.
+
+Limit file inspection to: `db_loader.hpp/db_loader.cpp`, `query_impl.cpp`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+
+Focus on correctness first! The implementation can be optimized later.
+
+Execution model: the generated engine runs each query on a single thread. Optimize for sequential scan locality; no cross-thread partitioning is needed.
+
+Parallel-ready execution structure: the in-memory workspace already provides the shared query pool
+through `query_pool.hpp` / `thread_pool.hpp` (`get_query_pool()`, `parallel_for`, and
+`parallel_reduce<T>`). Non-parallel base validation runs with CORE_IDS=1, so these primitives take
+their serial fast path and should be byte-identical to a plain loop; later MT stages can scale the
+same code by raising the thread count. Write the base implementation so changing CORE_IDS alone
+keeps the query correct - no separate ST/MT code path should be needed. For the dominant scan/aggregation in this query, prefer
+`parallel_reduce<T>(get_query_pool(), n_morsels_or_rows, identity, fold, combine)` now instead of
+writing a serial loop you intend to parallelize later. Keep the shape workload-agnostic:
+- partition by logical row ranges or morsels of the dominant input table;
+- fold each slice into private per-thread/per-slice state only - no shared hot-loop map, output
+  vector, counter, or mutex-protected accumulator;
+- build shared lookup/hash structures before the parallel region and treat them as read-only inside;
+- merge partials deterministically after the region. For aggregates, use associative/commutative
+  integer or exact fixed-point merges (`+`, min, max, bit-or, element-wise bucket add). For ordered
+  projections, merge earlier logical slices before later slices, then apply SQL ORDER BY/LIMIT;
+- do not nest `parallel_for` / `parallel_reduce`, and do not reduce DECIMAL/INT aggregates through
+  floating point. If a query genuinely cannot benefit from the pool, keep the accumulator shape
+  private-and-mergeable so it can be parallelized safely later.
+
+Output contract (CRITICAL for exactness): run_q6 returns std::shared_ptr<arrow::Table>
+built with cpp_helpers/column_egress.hpp (`using namespace synnodb::egress;`). Each output column
+must reproduce DuckDB's type AND value exactly:
+- `column_egress.hpp` is the sanctioned extension point for generic output behavior. READ it before
+  emitting results. If a supported flat scalar output family or exact target type is missing, extend
+  `column_egress.hpp` once with a reusable builder that preserves exact values, null masks, and
+  Arrow safe casts, then call that builder from `query6.cpp`. Do NOT format values as
+  strings, route exact values through DOUBLE, or build ad hoc Arrow arrays in the query file to work
+  around a missing helper. If the result type is truly unsupported by the framework (for example a
+  nested value or unsigned 128-bit value), fail explicitly instead of returning a lossy table.
+- A DECIMAL output column (a SUM of decimals, or a decimal expression) MUST be accumulated as the
+  exact unscaled integer in __int128 - never through double or a formatted string - and emitted
+  with decimal_column(values, precision, scale), where scale is DuckDB's column scale (e.g.
+  SUM(l_extendedprice) -> DECIMAL(38,2), scale 2; a product of two DECIMAL(_,2) -> scale 4).
+  precision>38 emits decimal256 automatically. A HUGEINT output is the same exact-integer family:
+  emit it with hugeint_column(values) or decimal_column(values, 38, 0), not double/string.
+- Only genuinely DOUBLE columns (AVG, ...) use double_column. Pick the builder that matches the
+  output column's value family and your C++ accumulator/storage type: integer_column(v, ..., target)
+  for signed/unsigned integer vectors of any C++ width, uint64_column for UBIGINT values that may
+  exceed INT64_MAX, bool_column for BOOLEAN, string_column for text, date_column for DATE, and
+  timestamp_column for TIMESTAMP. Pass an Arrow target like arrow::int32()/arrow::uint16() when
+  the DuckDB output type is narrower than the canonical family. The builder casts to the column's
+  exact Arrow type and THROWS on an impossible/overflowing cast, so feed it the matching type.
+  Build the result with make_table({{name, column}, ...}) in DuckDB's column order.
+- NULLs are first class and must follow SQL semantics, never null->0/"". If an output cell can be
+  NULL (a LEFT JOIN miss, MIN/MAX/AVG over an empty/all-null group, NULLIF, a NULL-propagating
+  expression, a value derived from a nullable input column), build a Validity mask (valid[i]==0
+  marks row i NULL) and pass it to the builder, e.g. integer_column(values, valid). For a NULLABLE
+  input column, read its nulls with the ingest helper's out-param - as_integer<T>(*tbl, "c", &valid),
+  scaled_integer<T>(*tbl, "c", scale, &valid), as_string(..., &valid), etc. - and honour them
+  (COUNT(col)/AVG skip NULL; NULL=NULL is not equality; arithmetic on NULL is NULL). A column with
+  no NULLs needs no mask.
+The correctness check compares DECIMAL/INT/DATE/STRING/BOOL/TIMESTAMP columns for EXACT equality
+and a NULL as distinct from any value (only DOUBLE columns are tolerant), so a decimal routed
+through double, a wrong type, or a NULL emitted as 0 will all fail.
+
+ Example instantiation of the query placeholders are:
+(24)
+NULL values might appear in IN-Lists and are represented with the string '<<NULL>>'.
+
+--- end prompt ---
+===== entry 13 =====
+kind: prompt-stage
+descriptor: base impl exec & validate Q6
+max_turns: None
+measure_performance_after_stage: True
+measure_perf_qid: 6
+auto_revert_on_regression: False
+feedback_on_incorrect: True
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Execute and check correctness by using the run tool. Run with query_id "6" and run mode  EXHAUSTIVE. If there are errors, fix the implementation accordingly.
+
+If errors occur: first assume the bug is in the target query file or `db_loader.hpp/db_loader.cpp`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+
+The SQL-template is:
+SELECT sum(l_extendedprice) FROM lineitem WHERE l_quantity < :1;
+--- end prompt ---
+===== entry 14 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 15 =====
+kind: marker
+marker: <<SUPERVISION_STAGE_VISIBILITY_MARKER>>
+benchmark_sf: None
+===== entry 16 =====
+kind: prompt-stage
+descriptor: base check correctness all
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Check correctness of the output of the queries you implemented by using the run tool. Run with EXHAUSTIVE run tool mode. Call the run tool once for exactly these query_ids: ["1", "6"] — only these. Do NOT run, implement, or modify any other query (the other query files are out of scope for this run and may be stubs). If there are errors in the in-scope queries, fix the implementation accordingly.
+
+After fixing, rerun those same query_ids once to confirm. If errors persist: first assume the bug is in the relevant query file or `query_impl.cpp`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+
+--- end prompt ---
+===== entry 17 =====
+kind: prompt-stage
+descriptor: run all queries and fix any errors
+max_turns: None
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: True
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Call the run tool with EXHAUSTIVE mode for exactly these query_ids: ["1", "6"] — only these. Check that the code is correct for those query_ids. Do NOT run, implement, or modify any other query (the other query files are out of scope for this run and may be stubs). Fix any errors that occur in the in-scope queries.
+
+If errors occur: first assume the bug is in the relevant query file (i.e. `query<QID>.cpp`) or `query_impl.cpp`. Do not inspect validator/compile/cache/tool internals unless the error explicitly indicates an interface mismatch.
+
+--- end prompt ---
+===== entry 18 =====
+kind: marker
+marker: <<BENCHMARK>>
+benchmark_sf: None
+===== entry 19 =====
+kind: marker
+marker: <<VALIDATE_OUTPUT_STDOUT_OFF>>
+benchmark_sf: None
+===== entry 20 =====
+kind: dynamic-stage
+class: OptimizeBuildStage
+descriptor: optimize build
+max_turns: None
+--- prompt ---
+Optimize `db_loader.hpp` and `db_loader.cpp` build (ingest) time. The current build time is 12345 ms (ExecSettings()).
+Hardware: SYNTHETIC HARDWARE CONTEXT (fixed for golden test).
+
+Note: the reported build time includes ALL work inside your `build()` function - Arrow column decoding via `column_ingest.hpp` helpers (`as_integer`, `as_string`, `scaled_integer`, `as_date_days`), sorting, index construction, and gather passes. There is no separate Parquet-read phase before `build()` is called. When adding timing instrumentation, place the first timestamp at the very first line of `build()` to capture the full cost.
+
+Before profiling, read `storage_plan.txt` and `base_impl_todo.txt` to understand the intended storage layout and optimization goals.
+
+For each optimization attempt (up to 2 major attempts and 1 refinement), follow these steps:
+
+**Profile** - Add lightweight per-phase timing instrumentation (wall-clock timestamps around each major phase) to `db_loader.hpp` and `db_loader.cpp`. Compile once, call the run tool with mode "INGEST", and report the per-phase breakdown. Then remove all timing instrumentation from the source files in a single edit (rewrite the instrumented section, do not remove markers one at a time) before proceeding.
+
+**Plan** - Based on the profiling data, identify the top 3 bottlenecks. Consult the hints below for common patterns. Write a short plan with the optimizations you will implement.
+
+**Implement** - Implement the planned optimizations in a batch. Before compiling, re-read every changed section and verify: (a) all variables declared before use, (b) no use-after-move/use-after-clear, (c) no duplicate variable names across scopes. Then compile once and validate correctness and the performance improvement by calling the run tool.
+
+Constraints:
+- Limit inspection to `db_loader.hpp`, `db_loader.cpp`, directly included headers, `storage_plan.txt`, and `base_impl_todo.txt` only. Do not inspect validator/compile/cache/tool internals unless an error explicitly indicates an interface mismatch. No broad grep/find/ls.
+- No compile or run after individual edits. Only validate after a complete batch implementing one coherent optimization strategy.
+- If the bottleneck is memory-bandwidth bound, stop and report.
+- Keep the engine's peak in-memory footprint within about 10-15% of the decompressed size of the loaded column data (roughly rows x the natural width of each typed value, NOT the compressed Parquet size). Do not trade memory for speed beyond that headroom unless it buys a large, measured speedup; a modest speedup does not justify a multiplied footprint.
+- Always load all data from Parquet during ingestion (do not skip rows or columns). Do not inspect `query*.cpp` to decide what to load, skip, or reorder. Storage layout must remain general enough that arbitrary SQL could in theory be executed.
+
+Hints - common optimization patterns:
+- **Parallelism**: Independent table builds can run concurrently in `std::thread`; the largest table dominates, so overlapping all smaller ones is free. Calibrate nested thread counts against the hardware above to avoid oversubscription.
+- **Sort strategy**: For a sort key with low cardinality (thousands of distinct values across millions of rows), use counting sort / bucket sort instead of `std::sort`. Sort the permutation array, then apply it in a single gather pass over all columns simultaneously.
+- **`as_string()` heap cost**: allocates one `std::string` per row. For single-character or low-cardinality string columns, prefer `char` or `uint8_t` with dict encoding - eliminates heap allocation and reduces scatter memory footprint.
+- **Large `unordered_map` indexes**: building an `unordered_map<int64_t, int32_t>` with millions of entries is slow due to cache-unfriendly separate chaining. If the key domain is dense integers, a flat `vector<int32_t>` indexed directly by key value is much faster - both to build and to probe.
+- **Interface compatibility**: Any change to a field's type or layout in `db_loader.hpp` (column type, index structure, field name) must preserve the interface that existing query files use. If the underlying type changes, wrap it in a class that exposes the same `.find()`/`.end()` or `[]` semantics - do not modify query files to adapt to a new interface. A type mismatch can compile silently and crash at runtime.
+
+--- end prompt ---
+===== entry 21 =====
+kind: marker
+marker: <<BENCHMARK>>
+benchmark_sf: None
+

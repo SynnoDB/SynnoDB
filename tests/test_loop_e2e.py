@@ -26,8 +26,18 @@ TABLES = [
     "supplier",
 ]
 
+
+def _fixture_present() -> bool:
+    # exists() raises PermissionError (instead of returning False) when a parent
+    # directory is unreadable, e.g. another user's home on a shared machine.
+    try:
+        return (Q1Q6BYO / "db").exists() and SF1.exists()
+    except OSError:
+        return False
+
+
 pytestmark = pytest.mark.skipif(
-    not ((Q1Q6BYO / "db").exists() and SF1.exists()),
+    not _fixture_present(),
     reason="requires the compiled q1q6byo engine and SF1 parquet",
 )
 

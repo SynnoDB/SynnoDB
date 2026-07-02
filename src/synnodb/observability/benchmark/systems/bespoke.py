@@ -4,6 +4,7 @@ from pathlib import Path
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
+from synnodb.cpp_runner.prepare_repo.prepare_features import Parallelism
 from synnodb.observability.benchmark.systems.track import BespokePrep
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.tools.run import RunTool, RunWorkerResult
@@ -77,12 +78,17 @@ class BespokeRunner:
             self._snapshotter.reset_changes()
             self._snapshotter.clear_untracked(include_ignored=True)
 
+        # Replay the snapshot's own prepare record (features=None): the
+        # workspace metadata file committed with the snapshot says what its
+        # files were prepared with, so no is_mt-dependent prepare fn is needed.
         prepare_repo_and_load_snapshot(
             snapshotter=self._snapshotter,
             snapshot=snapshot,
-            prepare_fn=self._prep.prepare_fn_for(is_mt),
+            features=None,
             prepare_workspace_provider=prepare_workspace,
-            usecase_prepare_args={},
+            parallelism=Parallelism.MULTI_THREADED
+            if is_mt
+            else Parallelism.SINGLE_THREADED,  # ignored on the replay path
             do_not_cache=True,
         )
 

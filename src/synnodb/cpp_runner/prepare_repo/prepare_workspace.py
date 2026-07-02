@@ -3,6 +3,7 @@ from abc import abstractmethod
 from pathlib import Path
 
 from synnodb.conversations.filenames import PLAN_FILENAME_BY_USECASE
+from synnodb.cpp_runner.prepare_repo.prepare_features import PREPARE_METADATA_FILENAME
 from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     extract_version_id,
 )
@@ -70,6 +71,10 @@ class PrepareWorkspace:
 
         readonly_files_to_be_git_tracked = {
             "queries.md",
+            # The workspace's prepare record: committed with every snapshot (it
+            # is the authoritative record of what the files were prepared with)
+            # but never modifiable by the agent.
+            PREPARE_METADATA_FILENAME,
         }
 
         return readonly_files_not_git_tracked, readonly_files_to_be_git_tracked
