@@ -588,6 +588,10 @@ class LiveDashboardDrain(DataDrain):
             "system_name": system_name,
             "start_time": datetime.now().isoformat(timespec="seconds"),
             "stages": self._stages,
+            # Previews of the currently-running conversation's scheduled stages,
+            # populated by register_planned_stages; None until a conversation
+            # registers its stage list. See the prompts pane in the live UI.
+            "planned_stages": None,
         }
         # Construction starts the server but opens no stage yet — the first stage to
         # emit calls begin_stage(). This lets the driver start the dashboard eagerly
@@ -624,6 +628,9 @@ class LiveDashboardDrain(DataDrain):
         with self._lock:
             self._stage_base = (max(self._data) + 1) if self._data else 0
             self._carry = dict(self._last_global)
+            # Drop the previous conversation's scheduled-stage previews; the new
+            # stage republishes its own the moment its stage list is built.
+            self._meta["planned_stages"] = None
             self._meta["run_name"] = run_name
             if wandb_run_id is not None:
                 self._meta["wandb_run_id"] = wandb_run_id
@@ -641,6 +648,24 @@ class LiveDashboardDrain(DataDrain):
             else:
                 self._stages.append(entry)
 
+    def register_planned_stages(
+        self, previews: list[dict], stage_name: str | None = None
+    ) -> None:
+        """Publish the scheduled stages of the currently-running conversation.
+
+        Stored as a self-contained block on the meta - the stage's global
+        ``base_step`` (so the UI can tell which executed sections belong to this
+        conversation) plus the ordered stage previews. Assigned as a whole new
+        dict (never mutated in place) so a concurrent ``_snapshot`` reader that
+        captured the previous reference is unaffected.
+        """
+        with self._lock:
+            self._meta["planned_stages"] = {
+                "base_step": self._stage_base,
+                "stage_name": stage_name,
+                "stages": list(previews),
+            }
+
     def _reset(self) -> None:
         """Wipe accumulated data so the next stage starts a fresh pipeline. The
         HTTP server (and its bound port) is left running."""
@@ -650,6 +675,7 @@ class LiveDashboardDrain(DataDrain):
             self._carry.clear()
             self._last_global.clear()
             self._stages.clear()
+            self._meta["planned_stages"] = None
             self._meta["run_name"] = None
             self._meta["wandb_run_id"] = None
             self._meta["start_time"] = datetime.now().isoformat(timespec="seconds")
