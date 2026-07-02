@@ -265,7 +265,10 @@ def test_benchmark_sf_override_applied_and_restored(tmp_path):
 
     # large_check resolved via the workload spec; restored after each item
     assert provider.sf_log == [100.0, 20.0, 42.0, 20.0]
-    assert seen_sf == [100.0]  # the stage executed under the override
+    # The scheduled-stage preview renders the prompt once at plan registration
+    # (before any per-stage benchmark_sf override applies, hence the default 20),
+    # then execution renders it again under the large_check override (100).
+    assert seen_sf == [20.0, 100.0]
     assert provider.benchmark_sf == 20.0
 
 

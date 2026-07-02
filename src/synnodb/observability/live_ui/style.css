@@ -224,6 +224,21 @@ body::-webkit-scrollbar-corner,
          padding-left:6px;border-left:3px solid transparent;}
 .pl-meta{color:var(--muted);font-size:11px;padding-left:9px;}
 
+/* Scheduled (not-yet-executed) stages: rendered in plain white and dimmed so
+   they read clearly as upcoming rather than done. */
+.pl-section-header{padding:10px 14px 4px;font-size:10px;font-weight:600;
+                   letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+.pl-item.pl-future{opacity:.6;}
+.pl-item.pl-future:hover{opacity:.85;}
+.pl-item.pl-future .pl-name{color:#fff;font-weight:400;
+                            border-left:3px dashed rgba(255,255,255,.35);}
+.pl-item.pl-future .pl-meta{font-style:italic;}
+
+.prompt-preview-banner{margin-bottom:12px;padding:8px 12px;border-radius:6px;
+                       background:rgba(255,255,255,.06);
+                       border:1px dashed rgba(255,255,255,.25);
+                       color:var(--muted);font-size:12px;line-height:1.45;}
+
 /* ── Main content ─────────────────────────────────────────────────── */
 #content{flex:1;display:flex;flex-direction:column;padding:14px;
          gap:12px;min-width:0;overflow:hidden;}

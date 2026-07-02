@@ -144,6 +144,11 @@ class RunStatsCollector(RunHooks):
         """Add an entry to the activity summary"""
         self.activity_summary.append(entry)
 
+    def register_planned_stages(self, previews: list[dict]) -> None:
+        """Fan the current stage's scheduled-stage previews out to all drains."""
+        for drain in self.drains:
+            drain.register_planned_stages(previews, stage_name=self.current_stage_name)
+
     # Callback for validation tool to report metrics
     def log_metrics_callback(
         self, metrics: dict, log_and_increment: bool = False

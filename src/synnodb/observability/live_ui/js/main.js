@@ -17,6 +17,7 @@ async function poll() {
     // after the new data has rendered and briefly overwrites the UI with the
     // previous run's values.
     if (_expectedSourceRef != null && meta?._source_ref !== _expectedSourceRef) return;
+    _lastMeta = meta || {};
     updateHeaderMeta(meta);
     updateSourceUI(meta);
     if (!_applyingInitialSource && !_initialSourceApplied && meta?._source_type === 'standalone') {
@@ -24,6 +25,9 @@ async function poll() {
     }
     if (!steps?.length) {
       document.getElementById('ts-txt').textContent = 'No data yet';
+      // No turns emitted yet, but the running conversation may already have
+      // published its scheduled stages - show them as upcoming.
+      updatePrompts([], {});
       return;
     }
     _lastSteps = steps;

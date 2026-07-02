@@ -89,13 +89,56 @@ function updateCards(steps, data) {
 // Maps section desc → full prompt text / agent config, populated by updatePrompts.
 const _promptsByDesc = new Map();
 const _configByDesc  = new Map();
+// Descriptors currently rendered as not-yet-executed (scheduled) stages. Their
+// prompt text in _promptsByDesc is a best-effort preview, so the modal flags it.
+const _futurePrompts = new Set();
 
-// ── Prompts list (per-section turn / time / cost summary) ────────────────
+// Determine which of the running conversation's scheduled stages have not been
+// reached yet. The backend publishes the full planned stage list of the active
+// conversation as meta.planned_stages; we align it against the executed sections
+// (which span the whole pipeline) by walking a monotonic pointer through the
+// plan and consuming an entry whenever an executed section matches its
+// descriptor. Off-plan sections (correctness retries, supervisor feedback) never
+// match and so never advance the pointer. Everything past the last match is
+// still upcoming.
+//
+// A `dynamic` planned entry (a PerQueryLoop) is special: it emits its concrete
+// work as many inner per-query sections under runtime descriptors we cannot
+// predict, so none of them ever equals the loop's own descriptor. Matching by
+// descriptor alone would leave the loop entry stranded in "Scheduled" for the
+// whole time it is actually running (and forever if no later planned stage
+// follows to sweep the pointer past it). So when the pointer sits on a dynamic
+// entry and a section arrives that matches nothing from here on, we treat that
+// as the dynamic stage having started and consume its entry - its inner
+// sections carry the live display from then on, while any planned stage after
+// the loop stays scheduled until its own descriptor executes.
+function getFutureStages(steps, sections) {
+  const planned = _lastMeta && _lastMeta.planned_stages;
+  const stages  = planned && Array.isArray(planned.stages) ? planned.stages : [];
+  if (!stages.length) return [];
+
+  const base = planned.base_step;
+  const curSecs = base == null
+    ? sections
+    : sections.filter(sec => steps[sec.startIdx] >= base);
+
+  let p = 0;
+  for (const sec of curSecs) {
+    let m = p;
+    while (m < stages.length && stages[m].descriptor !== sec.desc) m++;
+    if (m < stages.length) p = m + 1;
+    else if (p < stages.length && stages[p].dynamic) p += 1;
+  }
+  return stages.slice(p);
+}
+
+// ── Prompts list (per-section turn / time / cost summary + upcoming stages) ─
 function updatePrompts(steps, data) {
   const sections = getSections(steps, data);
+  const future   = getFutureStages(steps, sections);
 
   const el = document.getElementById('prompt-list');
-  if (!sections.length) {
+  if (!sections.length && !future.length) {
     el.innerHTML = '<div class="pl-item" style="color:var(--muted)">No stages yet…</div>';
     return;
   }
@@ -111,6 +154,7 @@ function updatePrompts(steps, data) {
 
   _promptsByDesc.clear();
   _configByDesc.clear();
+  _futurePrompts.clear();
   for (const sec of sections) {
     const promptText = (data[steps[sec.startIdx]] || {}).current_prompt || null;
     if (promptText) _promptsByDesc.set(sec.desc, promptText);
@@ -119,7 +163,7 @@ function updatePrompts(steps, data) {
   }
 
   const costKey = costMode === 'real' ? 'total/real_cost_usd' : 'total/cost_usd';
-  el.innerHTML = sections.map(sec => {
+  const executedHtml = sections.map(sec => {
     const desc      = sec.desc;
     const active    = sec.endIdx >= steps.length - 1 ? ' active' : '';
     const color     = sectRgba(desc, 0.9);
@@ -137,6 +181,34 @@ function updatePrompts(steps, data) {
       <div class="pl-meta">${turnStr} &nbsp;·&nbsp; ${tStr} &nbsp;·&nbsp; ${cStr}</div>
     </div>`;
   }).join('');
+
+  // Scheduled, not-yet-executed stages of the running conversation.
+  const futureHtml = future.map(fs => {
+    const desc = fs.descriptor;
+    _futurePrompts.add(desc);
+    if (!_promptsByDesc.has(desc)) {
+      _promptsByDesc.set(
+        desc,
+        fs.prompt_preview ||
+          '_The prompt for this scheduled stage is generated at runtime and is not known yet._'
+      );
+    }
+    const note = fs.dynamic
+      ? 'scheduled · prompt built at runtime'
+      : fs.has_runtime_placeholder
+        ? 'scheduled · runtime values pending'
+        : 'scheduled';
+    return `<div class="pl-item pl-future" data-desc="${esc(desc)}" data-future="1">
+      <div class="pl-name">${esc(desc)}</div>
+      <div class="pl-meta">${note}</div>
+    </div>`;
+  }).join('');
+
+  const futureHeader = future.length
+    ? '<div class="pl-section-header">Scheduled</div>'
+    : '';
+
+  el.innerHTML = executedHtml + futureHeader + futureHtml;
 }
 
 // ── Correctness strip ────────────────────────────────────────────────────

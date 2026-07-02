@@ -6,6 +6,7 @@
 
 let _lastSteps = [];
 let _lastData  = {};
+let _lastMeta  = {};  // most recent /api/stats meta (holds planned_stages, etc.)
 
 let chart             = null;  // main timeline chart
 let queryChart        = null;  // per-query runtime bar chart
