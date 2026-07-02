@@ -50,7 +50,6 @@ from synnodb.utils.cli_config import RunConfig, Usecase
 from synnodb.utils.confirm_dialog import await_user_confirmation
 from synnodb.utils.conv_name_utils import generate_conv_name
 from synnodb.utils.core_utils import resolve_target_cores
-from synnodb.utils.hugepages import get_num_numa_nodes, set_hugepages
 from synnodb.utils.pkgconfig import check_pkg
 from synnodb.utils.snapshot_utils import load_storage_plan_from_snapshot
 from synnodb.utils.utils import (
@@ -840,9 +839,6 @@ def _publish_generated_engine(
 def _setup() -> None:
     if not check_pkg("arrow", "parquet"):
         raise Exception("arrow and parquet are not available. See README.")
-
-    for node in range(get_num_numa_nodes()):
-        set_hugepages(node=node, page_kb=2048, count=0)
 
 
 def _run_coroutine(coro):
