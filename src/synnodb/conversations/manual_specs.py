@@ -1,48 +1,58 @@
-"""Stage catalog for the ``manual`` debug entry point in main.py.
+"""Plan catalog for the ``manual`` debug entry point in main.py.
 
-The normal entry point is the importable :class:`~synnodb.api.SynnoDB` API, whose
-stages register themselves in ``synnodb.api``'s registry. This module maps a
-stage name onto the corresponding stage so ``python main.py manual --stage X``
-can resolve one. The ``scripted`` conversation has no API stage, so its
-descriptor is defined here.
+The normal entry point is the importable :class:`~synnodb.api.SynnoDB` API,
+whose named methods construct their plans directly. This module maps a stage
+name onto the corresponding predefined plan so ``python main.py manual
+--stage X`` can resolve one; parameterized plans take their inputs from the
+parsed CLI args. The ``scripted`` conversation exists only here.
 """
 
-from synnodb.api import Stage, all_stages
-from synnodb.conversations.conversation_spec import FrameworkContext
-from synnodb.cpp_runner.prepare_repo.prepare_olap import prepare_base
+import argparse
+
+from synnodb.builtin_plans import (
+    base_impl_plan,
+    check_sf_plan,
+    mt_plan,
+    optim_plan,
+    storage_plan_plan,
+)
+from synnodb.conversations.builders import scripted as _scripted_builder
+from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
+from synnodb.plan import ConversationPlan
 
 
-def _scripted_factory(ctx: FrameworkContext):
-    from synnodb.conversations.scripted_conversation import ScriptedConversation
-
-    return ScriptedConversation(**ctx.conv_args)
-
-
-def _scripted_build_config(cfg, inputs):
-    raise NotImplementedError(
-        "the 'scripted' conversation has no API build_config; it is only reachable "
-        "via the `manual` debug entry point (which supplies args directly)."
+def _scripted_plan() -> ConversationPlan:
+    return ConversationPlan(
+        name="scripted",
+        prepare=PrepareFeatures.base(),
+        stages=_scripted_builder.build,
+        finish_interactive=True,
     )
 
 
-# Not a registered API stage: scripted runs only through the manual entry point,
-# so build_config/result/usecases are never exercised for it.
-_SCRIPTED_SPEC = Stage(
-    name="scripted",
-    usecases=frozenset(),
-    build_config=_scripted_build_config,
-    prepare=prepare_base,
-    needs_parallelism=False,
-    be_relaxed_supervision=False,
-    factory=_scripted_factory,
-)
-
-
-def get_spec(stage_name: str) -> Stage:
-    catalog: dict = {st.name: st for st in all_stages()}
-    catalog[_SCRIPTED_SPEC.name] = _SCRIPTED_SPEC
-    if stage_name not in catalog:
-        raise ValueError(
-            f"Unknown stage '{stage_name}'. Known stages: {sorted(catalog)}"
+def get_plan(stage_name: str, args: argparse.Namespace) -> ConversationPlan:
+    if stage_name == "createStoragePlan":
+        return storage_plan_plan()
+    if stage_name == "createBaseImpl":
+        return base_impl_plan()  # plan text resolved by main() from the config
+    if stage_name == "runOptimLoop":
+        return optim_plan(
+            plan_source=getattr(args, "optimize_sample_plan_source", None) or "umbra"
         )
-    return catalog[stage_name]
+    if stage_name == "addMultiThreading":
+        return mt_plan()
+    if stage_name == "checkSfCorrectness":
+        target_sf = getattr(args, "target_sf", None)
+        assert target_sf is not None, "checkSfCorrectness requires --target_sf"
+        return check_sf_plan(target_sf)
+    if stage_name == "scripted":
+        return _scripted_plan()
+    known = [
+        "createStoragePlan",
+        "createBaseImpl",
+        "runOptimLoop",
+        "addMultiThreading",
+        "checkSfCorrectness",
+        "scripted",
+    ]
+    raise ValueError(f"Unknown stage '{stage_name}'. Known stages: {known}")

@@ -5,7 +5,7 @@ from agents import MaxTurnsExceeded, ModelBehaviorError
 from agents.exceptions import UserError
 from litellm.exceptions import BadRequestError, InternalServerError
 
-from synnodb.conversations.conversation import (
+from synnodb.conversations.stage_items import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_OFF,

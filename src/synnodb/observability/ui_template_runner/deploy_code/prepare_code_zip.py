@@ -12,10 +12,9 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent.parent.parent))
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
-    prepare_mt,
     prepare_repo_and_load_snapshot,
 )
-from synnodb.observability.benchmark.run import get_all_query_ids
+from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.observability.logging.wandb_api_helper import (
     wandb_retrieve_metrics_for_run,
@@ -119,14 +118,40 @@ def main() -> None:
         do_not_snapshot=True,
     )
 
+    # Restore the snapshot and regenerate its untracked framework helper files
+    # by replaying the prepare record committed with the snapshot itself.
+    from synnodb import settings
+    from synnodb.utils.utils import DBStorage
+    from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
+    from synnodb.workloads.workload_spec import get_workload_spec
+
+    db_storage_enum = DBStorage(db_storage)
+    workload_spec = get_workload_spec(args.benchmark)
+    parquet_dir = (
+        settings.get_data_dir()
+        / "workloads"
+        / args.benchmark
+        / f"{workload_spec.dataset_name}_parquet"
+    )
+    workload_provider = OLAPWorkloadProvider(
+        benchmark=args.benchmark,
+        base_parquet_dir=parquet_dir,
+        db_storage=db_storage_enum,
+    )
+    prepare_ws = OLAPPrepareWorkspace(
+        db_storage=db_storage_enum,
+        workload_provider=workload_provider,
+        workspace_dir=OUTPUT_DIR,
+        git_snapshotter=snapshotter,
+        prepare_cache_dir=None,
+    )
     prepare_repo_and_load_snapshot(
         snapshotter=snapshotter,
         snapshot=git_snapshot,
-        prepare_fn=prepare_mt,  # TODO extract from config or args
-        benchmark=args.benchmark,
-        query_list=get_all_query_ids(args.benchmark),
-        cache_path=ARTIFACTS_DIR / "cache",
-        db_storage=db_storage,
+        features=None,  # replay the snapshot's own prepare record
+        prepare_workspace_provider=prepare_ws,
+        parallelism=False,  # ignored on the replay path
+        do_not_cache=True,
     )
 
     zip_name = args.wandb_id or git_snapshot

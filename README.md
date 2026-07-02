@@ -58,6 +58,65 @@ forced through the `extra_config={...}` escape hatch.
 For low-level debugging there is still `python -m synnodb.main manual
 --conv_mode <mode> …` (explicit args; not the supported entry point).
 
+## Define your own conversation
+
+The built-in stages are ordinary `ConversationPlan`s; you can assemble and run
+your own conversation from the same primitives via `run_synthesis`, the single
+entry point every stage goes through:
+
+```python
+from synnodb import (
+    AssertCorrect, Benchmark, Compact, ConversationPlan, ConvContext,
+    PerQueryLoop, PrepareFeatures, PromptStage, SynnoDB,
+)
+
+db = SynnoDB.in_memory(workload="tpch", queries="1,4,6")
+
+def my_stages(ctx: ConvContext):
+    return [
+        AssertCorrect(),
+        PromptStage(
+            descriptor="inspect hot loops",
+            get_prompt=lambda _exec_settings, _rt: (
+                f"Profile {ctx.filenames.query_impl_path} and summarize the hot loops."),
+            measure_performance_after_stage=False,
+            auto_revert_on_regression=False,
+        ),
+        Compact(),
+        PerQueryLoop(lambda qid, ctx: [
+            PromptStage(
+                descriptor=f"tune {qid}",
+                # runtime and tracing data arrive exactly as in the built-in stages
+                get_prompt_with_tracing=lambda _exec_settings, rt, trace: (
+                    f"Query {qid} currently runs in {rt:.0f} ms.\n"
+                    f"Trace:\n{trace}\nOptimize it."),
+                max_turns=125,
+                # defaults: measure after stage, auto-revert on regression
+            ),
+        ]),
+        Benchmark(),
+    ]
+
+plan = ConversationPlan(
+    name="myTuningPass",                    # run identity: naming, logging, caching
+    prepare=PrepareFeatures(tracing=True),  # what the workspace must provide
+    stages=my_stages,
+)
+result = db.run_synthesis(plan, start=base_impl)  # start: artifact | snapshot hash | None
+```
+
+- `prepare` states *what the workspace must have* (scaffold, tracing
+  instrumentation, MT helpers, ...) as independent feature flags; the features
+  actually applied are recorded in a git-tracked `.synnodb_prepare.json` inside
+  every snapshot, so chained runs know what they start from.
+- `stages` receives a `ConvContext` (queries, workspace filenames, run tool,
+  lazy helpers like `ctx.reference_plans(source="umbra")`) and returns a flat
+  list of stage items. `PerQueryLoop` runs one conversation branch per query,
+  feeding each stage the freshly measured runtime and trace data.
+- The returned artifact carries the final snapshot hash and the prepare record,
+  so it chains into `db.checkSfCorrectness(result, target_sf=100)` or further
+  custom plans with no extra ceremony.
+
 Install: `uv sync` (add extras as needed: `uv sync --extra dev --extra viz`).
 
 ## Prerequisites

@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Callable, Mapping
 
 if TYPE_CHECKING:
     from synnodb.api import SynnoConfig
+    from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
 
 
 @dataclass(frozen=True)
@@ -40,11 +41,12 @@ class StageArtifact:
     # stage can restore it directly from the local workspace repo. kw_only so the
     # existing positional constructors (and their subclass fields) are unaffected.
     snapshot_hash: str | None = field(default=None, kw_only=True)
-    # Name of the Stage that produced this artifact, stamped by SynnoDB.run() from
-    # spec.name. Lets a consumer (e.g. checkSfCorrectness) recover which stage's
-    # prepare to replay without a hardcoded artifact-class -> stage-name map. kw_only
-    # so the positional subclass constructors are unaffected.
-    source_stage_name: str | None = field(default=None, kw_only=True)
+    # The prepare record of the run that produced this artifact, mirrored from
+    # the workspace metadata file (.synnodb_prepare.json) - the workspace, not
+    # this artifact, is the source of truth. kw_only so the positional subclass
+    # constructors are unaffected.
+    prepare_features: "PrepareFeatures | None" = field(default=None, kw_only=True)
+    parallelism: bool | None = field(default=None, kw_only=True)
 
     def __bool__(self) -> bool:
         """Truthy when there is a wandb run id to chain off."""
@@ -111,3 +113,72 @@ class CorrectnessReport(StageArtifact):
 
     def __repr__(self) -> str:
         return f"CorrectnessReport(run_id={self.run_id!r}, target_sf={self.target_sf})"
+
+
+# ---------------------- result builders (workspace -> artifact) -------------
+# Each reads the produced artifact out of the run's workspace and wraps it with
+# provenance (run_id, snapshot_hash, workspace, config). Uniform signature so a
+# ConversationPlan can carry any of them as its ``result``.
+
+ResultBuilder = Callable[
+    ["str | None", "str | None", Path, "SynnoConfig"], StageArtifact
+]
+
+
+def _engine_files(workspace: Path) -> dict[str, str]:
+    files: dict[str, str] = {}
+    for p in sorted(workspace.glob("*.cpp")) + sorted(workspace.glob("*.hpp")):
+        try:
+            files[p.name] = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    return files
+
+
+def build_artifact(run_id, snapshot_hash, workspace, config) -> StageArtifact:
+    return StageArtifact(run_id, workspace, config, snapshot_hash=snapshot_hash)
+
+
+def build_storage_plan(run_id, snapshot_hash, workspace, config) -> StoragePlan:
+    path = workspace / "storage_plan.txt"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    return StoragePlan(
+        run_id, workspace, config, path, text, snapshot_hash=snapshot_hash
+    )
+
+
+def build_base_impl(run_id, snapshot_hash, workspace, config) -> BaseImplementation:
+    return BaseImplementation(
+        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+    )
+
+
+def build_optimized(
+    run_id, snapshot_hash, workspace, config
+) -> OptimizedImplementation:
+    return OptimizedImplementation(
+        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+    )
+
+
+def build_multithreaded(
+    run_id, snapshot_hash, workspace, config
+) -> MultiThreadedImplementation:
+    return MultiThreadedImplementation(
+        run_id, workspace, config, _engine_files(workspace), snapshot_hash=snapshot_hash
+    )
+
+
+def make_correctness_builder(target_sf: float) -> ResultBuilder:
+    """A result builder for a checkSfCorrectness plan at ``target_sf``."""
+
+    def _build(run_id, snapshot_hash, workspace, config) -> CorrectnessReport:
+        return CorrectnessReport(
+            run_id,
+            workspace,
+            config,
+            float(target_sf),
+            snapshot_hash=snapshot_hash,
+        )
+
+    return _build

@@ -77,12 +77,15 @@ class BespokeRunner:
             self._snapshotter.reset_changes()
             self._snapshotter.clear_untracked(include_ignored=True)
 
+        # Replay the snapshot's own prepare record (features=None): the
+        # workspace metadata file committed with the snapshot says what its
+        # files were prepared with, so no is_mt-dependent prepare fn is needed.
         prepare_repo_and_load_snapshot(
             snapshotter=self._snapshotter,
             snapshot=snapshot,
-            prepare_fn=self._prep.prepare_fn_for(is_mt),
+            features=None,
             prepare_workspace_provider=prepare_workspace,
-            usecase_prepare_args={},
+            parallelism=is_mt,  # ignored on the replay path
             do_not_cache=True,
         )
 

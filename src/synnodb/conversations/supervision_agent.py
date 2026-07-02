@@ -1,19 +1,20 @@
 import logging
 
 
-from synnodb.conversations.conversation import (
+from synnodb.conversations.prompts_gen import (
+    SUPERVISION_SUCCESS_KW,
+    supervision_agent_prompt,
+)
+from synnodb.conversations.stage_items import (
     BENCHMARK_MARKER,
     COMPACTION_MARKER,
     VALIDATE_OFF,
     VALIDATE_ON,
     VALIDATE_OUTPUT_STDOUT_OFF,
     VALIDATE_OUTPUT_STDOUT_ON,
+    MarkerItem,
+    StageItem,
 )
-from synnodb.conversations.prompts_gen import (
-    SUPERVISION_SUCCESS_KW,
-    supervision_agent_prompt,
-)
-from synnodb.conversations.stage_config import StageConfig
 from synnodb.llm.sdk.sdk_wrapper import SDKWrapper
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 
@@ -50,12 +51,16 @@ class SupervisionAgent:
         )
         self.agent_sdk_wrapper = agent_sdk_wrapper
 
-    def register_workload_info(self, stages: list[str | StageConfig]):
-        # convert to str list
+    def register_workload_info(self, stages: list[StageItem | str]):
+        # Lower typed marker items to their legacy strings: the scoping and
+        # skip-set logic below operates on the marker strings.
+        stages = [s.marker if isinstance(s, MarkerItem) else s for s in stages]
         self.stages = stages
         self.stage_descriptions = []
         for i, stage in enumerate(stages):
-            if isinstance(stage, StageConfig):
+            if isinstance(stage, StageItem):
+                # every non-marker item (prompt stages and composites alike)
+                # describes itself via its descriptor
                 stage_str = stage.descriptor
             else:
                 stage_str = stage
@@ -141,10 +146,10 @@ class SupervisionAgent:
 
 
 def scope_stages_for_supervisor(
-    stage_list: list[str | StageConfig],
+    stage_list: list[str | StageItem],
     stage_descr_list: list[str],
     stage_pos: int,
-) -> tuple[list[str | StageConfig], list[str]]:
+) -> tuple[list[str | StageItem], list[str]]:
 
     # search marker before stage_pos
     start_pos = 0

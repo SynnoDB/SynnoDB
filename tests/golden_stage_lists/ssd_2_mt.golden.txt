@@ -1,0 +1,1081 @@
+########## section: stages ##########
+===== entry 0 =====
+kind: assert-correct
+query_ids: None
+===== entry 1 =====
+kind: marker
+marker: <<VALIDATE_ON>>
+benchmark_sf: None
+===== entry 2 =====
+kind: marker
+marker: <<VALIDATE_OUTPUT_STDOUT_ON>>
+benchmark_sf: None
+===== entry 3 =====
+kind: measure-baselines
+into: single_threaded_rt_ms
+===== entry 4 =====
+kind: prompt-stage
+descriptor: Add ThreadPool
+max_turns: 100
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Verify that the shared query thread pool is available. New in-memory base implementations should
+already have `get_query_pool()` wired in `query_impl.cpp` and `query_pool.hpp` available.
+If it is already present, do not add a duplicate definition; only make the smallest missing include
+or declaration fix needed for query files to call it.
+
+If `query_impl.cpp` truly does not define it yet, add exactly one definition:
+```
+// query_impl.cpp
+ThreadPool& get_query_pool() {
+    static struct Holder {
+        ThreadPool pool;
+        Holder() {
+            init_thread_pool(pool);
+            pool.parallel_for([](int, int) {});  // warm-up
+        }
+    } h;
+    return h.pool;
+}
+```
+The function is forward declared in `query_pool.hpp`.
+The ThreadPool struct is defined in `thread_pool.hpp`.
+This thread pool is shared across all queries and can be used to dispatch parallel tasks for query execution.
+
+In each queryN.cpp that needs direct pool access, include:
+```
+#include "query_pool.hpp"
+```
+Use `ThreadPool& pool = get_query_pool();` inside `run_qN()` or call `get_query_pool()` directly at
+the dispatch site. Do not add a file-scope static pool reference. Do not modify any other files
+besides query_impl.cpp, query_pool.hpp if needed, and the listed queryN.cpp files.
+Do not yet dispatch work to the thread pool in this setup step; just ensure that it is initialized
+and can be accessed.
+
+Call the run-tool after implementing the thread pool initialization. Check that the code compiles and runs correctly.
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+--- end prompt ---
+===== entry 5 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 6 =====
+kind: per-query-loop
+conversation_branching: True
+end_of_ring_benchmark: True
+branch_anchor: True
+benchmark_sf: None
+--- branch anchor (descriptor: Branch Anchor, max_turns: 5) ---
+--- prompt ---
+We are about to create one conversation branch per query for the multi-threading tuning loop. The base implementation is already parallel-ready through the shared query pool. Do not inspect files, do not use tools, and do not change code. Reply exactly: Ready for per-query branches.
+--- end prompt ---
+----- loop stage 0 (query 1) -----
+kind: prompt-stage
+descriptor: Introduce Multi-Threading (1)
+max_turns: 150
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Parallelize the implementation of query 1 (`query1.hpp/cpp`) to utilize multiple CPU cores. The goal is to reduce the query execution time by decomposing the work into parallel tasks that can be executed concurrently.
+The thread_pool is already added and initialized in the query files. Use its ThreadPool API defined in `thread_pool.hpp` to manage the execution of parallel tasks.
+Call `thread_pool.parallel_for(f)` to dispatch work, where f(tid, n_threads) is invoked concurrently on all threads at once.
+
+Current single-threaded tracing/profiling output. Use it to classify the bottleneck (I/O-bound vs CPU-bound) before choosing a parallelization pattern:
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+
+
+# Diagnose the bottleneck first, then pick the parallelization pattern
+
+For SSD-backed storage the right parallelization depends on whether the query is I/O-bound (most of the time is spent waiting on `pin_page` slow paths) or CPU-bound (most of the time is spent in the inner aggregation loop). The two regimes call for different patterns:
+
+- **CPU-bound** (cache-resident or small data): inner-loop row split inside one chunk is fine. The main thread pins pages serially, workers parallelize the compute.
+- **I/O-bound** (data > buffer pool): inner-loop row split leaves N-1 worker threads idle while the main thread blocks on `pread`. Use **outer-loop page-range partition** instead, so workers own page pinning and I/O can overlap.
+
+If `buffer_pool_read_page` / `buffer_pool_pin_page` or high `buffer_pool_bytes_read` / `buffer_pool_page_misses` dominate, you are I/O-bound (pattern B); otherwise pattern A is sufficient. If the trace is unclear, add finer-grained `PROFILE_SCOPE` markers and re-run with `trace_mode=true`.
+
+# Page-Aware Parallelism (Important for SSD-backed storage)
+
+Column data is accessed via ColumnHandle<T> page by page. Scattering threads across arbitrary non-contiguous row ranges causes parallel page faults and thrashes the buffer pool. Chunking is mandatory; the question is **which thread owns the pin** for each chunk.
+
+For multi-column scans, chunk by logical row range, not by a shared page index, because different element sizes have different rows-per-page.
+
+## Pattern A — Inner-loop row split (good when CPU-bound)
+
+One driver thread pins pages for a chunk, workers split rows within the chunk. Simple, correct, but the I/O is serial.
+
+```cpp
+for (int64_t pg = 0; pg < db->col.num_pages(); ++pg) {
+    int64_t count;
+    const T* ptr = db->col.pin_page(pg, &count);
+
+    pool.parallel_for([&](int tid, int n) {
+        int64_t lo = tid * (count / n);
+        int64_t hi = (tid == n - 1) ? count : lo + count / n;
+        // process ptr[lo..hi) with thread-local accumulators
+    });
+
+    db->col.unpin_page(pg);
+}
+// merge per-thread accumulators
+```
+
+## Pattern B — Outer-loop page-range partition (preferred when I/O-bound)
+
+Partition the **page range** across threads; each thread does its own pins, its own compute, and writes into its own accumulator. The OS sees N concurrent read streams, NVMe queue depth grows, and there is no main-thread serialization point.
+
+```cpp
+const int64_t n_pages = db->col_a.num_pages();
+pool.parallel_for([&](int tid, int n) {
+    const int64_t pg_lo = tid * (n_pages / n);
+    const int64_t pg_hi = (tid == n - 1) ? n_pages : pg_lo + n_pages / n;
+    Accum local{};
+    for (int64_t pg = pg_lo; pg < pg_hi; ++pg) {
+        int64_t count_a, count_b;
+        const A* a = db->col_a.pin_page(pg, &count_a);
+        const B* b = db->col_b.pin_page(pg, &count_b);  // must be same pages_per_page
+        // process a[0..count_a), b[0..count_a) into `local`
+        db->col_a.unpin_page(pg);
+        db->col_b.unpin_page(pg);
+    }
+    publish(tid, local);
+});
+// merge per-thread accumulators
+```
+
+For uneven page counts, give the last thread the remainder. For imbalanced work per page, replace the static `pg_lo/pg_hi` split with an `std::atomic<int64_t> next_pg` claim loop.
+
+# Common pitfalls
+
+- **Per-thread accumulators must be cache-line padded** (struct size aligned to 64 B). Adjacent slots in a `std::vector<Accum>` will false-share otherwise.
+- **`pin_page` uses a shared buffer-pool mutex around metadata and in-flight page coordination.** Page reads happen outside the mutex, but many threads pinning tiny chunks can still bottleneck on metadata. Prefer fewer, larger chunks; or partition cleanly so each thread mostly hits its own page set.
+- **Do not pin a page from one thread and unpin from another** unless the framework explicitly supports cross-thread unpin.
+
+Additional strategies (choose what fits):
+- Parallel aggregation with per-thread local accumulators, then a sequential final merge.
+- Parallel hash join where each thread builds a thread-local hash table over its sub-range, then merges.
+- Lock-free data structures if concurrent write access is required.
+
+You can assume a single-numa region.
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Use the run tool's EXHAUSTIVE mode for correctness checking and BENCHMARK mode for benchmarking.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+- Dispatch work to the thread pool and collect results before returning. Avoid spawning new threads per query call.
+
+Validate correctness after each change. If performance did not improve, reconsider the parallelization strategy and try again.
+
+--- end prompt ---
+----- loop stage 1 (query 1) -----
+kind: prompt-stage
+descriptor: Optim w. Tracing Stats MT-aware (1)
+max_turns: 125
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the implementation of query 1 using the tracing/profiling data collected with the run tool:
+
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+Analyze the tracing/profiling data to identify bottlenecks in the query execution, e.g. operators which consume the most time, cardinalities that require significant processing and optimized code implementation.
+- High `buffer_pool_read_page`, high `buffer_pool_page_misses`, or high `buffer_pool_bytes_read` indicates **I/O-bound** work. Reduce bytes read, improve zone-map skipping, or switch from one driver thread pinning all pages to page-range/chunk ownership by workers.
+- High `buffer_pool_pin_page` with low `buffer_pool_read_page` indicates **buffer-pool metadata contention** or excessive pin/unpin frequency. Use larger chunks, fewer pins, or avoid repeatedly pinning already-known pages.
+- A compute scope dominating while buffer-pool miss/read metrics are low indicates a **CPU-bound** hot loop — apply inner-loop optimizations (branchless, SIMD, register-resident accumulators).
+- If per-thread scopes or counters are present and one thread dominates, that indicates **thread skew**. Repartition work or use a chunk queue.
+- A scope dominated by shared accumulator/hash-table updates indicates **contention** — shard the resource, use thread-local copies and merge, or reduce hold time.
+
+Before editing, think about a plan first: which scope or counter dominates, what bottleneck class it represents (skew / I/O / CPU / contention), and what change addresses that specific class.
+Then implement the optimization by editing the query implementation files (`query1.hpp/cpp`). Focus on the scope that is the bottleneck.
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+- A change that improves single-thread wall time but worsens parallel scalability is a regression. If per-thread trace scopes are available, per-thread time variance should not grow.
+
+
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail.
+
+--- end prompt ---
+----- loop stage 2 (query 1) -----
+kind: prompt-stage
+descriptor: Optim w. Expert Knowledge (1)
+max_turns: 150
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Optimize query 1 using the expert knowledge on high-performance SSD-backed OLAP systems:
+
+# Expert Knowledge & Best Practices for High-Performance Data Processing
+
+## Memory Access & Data Movement
+
+1. Ensure sequential memory access patterns
+Traverse memory linearly whenever possible. Sequential access maximizes cache line utilization and hardware prefetch efficiency.
+
+2. Prefer pointer iteration over indexed access in tight loops - ensure sequential memory access patterns
+Sequential pointer traversal reduces address recomputation and improves auto-vectorization.
+
+3. Prefetch data when accessing through indices
+If you access arrays indirectly through an index list, the CPU cannot predict what memory will be needed next. Manually prefetching upcoming elements helps hide memory latency and reduces cache misses.
+
+4. Copy small records into local variables
+When repeatedly accessing multiple fields of a small struct, copy the struct into a local variable first. This allows the compiler to keep values in registers instead of reloading them from memory.
+
+5. Avoid unnecessary move or copy operations
+Use in-place construction and rely on compiler elision where possible.
+
+## Loop Structure & Invariants
+
+6. Hoist invariant work out of loops
+Any computation, lookup, or reference that does not change per iteration must be moved outside the loop.
+
+7. Eliminate repeated structural checks
+Do not repeatedly verify conditions that are constant or guaranteed.
+Compute once, cache once, or rely on established invariants.
+Also, if different conditions require different processing strategies, determine the strategy before the loop starts and then run the appropriate version. Avoid checking the same conditions repeatedly while scanning data.
+
+8. Decide execution strategy before entering the loop
+If multiple processing modes exist, select the mode once and run a dedicated loop variant.
+
+9. Avoid duplicating large loop bodies
+If several branches run almost identical loops with only small differences in filtering, combine them into one loop and control behavior with flags. This keeps code smaller, improves instruction cache usage, and helps the compiler optimize better.
+
+## Control Flow
+
+10. Minimize branching in inner loops
+Use early-continue filtering or direct predicate-based accumulation.
+Avoid auxiliary state flags if results can be inferred.
+
+11. Consider branchless computation when branch prediction is poor
+If control flow is unpredictable, replace branches with arithmetic masking.
+Computing a boolean condition and using it to control arithmetic (e.g., multiply by 0 or 1) can be faster than branching, especially in large scans.
+
+## Arithmetic & Computation Cost
+
+12. Remove expensive arithmetic from hot loops
+Avoid division or other high-latency operations per element.
+Precompute constants or perform normalization after aggregation.
+
+13. Avoid expensive general-purpose parsing in hot paths
+Do not use high-level string conversions or substring allocation inside tight loops (e.g. std::stoi, std::stod, substr).
+Prefer fixed-format, allocation-free parsing directly from raw memory.
+
+## Containers & Lookup Structures
+
+14. Pre-size output containers using realistic estimates
+Estimate result size from selectivity or statistics to avoid dynamic growth.
+
+15. Replace repeated linear searches with indexed lookup structures
+Use hash-based or constant-time lookup instead of scanning collections repeatedly.
+
+## Algorithm Selection
+
+16. Use algorithms specialized for data characteristics
+For fixed-width numeric keys or sortable primitives, prefer non-comparison-based or domain-specific algorithms.
+
+## Compiler Optimization Signals
+
+17. Communicate aliasing guarantees
+Tell the compiler when memory regions do not overlap (e.g. restrict semantics).
+
+18. Inline hot functions when beneficial
+Reduces call overhead and exposes optimization opportunities.
+
+## Vectorization & Hardware Utilization
+
+19. Exploit SIMD parallelism where applicable
+Process multiple elements per iteration using vectorized comparisons and masked arithmetic.
+
+## SSD-Backed Storage: I/O is the budget
+
+When the dataset is larger than the buffer pool, query runtime is often bounded by **bytes read from disk**, not by CPU cycles. The single-most-effective optimization is to read less. The second is to overlap reads with compute. Inner-loop micro-optimization gains nothing if the scan is bandwidth-bound: first determine the bottleneck, then optimize the right resource.
+
+20. Diagnose I/O vs CPU bottleneck before optimizing
+Use the buffer-pool read/pin timers and miss/bytes counters. If they dominate total query time, the query is I/O-bound — optimizing the compute kernel is wasted effort. If buffer-pool misses are low and the inner loop dominates, the query is CPU-bound. The two bottlenecks call for opposite strategies: I/O-bound queries want fewer/smaller reads and I/O parallelism; CPU-bound queries want SIMD, branchless inner loops, and tighter per-thread accumulators. Re-check at memory-pressure scale factors, not just at SFs where data fits in RAM — a change that wins at SF=1 but doubles bytes read at SF=100 is a regression.
+
+21. Reduce bytes-on-disk before reducing cycles
+Every byte you do not write at ingest is a byte you do not read at query time. Concrete techniques, in priority order:
+- Narrow integer types to the smallest that fits the observed value range (not the SQL nominal type). A column whose SQL type is `INTEGER` but whose values lie in `[1, 50]` is `int8`, not `int32`. Check actual min/max/distinct before choosing a type.
+- Frame-of-reference encoding for clustered integers: store `value - min_of_page` and shrink the type. Common for dates and identifiers.
+- Bit-pack small-domain integers: a column with 4 distinct values needs 2 bits, not 8.
+- RLE for sorted or highly clustered columns: store runs of `(value, count)`.
+- Dictionary encoding for low-cardinality strings or repeated small values; persist the dictionary separately, store column as fixed-width codes.
+
+22. Decode at the page boundary, not per-row
+When a page uses encoding (FOR, bit-pack, RLE, dict), decode the entire page once into a thread-local scratch buffer on pin, then run the existing aggregation loop unmodified. This isolates decode complexity from hot inner-loop code and lets the inner loop stay vectorizable.
+
+23. Use zone maps aggressively, and design the data so they actually fire
+Zone maps only help when the data is clustered on the filtered column. If a query's predicate is on column `C`, the table needs to be either sorted by `C` or partitioned such that most pages have a tight `(min, max)` range on `C`. A workload-wide sort key should be the single column that yields the highest expected pruning across the most expensive queries — not picked per query.
+
+24. Prefer page-level or prefix summaries for tiny-cardinality range aggregates
+When a query aggregates a contiguous range over the clustering key and has a tiny fixed group cardinality, a compact derived sidecar beats scanning data pages. Store per-page or prefix aggregate records, then scan only the boundary page at query time. This is especially strong for predicates like `date <= cutoff` on data sorted by `date`, where all qualifying full pages can be answered from summaries.
+
+25. Pin briefly and unpin promptly
+The buffer pool has a fixed frame count and shared metadata protected by a mutex. Long-held pins reduce eviction flexibility, and tiny chunks increase metadata contention. Pin a page, process it within a single pipeline step, and unpin immediately to keep the working set small.
+
+26. Overlap I/O with compute via parallelism or prefetching
+With synchronous `pin_page` on a single driver thread, the timeline is `[wait on SSD][compute][wait on SSD][compute]…`. NVMe wants queue depth ≥ 8 to hit peak bandwidth. Two ways to get there:
+- **Page-range partition across threads** (simplest): each of N threads scans a disjoint page range and aggregates into a thread-local accumulator. The OS sees N parallel read streams, and each worker pins its own pages so the main thread is not a serial bottleneck.
+- **Producer-consumer pipeline** (when partitioning is awkward): a producer pins N+lookahead pages ahead of the consumer; lookahead ≈ 4–16.
+
+27. Co-process columns within the same row range to avoid eviction thrashing
+For a query touching K columns, pin all K columns for one row range (chunk), process them together, then unpin and advance. Do not scan column A end-to-end and then column B end-to-end — that requires K full passes through the buffer pool and evicts useful pages.
+
+28. Choose join strategies based on memory and ordering
+Sort-merge joins are efficient when both inputs are sorted on the join key or can be streamed in sorted order — purely sequential I/O, no random reads. Hash joins are preferable when the build side fits in RAM. For large joins where neither input fits, use partitioned hash joins (radix-partition both sides to disk, then hash-join partitions that fit in RAM) — this keeps access mostly sequential and bounds peak memory.
+
+29. Write column data sequentially and in large blocks at ingest
+During build, write each column in a single append-only pass. Avoid random writes and flush data in large, aligned blocks (≥ 2 MiB) to maximize SSD throughput and minimize write amplification. The cost paid at ingest is recouped many times over at query time.
+
+
+Use this expert knowledge to speedup the implementation of query 1. 
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail. 
+--- end prompt ---
+----- loop stage 3 (query 1) -----
+kind: prompt-stage
+descriptor: Optim w. Human Reference (1)
+max_turns: 125
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize query 1 as Prof. Thomas Neumann or Matthias Jasny would: apply every low-level technique available, leave nothing on the table. Focus on the bottlenecks identified in the tracing output, but also reconsider the overall approach if it unlocks significantly larger speedups.
+First output a short plan with candidate strategies, expected bottleneck addressed, and files to edit. Then implement and evaluate the most 1-2 promising candidates.
+
+Tracing/profiling data collected for query 1:
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+- You have only 125 turns available, so prioritize the most promising strategies.
+
+
+You may try at most 2 candidate implementations total. Each candidate may include one batched edit set and one evaluation.
+--- end prompt ---
+----- loop stage 0 (query 6) -----
+kind: prompt-stage
+descriptor: Introduce Multi-Threading (6)
+max_turns: 150
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Parallelize the implementation of query 6 (`query6.hpp/cpp`) to utilize multiple CPU cores. The goal is to reduce the query execution time by decomposing the work into parallel tasks that can be executed concurrently.
+The thread_pool is already added and initialized in the query files. Use its ThreadPool API defined in `thread_pool.hpp` to manage the execution of parallel tasks.
+Call `thread_pool.parallel_for(f)` to dispatch work, where f(tid, n_threads) is invoked concurrently on all threads at once.
+
+Current single-threaded tracing/profiling output. Use it to classify the bottleneck (I/O-bound vs CPU-bound) before choosing a parallelization pattern:
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+
+
+# Diagnose the bottleneck first, then pick the parallelization pattern
+
+For SSD-backed storage the right parallelization depends on whether the query is I/O-bound (most of the time is spent waiting on `pin_page` slow paths) or CPU-bound (most of the time is spent in the inner aggregation loop). The two regimes call for different patterns:
+
+- **CPU-bound** (cache-resident or small data): inner-loop row split inside one chunk is fine. The main thread pins pages serially, workers parallelize the compute.
+- **I/O-bound** (data > buffer pool): inner-loop row split leaves N-1 worker threads idle while the main thread blocks on `pread`. Use **outer-loop page-range partition** instead, so workers own page pinning and I/O can overlap.
+
+If `buffer_pool_read_page` / `buffer_pool_pin_page` or high `buffer_pool_bytes_read` / `buffer_pool_page_misses` dominate, you are I/O-bound (pattern B); otherwise pattern A is sufficient. If the trace is unclear, add finer-grained `PROFILE_SCOPE` markers and re-run with `trace_mode=true`.
+
+# Page-Aware Parallelism (Important for SSD-backed storage)
+
+Column data is accessed via ColumnHandle<T> page by page. Scattering threads across arbitrary non-contiguous row ranges causes parallel page faults and thrashes the buffer pool. Chunking is mandatory; the question is **which thread owns the pin** for each chunk.
+
+For multi-column scans, chunk by logical row range, not by a shared page index, because different element sizes have different rows-per-page.
+
+## Pattern A — Inner-loop row split (good when CPU-bound)
+
+One driver thread pins pages for a chunk, workers split rows within the chunk. Simple, correct, but the I/O is serial.
+
+```cpp
+for (int64_t pg = 0; pg < db->col.num_pages(); ++pg) {
+    int64_t count;
+    const T* ptr = db->col.pin_page(pg, &count);
+
+    pool.parallel_for([&](int tid, int n) {
+        int64_t lo = tid * (count / n);
+        int64_t hi = (tid == n - 1) ? count : lo + count / n;
+        // process ptr[lo..hi) with thread-local accumulators
+    });
+
+    db->col.unpin_page(pg);
+}
+// merge per-thread accumulators
+```
+
+## Pattern B — Outer-loop page-range partition (preferred when I/O-bound)
+
+Partition the **page range** across threads; each thread does its own pins, its own compute, and writes into its own accumulator. The OS sees N concurrent read streams, NVMe queue depth grows, and there is no main-thread serialization point.
+
+```cpp
+const int64_t n_pages = db->col_a.num_pages();
+pool.parallel_for([&](int tid, int n) {
+    const int64_t pg_lo = tid * (n_pages / n);
+    const int64_t pg_hi = (tid == n - 1) ? n_pages : pg_lo + n_pages / n;
+    Accum local{};
+    for (int64_t pg = pg_lo; pg < pg_hi; ++pg) {
+        int64_t count_a, count_b;
+        const A* a = db->col_a.pin_page(pg, &count_a);
+        const B* b = db->col_b.pin_page(pg, &count_b);  // must be same pages_per_page
+        // process a[0..count_a), b[0..count_a) into `local`
+        db->col_a.unpin_page(pg);
+        db->col_b.unpin_page(pg);
+    }
+    publish(tid, local);
+});
+// merge per-thread accumulators
+```
+
+For uneven page counts, give the last thread the remainder. For imbalanced work per page, replace the static `pg_lo/pg_hi` split with an `std::atomic<int64_t> next_pg` claim loop.
+
+# Common pitfalls
+
+- **Per-thread accumulators must be cache-line padded** (struct size aligned to 64 B). Adjacent slots in a `std::vector<Accum>` will false-share otherwise.
+- **`pin_page` uses a shared buffer-pool mutex around metadata and in-flight page coordination.** Page reads happen outside the mutex, but many threads pinning tiny chunks can still bottleneck on metadata. Prefer fewer, larger chunks; or partition cleanly so each thread mostly hits its own page set.
+- **Do not pin a page from one thread and unpin from another** unless the framework explicitly supports cross-thread unpin.
+
+Additional strategies (choose what fits):
+- Parallel aggregation with per-thread local accumulators, then a sequential final merge.
+- Parallel hash join where each thread builds a thread-local hash table over its sub-range, then merges.
+- Lock-free data structures if concurrent write access is required.
+
+You can assume a single-numa region.
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Use the run tool's EXHAUSTIVE mode for correctness checking and BENCHMARK mode for benchmarking.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+- Dispatch work to the thread pool and collect results before returning. Avoid spawning new threads per query call.
+
+Validate correctness after each change. If performance did not improve, reconsider the parallelization strategy and try again.
+
+--- end prompt ---
+----- loop stage 1 (query 6) -----
+kind: prompt-stage
+descriptor: Optim w. Tracing Stats MT-aware (6)
+max_turns: 125
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize the implementation of query 6 using the tracing/profiling data collected with the run tool:
+
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+Analyze the tracing/profiling data to identify bottlenecks in the query execution, e.g. operators which consume the most time, cardinalities that require significant processing and optimized code implementation.
+- High `buffer_pool_read_page`, high `buffer_pool_page_misses`, or high `buffer_pool_bytes_read` indicates **I/O-bound** work. Reduce bytes read, improve zone-map skipping, or switch from one driver thread pinning all pages to page-range/chunk ownership by workers.
+- High `buffer_pool_pin_page` with low `buffer_pool_read_page` indicates **buffer-pool metadata contention** or excessive pin/unpin frequency. Use larger chunks, fewer pins, or avoid repeatedly pinning already-known pages.
+- A compute scope dominating while buffer-pool miss/read metrics are low indicates a **CPU-bound** hot loop — apply inner-loop optimizations (branchless, SIMD, register-resident accumulators).
+- If per-thread scopes or counters are present and one thread dominates, that indicates **thread skew**. Repartition work or use a chunk queue.
+- A scope dominated by shared accumulator/hash-table updates indicates **contention** — shard the resource, use thread-local copies and merge, or reduce hold time.
+
+Before editing, think about a plan first: which scope or counter dominates, what bottleneck class it represents (skew / I/O / CPU / contention), and what change addresses that specific class.
+Then implement the optimization by editing the query implementation files (`query6.hpp/cpp`). Focus on the scope that is the bottleneck.
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+- A change that improves single-thread wall time but worsens parallel scalability is a regression. If per-thread trace scopes are available, per-thread time variance should not grow.
+
+
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail.
+
+--- end prompt ---
+----- loop stage 2 (query 6) -----
+kind: prompt-stage
+descriptor: Optim w. Expert Knowledge (6)
+max_turns: 150
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt
+--- prompt ---
+Optimize query 6 using the expert knowledge on high-performance SSD-backed OLAP systems:
+
+# Expert Knowledge & Best Practices for High-Performance Data Processing
+
+## Memory Access & Data Movement
+
+1. Ensure sequential memory access patterns
+Traverse memory linearly whenever possible. Sequential access maximizes cache line utilization and hardware prefetch efficiency.
+
+2. Prefer pointer iteration over indexed access in tight loops - ensure sequential memory access patterns
+Sequential pointer traversal reduces address recomputation and improves auto-vectorization.
+
+3. Prefetch data when accessing through indices
+If you access arrays indirectly through an index list, the CPU cannot predict what memory will be needed next. Manually prefetching upcoming elements helps hide memory latency and reduces cache misses.
+
+4. Copy small records into local variables
+When repeatedly accessing multiple fields of a small struct, copy the struct into a local variable first. This allows the compiler to keep values in registers instead of reloading them from memory.
+
+5. Avoid unnecessary move or copy operations
+Use in-place construction and rely on compiler elision where possible.
+
+## Loop Structure & Invariants
+
+6. Hoist invariant work out of loops
+Any computation, lookup, or reference that does not change per iteration must be moved outside the loop.
+
+7. Eliminate repeated structural checks
+Do not repeatedly verify conditions that are constant or guaranteed.
+Compute once, cache once, or rely on established invariants.
+Also, if different conditions require different processing strategies, determine the strategy before the loop starts and then run the appropriate version. Avoid checking the same conditions repeatedly while scanning data.
+
+8. Decide execution strategy before entering the loop
+If multiple processing modes exist, select the mode once and run a dedicated loop variant.
+
+9. Avoid duplicating large loop bodies
+If several branches run almost identical loops with only small differences in filtering, combine them into one loop and control behavior with flags. This keeps code smaller, improves instruction cache usage, and helps the compiler optimize better.
+
+## Control Flow
+
+10. Minimize branching in inner loops
+Use early-continue filtering or direct predicate-based accumulation.
+Avoid auxiliary state flags if results can be inferred.
+
+11. Consider branchless computation when branch prediction is poor
+If control flow is unpredictable, replace branches with arithmetic masking.
+Computing a boolean condition and using it to control arithmetic (e.g., multiply by 0 or 1) can be faster than branching, especially in large scans.
+
+## Arithmetic & Computation Cost
+
+12. Remove expensive arithmetic from hot loops
+Avoid division or other high-latency operations per element.
+Precompute constants or perform normalization after aggregation.
+
+13. Avoid expensive general-purpose parsing in hot paths
+Do not use high-level string conversions or substring allocation inside tight loops (e.g. std::stoi, std::stod, substr).
+Prefer fixed-format, allocation-free parsing directly from raw memory.
+
+## Containers & Lookup Structures
+
+14. Pre-size output containers using realistic estimates
+Estimate result size from selectivity or statistics to avoid dynamic growth.
+
+15. Replace repeated linear searches with indexed lookup structures
+Use hash-based or constant-time lookup instead of scanning collections repeatedly.
+
+## Algorithm Selection
+
+16. Use algorithms specialized for data characteristics
+For fixed-width numeric keys or sortable primitives, prefer non-comparison-based or domain-specific algorithms.
+
+## Compiler Optimization Signals
+
+17. Communicate aliasing guarantees
+Tell the compiler when memory regions do not overlap (e.g. restrict semantics).
+
+18. Inline hot functions when beneficial
+Reduces call overhead and exposes optimization opportunities.
+
+## Vectorization & Hardware Utilization
+
+19. Exploit SIMD parallelism where applicable
+Process multiple elements per iteration using vectorized comparisons and masked arithmetic.
+
+## SSD-Backed Storage: I/O is the budget
+
+When the dataset is larger than the buffer pool, query runtime is often bounded by **bytes read from disk**, not by CPU cycles. The single-most-effective optimization is to read less. The second is to overlap reads with compute. Inner-loop micro-optimization gains nothing if the scan is bandwidth-bound: first determine the bottleneck, then optimize the right resource.
+
+20. Diagnose I/O vs CPU bottleneck before optimizing
+Use the buffer-pool read/pin timers and miss/bytes counters. If they dominate total query time, the query is I/O-bound — optimizing the compute kernel is wasted effort. If buffer-pool misses are low and the inner loop dominates, the query is CPU-bound. The two bottlenecks call for opposite strategies: I/O-bound queries want fewer/smaller reads and I/O parallelism; CPU-bound queries want SIMD, branchless inner loops, and tighter per-thread accumulators. Re-check at memory-pressure scale factors, not just at SFs where data fits in RAM — a change that wins at SF=1 but doubles bytes read at SF=100 is a regression.
+
+21. Reduce bytes-on-disk before reducing cycles
+Every byte you do not write at ingest is a byte you do not read at query time. Concrete techniques, in priority order:
+- Narrow integer types to the smallest that fits the observed value range (not the SQL nominal type). A column whose SQL type is `INTEGER` but whose values lie in `[1, 50]` is `int8`, not `int32`. Check actual min/max/distinct before choosing a type.
+- Frame-of-reference encoding for clustered integers: store `value - min_of_page` and shrink the type. Common for dates and identifiers.
+- Bit-pack small-domain integers: a column with 4 distinct values needs 2 bits, not 8.
+- RLE for sorted or highly clustered columns: store runs of `(value, count)`.
+- Dictionary encoding for low-cardinality strings or repeated small values; persist the dictionary separately, store column as fixed-width codes.
+
+22. Decode at the page boundary, not per-row
+When a page uses encoding (FOR, bit-pack, RLE, dict), decode the entire page once into a thread-local scratch buffer on pin, then run the existing aggregation loop unmodified. This isolates decode complexity from hot inner-loop code and lets the inner loop stay vectorizable.
+
+23. Use zone maps aggressively, and design the data so they actually fire
+Zone maps only help when the data is clustered on the filtered column. If a query's predicate is on column `C`, the table needs to be either sorted by `C` or partitioned such that most pages have a tight `(min, max)` range on `C`. A workload-wide sort key should be the single column that yields the highest expected pruning across the most expensive queries — not picked per query.
+
+24. Prefer page-level or prefix summaries for tiny-cardinality range aggregates
+When a query aggregates a contiguous range over the clustering key and has a tiny fixed group cardinality, a compact derived sidecar beats scanning data pages. Store per-page or prefix aggregate records, then scan only the boundary page at query time. This is especially strong for predicates like `date <= cutoff` on data sorted by `date`, where all qualifying full pages can be answered from summaries.
+
+25. Pin briefly and unpin promptly
+The buffer pool has a fixed frame count and shared metadata protected by a mutex. Long-held pins reduce eviction flexibility, and tiny chunks increase metadata contention. Pin a page, process it within a single pipeline step, and unpin immediately to keep the working set small.
+
+26. Overlap I/O with compute via parallelism or prefetching
+With synchronous `pin_page` on a single driver thread, the timeline is `[wait on SSD][compute][wait on SSD][compute]…`. NVMe wants queue depth ≥ 8 to hit peak bandwidth. Two ways to get there:
+- **Page-range partition across threads** (simplest): each of N threads scans a disjoint page range and aggregates into a thread-local accumulator. The OS sees N parallel read streams, and each worker pins its own pages so the main thread is not a serial bottleneck.
+- **Producer-consumer pipeline** (when partitioning is awkward): a producer pins N+lookahead pages ahead of the consumer; lookahead ≈ 4–16.
+
+27. Co-process columns within the same row range to avoid eviction thrashing
+For a query touching K columns, pin all K columns for one row range (chunk), process them together, then unpin and advance. Do not scan column A end-to-end and then column B end-to-end — that requires K full passes through the buffer pool and evicts useful pages.
+
+28. Choose join strategies based on memory and ordering
+Sort-merge joins are efficient when both inputs are sorted on the join key or can be streamed in sorted order — purely sequential I/O, no random reads. Hash joins are preferable when the build side fits in RAM. For large joins where neither input fits, use partitioned hash joins (radix-partition both sides to disk, then hash-join partitions that fit in RAM) — this keeps access mostly sequential and bounds peak memory.
+
+29. Write column data sequentially and in large blocks at ingest
+During build, write each column in a single append-only pass. Avoid random writes and flush data in large, aligned blocks (≥ 2 MiB) to maximize SSD throughput and minimize write amplification. The cost paid at ingest is recouped many times over at query time.
+
+
+Use this expert knowledge to speedup the implementation of query 6. 
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+Make at most 2 optimization rounds. Stop when performance improves measurably or two rounds fail. 
+--- end prompt ---
+----- loop stage 3 (query 6) -----
+kind: prompt-stage
+descriptor: Optim w. Human Reference (6)
+max_turns: 125
+measure_performance_after_stage: True
+measure_perf_qid: None
+auto_revert_on_regression: True
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: None
+prompt_source: get_prompt_with_tracing
+--- prompt ---
+Optimize query 6 as Prof. Thomas Neumann or Matthias Jasny would: apply every low-level technique available, leave nothing on the table. Focus on the bottlenecks identified in the tracing output, but also reconsider the overall approach if it unlocks significantly larger speedups.
+First output a short plan with candidate strategies, expected bottleneck addressed, and files to edit. Then implement and evaluate the most 1-2 promising candidates.
+
+Tracing/profiling data collected for query 6:
+```
+SYNTHETIC TRACING DATA (fixed for golden test)
+```
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
+- Read each file at most once per round. Do not re-read files to look up details you already saw.
+- Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+- You have only 125 turns available, so prioritize the most promising strategies.
+
+
+You may try at most 2 candidate implementations total. Each candidate may include one batched edit set and one evaluation.
+--- end prompt ---
+===== entry 7 =====
+kind: marker
+marker: <<COMPACTION>>
+benchmark_sf: None
+===== entry 8 =====
+kind: prompt-stage
+descriptor: Check large SF
+max_turns: 125
+measure_performance_after_stage: False
+measure_perf_qid: None
+auto_revert_on_regression: False
+feedback_on_incorrect: False
+throw_exception_on_incorrect: False
+has_post_stage_validate: False
+benchmark_sf: large_check
+prompt_source: get_prompt
+--- prompt ---
+Verify the implementation is correct at the benchmark scale. Call the run tool in
+BENCHMARK mode (optimize=True, trace=False) and fix any scaling issues you find.
+
+If it produces errors, the most common causes when scaling to a larger dataset are:
+
+- int32 overflow in row counts, offsets, or array indices (use int64/size_t)
+- int32 overflow in aggregation accumulators (e.g. SUM into int32)
+- Hardcoded or statically-sized buffers that were large enough at smaller SF
+- Hash table capacity not scaling with data size, causing OOM or rehash loops
+- Arrow/Parquet int32 column offset overflow when a column exceeds 2 GiB
+- Join build side exceeding available memory with no spill path
+- mmap or allocation sizes computed through int32 arithmetic that wraps
+
+# Overall System
+
+During the build phase, the database engine serializes Parquet file data into flat binary column files on disk, managed via a BufferPool (`buffer_pool.hpp`). At query time, column pages are loaded on demand from SSD into a fixed RAM pool via `ColumnHandle<T>` (`column_handle.hpp`). You can change column file formats, buffer pool frame count, compression, storage layout, chunking strategies, execution strategies, and the db_loader pipeline.
+For SSD builds, `file_loader_utils.hpp`/`.cpp` may provide shared serialization helpers such as `ParquetFileScanner`, `FdStream`, `StringWriter`, Arrow extraction helpers, and column registration helpers. Reuse them for generic loader work instead of duplicating utilities in query or loader code.
+
+# Scope
+
+Scope is strict: limit file reads to the query implementation files (`queryXYZ.hpp/cpp`), `db_loader.hpp/db_loader.cpp`, `file_loader_utils.hpp`/`.cpp` when present, `buffer_pool.hpp`, and `column_handle.hpp`. Do not inspect validator, compile, cache, or tool internals unless an error explicitly indicates an interface mismatch. Never run `find`, `ls`, or repo-wide `grep` for discovery. Target files are already named in each prompt. If you need to read any other file, state why in one sentence first.
+
+# Profiling Instrumentation
+
+When you edit or rewrite a file, ensure that you add profiling instrumentation to all new code paths, and preserve existing instrumentation. `trace.hpp` is already present in the workspace and provides zero-overhead profiling macros (compiled away unless `-DTRACE` is set).
+
+```cpp
+PROFILE_SCOPE("section_name");   // RAII timer — measures until end of enclosing scope
+TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
+```
+
+Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+
+# Constraints
+
+Hard constraints (must obey):
+- Leave the input/output interface unchanged.
+- Use standard C++ threading (std::thread, std::mutex, thread pools, etc.).
+- Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format — they enable page skipping for range filters without cheating.
+- Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
+- Storage layout must remain general enough that in theory arbitrary SQL could be executed.
+- Always serialize all data from Parquet to column files during the build phase (do not skip rows or columns).
+
+- Call run-tool only after significant edits. A single call is sufficient to evaluate a batch of changes.
+- Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
+
+--- end prompt ---
+===== entry 9 =====
+kind: marker
+marker: <<BENCHMARK>>
+benchmark_sf: large_check
+

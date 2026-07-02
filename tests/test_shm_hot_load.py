@@ -32,9 +32,11 @@ def _exact_arrow_engine() -> bool:
     egress (column_egress). Both markers live in the plugins, so a stale binary skips."""
     loader = Q1Q6BYO / "build" / "libloader.so"
     query = Q1Q6BYO / "build" / "libquery.so"
-    if not (Q1Q6BYO / "db").exists() or not loader.exists() or not query.exists():
-        return False
     try:
+        # exists() raises PermissionError (instead of returning False) when a
+        # parent directory is unreadable, e.g. another user's home.
+        if not (Q1Q6BYO / "db").exists() or not loader.exists() or not query.exists():
+            return False
         return (
             b"SYNNODB_SHM_INGEST" in loader.read_bytes()
             and b"SYNNODB_RESULT_DIR" in query.read_bytes()

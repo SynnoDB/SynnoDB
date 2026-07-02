@@ -23,7 +23,25 @@ from synnodb.duckdb_compat import *  # noqa: F401,F403  (re-export DuckDB + drop
 from synnodb.router import RouterMode, enable_debug_logging
 
 if TYPE_CHECKING:  # for type-checkers/IDEs only; runtime resolves these lazily.
-    from synnodb.api import Stage, SynnoConfig, SynnoDB, register_stage
+    from synnodb.api import SynnoConfig, SynnoDB
+    from synnodb.conversations.conv_context import ConvContext
+    from synnodb.conversations.stage_items import (
+        AssertCorrect,
+        Benchmark,
+        Compact,
+        DynamicStageConfig,
+        MeasureBaselines,
+        PerQueryLoop,
+        PromptStage,
+        StageItem,
+        SupervisionHorizon,
+        ValidateOff,
+        ValidateOn,
+        ValidateStdoutOff,
+        ValidateStdoutOn,
+    )
+    from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
+    from synnodb.plan import ConversationPlan, SupervisionPolicy
     from synnodb.results import (
         BaseImplementation,
         CorrectnessReport,
@@ -39,8 +57,23 @@ _LAZY_FACTORY = {
     "optimize_database": "synnodb.optimize",
     "SynnoDB": "synnodb.api",
     "SynnoConfig": "synnodb.api",
-    "Stage": "synnodb.api",
-    "register_stage": "synnodb.api",
+    "ConversationPlan": "synnodb.plan",
+    "SupervisionPolicy": "synnodb.plan",
+    "PrepareFeatures": "synnodb.cpp_runner.prepare_repo.prepare_features",
+    "ConvContext": "synnodb.conversations.conv_context",
+    "StageItem": "synnodb.conversations.stage_items",
+    "PromptStage": "synnodb.conversations.stage_items",
+    "DynamicStageConfig": "synnodb.conversations.stage_items",
+    "PerQueryLoop": "synnodb.conversations.stage_items",
+    "AssertCorrect": "synnodb.conversations.stage_items",
+    "MeasureBaselines": "synnodb.conversations.stage_items",
+    "Compact": "synnodb.conversations.stage_items",
+    "Benchmark": "synnodb.conversations.stage_items",
+    "ValidateOn": "synnodb.conversations.stage_items",
+    "ValidateOff": "synnodb.conversations.stage_items",
+    "ValidateStdoutOn": "synnodb.conversations.stage_items",
+    "ValidateStdoutOff": "synnodb.conversations.stage_items",
+    "SupervisionHorizon": "synnodb.conversations.stage_items",
     "StageArtifact": "synnodb.results",
     "StoragePlan": "synnodb.results",
     "GeneratedEngine": "synnodb.results",
