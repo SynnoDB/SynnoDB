@@ -592,6 +592,11 @@ class LiveDashboardDrain(DataDrain):
             # populated by register_planned_stages; None until a conversation
             # registers its stage list. See the prompts pane in the live UI.
             "planned_stages": None,
+            # Set by report_error when a run aborts with an unrecovered exception.
+            # None while the run is healthy; a dict with the message + traceback
+            # once it fails. The UI raises an alert banner and freezes its timer
+            # the moment this is populated. Cleared when the next stage begins.
+            "error": None,
         }
         # Construction starts the server but opens no stage yet — the first stage to
         # emit calls begin_stage(). This lets the driver start the dashboard eagerly
@@ -631,6 +636,9 @@ class LiveDashboardDrain(DataDrain):
             # Drop the previous conversation's scheduled-stage previews; the new
             # stage republishes its own the moment its stage list is built.
             self._meta["planned_stages"] = None
+            # A fresh stage is starting, so any error surfaced by the previous
+            # one no longer applies - clear it so the alert banner disappears.
+            self._meta["error"] = None
             self._meta["run_name"] = run_name
             if wandb_run_id is not None:
                 self._meta["wandb_run_id"] = wandb_run_id
@@ -666,6 +674,28 @@ class LiveDashboardDrain(DataDrain):
                 "stages": list(previews),
             }
 
+    def report_error(
+        self,
+        message: str,
+        *,
+        traceback_text: str | None = None,
+        log_file: str | None = None,
+    ) -> None:
+        """Record that the current run aborted with an unrecovered exception.
+
+        Stored as a self-contained block on the meta (assigned as a whole new
+        dict, never mutated in place, so a concurrent ``_snapshot`` reader is
+        unaffected). The polling UI turns this into an alert banner and freezes
+        its live timer. Cleared automatically when the next stage begins.
+        """
+        with self._lock:
+            self._meta["error"] = {
+                "message": message,
+                "traceback": traceback_text,
+                "log_file": log_file,
+                "time": datetime.now().isoformat(timespec="seconds"),
+            }
+
     def _reset(self) -> None:
         """Wipe accumulated data so the next stage starts a fresh pipeline. The
         HTTP server (and its bound port) is left running."""
@@ -676,6 +706,7 @@ class LiveDashboardDrain(DataDrain):
             self._last_global.clear()
             self._stages.clear()
             self._meta["planned_stages"] = None
+            self._meta["error"] = None
             self._meta["run_name"] = None
             self._meta["wandb_run_id"] = None
             self._meta["start_time"] = datetime.now().isoformat(timespec="seconds")
@@ -807,6 +838,22 @@ def reset_live_dashboard() -> None:
     with _SHARED_DRAIN_LOCK:
         if _SHARED_DRAIN is not None:
             _SHARED_DRAIN._reset()
+
+
+def report_live_dashboard_error(
+    message: str,
+    *,
+    traceback_text: str | None = None,
+    log_file: str | None = None,
+) -> None:
+    """Surface a run-aborting error on the live dashboard, if one is running.
+
+    No-op when no drain has been created yet (nothing is displaying anything to
+    warn on). Safe to call from the top-level exception handler of a run.
+    """
+    drain = _SHARED_DRAIN
+    if drain is not None:
+        drain.report_error(message, traceback_text=traceback_text, log_file=log_file)
 
 
 def live_dashboard_url() -> "str | None":

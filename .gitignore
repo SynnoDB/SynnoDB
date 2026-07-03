@@ -25,6 +25,7 @@ webpage/
 code_v*/
 observability/analysis_model_behaviour/analysis
 observability/analysis_model_behaviour/llm_cache
+.synno_data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

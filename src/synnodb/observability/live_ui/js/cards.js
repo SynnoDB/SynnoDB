@@ -10,6 +10,9 @@ let _timerStart = null;
 function tickTimer() {
   const el = document.getElementById('v-timer');
   if (!el) return;
+  // The run aborted - hold the timer at its last value instead of ticking up
+  // forever on a run that is no longer making progress.
+  if (_timerFrozen) return;
   if (_timerStart == null) { el.textContent = '—'; return; }
   const secs = Math.floor((Date.now() - _timerStart) / 1000);
   const m = Math.floor(secs / 60), s = secs % 60;

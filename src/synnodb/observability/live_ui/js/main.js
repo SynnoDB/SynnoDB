@@ -28,6 +28,9 @@ async function poll() {
       // No turns emitted yet, but the running conversation may already have
       // published its scheduled stages - show them as upcoming.
       updatePrompts([], {});
+      // A run can fail before emitting any turn (e.g. during setup); still
+      // surface the error rather than sitting on "No data yet".
+      updateRunError(meta && meta.error);
       return;
     }
     _lastSteps = steps;
@@ -45,6 +48,9 @@ async function poll() {
     }
     updateLog(steps, data);
     document.getElementById('ts-txt').textContent = _tsTxt(meta);
+    // Applied last so its red error status wins over the normal "Updated …"
+    // header and freezes the timer when the run has aborted.
+    updateRunError(meta && meta.error);
   } catch(e) {
     document.getElementById('ts-txt').textContent = 'Error: ' + e.message;
   }
