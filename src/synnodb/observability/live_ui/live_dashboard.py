@@ -853,9 +853,7 @@ def report_live_dashboard_error(
     """
     drain = _SHARED_DRAIN
     if drain is not None:
-        drain.report_error(
-            message, traceback_text=traceback_text, log_file=log_file
-        )
+        drain.report_error(message, traceback_text=traceback_text, log_file=log_file)
 
 
 def live_dashboard_url() -> "str | None":

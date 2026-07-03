@@ -231,3 +231,71 @@ def test_create_base_impl_requires_exactly_one_source(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="both"):
         db.createBaseImpl(plan_artifact, storage_plan_wandb_id="run1")
+
+
+# ------------------------ abort surfacing to the live UI -----------------------
+def _minimal_run_config():
+    """A stand-in RunConfig carrying only the attributes run_conv_wrapper reads
+    before it enters the run coroutine (the setup seams are patched out)."""
+    import types
+
+    return types.SimpleNamespace(
+        usecase=None,
+        db_storage=DBStorage.IN_MEMORY,
+        continue_run=False,
+        benchmark="tpch",
+        queries_str="1",
+        model="model",
+        bespoke_storage=False,
+        sdk="openai",
+        disable_openai_tracing=False,
+        notify=False,
+        verbose=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "raised, expected_message",
+    [
+        (KeyboardInterrupt(), "KeyboardInterrupt"),  # str() is empty -> type name
+        (RuntimeError("boom"), "boom"),
+    ],
+)
+def test_run_conv_wrapper_surfaces_abort_to_live_dashboard(
+    raised, expected_message, tmp_path
+):
+    """A run aborting mid-flight must be reported to the live dashboard so the
+    watcher sees a banner and a frozen timer instead of one ticking forever on a
+    dead run. KeyboardInterrupt is a BaseException (not an Exception), so it would
+    slip past a too-narrow ``except Exception`` handler entirely - this pins that
+    both an ordinary error and a Ctrl-C are surfaced, and that the empty
+    KeyboardInterrupt message degrades to the exception's type name."""
+    from synnodb import main as main_mod
+
+    reported: dict = {}
+
+    def _capture(message, *, traceback_text=None, log_file=None):
+        reported.update(message=message, traceback=traceback_text)
+
+    def _abort(coro):
+        coro.close()  # the run coroutine is never awaited in this path
+        raise raised
+
+    with (
+        patch.object(main_mod, "_setup", lambda: None),
+        patch.object(
+            main_mod, "get_effective_db_storage", lambda u, d: DBStorage.IN_MEMORY
+        ),
+        patch.object(main_mod, "generate_conv_name", lambda **kw: ("conv", "conv_dt")),
+        patch.object(main_mod, "setup_logging", lambda *a, **k: None),
+        patch.object(main_mod.settings, "log_dir", lambda: tmp_path),
+        patch.object(main_mod, "_run_coroutine", _abort),
+        patch.object(main_mod, "report_live_dashboard_error", _capture),
+    ):
+        with pytest.raises(type(raised)):
+            main_mod.run_conv_wrapper(
+                run_config=_minimal_run_config(), plan=_trivial_plan()
+            )
+
+    assert reported["message"] == expected_message
+    assert type(raised).__name__ in (reported["traceback"] or "")

@@ -995,10 +995,14 @@ def run_conv_wrapper(
             notify.send_notification(
                 f"Conversation completed successfully (*{run_name}*))"
             )
-    except Exception as e:
+    except BaseException as e:
         import traceback
 
         stacktrace = traceback.format_exc()
+
+        # str(KeyboardInterrupt()) is empty, so fall back to the exception type
+        # name to give the banner something meaningful to display.
+        error_message = str(e) or type(e).__name__
 
         # Surface the failure on the live dashboard so a watcher sees the run
         # aborted (banner + frozen timer) instead of a timer that keeps ticking
@@ -1006,7 +1010,7 @@ def run_conv_wrapper(
         # original error.
         try:
             report_live_dashboard_error(
-                str(e),
+                error_message,
                 traceback_text=stacktrace,
                 log_file=str(settings.log_dir() / log_filename),
             )
@@ -1015,9 +1019,9 @@ def run_conv_wrapper(
 
         if args.notify:
             # send notification about the error (e.g. via email or slack - not implemented here, just a placeholder)
-            logger.error(f"An error occurred: {e}. Sending notification...")
+            logger.error(f"An error occurred: {error_message}. Sending notification...")
 
-            notify_msg = f"Error in conversation (*{run_name}*):\n```quote\n{str(e)}\n```\n\nStacktrace:\n```shell\n{stacktrace}\n```"
+            notify_msg = f"Error in conversation (*{run_name}*):\n```quote\n{error_message}\n```\n\nStacktrace:\n```shell\n{stacktrace}\n```"
 
             notify.send_notification(notify_msg, check_tmux=False)
 
