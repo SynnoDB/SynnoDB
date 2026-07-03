@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 SNAPSHOT_REF_PREFIX = "refs/snapshots"
 SNAPSHOT_REF_GLOB = f"{SNAPSHOT_REF_PREFIX}/*"
 
+# Workspace subdirectories the framework writes but must never be part of a
+# snapshot (e.g. debug_logs/ populated by DebugLogger). Ignored automatically
+# for every workspace, in addition to any caller-supplied `extra_gitignore`.
+ALWAYS_IGNORED: tuple[str, ...] = ("/debug_logs/",)
+
 
 def resolve_snapshot_repo_dir() -> Path | None:
     """The single bare repo (shared object store + ``refs/snapshots/*``) all
@@ -85,6 +90,7 @@ class GitSnapshotter:
         self._pin_repo_env()
         self._ensure_repo()
 
+        self._write_common_excludes()
         self._write_extra_gitignore(extra_gitignore)
 
         self.cache_repo: str | None = None
@@ -675,16 +681,46 @@ class GitSnapshotter:
                 parts.append(str(exc.stderr).strip())
             raise RuntimeError("\n".join(parts)) from exc
 
+    def _write_common_excludes(self) -> None:
+        """Persist the always-ignored framework paths in the (shared) repo's
+        ``info/exclude``. Unlike the env-injected ``core.excludesFile`` - which
+        only applies to git commands the snapshotter itself runs - ``info/exclude``
+        is consulted by *every* git invocation against this workspace, including a
+        plain ``git status`` a user runs in the workspace by hand.
+
+        These patterns are universal (identical for all workspaces), so sharing
+        them in the common dir is safe; per-workspace ``extra_gitignore`` stays in
+        this worktree's private excludes file to avoid cross-workspace clobbering.
+        Appends idempotently and keeps the file world-writable for parallel runs.
+        """
+        exclude_file = self._common_dir / "info" / "exclude"
+        exclude_file.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude_file.read_text() if exclude_file.exists() else ""
+        missing = [p for p in ALWAYS_IGNORED if p not in existing.split()]
+        if not missing:
+            return
+        with exclude_file.open("a") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write("# synno: always-ignored framework paths (auto-added)\n")
+            f.writelines(f"{p}\n" for p in missing)
+        try:
+            os.chmod(exclude_file, 0o666)
+        except OSError:
+            pass  # best effort; ownership may forbid it
+
     def _write_extra_gitignore(self, patterns: Iterable[str] | None) -> None:
         """
         Writes ignore patterns and excluded file paths to this worktree's private
         excludes file (via ``core.excludesFile``; applies in addition to .gitignore).
+        Always-ignored framework paths (``ALWAYS_IGNORED``) are prepended so they
+        are excluded for every workspace regardless of caller-supplied patterns.
         Overwrites the file each time so stale patterns from previous runs don't accumulate.
         """
         exclude = self._excludes_file
         exclude.parent.mkdir(parents=True, exist_ok=True)
 
-        lines: list[str] = []
+        lines: list[str] = list(ALWAYS_IGNORED)
         if patterns:
             lines += [p.strip() for p in patterns if p.strip()]
         lines += self.exclude_files

@@ -89,6 +89,38 @@ def test_two_workspaces_share_objects_and_refs_but_isolate_working_state(tmp_pat
     assert _git(snap_a.git_dir, "rev-parse", "HEAD") == commit_a
 
 
+def test_debug_logs_are_auto_excluded_from_snapshots(tmp_path):
+    # debug_logs/ is written by the framework (DebugLogger) but must never be
+    # snapshotted; the snapshotter ignores it automatically, without the caller
+    # having to list it in extra_gitignore.
+    ws = _make_workspace(tmp_path, "ws", {"a.txt": "keep"})
+    (ws / "debug_logs").mkdir()
+    (ws / "debug_logs" / "trace.log").write_text("noisy")
+
+    snap = GitSnapshotter(working_dir=ws)
+
+    _, commit = snap.snapshot("state")
+    assert commit is not None
+    files = _git(snap.git_dir, "ls-tree", "-r", "--name-only", commit).split()
+    assert files == ["a.txt"]  # debug_logs/ absent from the snapshot tree
+
+    # With everything committed, the still-present (ignored) debug_logs/ must not
+    # register as a dirty working tree.
+    dirty, _ = snap.is_dirty()
+    assert not dirty
+
+    # A plain `git status` a user runs by hand (no snapshotter env, so no
+    # core.excludesFile) must still ignore debug_logs/, via the shared info/exclude.
+    plain = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "debug_logs" not in plain.stdout
+
+
 def test_recreated_workspace_resumes_its_own_snapshot_line(tmp_path):
     ws = _make_workspace(tmp_path, "ws", {"a.txt": "v1"})
     snap = GitSnapshotter(working_dir=ws)
