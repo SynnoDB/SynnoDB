@@ -16,12 +16,12 @@ trace; for the exact faulting line + variable, re-run with ``SYNNO_SANITIZE=addr
 the engine under AddressSanitizer (small-SF iteration makes its overhead negligible).
 
 Run (in tmux, unattended):
-    yes | .venv/bin/python -u tutorials/generate_all.py
+    yes | .venv/bin/python -u tutorials/assemble_tutorial/generate_all.py
 ``yes |`` auto-confirms the occasional interactive prompt (e.g. model/workspace
 confirmations) so the run never blocks on stdin.
 
 Optional serving-plane check:
-    SYNNO_SHM_IPC_CHECK=1 yes | .venv/bin/python -u tutorials/generate_all.py
+    SYNNO_SHM_IPC_CHECK=1 yes | .venv/bin/python -u tutorials/assemble_tutorial/generate_all.py
 
 This runs every generated query through the production ``ShmHotLoadEngine`` after base
 implementation: Arrow tables are staged under ``/dev/shm`` (``SYNNODB_SHM_INGEST``), the
@@ -78,7 +78,7 @@ THREADS = 64
 MAX_TURNS = 500
 
 HERE = Path(__file__).parent
-QUERIES_JSON = HERE / "queries.json"
+QUERIES_JSON = HERE.parent / "queries.json"  # tutorials/queries.json
 
 
 def log(msg: str) -> None:
