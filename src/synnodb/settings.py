@@ -117,6 +117,26 @@ def get_workspace_dir(override: str | None = None) -> Path:
     return path
 
 
+def get_snapshotter_dir() -> Path | None:
+    """The single shared git-snapshotter repository (one bare repo for all workspaces).
+
+    By default it lives at ``<data_dir>/git_snapshotter`` so snapshots sit in the
+    SynnoDB data folder (shared across workspaces and users) instead of inside
+    each run's workspace. Set ``SYNNO_SNAPSHOTTER_DIR`` to override that location
+    (e.g. point it at a faster local disk). Returns ``None`` only when neither the
+    override nor ``SYNNO_DATA_DIR`` is configured, letting a standalone snapshotter
+    fall back to a workspace-local ``.git``.
+    """
+    load_dotenv()  # harmless if already loaded; lets .env work without configure()
+    override = os.getenv("SYNNO_SNAPSHOTTER_DIR")
+    if override:
+        return Path(override)
+    try:
+        return get_data_dir() / "git_snapshotter"
+    except RuntimeError:
+        return None
+
+
 def _mkdir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path

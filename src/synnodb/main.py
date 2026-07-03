@@ -27,7 +27,10 @@ from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
 )
 from synnodb.llm.sdk.agents_sdk.openai_sdk import OpenAIAgentsSDKWrapper
-from synnodb.observability.live_ui.live_dashboard import get_or_create_live_drain
+from synnodb.observability.live_ui.live_dashboard import (
+    get_or_create_live_drain,
+    report_live_dashboard_error,
+)
 from synnodb.observability.logging import notify
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
@@ -115,6 +118,11 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     create_dir_and_set_permissions(apply_patch_cache_dir)
     create_dir_and_set_permissions(shell_cache_dir)
     create_dir_and_set_permissions(llm_cache_dir)
+
+    # create git snapshot dir
+    snapshotter_base = settings.get_snapshotter_dir()
+    if snapshotter_base is not None:
+        create_dir_and_set_permissions(snapshotter_base)
 
     # snapshotter cache repo
     snapshotter_cache_repo = (
@@ -875,110 +883,116 @@ def run_conv_wrapper(
     # workspace prepare metadata.
     args.needs_parallelism = plan.parallelism
 
-    _setup()
-    if args.continue_run:
-        ask_yes_no(
-            "Are you really sure you want to continue the current snapshot? Does not start from fresh and continues from current state of output folder. This is DANGEROUS as it might include unwanted files already present in the output folder!"
-        )
-
-    # assemble conv name
-    conv_name, conv_name_withdatetime = generate_conv_name(
-        stage_name=plan.name,
-        benchmark=args.benchmark,
-        queries_str=args.queries_str,
-        model=args.model,
-        bespoke_storage=args.bespoke_storage,
-        db_storage=args.db_storage,
-    )
-    # add conv name to args for later use (e.g. in the agent or conversation)
-    args.conv_name = conv_name
-    args.conv_name_withdatetime = conv_name_withdatetime
-
-    if args.sdk == "openai":
-        if args.disable_openai_tracing:
-            # disable agents sdk tracing
-            from agents.tracing import set_tracing_disabled
-
-            set_tracing_disabled(True)
-    else:
-        raise Exception(f"Unsupported SDK: {args.sdk}")
-
-    if args.log_to_wandb:
-        # add weave (wandb) tracing in addition to openai tracing
-        configure_weave_cache_dirs()
-        import weave
-
-        import wandb
-        from synnodb.settings import get_wandb_entity_project
-
-        entity, project = get_wandb_entity_project(
-            getattr(args, "wandb_entity", None), getattr(args, "wandb_project", None)
-        )
-
-        # With no entity, pass a bare project name so weave/wandb log to the
-        # caller's own default entity rather than a hardcoded one.
-        weave.init(
-            f"{entity}/{project}" if entity else project,
-            # weave_log_level="info",
-            settings={"log_level": "INFO", "print_call_link": False},
-        )
-
-        db_storage_translate_dict = {
-            DBStorage.IN_MEMORY: "in-memory",
-            DBStorage.SSD: "ssd",
-            DBStorage.LABSTORE: "labstore",
-        }
-
-        # log statistics to wandb
-        tags = [
-            db_storage_translate_dict.get(args.db_storage),
-            args.benchmark,
-        ]
-
-        _wandb_run = wandb.init(
-            config=vars(args),
-            entity=entity,
-            project=project,
-            name=args.conv_name,
-            tags=tags,
-            # dir=f"/tmp/{os.environ['USER']}/wandb",
-        )
-    else:
-        _wandb_run = None
-
-    # create log dir and setup logging
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # assemble log filename
-    if _wandb_run is not None:
-        run_name = f"{timestamp}_{_wandb_run.id}_{args.conv_name}"
-    else:
-        run_name = f"{timestamp}_{args.conv_name}"
-    args.run_name = run_name  # add run name to args for later use (e.g. in the agent or conversation)
-
-    if _wandb_run is not None:
-        _wandb_run.config.update({"log_run_name": run_name})
-        args.wandb_run_id = _wandb_run.id
-    else:
-        args.wandb_run_id = None
-
-    log_filename = f"{run_name}.log"
-    # Full DEBUG always goes to the logfile; the console stays at INFO unless the
-    # caller opted into verbose output (e.g. db.createStoragePlan(verbose=True)).
-    verbose = getattr(args, "verbose", False)
-    setup_logging(
-        logging.DEBUG,
-        settings.log_dir() / log_filename,
-        console_level=logging.DEBUG if verbose else logging.INFO,
-    )
-
-    if args.notify:
-        logger.info(
-            "This run will send notifications about errors to the configured Zulip channel."
-        )
-
+    # Pre-initialized so the except/finally handlers below stay valid even when a
+    # setup step (dependency checks, SDK selection, W&B init) crashes before these
+    # are assigned - the live dashboard, already started by SynnoDB.__init__, still
+    # gets its crash banner instead of freezing at its no-data state.
+    _wandb_run = None
+    run_name: str | None = None
+    log_filename: str | None = None
     snapshot_hash: str | None = None
     try:
+        _setup()
+        if args.continue_run:
+            ask_yes_no(
+                "Are you really sure you want to continue the current snapshot? Does not start from fresh and continues from current state of output folder. This is DANGEROUS as it might include unwanted files already present in the output folder!"
+            )
+
+        # assemble conv name
+        conv_name, conv_name_withdatetime = generate_conv_name(
+            stage_name=plan.name,
+            benchmark=args.benchmark,
+            queries_str=args.queries_str,
+            model=args.model,
+            bespoke_storage=args.bespoke_storage,
+            db_storage=args.db_storage,
+        )
+        # add conv name to args for later use (e.g. in the agent or conversation)
+        args.conv_name = conv_name
+        args.conv_name_withdatetime = conv_name_withdatetime
+
+        if args.sdk == "openai":
+            if args.disable_openai_tracing:
+                # disable agents sdk tracing
+                from agents.tracing import set_tracing_disabled
+
+                set_tracing_disabled(True)
+        else:
+            raise Exception(f"Unsupported SDK: {args.sdk}")
+
+        if args.log_to_wandb:
+            # add weave (wandb) tracing in addition to openai tracing
+            configure_weave_cache_dirs()
+            import weave
+
+            import wandb
+            from synnodb.settings import get_wandb_entity_project
+
+            entity, project = get_wandb_entity_project(
+                getattr(args, "wandb_entity", None),
+                getattr(args, "wandb_project", None),
+            )
+
+            # With no entity, pass a bare project name so weave/wandb log to the
+            # caller's own default entity rather than a hardcoded one.
+            weave.init(
+                f"{entity}/{project}" if entity else project,
+                # weave_log_level="info",
+                settings={"log_level": "INFO", "print_call_link": False},
+            )
+
+            db_storage_translate_dict = {
+                DBStorage.IN_MEMORY: "in-memory",
+                DBStorage.SSD: "ssd",
+                DBStorage.LABSTORE: "labstore",
+            }
+
+            # log statistics to wandb
+            tags = [
+                db_storage_translate_dict.get(args.db_storage),
+                args.benchmark,
+            ]
+
+            _wandb_run = wandb.init(
+                config=vars(args),
+                entity=entity,
+                project=project,
+                name=args.conv_name,
+                tags=tags,
+                # dir=f"/tmp/{os.environ['USER']}/wandb",
+            )
+
+        # create log dir and setup logging
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # assemble log filename
+        if _wandb_run is not None:
+            run_name = f"{timestamp}_{_wandb_run.id}_{args.conv_name}"
+        else:
+            run_name = f"{timestamp}_{args.conv_name}"
+        args.run_name = run_name  # add run name to args for later use (e.g. in the agent or conversation)
+
+        if _wandb_run is not None:
+            _wandb_run.config.update({"log_run_name": run_name})
+            args.wandb_run_id = _wandb_run.id
+        else:
+            args.wandb_run_id = None
+
+        log_filename = f"{run_name}.log"
+        # Full DEBUG always goes to the logfile; the console stays at INFO unless the
+        # caller opted into verbose output (e.g. db.createStoragePlan(verbose=True)).
+        verbose = getattr(args, "verbose", False)
+        setup_logging(
+            logging.DEBUG,
+            settings.log_dir() / log_filename,
+            console_level=logging.DEBUG if verbose else logging.INFO,
+        )
+
+        if args.notify:
+            logger.info(
+                "This run will send notifications about errors to the configured Zulip channel."
+            )
+
         snapshot_hash = _run_coroutine(main(args, plan))
 
         if args.notify:
@@ -988,15 +1002,35 @@ def run_conv_wrapper(
             notify.send_notification(
                 f"Conversation completed successfully (*{run_name}*))"
             )
-    except Exception as e:
+    except BaseException as e:
+        import traceback
+
+        stacktrace = traceback.format_exc()
+
+        # str(KeyboardInterrupt()) is empty, so fall back to the exception type
+        # name to give the banner something meaningful to display.
+        error_message = str(e) or type(e).__name__
+
+        # Surface the failure on the live dashboard so a watcher sees the run
+        # aborted (banner + frozen timer) instead of a timer that keeps ticking
+        # forever on a dead run. Best-effort: never let reporting mask the
+        # original error.
+        try:
+            report_live_dashboard_error(
+                error_message,
+                traceback_text=stacktrace,
+                log_file=str(settings.log_dir() / log_filename)
+                if log_filename
+                else None,
+            )
+        except Exception:
+            logger.warning("could not report error to live dashboard", exc_info=True)
+
         if args.notify:
             # send notification about the error (e.g. via email or slack - not implemented here, just a placeholder)
-            logger.error(f"An error occurred: {e}. Sending notification...")
+            logger.error(f"An error occurred: {error_message}. Sending notification...")
 
-            # get exception and stacktrace info
-            import traceback
-
-            notify_msg = f"Error in conversation (*{run_name}*):\n```quote\n{str(e)}\n```\n\nStacktrace:\n```shell\n{traceback.format_exc()}\n```"
+            notify_msg = f"Error in conversation (*{run_name}*):\n```quote\n{error_message}\n```\n\nStacktrace:\n```shell\n{stacktrace}\n```"
 
             notify.send_notification(notify_msg, check_tmux=False)
 

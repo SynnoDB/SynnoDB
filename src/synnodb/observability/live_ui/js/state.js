@@ -22,6 +22,11 @@ let distChartMode     = 'pie';       // 'pie'   | 'rel' | 'abs'
 let timeTravelStep = null;  // null = live, otherwise frozen turn id
 let hoveredDesc    = null;  // section currently highlighted via hover
 
+// Set once the backend reports the run aborted with an error. Freezes the
+// per-turn timer so a dead run stops counting up. Cleared when a fresh run's
+// data arrives without an error. See js/error-alert.js.
+let _timerFrozen = false;
+
 let selectedScaleFactor = null;  // null = follow max SF; else fixed SF
 
 // The _source_ref the user has explicitly switched to. Used to drop stale
