@@ -269,6 +269,16 @@ body::-webkit-scrollbar-corner,
 #canvas-wrap{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;}
 #canvas-wrap>canvas{flex:1;min-height:0;}
 
+.chart-hdr-actions{display:flex;align-items:center;gap:8px;}
+.fullscreen-btn{background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:6px;
+                color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:3px 7px;
+                transition:background .12s,color .12s;}
+.fullscreen-btn:hover{color:var(--text);background:rgba(0,0,0,.5);}
+
+/* Fullscreen timeline: the chart box fills the viewport with a matching backdrop. */
+#chart-box:fullscreen{background:var(--bg);border:none;border-radius:0;padding:20px;}
+#chart-box:fullscreen .fullscreen-btn{color:var(--accent);border-color:var(--accent);}
+
 #timeline-mode-toggle,#qc-mode-toggle{display:flex;background:rgba(0,0,0,.35);border:1px solid var(--border);
                 border-radius:6px;padding:2px;gap:2px;}
 .tlm-btn,.qcm-btn{background:none;border:none;border-radius:4px;padding:2px 10px;
@@ -339,6 +349,15 @@ details.log-entry[open] .log-chevron{transform:rotate(90deg);}
                  color:var(--muted);margin-bottom:2px;}
 #qcanvas-wrap{flex:1;min-height:0;position:relative;}
 #qcanvas-wrap>canvas{display:block;}
+.chart-empty{position:absolute;inset:0;display:flex;flex-direction:column;
+             align-items:center;justify-content:center;gap:6px;text-align:center;
+             padding:0 24px;background:linear-gradient(180deg,
+             rgba(16,30,52,.55),rgba(16,30,52,.85));border-radius:6px;
+             backdrop-filter:blur(1.5px);pointer-events:none;}
+.chart-empty[hidden]{display:none;}
+.chart-empty-title{font-size:13px;font-weight:600;color:var(--text);
+                   letter-spacing:.3px;}
+.chart-empty-sub{font-size:11px;line-height:1.45;color:var(--muted);max-width:320px;}
 #qc-sf-toggle{display:flex;background:rgba(0,0,0,.35);border:1px solid var(--border);
               border-radius:6px;padding:2px;gap:2px;}
 #qc-sf-toggle[hidden]{display:none;}

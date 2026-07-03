@@ -232,6 +232,20 @@ document.getElementById('timeline-mode-toggle').addEventListener('click', e => {
   if (btn) setTimelineChartMode(btn.dataset.mode);
 });
 
+// ── Timeline fullscreen ──────────────────────────────────────────────────
+const chartBox = document.getElementById('chart-box');
+document.getElementById('timeline-fullscreen-btn').addEventListener('click', () => {
+  if (document.fullscreenElement === chartBox) {
+    document.exitFullscreen();
+  } else {
+    chartBox.requestFullscreen?.();
+  }
+});
+// Chart.js needs a resize once the box has taken (or released) the viewport.
+document.addEventListener('fullscreenchange', () => {
+  if (chart) chart.resize();
+});
+
 function setQueryChartMode(mode) {
   queryChartMode = mode;
   document.querySelectorAll('.qcm-btn').forEach(btn => {
