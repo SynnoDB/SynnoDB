@@ -28,6 +28,7 @@ dependencies = [
     "pandas>=2.3.3",     # DuckDB .df() egress; common in user code
     "python-dotenv>=1.2.1",
     "matplotlib>=3.10.9",
+    "psutil>=5.9",       # core counts (engine routing) + host-RAM preflight
 ]
 
 [project.optional-dependencies]
