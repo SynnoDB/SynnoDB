@@ -1,13 +1,14 @@
 [project]
 name = "synnodb"
-version = "0.1.1"
+version = "0.1.2"
 description = "Synthesizing Databases for your Workload"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Johannes Wehrstein", email = "johannes.wehrstein@synnodb.com" },
+    { name = "Johannes Wehrstein", email = "johannes@synnodb.com" },
+    { name = "Timo Eckmann", email = "timo@synnodb.com" },
 ]
 keywords = ["database", "llm", "agents", "code-generation", "olap", "benchmark"]
 classifiers = [
