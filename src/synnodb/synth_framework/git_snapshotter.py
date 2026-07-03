@@ -1,4 +1,5 @@
 import getpass
+import hashlib
 import logging
 import os
 import re
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, Tuple
 from urllib.parse import urlparse
 
+from synnodb import settings
 from synnodb.observability.logging.notify import send_notification
 from synnodb.utils.confirm_dialog import await_user_confirmation
 
@@ -15,6 +17,34 @@ logger = logging.getLogger(__name__)
 
 SNAPSHOT_REF_PREFIX = "refs/snapshots"
 SNAPSHOT_REF_GLOB = f"{SNAPSHOT_REF_PREFIX}/*"
+
+
+def resolve_snapshot_repo_dir() -> Path | None:
+    """The single bare repo (shared object store + ``refs/snapshots/*``) all
+    workspaces snapshot into. ``None`` when no data dir is configured."""
+    return settings.get_snapshotter_dir()
+
+
+def _workspace_key(working_dir: Path) -> str:
+    """Stable, filesystem-safe worktree id derived from the workspace path."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", working_dir.name).strip("-.") or "workspace"
+    digest = hashlib.sha1(str(working_dir).encode("utf-8")).hexdigest()[:12]
+    return f"{name}-{digest}"
+
+
+def resolve_git_dir(working_dir: Path, git_dir: Path | None = None) -> Path:
+    """The ``GIT_DIR`` a workspace's git commands use: its linked-worktree admin
+    dir ``<repo>/worktrees/<key>`` (own HEAD/index, shared objects/refs via
+    ``commondir``). An explicit ``git_dir`` wins; with no shared repo it falls
+    back to a workspace-local ``.git``. Single source of truth for the location.
+    """
+    if git_dir is not None:
+        return git_dir.resolve()
+    working_dir = working_dir.resolve()
+    snapshotter_dir = resolve_snapshot_repo_dir()
+    if snapshotter_dir is None:
+        return working_dir / ".git"
+    return (snapshotter_dir / "worktrees" / _workspace_key(working_dir)).resolve()
 
 
 class GitSnapshotter:
@@ -27,9 +57,21 @@ class GitSnapshotter:
         exclude_files: set[
             str
         ] = set(),  # files to exclude from snapshots, filename (relative to working_dir)
+        git_dir: Path | None = None,
     ):
         self.working_dir = working_dir.resolve()
         self.working_dir.mkdir(parents=True, exist_ok=True)
+        # This workspace is a linked worktree of the shared repo: `git_dir` is
+        # its worktree admin dir (own HEAD/index), `_common_dir` the shared repo.
+        self.git_dir = resolve_git_dir(self.working_dir, git_dir)
+        repo = resolve_snapshot_repo_dir()
+        if git_dir is None and repo is not None:
+            self._shared = True
+            self._common_dir = repo
+        else:
+            self._shared = False
+            self._common_dir = self.git_dir
+        self._workspace_key = _workspace_key(self.working_dir)
         self.current_hash: str | None = None
         self.do_not_snapshot = do_not_snapshot
         # Number of new commits created via snapshot() since the last push.
@@ -38,22 +80,10 @@ class GitSnapshotter:
 
         self.exclude_files: set[str] = exclude_files
 
-        # If there's already a repo here, verify it's rooted HERE (not a parent).
-        # If not, initialize a new repo here.
-        if self._has_git_dir_here():
-            self._pin_repo_env()
-            self._assert_repo_root_is_working_dir()
-        else:
-            # Create an independent repo here.
-            # Ensure we don't accidentally "discover" a parent repo when calling git.
-            self._git_raw(["init"])
-            self._pin_repo_env()
-            self._assert_repo_root_is_working_dir()
-
-        # Minimal identity for commits
-        username = getpass.getuser()
-        self._git(["config", "user.name", username])
-        self._git(["config", "user.email", "llm@local"])
+        # Pin git to this worktree (git dir + work tree) so a parent repo is
+        # never discovered, then create the shared repo + this worktree on first use.
+        self._pin_repo_env()
+        self._ensure_repo()
 
         self._write_extra_gitignore(extra_gitignore)
 
@@ -439,63 +469,131 @@ class GitSnapshotter:
 
         return name
 
-    def _has_git_dir_here(self) -> bool:
+    @property
+    def _excludes_file(self) -> Path:
+        """Per-worktree ignore file (via ``core.excludesFile``), so workspaces
+        don't clobber each other's patterns in the shared ``info/exclude``."""
+        return self.git_dir / "synno-excludes"
+
+    def _wt_branch(self) -> str:
+        """Unique unborn branch a fresh worktree's HEAD starts on, so its first
+        snapshot has no parent instead of chaining onto another workspace."""
+        return f"refs/heads/synno/{self._workspace_key}"
+
+    def _common_env(self) -> dict[str, str]:
+        """Env targeting the shared repo directly (bare; no work tree/index)."""
+        env = {k: v for k, v in self._env.items() if k != "GIT_WORK_TREE"}
+        env["GIT_DIR"] = str(self._common_dir)
+        return env
+
+    def _ensure_repo(self) -> None:
+        """Create the shared repo and this workspace's worktree as needed."""
+        if not self._shared:
+            self._ensure_standalone_repo()
+            return
+        self._ensure_common_repo()
+        self._ensure_worktree()
+
+    def _ensure_common_repo(self) -> None:
+        """Create the shared bare repo if needed. ``--shared`` makes it
+        writable by all users on a shared filesystem."""
+        if (self._common_dir / "HEAD").is_file():
+            return
+        self._common_dir.mkdir(parents=True, exist_ok=True)
+        env = {
+            k: v for k, v in self._env.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")
+        }
+        self._git_run_env(
+            ["init", "--bare", "--shared=0777", str(self._common_dir)],
+            env=env,
+            check=True,
+        )
+
+    def _ensure_worktree(self) -> None:
+        """Register this workspace as a linked worktree of the shared repo: an
+        admin dir (``<repo>/worktrees/<key>``) with its own HEAD/index and a
+        ``commondir`` pointer, plus a ``.git`` gitfile in the workspace. Created
+        once; later runs keep HEAD/index so the workspace resumes its own line.
         """
-        True if working_dir has its own .git (directory or gitfile).
-        This is the key signal that a repo is rooted here, not only in a parent.
-        """
-        git_path = self.working_dir / ".git"
-        return git_path.exists()
+        wt = self.git_dir
+        gitfile = self.working_dir / ".git"
+        if not (wt / "HEAD").is_file():
+            wt.mkdir(parents=True, exist_ok=True)
+            # `worktrees/` and this admin dir are shared across users; keep writable.
+            for d in (wt.parent, wt):
+                try:
+                    os.chmod(d, 0o777)
+                except OSError:
+                    pass  # best effort; ownership may forbid it
+            # Drop any stale branch so the fresh HEAD is genuinely unborn
+            # (snapshots stay anchored by refs/snapshots/*).
+            self._git_run_env(
+                ["update-ref", "-d", self._wt_branch()],
+                env=self._common_env(),
+                check=False,
+            )
+            self._write_shared(wt / "commondir", "../..\n")
+            self._write_shared(wt / "HEAD", f"ref: {self._wt_branch()}\n")
+        # (Re)link admin dir and workspace to each other (idempotent).
+        self._write_shared(wt / "gitdir", f"{gitfile}\n")
+        if gitfile.is_dir():
+            raise RuntimeError(
+                f"{gitfile} is a git directory, but this workspace's snapshot "
+                f"worktree lives at {wt}. Remove one of the two."
+            )
+        self._write_shared(gitfile, f"gitdir: {wt}\n")
+
+    def _ensure_standalone_repo(self) -> None:
+        """Fallback (no shared repo / explicit ``git_dir``): a plain repo at
+        ``self.git_dir``, colocated or via ``--separate-git-dir``."""
+        if (self.git_dir / "HEAD").is_file():
+            return
+        gitpath = self.working_dir / ".git"
+        if gitpath.is_file():
+            gitpath.unlink()  # dangling gitfile; git init refuses to follow it
+        self.git_dir.parent.mkdir(parents=True, exist_ok=True)
+        if self.git_dir == gitpath:
+            self._git(["init"])
+            return
+        env = {
+            k: v for k, v in self._env.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")
+        }
+        self._git_run_env(
+            ["init", f"--separate-git-dir={self.git_dir}"], env=env, check=True
+        )
+
+    @staticmethod
+    def _write_shared(path: Path, content: str) -> None:
+        """Write a worktree metadata file, best-effort world-writable so other
+        users can re-register the same workspace's worktree."""
+        path.write_text(content, encoding="utf-8")
+        try:
+            os.chmod(path, 0o666)
+        except OSError:
+            pass  # best effort; ownership may forbid it
 
     def _pin_repo_env(self) -> None:
         """
-        Force git to use ONLY this repo (no parent discovery).
-        Supports normal repos and gitdir 'gitfile' (e.g., worktrees/submodules).
+        Force git to use ONLY this worktree (its git dir + work tree), never a
+        repo discovered by walking up from the working tree. The git dir is
+        decoupled from the work tree so it can live in the shared repo. Commit
+        identity and this worktree's ignore file are injected here, so no
+        (shared) per-repo config writes are needed.
         """
-        git_path = self.working_dir / ".git"
+        username = getpass.getuser()
         self._env = os.environ.copy()
+        self._env["GIT_DIR"] = str(self.git_dir)
         self._env["GIT_WORK_TREE"] = str(self.working_dir)
-
-        if git_path.is_file():
-            # .git is a "gitfile": contains "gitdir: /actual/path"
-            content = git_path.read_text(encoding="utf-8", errors="replace").strip()
-            prefix = "gitdir:"
-            if not content.lower().startswith(prefix):
-                raise RuntimeError(f"Invalid .git file at {git_path}")
-            gitdir = content[len(prefix) :].strip()
-            gitdir_path = (self.working_dir / gitdir).resolve()
-            self._env["GIT_DIR"] = str(gitdir_path)
-        else:
-            # normal .git directory
-            self._env["GIT_DIR"] = str(git_path)
-
         # Also prevent upward discovery if something goes odd
         self._env["GIT_CEILING_DIRECTORIES"] = str(self.working_dir)
-
-    def _assert_repo_root_is_working_dir(self) -> None:
-        """
-        Verify that git sees the repo root as working_dir.
-        This catches the case where we accidentally target a parent repo.
-        """
-        # With pinned env, this should always match working_dir
-        result = self._git_capture(["rev-parse", "--show-toplevel"], check=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"Git repo check failed: {result.stderr.strip()}")
-
-        toplevel = Path(result.stdout.strip()).resolve()
-        if toplevel != self.working_dir:
-            raise RuntimeError(
-                f"Refusing to use repo rooted at {toplevel}; expected {self.working_dir}. "
-                f"This usually means a parent repo is being picked up."
-            )
-
-    def _git_raw(self, args):
-        """
-        Git calls before repo pinning. We still prevent parent discovery by ceiling.
-        """
-        env = os.environ.copy()
-        env["GIT_CEILING_DIRECTORIES"] = str(self.working_dir)
-        self._git_run_env(args, env=env, check=True)
+        self._env["GIT_AUTHOR_NAME"] = username
+        self._env["GIT_AUTHOR_EMAIL"] = "llm@local"
+        self._env["GIT_COMMITTER_NAME"] = username
+        self._env["GIT_COMMITTER_EMAIL"] = "llm@local"
+        # Per-worktree ignore patterns without touching the shared info/exclude.
+        self._env["GIT_CONFIG_COUNT"] = "1"
+        self._env["GIT_CONFIG_KEY_0"] = "core.excludesFile"
+        self._env["GIT_CONFIG_VALUE_0"] = str(self._excludes_file)
 
     def _git(self, args):
         """
@@ -579,11 +677,11 @@ class GitSnapshotter:
 
     def _write_extra_gitignore(self, patterns: Iterable[str] | None) -> None:
         """
-        Writes ignore patterns and excluded file paths to .git/info/exclude
-        (applies in addition to .gitignore).
+        Writes ignore patterns and excluded file paths to this worktree's private
+        excludes file (via ``core.excludesFile``; applies in addition to .gitignore).
         Overwrites the file each time so stale patterns from previous runs don't accumulate.
         """
-        exclude = self.working_dir / ".git" / "info" / "exclude"
+        exclude = self._excludes_file
         exclude.parent.mkdir(parents=True, exist_ok=True)
 
         lines: list[str] = []
@@ -591,6 +689,4 @@ class GitSnapshotter:
             lines += [p.strip() for p in patterns if p.strip()]
         lines += self.exclude_files
 
-        with exclude.open("w", encoding="utf-8") as f:
-            for line in lines:
-                f.write(line + "\n")
+        self._write_shared(exclude, "".join(f"{line}\n" for line in lines))

@@ -115,6 +115,11 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     create_dir_and_set_permissions(shell_cache_dir)
     create_dir_and_set_permissions(llm_cache_dir)
 
+    # create git snapshot dir
+    snapshotter_base = settings.get_snapshotter_dir()
+    if snapshotter_base is not None:
+        create_dir_and_set_permissions(snapshotter_base)
+
     # snapshotter cache repo
     snapshotter_cache_repo = (
         None
