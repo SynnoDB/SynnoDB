@@ -6,6 +6,7 @@ and the workload providers (``WorkloadProvider.preflight_ram_check``) can use it
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +36,6 @@ class RamCheck:
 
     sf: float
     dataset_bytes: int  # summed on-disk parquet size of the SF's tables
-    required_bytes: int  # dataset_bytes * IN_MEMORY_RAM_FACTOR
     available_bytes: int  # host RAM available at check time
 
     @classmethod
@@ -43,20 +43,16 @@ class RamCheck:
         """Measure a dataset directory against the host's currently available RAM.
 
         Sums the on-disk size of ``<table>.parquet`` for each table under
-        ``sf_dir``, derives the required in-memory bytes via
-        ``IN_MEMORY_RAM_FACTOR``, and reads the host's available RAM. Raises
+        ``sf_dir`` and reads the host's available RAM. Raises
         ``FileNotFoundError`` if any table's parquet file is absent."""
-        import math
-
         import psutil
 
         dataset_bytes = 0
         missing: list[str] = []
         for table in tables:
-            parquet = sf_dir / f"{table}.parquet"
-            if parquet.exists():
-                dataset_bytes += parquet.stat().st_size
-            else:
+            try:
+                dataset_bytes += (sf_dir / f"{table}.parquet").stat().st_size
+            except FileNotFoundError:
                 missing.append(table)
         if missing:
             raise FileNotFoundError(
@@ -66,9 +62,13 @@ class RamCheck:
         return cls(
             sf=sf,
             dataset_bytes=dataset_bytes,
-            required_bytes=math.ceil(dataset_bytes * IN_MEMORY_RAM_FACTOR),
             available_bytes=psutil.virtual_memory().available,
         )
+
+    @property
+    def required_bytes(self) -> int:
+        """In-memory bytes needed: ``IN_MEMORY_RAM_FACTOR`` x the on-disk dataset."""
+        return math.ceil(self.dataset_bytes * IN_MEMORY_RAM_FACTOR)
 
     @property
     def sufficient(self) -> bool:

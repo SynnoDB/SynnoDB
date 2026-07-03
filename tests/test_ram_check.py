@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-from synnodb.api import IN_MEMORY_RAM_FACTOR, SynnoDB
+from synnodb.api import SynnoDB
+from synnodb.ram_check import IN_MEMORY_RAM_FACTOR
 from synnodb.workloads.byo_workload import register_workload_from_dir
 from synnodb.workloads.workload_spec import find_sf_dir
 

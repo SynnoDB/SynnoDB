@@ -23,11 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from synnodb import settings
-from synnodb.ram_check import (  # noqa: F401  (re-exported public API)
-    IN_MEMORY_RAM_FACTOR,
-    InsufficientRamError,
-    RamCheck,
-)
+from synnodb.ram_check import RamCheck
 
 # These enums resolve without SYNNO_DATA_DIR (the module-level assert was made
 # lazy), so importing synnodb stays config-free. The heavy pipeline modules
@@ -48,13 +44,7 @@ from synnodb.workloads.workload_provider_olap import OLAPWorkload
 if TYPE_CHECKING:
     from synnodb.plan import ConversationPlan
 
-__all__ = [
-    "SynnoDB",
-    "SynnoConfig",
-    "RamCheck",
-    "InsufficientRamError",
-    "IN_MEMORY_RAM_FACTOR",
-]
+__all__ = ["SynnoDB", "SynnoConfig"]
 
 
 # ----------------------------- coercion helpers -----------------------------
