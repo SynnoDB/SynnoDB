@@ -132,3 +132,34 @@ def test_recreated_workspace_resumes_its_own_snapshot_line(tmp_path):
     snap2 = GitSnapshotter(working_dir=ws)
     assert snap2.git_dir == git_dir
     assert _git(git_dir, "rev-parse", "HEAD") == commit
+
+
+def test_first_snapshot_leaves_no_bootstrap_branch(tmp_path):
+    # A fresh worktree starts on an unborn bootstrap branch (refs/heads/synno/*)
+    # so its first snapshot has no parent. Committing materializes that branch as
+    # a side effect; the snapshotter must drop it so snapshots stay anchored
+    # solely by refs/snapshots/* and the first commit does not linger outside the
+    # snapshot namespace past ref cleanup / GC.
+    ws = _make_workspace(tmp_path, "ws", {"a.txt": "v1"})
+    snap = GitSnapshotter(working_dir=ws)
+    repo = resolve_snapshot_repo_dir()
+    assert repo is not None
+
+    parent, first = snap.snapshot("first")
+    assert parent is None  # genuinely the first commit on an unborn HEAD
+    assert first is not None
+    (ws / "a.txt").write_text("v2")
+    snap.snapshot("second")
+
+    # No refs/heads/* survive: the bootstrap branch was cleaned up.
+    heads = _git(repo, "for-each-ref", "--format=%(refname)", "refs/heads/")
+    assert heads == ""
+
+    # The first commit is anchored ONLY within the snapshot namespace. (It stays
+    # reachable as the ancestor of later snapshots - that is a normal chain, not
+    # a leak; what must not exist is a stray branch pinning it outside
+    # refs/snapshots/*, which would survive snapshot-ref cleanup and GC.)
+    pointing = _git(
+        repo, "for-each-ref", "--points-at", first, "--format=%(refname)"
+    ).split()
+    assert pointing == ["refs/snapshots/snapshot-first"]

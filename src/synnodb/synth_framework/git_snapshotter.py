@@ -152,6 +152,17 @@ class GitSnapshotter:
         new = self._head_hash()
         self._git(["update-ref", self._snapshot_ref(safe), new])
 
+        if parent is None:
+            # The first commit landed on the unborn bootstrap branch
+            # (`_wt_branch`), which Git created as a side effect of committing.
+            # Detach HEAD onto the commit and drop that branch so snapshots stay
+            # anchored solely by refs/snapshots/* (the design invariant);
+            # otherwise it pins the first commit outside the snapshot namespace
+            # and survives snapshot-ref cleanup and GC. Detach before deleting -
+            # Git refuses to delete a branch that is still checked out.
+            self._git(["switch", "--detach", new])
+            self._git_run(["update-ref", "-d", self._wt_branch()], check=False)
+
         self.current_hash = new
 
         logger.debug(f"Created snapshot: {new}")
