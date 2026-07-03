@@ -24,6 +24,7 @@ from synnodb.router import RouterMode, enable_debug_logging
 
 if TYPE_CHECKING:  # for type-checkers/IDEs only; runtime resolves these lazily.
     from synnodb.api import SynnoConfig, SynnoDB
+    from synnodb.ram_check import InsufficientRamError, RamCheck
     from synnodb.conversations.conv_context import ConvContext
     from synnodb.conversations.stage_items import (
         AssertCorrect,
@@ -60,6 +61,8 @@ _LAZY_FACTORY = {
     "optimize_database": "synnodb.optimize",
     "SynnoDB": "synnodb.api",
     "SynnoConfig": "synnodb.api",
+    "RamCheck": "synnodb.ram_check",
+    "InsufficientRamError": "synnodb.ram_check",
     "ConversationPlan": "synnodb.plan",
     "SupervisionPolicy": "synnodb.plan",
     "PrepareFeatures": "synnodb.cpp_runner.prepare_repo.prepare_features",

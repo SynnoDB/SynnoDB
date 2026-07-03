@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from synnodb import settings
+from synnodb.ram_check import (  # noqa: F401  (re-exported public API)
+    IN_MEMORY_RAM_FACTOR,
+    InsufficientRamError,
+    RamCheck,
+)
 
 # These enums resolve without SYNNO_DATA_DIR (the module-level assert was made
 # lazy), so importing synnodb stays config-free. The heavy pipeline modules
@@ -43,7 +48,13 @@ from synnodb.workloads.workload_provider_olap import OLAPWorkload
 if TYPE_CHECKING:
     from synnodb.plan import ConversationPlan
 
-__all__ = ["SynnoDB", "SynnoConfig"]
+__all__ = [
+    "SynnoDB",
+    "SynnoConfig",
+    "RamCheck",
+    "InsufficientRamError",
+    "IN_MEMORY_RAM_FACTOR",
+]
 
 
 # ----------------------------- coercion helpers -----------------------------
@@ -449,6 +460,21 @@ class SynnoDB:
     def with_(self, **overrides: Any) -> "SynnoDB":
         """A new driver with a derived config (immutable; e.g. per-call SF/storage)."""
         return SynnoDB(dataclasses.replace(self.config, **overrides))
+
+    def check_ram_for_sf(self, sf: float) -> RamCheck:
+        """Whether the host has enough available RAM to serve this driver's workload
+        at scale factor ``sf`` fully in memory."""
+        from synnodb.workloads.workload_spec import find_sf_dir, get_workload_spec
+
+        spec = get_workload_spec(self.config.workload.value)
+        root = spec.parquet_root()
+        sf_dir = find_sf_dir(root, sf)
+        if sf_dir is None:
+            raise FileNotFoundError(
+                f"No sf{sf:g} dataset under {root} for workload {spec.name!r} - "
+                "generate the dataset before checking RAM."
+            )
+        return RamCheck.measure(sf, sf_dir, spec.tables)
 
     # ---- the single entry point ------------------------------------------
     def run_synthesis(

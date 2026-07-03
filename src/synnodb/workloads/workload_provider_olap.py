@@ -24,8 +24,10 @@ from synnodb.workloads.workload_provider import (
     WorkloadProvider,
     format_args_element,
 )
+from synnodb.ram_check import RamCheck
 from synnodb.workloads.workload_spec import (
     WorkloadSpec,
+    find_sf_dir,
     get_workload_spec,
     register_workload,
 )
@@ -137,6 +139,34 @@ class OLAPWorkloadProvider(WorkloadProvider):
     def set_benchmark_repetitions(self, repetitions: int) -> None:
         """Override the number of repetitions per query emitted in BENCHMARK mode."""
         self.benchmark_repetitions = repetitions
+
+    def preflight_ram_check(self, target_sf: float | None = None) -> RamCheck | None:
+        """Measure the largest scale factor an in-memory run would load into RAM.
+
+        Only in-memory runs ingest the parquet fully; disk-backed storage has
+        nothing to gate. Candidate SFs are everything a run may load: the
+        fast-check SFs (validation), ``benchmark_sf`` (benchmarking), and
+        ``large_check_sf`` / ``target_sf`` (large-scale checks). Only one SF is
+        resident at a time, so the largest dataset on disk is the peak
+        requirement; SFs without parquet on disk cannot be measured and are
+        skipped (if actually used, the missing data surfaces as its own error).
+        """
+        if self.db_storage != DBStorage.IN_MEMORY:
+            return None
+        candidates = {self.benchmark_sf, *self.spec.fast_check_sfs}
+        if self.spec.large_check_sf is not None:
+            candidates.add(self.spec.large_check_sf)
+        if target_sf is not None:
+            candidates.add(target_sf)
+        for sf in sorted(candidates, reverse=True):
+            sf_dir = find_sf_dir(self.base_parquet_dir, sf)
+            if sf_dir is not None:
+                return RamCheck.measure(sf, sf_dir, self.spec.tables)
+        logger.warning(
+            "RAM preflight skipped: no sf* parquet found under %s",
+            self.base_parquet_dir,
+        )
+        return None
 
     def produce_workload(
         self,

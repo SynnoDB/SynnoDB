@@ -2,6 +2,7 @@ import enum
 from abc import abstractmethod
 from dataclasses import dataclass
 
+from synnodb.ram_check import RamCheck
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils import utils
 
@@ -136,6 +137,15 @@ class WorkloadProvider:
         self.query_ids = query_ids
         self.sql_dict = sql_dict
         self.memory_limit_mb = memory_limit_mb
+
+    def preflight_ram_check(self, target_sf: float | None = None) -> RamCheck | None:
+        """The host-RAM check for the largest dataset this provider would load
+        fully into memory, or None when there is nothing to gate (disk-backed
+        storage, or no measurable on-disk dataset). ``target_sf`` is the run's
+        optional large-scale check target from the RunConfig; providers without
+        a scale-factor notion ignore it. The pipeline calls this before any
+        generation work and refuses to start a run whose check is insufficient."""
+        return None
 
     @abstractmethod
     def get_placeholders_fn(self):
