@@ -15,7 +15,9 @@ from pathlib import Path
 from synnodb.workloads.dataset.gen_tpch.tpch_param_specs import TPCH_PARAM_SPECS
 from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
 
-TUTORIAL_DIR = Path(__file__).parent.parent  # tutorials/, where the notebook reads queries.json
+TUTORIAL_DIR = Path(
+    __file__
+).parent.parent  # tutorials/, where the notebook reads queries.json
 
 
 def build() -> dict:
