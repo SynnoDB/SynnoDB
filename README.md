@@ -190,10 +190,11 @@ ANTHROPIC_API_KEY=...            # for the default anthropic/... models
 # WANDB_ENTITY=...  WANDB_PROJECT=... # optional Weights & Biases run tracking
 ```
 
-Point `SYNNO_DATA_DIR` at the data root that holds the parquet, caches, and published engines -
-or leave it unset to default to a project-local `.synno_data/`. The
-[demo notebook](tutorials/gen_tpch_demo.ipynb) generates its own TPC-H parquet, so there is
-nothing else to download to run it.
+Point `SYNNO_DATA_DIR` at the data root that holds the parquet, caches, and published engines.
+The CLI and API require it - export it, put it in `.env`, or pass `data_dir=...` to `SynnoDB(...)`.
+The [demo notebook](tutorials/gen_tpch_demo.ipynb) is self-contained: it defaults to a
+project-local `.synno_data/` when the variable is unset and generates its own TPC-H parquet, so
+there is nothing else to configure or download to run it.
 
 
 ## Development
