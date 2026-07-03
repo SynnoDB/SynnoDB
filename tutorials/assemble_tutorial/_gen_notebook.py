@@ -37,8 +37,37 @@ This notebook walks through the full journey for **TPC-H Q1-Q5**:
 It is **self-contained**: point it at a fresh (non-existent) data root and it generates the
 TPC-H parquet itself before running anything - no manual download or external tooling.
 
-> **Prerequisites** - see [`docs/TUTORIAL_base_implementation.md`](../docs/TUTORIAL_base_implementation.md)
-> for installation and model endpoint setup.
+### Prerequisites
+
+**Install SynnoDB** - it lives on [PyPI](https://pypi.org/project/synnodb/), so a single
+`pip install` pulls in every Python dependency. This demo *generates* an engine, so add the
+`factory` extra:
+
+```bash
+pip install "synnodb[factory]"
+```
+
+(Working from a source checkout instead? `uv sync --extra factory` builds the same environment -
+see the repo's Development section.)
+
+**System libraries** - a C++ toolchain and the Arrow/Parquet dev headers the generated engine is
+compiled against; `cloc` (optional) lets the factory report generated-code size. On Debian/Ubuntu:
+
+```bash
+sudo apt install -y build-essential cloc                # C++ compiler (+ optional cloc)
+
+# Apache Arrow + Parquet development libraries
+wget https://packages.apache.org/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+sudo apt install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+sudo apt update
+sudo apt install -y libarrow-dev libparquet-dev parquet-tools
+```
+
+**Model access** - the factory calls `MODEL` over an OpenAI-compatible API. Put the provider key
+in a repo-root `.env` (loaded below): `ANTHROPIC_API_KEY=...` for the default
+`anthropic/claude-sonnet-5`, or `OPENROUTER_API_KEY=...` for an `openrouter/...` model. For a
+self-hosted model, point at its endpoint with `LLM_API_BASE=http://your-host:PORT/v1` and set
+`OPENAI_API_KEY` to any non-empty placeholder.
 """)
 )
 
@@ -563,9 +592,6 @@ workspace; to chain across machines, log to W&B and pass the run id instead, e.g
 > **Want W&B logging?** Pass `wandb_project="..."` (and/or `wandb_entity="..."`) to
 > `SynnoDB(...)`. W&B is off unless one of them is set — nothing logs in, initializes, or
 > requires credentials otherwise.
-
-CLI equivalents and step-by-step commentary are in
-[`docs/TUTORIAL_base_implementation.md`](../docs/TUTORIAL_base_implementation.md).
 """)
 )
 

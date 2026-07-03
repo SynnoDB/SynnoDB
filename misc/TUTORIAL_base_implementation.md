@@ -51,7 +51,7 @@ Install them as in the repo [README](../README.md#installation), then install th
 factory extra** (generation needs the LLM stack):
 
 ```bash
-uv sync --extra factory          # add --extra dev --extra viz if you want tests / dashboards
+uv sync --extra factory          # add --extra dev if you want to run the tests
 ```
 
 Create a `.env` in the repo root:
