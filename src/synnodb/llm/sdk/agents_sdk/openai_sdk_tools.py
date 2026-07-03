@@ -8,7 +8,7 @@ from agents import (
 )
 from agents.run_context import RunContextWrapper
 from agents.tool import FunctionTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from synnodb.tools.custom_apply_patch import CustomApplyPatchTool
 from synnodb.tools.custom_replace_in_file import CustomReplaceInFileTool
@@ -140,7 +140,21 @@ def make_custom_openai_apply_patch_tool(
     impl = CustomApplyPatchTool(editor=editor)
 
     async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
-        args = CustomApplyPatchArgs.model_validate_json(args_json)
+        try:
+            args = CustomApplyPatchArgs.model_validate_json(args_json)
+        except ValidationError as e:
+            # The JSON was well-formed but did not match the tool schema (e.g. the
+            # required `type` field was omitted). Return the error to the model as
+            # a tool result - matching this tool's convention of reporting failures
+            # via the return value - so it can retry with a corrected call instead
+            # of the ValidationError propagating and crashing the whole run.
+            logger.warning(
+                "apply_patch received arguments that failed schema validation: %s", e
+            )
+            return (
+                "Error: apply_patch arguments failed validation. Retry with a valid "
+                f"call.\n{e}"
+            )
         return await impl(args.type, args.path, args.diff)
 
     schema = (
