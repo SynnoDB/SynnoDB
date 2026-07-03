@@ -30,6 +30,15 @@
     <span class="dot"></span><span id="ts-txt">Connecting&#8230;</span>
   </span>
 </header>
+<div id="error-banner" hidden>
+  <span class="error-banner-icon">&#9888;</span>
+  <span class="error-banner-text">
+    <strong>The run stopped with an error.</strong>
+    <span id="error-banner-msg"></span>
+  </span>
+  <button id="error-banner-details" type="button">View details &amp; log</button>
+  <button id="error-banner-dismiss" type="button" title="Dismiss" aria-label="Dismiss">&#10005;</button>
+</div>
 <div id="layout">
   <aside id="sidebar">
     <div class="panel-header">
@@ -138,6 +147,23 @@
     </div>
   </div>
 </div>
+<div id="error-modal" class="modal-overlay" hidden>
+  <div class="modal-box error-modal-box">
+    <div class="modal-hdr">
+      <span class="modal-title">&#9888; Run Error</span>
+      <div class="modal-hdr-actions">
+        <button class="modal-copy" id="error-modal-copy" title="Copy traceback">Copy</button>
+        <button class="modal-close" id="error-modal-close" aria-label="Close">&#10005;</button>
+      </div>
+    </div>
+    <div class="error-modal-body">
+      <div id="error-modal-msg" class="error-modal-msg"></div>
+      <div id="error-modal-logfile" class="error-modal-logfile" hidden></div>
+      <div class="error-modal-tb-label">Traceback</div>
+      <pre id="error-modal-tb" class="error-modal-tb"></pre>
+    </div>
+  </div>
+</div>
 <div id="code-modal" class="modal-overlay" hidden>
   <div class="modal-box code-modal-box">
     <div class="modal-hdr">
@@ -168,6 +194,7 @@
 <script src="js/controls.js"></script>
 <script src="js/highlight.js"></script>
 <script src="js/code-inspector.js"></script>
+<script src="js/error-alert.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

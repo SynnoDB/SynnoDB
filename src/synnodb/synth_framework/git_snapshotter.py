@@ -93,9 +93,14 @@ class GitSnapshotter:
         self._write_common_excludes()
         self._write_extra_gitignore(extra_gitignore)
 
+        # ``cache_repo`` is the git remote *name* used for fetch/push;
+        # ``cache_repo_url`` is the resolved location it points at (kept for
+        # logging, since the remote name alone is opaque).
         self.cache_repo: str | None = None
+        self.cache_repo_url: str | None = None
         if cache_repo is not None:
             self.cache_repo = self._configure_root_remote(cache_repo, "cache_repo")
+            self.cache_repo_url = self._remote_url(self.cache_repo)
             self.fetch_snapshots()
 
     def snapshot(
@@ -418,10 +423,25 @@ class GitSnapshotter:
         if self.cache_repo is None:
             return
 
-        logger.debug(f"Fetching snapshots from cache repo '{self.cache_repo}'...")
-        self._git_run(
-            ["fetch", self.cache_repo, f"{SNAPSHOT_REF_GLOB}:{SNAPSHOT_REF_GLOB}"]
+        logger.info(
+            f"Fetching snapshots from cache repo '{self.cache_repo}' "
+            f"({self.cache_repo_url or 'unknown url'}) "
+            "(this can be large on first sync)..."
         )
+        # ``--progress`` forces git to emit its native transfer progress bar
+        # (object counts, bytes, speed) on stderr even when stderr is not a TTY;
+        # ``passthrough`` streams it straight to the console so a large fetch
+        # shows live progress instead of a frozen "Fetching..." line.
+        self._git_run(
+            [
+                "fetch",
+                "--progress",
+                self.cache_repo,
+                f"{SNAPSHOT_REF_GLOB}:{SNAPSHOT_REF_GLOB}",
+            ],
+            passthrough=True,
+        )
+        logger.info("Finished fetching snapshots from cache repo.")
 
     # ---------- git + safety helpers ----------
 
@@ -453,6 +473,11 @@ class GitSnapshotter:
     def _remote_exists(self, name: str) -> bool:
         r = self._git_quiet(["remote", "get-url", name], check=False)
         return r.returncode == 0
+
+    def _remote_url(self, name: str) -> str | None:
+        """Resolved URL/path a configured remote points at, or None if unknown."""
+        r = self._git_capture(["remote", "get-url", name], check=False)
+        return r.stdout.strip() if r.returncode == 0 else None
 
     def _sanitize_ref_component(self, name: str) -> str:
         """
