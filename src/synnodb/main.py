@@ -185,9 +185,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     # Fail fast before the snapshotter / workspace prepare / any LLM call if the
     # host cannot fit the largest dataset the run would load into memory. The
     # provider owns what (if anything) gets loaded; None means nothing to gate.
-    ram_check = workload_provider.preflight_ram_check(
-        target_sf=getattr(args, "target_sf", None)
-    )
+    ram_check = workload_provider.preflight_ram_check()
     if ram_check is not None:
         if not ram_check.sufficient:
             raise InsufficientRamError(

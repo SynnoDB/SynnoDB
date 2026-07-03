@@ -138,13 +138,17 @@ class WorkloadProvider:
         self.sql_dict = sql_dict
         self.memory_limit_mb = memory_limit_mb
 
-    def preflight_ram_check(self, target_sf: float | None = None) -> RamCheck | None:
-        """The host-RAM check for the largest dataset this provider would load
+    def preflight_ram_check(self) -> RamCheck | None:
+        """The host-RAM check for the largest dataset this provider could load
         fully into memory, or None when there is nothing to gate (disk-backed
-        storage, or no measurable on-disk dataset). ``target_sf`` is the run's
-        optional large-scale check target from the RunConfig; providers without
-        a scale-factor notion ignore it. The pipeline calls this before any
-        generation work and refuses to start a run whose check is insufficient."""
+        storage, or no measurable dataset present).
+
+        The provider owns what a run loads: subclasses that ingest a dataset into
+        RAM override this to point the check at the files they may load (a
+        scale-factor workload picks a scale factor's parquet dir; a workload with
+        no scale-factor notion points at its data directory). The pipeline calls
+        this before any generation work and refuses to start a run whose check is
+        insufficient."""
         return None
 
     @abstractmethod

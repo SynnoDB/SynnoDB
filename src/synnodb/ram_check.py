@@ -32,35 +32,39 @@ class InsufficientRamError(RuntimeError):
 class RamCheck:
     """Result of a host-RAM preflight (``SynnoDB.check_ram_for_sf`` or the
     pipeline's automatic gate) - truthy iff the host's available RAM covers
-    ``IN_MEMORY_RAM_FACTOR`` x the dataset's on-disk parquet size."""
+    ``IN_MEMORY_RAM_FACTOR`` x the dataset's on-disk size.
 
-    sf: float
-    dataset_bytes: int  # summed on-disk parquet size of the SF's tables
+    The dataset is identified only by a human-readable ``label`` (e.g. ``sf100``
+    for a scale-factor workload, or a data-directory name for a usecase with no
+    scale-factor notion): the check itself is agnostic to how a workload names
+    or lays out the files it loads."""
+
+    label: str  # human-readable dataset identifier, e.g. "sf100"
+    dataset_bytes: int  # summed on-disk size of the dataset's files
     available_bytes: int  # host RAM available at check time
 
     @classmethod
-    def measure(cls, sf: float, sf_dir: Path, tables: Sequence[str]) -> "RamCheck":
-        """Measure a dataset directory against the host's currently available RAM.
+    def measure(cls, label: str, paths: Sequence[Path]) -> "RamCheck":
+        """Measure a set of dataset files against the host's currently available RAM.
 
-        Sums the on-disk size of ``<table>.parquet`` for each table under
-        ``sf_dir`` and reads the host's available RAM. Raises
-        ``FileNotFoundError`` if any table's parquet file is absent."""
+        Sums the on-disk size of every path in ``paths`` and reads the host's
+        available RAM. Raises ``FileNotFoundError`` if any path is absent - it is
+        the caller's job (the workload provider) to pass the files a run loads."""
         import psutil
 
         dataset_bytes = 0
         missing: list[str] = []
-        for table in tables:
+        for path in paths:
             try:
-                dataset_bytes += (sf_dir / f"{table}.parquet").stat().st_size
+                dataset_bytes += Path(path).stat().st_size
             except FileNotFoundError:
-                missing.append(table)
+                missing.append(str(path))
         if missing:
             raise FileNotFoundError(
-                f"Dataset at {sf_dir} is missing the parquet files for tables "
-                f"{missing}."
+                f"Dataset {label!r} is missing the files: {missing}."
             )
         return cls(
-            sf=sf,
+            label=label,
             dataset_bytes=dataset_bytes,
             available_bytes=psutil.virtual_memory().available,
         )
@@ -81,7 +85,7 @@ class RamCheck:
         gib = 1024**3
         verdict = "sufficient" if self.sufficient else "insufficient"
         return (
-            f"RAM {verdict} for sf{self.sf:g}: dataset {self.dataset_bytes / gib:.2f} GiB "
+            f"RAM {verdict} for {self.label}: dataset {self.dataset_bytes / gib:.2f} GiB "
             f"on disk, {self.required_bytes / gib:.2f} GiB required in memory "
             f"({IN_MEMORY_RAM_FACTOR:g}x), {self.available_bytes / gib:.2f} GiB available"
         )

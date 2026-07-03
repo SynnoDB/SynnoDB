@@ -464,7 +464,8 @@ class SynnoDB:
                 f"No sf{sf:g} dataset under {root} for workload {spec.name!r} - "
                 "generate the dataset before checking RAM."
             )
-        return RamCheck.measure(sf, sf_dir, spec.tables)
+        paths = [sf_dir / f"{table}.parquet" for table in spec.tables]
+        return RamCheck.measure(f"sf{sf:g}", paths)
 
     # ---- the single entry point ------------------------------------------
     def run_synthesis(

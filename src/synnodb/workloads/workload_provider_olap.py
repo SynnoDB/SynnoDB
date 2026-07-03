@@ -2,6 +2,7 @@ import functools
 import logging
 import os
 import random
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -140,33 +141,58 @@ class OLAPWorkloadProvider(WorkloadProvider):
         """Override the number of repetitions per query emitted in BENCHMARK mode."""
         self.benchmark_repetitions = repetitions
 
-    def preflight_ram_check(self, target_sf: float | None = None) -> RamCheck | None:
-        """Measure the largest scale factor an in-memory run would load into RAM.
+    def preflight_ram_check(self) -> RamCheck | None:
+        """Measure the largest scale-factor dataset this workload could load into RAM.
 
         Only in-memory runs ingest the parquet fully; disk-backed storage has
-        nothing to gate. Candidate SFs are everything a run may load: the
-        fast-check SFs (validation), ``benchmark_sf`` (benchmarking), and
-        ``large_check_sf`` / ``target_sf`` (large-scale checks). Only one SF is
-        resident at a time, so the largest dataset on disk is the peak
-        requirement; SFs without parquet on disk cannot be measured and are
-        skipped (if actually used, the missing data surfaces as its own error).
-        """
+        nothing to gate. An in-memory run holds one scale factor at a time, so
+        the peak requirement is the largest of the workload's own scale factors
+        whose dataset is present on disk. Candidate scale factors come from the
+        workload spec (the per-mode ladders, the benchmark SF, and the large-scale
+        check SF) - a stray ``sf*`` directory the spec does not reference is not
+        something a run would load, so it is not gated on. Scale factors whose
+        parquet is not on disk cannot be measured and are ignored."""
         if self.db_storage != DBStorage.IN_MEMORY:
             return None
-        candidates = {self.benchmark_sf, *self.spec.fast_check_sfs}
-        if self.spec.large_check_sf is not None:
-            candidates.add(self.spec.large_check_sf)
-        if target_sf is not None:
-            candidates.add(target_sf)
-        for sf in sorted(candidates, reverse=True):
-            sf_dir = find_sf_dir(self.base_parquet_dir, sf)
-            if sf_dir is not None:
-                return RamCheck.measure(sf, sf_dir, self.spec.tables)
-        logger.warning(
-            "RAM preflight skipped: no sf* parquet found under %s",
-            self.base_parquet_dir,
+        datasets = list(self._datasets_on_disk())
+        if not datasets:
+            logger.warning(
+                "RAM preflight skipped: none of the workload's scale-factor "
+                "datasets are present under %s",
+                self.base_parquet_dir,
+            )
+            return None
+        label, paths = max(
+            datasets, key=lambda dp: sum(p.stat().st_size for p in dp[1])
         )
-        return None
+        return RamCheck.measure(label, paths)
+
+    def _candidate_sfs(self) -> set[float]:
+        """Every scale factor the workload could load across its run modes: the
+        per-mode ladders, the (possibly overridden) benchmark SF, and the
+        large-scale check SF."""
+        sfs = {
+            self.benchmark_sf,
+            *self.spec.fast_check_sfs,
+            *self.spec.exhaustive_sfs,
+            *self.spec.ingest_sfs,
+        }
+        if self.spec.large_check_sf is not None:
+            sfs.add(self.spec.large_check_sf)
+        return sfs
+
+    def _datasets_on_disk(self) -> Iterator[tuple[str, list[Path]]]:
+        """``(label, parquet paths)`` for every candidate scale factor whose
+        dataset is fully present under the parquet root - a directory holding a
+        parquet file for every table the workload loads. Scale factors with no
+        directory, or an incomplete one, are skipped."""
+        for sf in sorted(self._candidate_sfs()):
+            sf_dir = find_sf_dir(self.base_parquet_dir, sf)
+            if sf_dir is None:
+                continue
+            paths = [sf_dir / f"{table}.parquet" for table in self.spec.tables]
+            if all(p.exists() for p in paths):
+                yield sf_dir.name, paths
 
     def produce_workload(
         self,

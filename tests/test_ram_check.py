@@ -147,8 +147,12 @@ def test_preflight_none_when_no_parquet_on_disk(ramshop, monkeypatch, tmp_path):
     assert provider.preflight_ram_check() is None
 
 
-def test_preflight_measures_target_sf(ramshop, monkeypatch, tmp_path):
-    """A checkSfCorrectness run's target_sf dominates when its dataset is larger."""
+def test_preflight_ignores_datasets_not_in_the_workload_spec(
+    ramshop, monkeypatch, tmp_path
+):
+    """A stray sf* dataset the workload spec does not reference is not gated on:
+    the check measures the workload's own scale factor, not whatever else happens
+    to sit in the parquet root. (ramshop's spec references only sf1.)"""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -158,7 +162,44 @@ def test_preflight_measures_target_sf(ramshop, monkeypatch, tmp_path):
     pq.write_table(pa.table({"u_id": list(range(1000))}), sf2 / "users.parquet")
     pq.write_table(pa.table({"e_id": list(range(1000))}), sf2 / "events.parquet")
 
-    # Enough RAM for sf1 but not for the larger sf2 the run would validate at.
+    # Enough RAM for the workload's sf1 but not the larger, unrelated sf2.
     _set_available_ram(monkeypatch, int(sf1_bytes * IN_MEMORY_RAM_FACTOR))
-    check = _provider(tmp_path).preflight_ram_check(target_sf=2)
-    assert check is not None and check.sf == 2 and not check.sufficient
+    check = _provider(tmp_path).preflight_ram_check()
+    assert check is not None and check.label == "sf1" and check.sufficient
+    assert check.dataset_bytes == sf1_bytes
+
+
+def test_preflight_gates_on_largest_spec_scale_factor_present(monkeypatch, tmp_path):
+    """When the spec references several scale factors, the check measures the
+    largest one whose dataset is present - an in-memory run holds one SF at a
+    time, so that is the peak requirement."""
+    from synnodb.utils.utils import DBStorage
+    from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
+
+    pa = pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pq
+
+    data = tmp_path / "data"
+    for sf, n in ((1, 3), (2, 1000)):
+        sf_dir = data / f"sf{sf}"
+        sf_dir.mkdir(parents=True)
+        pq.write_table(pa.table({"u_id": list(range(n))}), sf_dir / "users.parquet")
+        pq.write_table(pa.table({"e_id": list(range(n))}), sf_dir / "events.parquet")
+
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    (sql_dir / "1.sql").write_text("SELECT count(*) AS n FROM events\n")
+    register_workload_from_dir("ramshop_multi", sql_dir, data, scale_factors=(1, 2))
+
+    sf2_bytes = sum(
+        (data / "sf2" / f"{t}.parquet").stat().st_size for t in ("users", "events")
+    )
+    _set_available_ram(monkeypatch, int(sf2_bytes * IN_MEMORY_RAM_FACTOR) - 1)
+    provider = OLAPWorkloadProvider(
+        benchmark="ramshop_multi",
+        base_parquet_dir=data,
+        db_storage=DBStorage.IN_MEMORY,
+    )
+    check = provider.preflight_ram_check()
+    assert check is not None and check.label == "sf2" and not check.sufficient
+    assert check.dataset_bytes == sf2_bytes
