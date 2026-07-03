@@ -21,6 +21,7 @@ from synnodb.cpp_runner.prepare_repo.prepare_features import (
     features_metadata_dict,
 )
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
+from synnodb.ram_check import InsufficientRamError
 from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
 from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
@@ -68,7 +69,7 @@ from synnodb.workloads.system_factory_olap import OLAPSystemFactory
 from synnodb.workloads.workload_provider_olap import (
     OLAPWorkloadProvider,
 )
-from synnodb.workloads.workload_spec import get_workload_spec
+from synnodb.workloads.workload_spec import find_sf_dir, get_workload_spec
 
 logger = logging.getLogger(__name__)
 
@@ -138,18 +139,9 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     # parquet dir and workload provider
     if usecase == Usecase.OLAP:
         workload_spec = get_workload_spec(args.benchmark.value)
-        dataset_name = workload_spec.dataset_name
         # Bring-your-own workloads carry their absolute parquet location; built-ins
         # derive it from the data-dir + benchmark-name convention.
-        if workload_spec.base_parquet_dir is not None:
-            parquet_dir = Path(workload_spec.base_parquet_dir)
-        else:
-            parquet_dir = (
-                settings.get_data_dir()
-                / "workloads"
-                / args.benchmark.value
-                / f"{dataset_name}_parquet"
-            )
+        parquet_dir = workload_spec.parquet_root()
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
 
@@ -197,6 +189,18 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         )
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
+
+    # Fail fast before the snapshotter / workspace prepare / any LLM call if the
+    # host cannot fit the largest dataset the run would load into memory. The
+    # provider owns what (if anything) gets loaded; None means nothing to gate.
+    ram_check = workload_provider.preflight_ram_check()
+    if ram_check is not None:
+        if not ram_check.sufficient:
+            raise InsufficientRamError(
+                f"{ram_check}. An in-memory run would crash OOM mid-generation; "
+                f"use db_storage='ssd', a smaller dataset, or a host with more RAM."
+            )
+        logger.info("RAM preflight passed: %s", ram_check)
 
     # get files that should be marked as read-only - they will be untracked in git and excluded from snapshot hashed / ... (i.e. unless their version number changes, they will not affect caches)
     readonly_files_not_git_tracked, readonly_files_git_tracked = (
@@ -687,18 +691,10 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
 def _resolve_sf_dir(base_parquet_dir, scale_factor):
     """The ``sf<N>`` data directory for a scale factor, tolerant of int/float formatting
     (``sf1`` vs ``sf1.0``); falls back to the first ``sf*`` present. None if there is none."""
-    base = Path(base_parquet_dir)
-    candidates = []
-    try:
-        if float(scale_factor).is_integer():
-            candidates.append(f"sf{int(scale_factor)}")
-    except (TypeError, ValueError):
-        pass
-    candidates.append(f"sf{scale_factor}")
-    for name in candidates:
-        if (base / name).exists():
-            return base / name
-    found = sorted(base.glob("sf*"))
+    resolved = find_sf_dir(base_parquet_dir, scale_factor)
+    if resolved is not None:
+        return resolved
+    found = sorted(Path(base_parquet_dir).glob("sf*"))
     return found[0] if found else None
 
 

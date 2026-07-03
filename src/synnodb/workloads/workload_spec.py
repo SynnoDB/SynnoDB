@@ -95,6 +95,21 @@ class WorkloadSpec:
     def schema(self) -> str:
         return self.schema_factory()
 
+    def parquet_root(self) -> Path:
+        """Absolute parquet root holding ``sf<sf>/<table>.parquet``. Bring-your-own
+        workloads carry it on the spec; built-ins derive it from the data-dir +
+        workload-name convention (so this requires SYNNO_DATA_DIR to be configured)."""
+        if self.base_parquet_dir is not None:
+            return Path(self.base_parquet_dir)
+        from synnodb import settings
+
+        return (
+            settings.get_data_dir()
+            / "workloads"
+            / self.name
+            / f"{self.dataset_name}_parquet"
+        )
+
     def scale_factors_for(self, run_mode: RunToolMode) -> list[float]:
         if run_mode == RunToolMode.FAST_CHECK:
             return list(self.fast_check_sfs)
@@ -105,6 +120,23 @@ class WorkloadSpec:
         if run_mode == RunToolMode.BENCHMARK:
             return [self.benchmark_sf]
         raise ValueError(f"Unknown run mode: {run_mode}")
+
+
+def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | None:
+    """The ``sf<N>`` directory for a scale factor under a parquet root, tolerant of
+    int/float name formatting (``sf1`` vs ``sf1.0``). None if neither spelling exists."""
+    base = Path(base_parquet_dir)
+    candidates = []
+    try:
+        if float(scale_factor).is_integer():
+            candidates.append(f"sf{int(scale_factor)}")
+    except (TypeError, ValueError):
+        pass
+    candidates.append(f"sf{scale_factor}")
+    for name in candidates:
+        if (base / name).exists():
+            return base / name
+    return None
 
 
 _REGISTRY: dict[str, WorkloadSpec] = {}

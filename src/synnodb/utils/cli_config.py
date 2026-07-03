@@ -79,9 +79,6 @@ class RunConfig:
     )
     memory_budget_mb: int | None = None
     include_mem_budget_for_in_mem_in_hashes: bool = False
-    target_sf: float | None = (
-        None  # target scale factor for the check-sf correctness conversation
-    )
     usecase: Usecase = Usecase.OLAP
     workspace_dir: str | None = (
         None  # output/workspace dir; None -> settings.get_workspace_dir() (local ./output)
