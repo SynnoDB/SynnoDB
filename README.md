@@ -1,7 +1,30 @@
-# SynnoDB
+<div align="center">
+
+<img src="misc/logo-light.png" alt="SynnoDB" width="440">
+
+<br>
 
 **A drop-in replacement for DuckDB that transparently accelerates your SQL with auto-generated
-bespoke C++ engines** - and falls back to DuckDB for everything else, cross-checked for correctness.
+bespoke C++ engines** - falling back to DuckDB for everything else, cross-checked for correctness.
+
+[![PyPI](https://img.shields.io/pypi/v/synnodb.svg?color=blue)](https://pypi.org/project/synnodb/)
+[![Python](https://img.shields.io/pypi/pyversions/synnodb.svg)](https://pypi.org/project/synnodb/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+[![Paper](https://img.shields.io/badge/paper-VLDB-b31b1b.svg)](https://arxiv.org/pdf/2603.02001)
+[![Website](https://img.shields.io/badge/website-synnodb.com-1f6feb.svg)](https://synnodb.com)
+
+[🌐 Website](https://synnodb.com) &nbsp;·&nbsp;
+[📄 Paper](https://arxiv.org/pdf/2603.02001) &nbsp;·&nbsp;
+[📦 PyPI](https://pypi.org/project/synnodb/) &nbsp;·&nbsp;
+[📓 Demo Notebook](tutorials/gen_tpch_demo.ipynb)
+
+</div>
+
+---
+
+SynnoDB grew out of the research project [**Bespoke-OLAP**](https://github.com/DataManagementLab/BespokeOLAP)
+([paper](https://arxiv.org/pdf/2603.02001)): an LLM agent that synthesizes workload-specific,
+one-size-fits-one C++ query engines. SynnoDB packages that idea as a production-ready DuckDB drop-in.
 
 Install from **[PyPI](https://pypi.org/project/synnodb/)**:
 
