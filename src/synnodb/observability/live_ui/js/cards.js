@@ -67,7 +67,7 @@ function updateHeaderMeta(meta = {}) {
 function setCostMode(mode) {
   costMode = mode;
   document.querySelectorAll('.cost-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
-  document.getElementById('cost-label').textContent = mode === 'real' ? 'USD after caching' : 'USD Calculatorial';
+  document.getElementById('cost-label').textContent = mode === 'real' ? 'USD after caching' : 'USD w/o local LLM cache';
   if (_lastSteps.length) updateCards(_lastSteps, _lastData);
 }
 

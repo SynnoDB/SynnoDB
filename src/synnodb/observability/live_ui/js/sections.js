@@ -164,8 +164,25 @@ const sectionBgPlugin = {
 // A coarse header strip above the finer section fills: one labelled band per
 // pipeline stage plus a solid full-height divider at each stage boundary, so
 // it's obvious at a glance which stage any point on the timeline belongs to.
+// Resolve a span to its clamped [l, r] pixel bounds within the chart area,
+// plus the raw start pixel x0 used for the boundary divider. Returns null when
+// the span is off-screen or degenerate.
+function stageSpanBounds(chart, span, points) {
+  const {chartArea:ca, scales} = chart;
+  const startBounds = getSegmentBounds(points, span.startIdx);
+  const endBounds   = getSegmentBounds(points, span.endIdx);
+  if (!startBounds || !endBounds) return null;
+  const x0 = scales.x.getPixelForValue(startBounds.left);
+  const x1 = scales.x.getPixelForValue(endBounds.right);
+  const l  = Math.max(ca.left,  Math.min(x0, x1));
+  const r  = Math.min(ca.right, Math.max(x0, x1));
+  if (r <= l) return null;
+  return {l, r, x0};
+}
+
 const stageBandPlugin = {
   id:'stageBand',
+  // Full-height boundary dividers stay behind the grid and data series.
   beforeDraw(chart) {
     const {ctx, chartArea:ca, scales} = chart;
     if (!ca || !scales.x) return;
@@ -174,27 +191,36 @@ const stageBandPlugin = {
     if (!spans.length) return;
     ctx.save();
     for (const span of spans) {
-      const startBounds = getSegmentBounds(points, span.startIdx);
-      const endBounds   = getSegmentBounds(points, span.endIdx);
-      if (!startBounds || !endBounds) continue;
-      const x0 = scales.x.getPixelForValue(startBounds.left);
-      const x1 = scales.x.getPixelForValue(endBounds.right);
-      const l  = Math.max(ca.left,  Math.min(x0, x1));
-      const r  = Math.min(ca.right, Math.max(x0, x1));
-      if (r <= l) continue;
+      const b = stageSpanBounds(chart, span, points);
+      if (!b) continue;
+      // Solid full-height boundary divider at the stage start (more prominent
+      // than the dashed per-descriptor dividers), skipping the very first edge.
+      if (span.startIdx > 0 && b.x0 > ca.left + 2) {
+        const meta = stageMeta(span.stage);
+        ctx.strokeStyle = hexRgba(meta.hex, 0.85);
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(b.x0, ca.top); ctx.lineTo(b.x0, ca.bottom); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  },
+  // The ribbon header + label paint last so they sit on top of the grid lines.
+  afterDatasetsDraw(chart) {
+    const {ctx, chartArea:ca, scales} = chart;
+    if (!ca || !scales.x) return;
+    const spans  = chart.options.plugins.stageBand?.spans ?? [];
+    const points = chart.options.plugins.stageBand?.points ?? [];
+    if (!spans.length) return;
+    ctx.save();
+    for (const span of spans) {
+      const b = stageSpanBounds(chart, span, points);
+      if (!b) continue;
+      const {l, r} = b;
 
       const meta = stageMeta(span.stage);
       // Solid ribbon strip across the top of the plot for this stage.
       ctx.fillStyle = hexRgba(meta.hex, 0.9);
       ctx.fillRect(l, ca.top, r - l, STAGE_BAND_H);
-
-      // Solid full-height boundary divider at the stage start (more prominent
-      // than the dashed per-descriptor dividers), skipping the very first edge.
-      if (span.startIdx > 0 && x0 > ca.left + 2) {
-        ctx.strokeStyle = hexRgba(meta.hex, 0.85);
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(x0, ca.top); ctx.lineTo(x0, ca.bottom); ctx.stroke();
-      }
 
       // Centre the stage label within the visible portion of the ribbon.
       if ((r - l) > 24) {

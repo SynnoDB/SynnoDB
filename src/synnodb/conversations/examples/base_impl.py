@@ -339,7 +339,7 @@ class OptimizeBuildStage(DynamicStageConfig):
         num_threads: int,
         max_turns: int | None = None,
     ):
-        super().__init__(descriptor="optimize build", max_turns=max_turns)
+        super().__init__(descriptor="optimize ingest", max_turns=max_turns)
         self.builder_path_cpp = builder_path_cpp
         self.builder_path_hpp = builder_path_hpp
         self.run_tool = run_tool

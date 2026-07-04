@@ -28,6 +28,9 @@ async function poll() {
       // No turns emitted yet, but the running conversation may already have
       // published its scheduled stages - show them as upcoming.
       updatePrompts([], {});
+      // Clear the query chart and surface its "no speedups yet" overlay rather
+      // than leaving an empty panel (or stale bars after a source switch).
+      updateQueryChart([], {});
       // A run can fail before emitting any turn (e.g. during setup); still
       // surface the error rather than sitting on "No data yet".
       updateRunError(meta && meta.error);
