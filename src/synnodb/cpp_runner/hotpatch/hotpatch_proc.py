@@ -233,6 +233,12 @@ class HotpatchProc:
             self._cgroup.remove()
             self._cgroup = None
 
+    def is_running(self) -> bool:
+        """True when the managed child process is currently alive. After a ``run()`` this
+        distinguishes a healthy warm runner (child still resident, ready for the next batch)
+        from one whose child exited mid-batch (a loader/builder crash)."""
+        return self._proc is not None and self._proc.poll() is None
+
     def _start(self) -> None:
         """Launch the child process if it is not already running.
 
