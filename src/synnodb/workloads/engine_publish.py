@@ -185,11 +185,11 @@ def derive_template(
     # TPC-H generator tacks a `STREAM_ID` onto Q15). Keep only the values the template actually
     # binds, so the self-check compares placeholders and not incidental generator metadata.
     keep = set(distinct)
-    assignments = [
-        {k: v for k, v in a.items() if k in keep} for a in assignments
-    ]
+    assignments = [{k: v for k, v in a.items() if k in keep} for a in assignments]
     sample = assignments[0]
-    literals = _embedded_literals(bracket_sql)  # one scan, shared by info + collapse below
+    literals = _embedded_literals(
+        bracket_sql
+    )  # one scan, shared by info + collapse below
     embedded = _embedded_info(literals)
 
     def specs(names: Sequence[str]) -> Tuple[PlaceholderSpec, ...]:

@@ -178,6 +178,11 @@ class QueryRouter:
         # without template_sql uses positional literal extraction.
         if binding.template_sql is not None and has_param_markers(binding.template_sql):
             return bind_template(binding.template_sql, sql, specs)
+        # The positional path binds whole literals only. A spec embedded in a literal
+        # (affix or group) needs the template to peel its constants; binding it whole
+        # would hand the engine the raw pattern ('%y' instead of y), so refuse.
+        if any(s.prefix or s.suffix or s.group >= 0 for s in specs):
+            return None
         names = [spec.name for spec in specs]
         values = extract_literals(sql)
         return {

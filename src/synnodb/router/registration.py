@@ -20,7 +20,7 @@ import re
 from typing import Any, Iterable, List, Optional, Sequence
 
 from ..errors import SynnoUnsupportedQuery
-from .normalize import normalize_sql, tables_in
+from .normalize import binding_groups, normalize_sql, tables_in
 from .registry import ColumnSpec, EngineBinding, PlaceholderSpec
 
 log = logging.getLogger("synnodb.router.registration")
@@ -105,6 +105,10 @@ def _literalize(template_sql: str, placeholders: Sequence[PlaceholderSpec]) -> s
         return template_sql
 
     by_name = {p.name: p.type for p in placeholders}
+    # Each anonymous ``?`` is one binding group, not one spec: several specs packed in one
+    # string literal (Q13) share a single ``?``, whose bound value is that literal - a
+    # VARCHAR pattern - regardless of the specs' own types.
+    groups = binding_groups(placeholders)
     counter = {"i": 0}
 
     def _typed_null(type_str: str) -> "exp.Expression":
@@ -115,11 +119,15 @@ def _literalize(template_sql: str, placeholders: Sequence[PlaceholderSpec]) -> s
         except Exception:
             return exp.Null()
 
+    def _group_type(group: Sequence[PlaceholderSpec]) -> str:
+        whole_literal = len(group) == 1 and not group[0].prefix and not group[0].suffix
+        return group[0].type if whole_literal else "VARCHAR"
+
     def repl(node: "exp.Expression") -> "exp.Expression":
         if isinstance(node, exp.Placeholder):  # anonymous ?
             i = counter["i"]
             counter["i"] += 1
-            type_str = placeholders[i].type if i < len(placeholders) else "VARCHAR"
+            type_str = _group_type(groups[i]) if i < len(groups) else "VARCHAR"
             return _typed_null(type_str)
         if isinstance(node, exp.Parameter):  # $name / :name
             return _typed_null(by_name.get(node.name, "VARCHAR"))

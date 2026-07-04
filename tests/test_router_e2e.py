@@ -106,6 +106,20 @@ def test_parameterized_query_routes():
     assert result == _duckdb_answer(con, sql, [3])
 
 
+def test_named_parameters_fall_back_and_never_quarantine():
+    # DuckDB-style named parameters (`$name` + dict) share a structural key with a `?` template,
+    # but router binding is positional: a dict cannot be lined up with the specs. The guard must
+    # refuse it so DuckDB serves it natively - never bind the dict itself as a value, which would
+    # crash the engine repeatedly and quarantine a healthy template.
+    con, calls, binding = _setup(_correct, breaker_threshold=3)
+    sql = "SELECT count(*) AS c FROM t WHERE a >= $p"
+    for _ in range(4):  # more calls than breaker_threshold
+        result = con.execute(sql, {"p": 3}).fetchall()
+        assert result == _duckdb_answer(con, sql, {"p": 3})
+    assert calls["n"] == 0  # the engine never saw the dict
+    assert not con.router.registry.is_quarantined(binding.template_id)
+
+
 def test_trace_reports_cross_check_and_speedup():
     con, _, _ = _setup(_correct, cross_check_rate=1.0)
     dec = con.router.route("SELECT count(*) AS c FROM t WHERE a >= 2", None, con)
@@ -170,7 +184,9 @@ def test_like_without_wildcard_is_a_different_query_and_falls_back():
     sql = "SELECT count(*) AS c FROM t WHERE b LIKE 'y'"
     result = con.execute(sql).fetchall()
     assert calls["n"] == 0  # engine never ran
-    assert result == _duckdb_answer(con, sql)  # DuckDB's answer (0 rows exactly equal "y")
+    assert result == _duckdb_answer(
+        con, sql
+    )  # DuckDB's answer (0 rows exactly equal "y")
 
 
 def test_like_with_wildcard_in_core_falls_back():
@@ -188,15 +204,18 @@ def test_like_with_wildcard_in_core_falls_back():
         assert result == _duckdb_answer(con, sql)
 
 
-def test_multi_param_like_routes_and_equals_duckdb():
-    # Q13 shape: one literal packs two words (`b LIKE '%[W1]%[W2]%'`). The engine receives both,
-    # peeled and split out of the single bound pattern.
+def _q13_setup(cross_check_rate=1.0):
+    """Q13 shape: one literal packs two words (`b LIKE '%[W1]%[W2]%'`), so the template has a
+    single SQL `?` bound to two engine parameters. The engine receives both, peeled and split
+    out of the single bound pattern."""
     from synnodb.workloads.engine_publish import derive_template
 
-    policy = RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0)
+    policy = RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=cross_check_rate)
     con = synnodb.connect(policy=policy, registry=TemplateRegistry())
     con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
-    con.duckdb.execute("INSERT INTO t VALUES (1,'redcrab'),(2,'bluecrab'),(3,'redfish')")
+    con.duckdb.execute(
+        "INSERT INTO t VALUES (1,'redcrab'),(2,'bluecrab'),(3,'redfish')"
+    )
     rows = ["redcrab", "bluecrab", "redfish"]
     calls = {"n": 0}
 
@@ -221,10 +240,39 @@ def test_multi_param_like_routes_and_equals_duckdb():
         placeholders=list(specs),
         query_id="13",
     )
+    return con, calls
+
+
+def test_multi_param_like_routes_and_equals_duckdb():
+    con, calls = _q13_setup()
     sql = "SELECT count(*) AS c FROM t WHERE b LIKE '%red%crab%'"
     result = con.execute(sql).fetchall()
     assert calls["n"] == 1
     assert result == _duckdb_answer(con, sql)
+
+
+def test_multi_param_like_parameterized_routes_and_equals_duckdb():
+    # The packed pattern arrives as ONE bound value for the template's single `?`; the arity
+    # guard must count binding groups (1), not engine parameters (2), and binding then splits
+    # the words back out for the engine.
+    con, calls = _q13_setup()
+    sql = "SELECT count(*) AS c FROM t WHERE b LIKE ?"
+    params = ["%red%crab%"]
+    result = con.execute(sql, params).fetchall()
+    assert calls["n"] == 1
+    assert result == _duckdb_answer(con, sql, params)
+
+
+def test_multi_param_like_parameterized_wrong_pattern_falls_back():
+    # A bound pattern missing the template's constants (no leading `%`) or carrying a wildcard
+    # inside a word is a different query: SQL treats it as a pattern while the engine would take
+    # the words as literals. Binding must refuse both so DuckDB serves them.
+    con, calls = _q13_setup()
+    sql = "SELECT count(*) AS c FROM t WHERE b LIKE ?"
+    for params in (["red%crab"], ["%red_%crab%"]):
+        result = con.execute(sql, params).fetchall()
+        assert calls["n"] == 0  # engine never ran
+        assert result == _duckdb_answer(con, sql, params)
 
 
 def test_in_list_query_routes_and_equals_duckdb():

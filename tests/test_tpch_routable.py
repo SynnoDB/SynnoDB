@@ -15,7 +15,9 @@ import random
 
 import pytest
 
-from synnodb.router.normalize import bind_template, normalize_sql
+from synnodb.router.guards import GuardContext, placeholder_arity_guard
+from synnodb.router.normalize import bind_template, binding_groups, normalize_sql
+from synnodb.router.registry import EngineBinding
 from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
 from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from synnodb.workloads.engine_publish import build_query_templates
@@ -46,6 +48,36 @@ def templates() -> dict:
 
 def test_all_22_queries_derive(templates):
     assert sorted(int(q) for q in templates) == list(range(1, 23))
+
+
+@pytest.mark.parametrize("qid", QIDS)
+def test_parameterized_call_passes_arity_guard(qid, templates):
+    # A prepared-statement caller supplies one value per `?` in the template. The arity guard
+    # must accept exactly that count for every real workload shape - including Q13, whose
+    # single `?` carries two engine parameters packed in one literal.
+    template = templates[qid]
+    binding = EngineBinding(
+        template_id=f"eng::{qid}",
+        normalized_sql=normalize_sql(template.sql_template),
+        query_id=qid,
+        engine_id="eng",
+        placeholders=template.placeholders,
+        output_schema=(),
+        tables=frozenset(),
+        schema_fingerprint="fp",
+        template_sql=template.sql_template,
+    )
+    values = ["v"] * len(binding_groups(template.placeholders))
+    ok, detail = placeholder_arity_guard(
+        GuardContext(
+            sql=template.sql_template,
+            binding=binding,
+            conn=None,
+            registry=None,
+            parameters=values,
+        )
+    )
+    assert ok, f"Q{qid}: {detail}"
 
 
 @pytest.mark.parametrize("qid", QIDS)

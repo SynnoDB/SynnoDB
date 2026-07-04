@@ -126,7 +126,12 @@ def test_derive_like_affix_prefix_and_suffix():
         ("BRASS", "%", "", None),  # missing prefix -> different query, reject
         ("green", "%", "%", None),  # missing suffix -> reject
         ("", "%", "", None),  # too short to carry the affix -> reject
-        ("%y%", "%", "", None),  # wildcard left in the core: a pattern, not a word -> reject
+        (
+            "%y%",
+            "%",
+            "",
+            None,
+        ),  # wildcard left in the core: a pattern, not a word -> reject
         ("%_y", "%", "", None),  # `_` is a wildcard too -> reject
     ],
 )
