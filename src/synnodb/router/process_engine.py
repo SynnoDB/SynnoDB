@@ -54,6 +54,9 @@ class ProcessEngine:
         self.extra_env = dict(extra_env or {})
         self._proc: Any = None
         self._closed = False
+        # Whether the warm subprocess has already loaded its data (loader + builder ran). The
+        # first run() pays that one-time cost; load_data() pays it up front instead. Reset on close().
+        self._loaded_data = False
         # Where the engine writes its exact Arrow IPC result (result_<req_id>.arrow). Subclasses
         # (the shm hot-load) point this at /dev/shm for zero-copy egress.
         self._result_dir = self.workspace / "results"
@@ -201,6 +204,37 @@ class ProcessEngine:
         )
         return table
 
+    def load_data(self) -> None:
+        """Load this engine's data now, so the first query it serves is already fast.
+
+        The engine loads its snapshot (parquet plane) or maps its ``/dev/shm`` segments (hot-load
+        plane) and builds its in-memory database lazily, on the first ``run`` - a one-time cost
+        (seconds at scale) that otherwise lands on whichever query arrives first. Sending an empty
+        query batch drives the same loader -> builder pipeline with no query to execute, leaving
+        the data resident so every later query is served warm. Idempotent: the load runs once, so a
+        second call is a cheap round-trip. Best-effort - a crash here does not corrupt the engine
+        (the next ``run`` restarts it); it is raised so the caller can report a broken engine."""
+        if self._loaded_data:
+            return
+        # _runner() must come first: it may update self._result_dir via _ensure_writable_cwd.
+        runner = self._runner()
+        self._result_dir.mkdir(parents=True, exist_ok=True)
+        run_env = {**self.extra_env, "SYNNODB_RESULT_DIR": str(self._result_dir)}
+        log.info("engine=%s loading data", self.engine_id)
+        result = runner.run(timeout=self.timeout_s, query_lines=[], run_env=run_env)
+        # An empty batch produces no result file to check; the signal that the loader/builder
+        # completed is the child still being alive (a crash mid-load leaves it dead).
+        if not runner.is_running():
+            raise EngineExecutionError(
+                "engine crashed during data loading",
+                engine_id=self.engine_id,
+                query_id="<load_data>",
+                req_id="<load_data>",
+                response=result.response,
+                stderr=result.stderr,
+            )
+        self._loaded_data = True
+
     def _read_arrow(self, path: Path) -> pa.Table:
         # Own the result: read the IPC file through an OSFile (a copy into in-process buffers) and
         # close it, so the returned Table is a true snapshot. A memory_map would instead alias the
@@ -212,6 +246,7 @@ class ProcessEngine:
 
     def close(self) -> None:
         self._closed = True
+        self._loaded_data = False
         if self._proc is not None:
             try:
                 self._proc.terminate()
@@ -325,6 +360,9 @@ class ShmHotLoadEngine(ProcessEngine):
             shutil.rmtree(self._ingest_dir, ignore_errors=True)
             self._ingest_dir = None
             self._loaded = False
+            self._loaded_data = (
+                False  # new data means the process must reload before it is warm
+            )
         base = self._shm_base or SHM_DIR
         base.mkdir(parents=True, exist_ok=True)
         _sweep_ingest_orphans(base)
@@ -389,6 +427,14 @@ class ShmHotLoadEngine(ProcessEngine):
         if not self._loaded:
             raise RuntimeError(f"engine {self.engine_id}: run() called before ingest()")
         return super().run(query_id, placeholders)
+
+    def load_data(self) -> None:
+        # The hot-load plane has nothing to load until its data has been staged into /dev/shm.
+        if not self._loaded:
+            raise RuntimeError(
+                f"engine {self.engine_id}: load_data() called before ingest()"
+            )
+        super().load_data()
 
     def close(self) -> None:
         super().close()

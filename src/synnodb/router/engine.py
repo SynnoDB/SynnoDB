@@ -42,6 +42,10 @@ class BespokeEngine(Protocol):
     def run(self, query_id: str, placeholders: Mapping[str, Any]) -> pa.Table:
         """Execute one registered query with bound placeholder values."""
 
+    def load_data(self) -> None:
+        """Load this engine's data now so the first query is served warm. A no-op for engines
+        with no cold-start cost (e.g. in-process ones)."""
+
     def close(self) -> None:
         """Release resources (worker process, shm segments, ...)."""
 
@@ -77,6 +81,9 @@ class LocalCallableEngine:
                 f"{type(table).__name__}, expected pyarrow.Table"
             )
         return table
+
+    def load_data(self) -> None:  # in-process: data is already resident, no cold start
+        pass
 
     def close(self) -> None:  # nothing to release
         pass
