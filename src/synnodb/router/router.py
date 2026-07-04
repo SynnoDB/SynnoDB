@@ -24,13 +24,15 @@ from .adapt import results_diff, results_equal, to_synno_result
 from .backend import DuckDBBackend
 from .guards import GuardContext, evaluate
 from .normalize import (
+    bind_template,
+    binding_groups,
     extract_literals,
     has_order_by,
     has_param_markers,
     is_read_only_query,
+    merge_split,
     normalize_sql,
     order_by_key_indices,
-    unify_and_bind,
 )
 from .observe import RouteTrace, emit, logger
 from .policy import RouterMode, RouterPolicy
@@ -156,27 +158,27 @@ class QueryRouter:
         being read as a parameter and binds a repeated placeholder consistently. Returns
         ``None`` when the query does not match the template, and the router falls back.
         """
-        names = [spec.name for spec in binding.placeholders]
+        specs = binding.placeholders
         if parameters is not None:
             values = (
                 list(parameters)
                 if isinstance(parameters, (list, tuple))
                 else [parameters]
             )
-            if len(values) != len(names):
+            # One value per binding group (`?`), which may unpack into several engine parameters
+            # when a literal packs them (Q13). A LIKE affix carries the whole pattern (`%BRASS`);
+            # merge_split peels it so the engine receives the parameter it expects (`BRASS`).
+            groups = binding_groups(specs)
+            if len(values) != len(groups):
                 return None
-            bound: Dict[str, Any] = {}
-            for name, value in zip(names, values):
-                if name in bound and bound[name] != value:
-                    return None  # a repeated placeholder given two different values
-                bound[name] = value
-            return bound
+            return merge_split(groups, values)
         # Templates with explicit ?/$name markers bind by matching against the template,
         # which separates constants from parameters and handles repeated placeholders. A
         # concrete-example template (literals stand in for parameters) or a legacy binding
         # without template_sql uses positional literal extraction.
         if binding.template_sql is not None and has_param_markers(binding.template_sql):
-            return unify_and_bind(binding.template_sql, sql, names)
+            return bind_template(binding.template_sql, sql, specs)
+        names = [spec.name for spec in specs]
         values = extract_literals(sql)
         return {
             name: (values[i] if i < len(values) else None)

@@ -124,6 +124,144 @@ def test_cross_check_rate_zero_skips_duckdb():
 
 
 # --------------------------------------------------------------------------- #
+# LIKE parameter embedded in a string literal (`b LIKE '%[TYPE]'`)
+# --------------------------------------------------------------------------- #
+def _like_setup(cross_check_rate=1.0):
+    """A bespoke engine bound to `SELECT count(*) FROM t WHERE b LIKE '%<TYPE>'`, where the
+    parameter lives inside the literal and reaches the engine with the `%` peeled off."""
+    policy = RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=cross_check_rate)
+    con = synnodb.connect(policy=policy, registry=TemplateRegistry())
+    con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
+    con.duckdb.execute("INSERT INTO t VALUES (1,'x'),(2,'yy'),(3,'ay'),(4,'z'),(5,'z')")
+    b_values = ["x", "yy", "ay", "z", "z"]
+    calls = {"n": 0}
+
+    def fn(ph):
+        calls["n"] += 1
+        # The engine sees the bare parameter ("y"), never the "%y" pattern; it applies the
+        # `%<suffix>` semantics itself, exactly as the compiled TPC-H Q2 binary does.
+        suffix = ph["TYPE"]
+        n = sum(1 for v in b_values if v.endswith(suffix))
+        return pa.table({"c": pa.array([n], pa.int64())})
+
+    engine = LocalCallableEngine("elike", {"2": fn})
+    binding = register_engine(
+        con,
+        template_sql="SELECT count(*) AS c FROM t WHERE b LIKE ?",
+        engine=engine,
+        placeholders=[PlaceholderSpec("TYPE", "VARCHAR", "%", "")],
+        query_id="2",
+    )
+    return con, calls, binding
+
+
+def test_like_affix_query_routes_and_equals_duckdb():
+    con, calls, _ = _like_setup()
+    sql = "SELECT count(*) AS c FROM t WHERE b LIKE '%y'"
+    result = con.execute(sql).fetchall()
+    assert calls["n"] == 1  # the engine ran (parameter bound as "y", not "%y")
+    assert result == _duckdb_answer(con, sql)  # and matches DuckDB's LIKE exactly
+
+
+def test_like_without_wildcard_is_a_different_query_and_falls_back():
+    # `b LIKE 'y'` shares the coarse structural key with the template but is a different query
+    # (exact match, no wildcard). The affix guard must refuse it so DuckDB serves it.
+    con, calls, _ = _like_setup()
+    sql = "SELECT count(*) AS c FROM t WHERE b LIKE 'y'"
+    result = con.execute(sql).fetchall()
+    assert calls["n"] == 0  # engine never ran
+    assert result == _duckdb_answer(con, sql)  # DuckDB's answer (0 rows exactly equal "y")
+
+
+def test_like_with_wildcard_in_core_falls_back():
+    # `b LIKE '%y%'` carries the template's `%` prefix, but its core (`y%`) still contains a
+    # wildcard: SQL treats it as a pattern while the engine would take it as a literal word.
+    # Binding must refuse so DuckDB serves it (and the healthy engine is never cross-checked
+    # against a query outside its contract, which would quarantine it).
+    con, calls, _ = _like_setup()
+    for sql in (
+        "SELECT count(*) AS c FROM t WHERE b LIKE '%y%'",
+        "SELECT count(*) AS c FROM t WHERE b LIKE '%_y'",
+    ):
+        result = con.execute(sql).fetchall()
+        assert calls["n"] == 0  # engine never ran
+        assert result == _duckdb_answer(con, sql)
+
+
+def test_multi_param_like_routes_and_equals_duckdb():
+    # Q13 shape: one literal packs two words (`b LIKE '%[W1]%[W2]%'`). The engine receives both,
+    # peeled and split out of the single bound pattern.
+    from synnodb.workloads.engine_publish import derive_template
+
+    policy = RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0)
+    con = synnodb.connect(policy=policy, registry=TemplateRegistry())
+    con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
+    con.duckdb.execute("INSERT INTO t VALUES (1,'redcrab'),(2,'bluecrab'),(3,'redfish')")
+    rows = ["redcrab", "bluecrab", "redfish"]
+    calls = {"n": 0}
+
+    def fn(ph):
+        calls["n"] += 1
+        w1, w2 = ph["W1"], ph["W2"]  # bare words, not the '%w1%w2%' pattern
+
+        def matches(v):
+            i = v.find(w1)
+            return i >= 0 and v.find(w2, i + len(w1)) >= 0
+
+        return pa.table({"c": pa.array([sum(matches(v) for v in rows)], pa.int64())})
+
+    marker, specs = derive_template(
+        "SELECT count(*) AS c FROM t WHERE b LIKE '%[W1]%[W2]%'",
+        [{"W1": "red", "W2": "crab"}],
+    )
+    register_engine(
+        con,
+        template_sql=marker,
+        engine=LocalCallableEngine("e13", {"13": fn}),
+        placeholders=list(specs),
+        query_id="13",
+    )
+    sql = "SELECT count(*) AS c FROM t WHERE b LIKE '%red%crab%'"
+    result = con.execute(sql).fetchall()
+    assert calls["n"] == 1
+    assert result == _duckdb_answer(con, sql)
+
+
+def test_in_list_query_routes_and_equals_duckdb():
+    # Q22 shape: an IN-list of parameters. Exercises the `:synpN` rewrite that lets sqlglot parse
+    # placeholders inside `IN (...)`.
+    from synnodb.workloads.engine_publish import derive_template
+
+    policy = RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0)
+    con = synnodb.connect(policy=policy, registry=TemplateRegistry())
+    con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
+    con.duckdb.execute("INSERT INTO t VALUES (1,'17'),(2,'29'),(3,'18'),(4,'99')")
+    rows = ["17", "29", "18", "99"]
+    calls = {"n": 0}
+
+    def fn(ph):
+        calls["n"] += 1
+        wanted = {ph["I1"], ph["I2"], ph["I3"]}
+        return pa.table({"c": pa.array([sum(v in wanted for v in rows)], pa.int64())})
+
+    marker, specs = derive_template(
+        "SELECT count(*) AS c FROM t WHERE b IN ('[I1]','[I2]','[I3]')",
+        [{"I1": "17", "I2": "29", "I3": "18"}],
+    )
+    register_engine(
+        con,
+        template_sql=marker,
+        engine=LocalCallableEngine("e22", {"22": fn}),
+        placeholders=list(specs),
+        query_id="22",
+    )
+    sql = "SELECT count(*) AS c FROM t WHERE b IN ('29','18','99')"
+    result = con.execute(sql).fetchall()
+    assert calls["n"] == 1
+    assert result == _duckdb_answer(con, sql)
+
+
+# --------------------------------------------------------------------------- #
 # Correctness net: cross-check catches a wrong engine
 # --------------------------------------------------------------------------- #
 def test_cross_check_mismatch_serves_duckdb_and_quarantines():
