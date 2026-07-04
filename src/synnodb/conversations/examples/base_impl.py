@@ -303,23 +303,23 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 max_turns=ctx.max_turns,
             ),
             Benchmark(),
-            # VALIDATE_MAX_SF_REP1_ON,  # only single repetition with largest (benchmarking) scale factor - we don't care if measured query rt is noisy
-            ValidateStdoutOff(),
-            # VALIDATE_OUTPUT_STDOUT_MAXSF_ON,  # include stdout and stderr for largest (benchmarking) scale factor to have more info in case of regressions
-            OptimizeBuildStage(
-                builder_path_cpp=builder_cpp_path,
-                builder_path_hpp=builder_hpp_path,
-                run_tool=ctx.run_tool,
-                persistent_storage=ctx.persistent_storage,
-                allow_storage_restructuring=False,
-                storage_plan_filename=storage_plan_filename,
-                base_impl_todo_filename=base_impl_todo_filename,
-                num_threads=ctx.threads,
-                max_turns=ctx.max_turns,
-            ),
-            # VALIDATE_OUTPUT_STDOUT_MAXSF_OFF,
-            # VALIDATE_MAX_SF_REP1_OFF,
-            Benchmark(),
+            # # VALIDATE_MAX_SF_REP1_ON,  # only single repetition with largest (benchmarking) scale factor - we don't care if measured query rt is noisy
+            # ValidateStdoutOff(),
+            # # VALIDATE_OUTPUT_STDOUT_MAXSF_ON,  # include stdout and stderr for largest (benchmarking) scale factor to have more info in case of regressions
+            # OptimizeBuildStage(
+            #     builder_path_cpp=builder_cpp_path,
+            #     builder_path_hpp=builder_hpp_path,
+            #     run_tool=ctx.run_tool,
+            #     persistent_storage=ctx.persistent_storage,
+            #     allow_storage_restructuring=False,
+            #     storage_plan_filename=storage_plan_filename,
+            #     base_impl_todo_filename=base_impl_todo_filename,
+            #     num_threads=ctx.threads,
+            #     max_turns=ctx.max_turns,
+            # ),
+            # # VALIDATE_OUTPUT_STDOUT_MAXSF_OFF,
+            # # VALIDATE_MAX_SF_REP1_OFF,
+            # Benchmark(),
         ]
     )
 
