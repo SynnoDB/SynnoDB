@@ -24,6 +24,7 @@ Cursor model mirrors DuckDB exactly: ``execute`` returns the connection and the
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from typing import Any, List, Optional, Sequence, Tuple
@@ -34,6 +35,8 @@ from ..errors import SynnoError
 from ..router.normalize import is_read_only_query
 from .discovery import discover_engines
 from .errors import WriteNotSupportedError, write_not_supported_message
+
+log = logging.getLogger("synnodb.connection")
 
 
 def _stderr_is_tty() -> bool:
@@ -227,6 +230,42 @@ class SynnoConnection:
         """
         object.__setattr__(self, "_last_discover", time.monotonic())
         self._discover_now()
+
+    def synno_ingest_data(self) -> int:
+        """Load every discovered engine's data now, so the first query each serves is warm.
+
+        A bespoke engine loads its snapshot (and builds its in-memory database) lazily, on the
+        first query routed to it - a one-time cost, seconds at scale, that otherwise lands on
+        whichever query happens to arrive first and shows up as a slow first result. Call this
+        once, right after :meth:`refresh_engines`, to pay that cost up front as an explicit step.
+
+        Returns the number of engines whose data was loaded. A distinct engine is loaded once
+        even though it backs several query templates. Each failure is logged and skipped - the
+        engine still works, its first query just pays the load - so one bad engine never raises.
+        """
+        registry = getattr(self._router, "registry", None)
+        if registry is None:
+            return 0
+        loaded = 0
+        seen: set = set()
+        for binding in registry.bindings():
+            engine = getattr(binding, "engine", None)
+            if engine is None or id(engine) in seen:
+                continue
+            seen.add(id(engine))
+            loader = getattr(engine, "load_data", None)
+            if not callable(loader):
+                continue
+            try:
+                loader()
+                loaded += 1
+            except Exception as exc:
+                log.warning(
+                    "engine %s failed to load data (its first query will pay the load): %s",
+                    getattr(engine, "engine_id", "?"),
+                    exc,
+                )
+        return loaded
 
     # ---- cursor-style fetching (current result or DuckDB) --------------
     def _fetch_target(self) -> Any:

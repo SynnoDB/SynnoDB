@@ -35,7 +35,7 @@ from ..router.manifest import (
     build_manifest_from_dir,
     infer_duckdb_type,
 )
-from ..router.normalize import normalize_sql, unify_and_bind
+from ..router.normalize import bind_template, normalize_sql, scan_string_literals
 from ..router.registry import PlaceholderSpec
 from .query_params import render_value, substitute
 
@@ -47,6 +47,68 @@ _MARKER = re.compile(
     r"(?:\b(?:date|timestamp|time)\b\s*)?'?\[([A-Za-z_]\w*)\]'?", re.IGNORECASE
 )
 _BRACKET = re.compile(r"\[([A-Za-z_]\w*)\]")
+
+# One embedded-parameter string literal: its ``(start, close)`` span in the source and the
+# ``names``/``consts`` its inner text splits into (``len(consts) == len(names) + 1``).
+_Embedded = Tuple[int, int, List[str], List[str]]
+
+
+def _parse_embedded(inner: str) -> Optional[Tuple[List[str], List[str]]]:
+    """Split a literal's inner text into (names, consts), where ``consts`` are the ``len(names)+1``
+    constant fragments around the markers. ``'%[W1]%[W2]%'`` -> (['W1','W2'], ['%','%','%']).
+    Returns ``None`` for a literal with no marker (a plain constant like ``'SM CASE'``)."""
+    parts = _BRACKET.split(inner)  # ['%', 'W1', '%', 'W2', '%']
+    if len(parts) < 3:
+        return None
+    return parts[1::2], parts[0::2]
+
+
+def _embedded_literals(bracket_sql: str) -> List[_Embedded]:
+    """Every string literal that embeds parameter(s) in constant text - a LIKE affix or Q13's
+    two-word ``'%[W1]%[W2]%'`` - scanned once. A bare ``'[REGION]'`` (one marker, no surrounding
+    constants) is excluded: it is an ordinary whole-literal parameter handled by the plain marker
+    path, as is a plain constant like ``'SM CASE'``."""
+    out: List[_Embedded] = []
+    for start, close, inner in scan_string_literals(bracket_sql):
+        parsed = _parse_embedded(inner)
+        if parsed is None:
+            continue
+        names, consts = parsed
+        if len(names) == 1 and not consts[0] and not consts[1]:
+            continue
+        out.append((start, close, names, consts))
+    return out
+
+
+def _embedded_info(literals: Sequence[_Embedded]) -> dict[str, Tuple[str, str, int]]:
+    """``{name: (prefix, suffix, group)}`` for every embedded parameter. ``prefix``/``suffix`` are
+    the constants immediately before/after the parameter within the literal (``suffix`` is the
+    delimiter to the next parameter, or the tail). Parameters packed in one literal share a
+    ``group`` id (>= 0) so binding recovers them together; a lone affix gets ``-1``."""
+    out: dict[str, Tuple[str, str, int]] = {}
+    gid = 0
+    for _, _, names, consts in literals:
+        multi = len(names) > 1
+        group = gid if multi else -1
+        if multi:
+            gid += 1
+        for i, name in enumerate(names):
+            out[name] = (consts[i], consts[i + 1], group)
+    return out
+
+
+def _collapse_embedded(bracket_sql: str, literals: Sequence[_Embedded]) -> str:
+    """Replace each embedded-parameter literal with a single anonymous ``?`` marker (the whole
+    literal is one bind value, split back into its parameters at bind time); everything else is
+    left for ``_MARKER``."""
+    out: List[str] = []
+    last = 0
+    for start, close, _, _ in literals:
+        out.append(bracket_sql[last:start])
+        out.append("?")
+        last = close + 1
+    out.append(bracket_sql[last:])
+    return "".join(out)
 
 
 def _ordered_names(bracket_sql: str) -> List[str]:
@@ -62,14 +124,11 @@ def _distinct_names(bracket_sql: str) -> List[str]:
     return list(seen)
 
 
-def _to_named(bracket_sql: str) -> str:
-    """`date '[DATE]'` / `'[DELTA]'` / `[DISCOUNT]` -> `$DATE` / `$DELTA` / `$DISCOUNT`."""
-    return _MARKER.sub(lambda m: f"${m.group(1)}", bracket_sql)
-
-
-def _to_anon(bracket_sql: str) -> str:
-    """Same, but to anonymous `?` markers."""
-    return _MARKER.sub("?", bracket_sql)
+def _to_anon(bracket_sql: str, literals: Sequence[_Embedded]) -> str:
+    """`date '[DATE]'` / `'[DELTA]'` / `[DISCOUNT]` -> `?`, and an affixed literal `'%[TYPE]'`
+    (or a multi-parameter one like `'%[W1]%[W2]%'`) -> a single `?` for the whole literal."""
+    s = _collapse_embedded(bracket_sql, literals)
+    return _MARKER.sub("?", s)
 
 
 def _binds_match(bound: Mapping[str, object], assignment: Mapping[str, object]) -> bool:
@@ -86,12 +145,16 @@ def _binds_match(bound: Mapping[str, object], assignment: Mapping[str, object]) 
 
 def _validate(
     marker_sql: str,
-    names: Sequence[str],
+    specs: Sequence[PlaceholderSpec],
     bracket_sql: str,
     assignments: Sequence[Mapping[str, object]],
 ) -> bool:
     """A derived template is valid if, for every sample assignment, it shares the structural
-    key of the concrete query and binds that query's values back."""
+    key of the concrete query and binds that query's values back.
+
+    Binding goes through :func:`bind_template` (not raw ``unify_and_bind``) so a LIKE affix is
+    peeled exactly as the runtime router will peel it - the self-check then compares the stripped
+    parameter (``BRASS``) against the generator's value, guaranteeing publish and runtime agree."""
     key = normalize_sql(marker_sql)
     if key is None:
         return False
@@ -99,7 +162,7 @@ def _validate(
         concrete = substitute(bracket_sql, assignment)
         if normalize_sql(concrete) != key:
             return False
-        bound = unify_and_bind(marker_sql, concrete, list(names))
+        bound = bind_template(marker_sql, concrete, specs)
         if bound is None or not _binds_match(bound, assignment):
             return False
     return True
@@ -110,31 +173,40 @@ def derive_template(
 ) -> Optional[Tuple[str, Tuple[PlaceholderSpec, ...]]]:
     """Derive a router template (marker SQL + typed placeholders) from a ``[NAME]`` template.
 
-    Tries the named-marker form first, then the anonymous form, and returns the first that
-    self-validates against the sample *assignments*. Returns ``None`` if neither validates or
-    the template has no placeholders (a constant query needs no template to route as itself).
-    Placeholder types are inferred from the sample values.
+    Every marker becomes an anonymous ``?``, and the result ships only if it self-validates
+    against the sample *assignments*. Returns ``None`` if it does not validate or the template
+    has no placeholders (a constant query needs no template to route as itself). Placeholder
+    types are inferred from the sample values.
     """
     distinct = _distinct_names(bracket_sql)
     if not distinct:
         return None
+    # A workload generator may hand back keys that are not template placeholders (e.g. the
+    # TPC-H generator tacks a `STREAM_ID` onto Q15). Keep only the values the template actually
+    # binds, so the self-check compares placeholders and not incidental generator metadata.
+    keep = set(distinct)
+    assignments = [{k: v for k, v in a.items() if k in keep} for a in assignments]
     sample = assignments[0]
+    literals = _embedded_literals(
+        bracket_sql
+    )  # one scan, shared by info + collapse below
+    embedded = _embedded_info(literals)
 
     def specs(names: Sequence[str]) -> Tuple[PlaceholderSpec, ...]:
         return tuple(
-            PlaceholderSpec(n, infer_duckdb_type(sample.get(n))) for n in names
+            PlaceholderSpec(
+                n, infer_duckdb_type(sample.get(n)), *embedded.get(n, ("", "", -1))
+            )
+            for n in names
         )
 
-    # Named markers carry their own name, so distinct placeholders suffice. Anonymous `?`
-    # markers are bound and typed by position, so they need one placeholder per occurrence
-    # in source order (a name that repeats, like Q6's [DATE], appears more than once).
-    named = _to_named(bracket_sql)
-    if _validate(named, distinct, bracket_sql, assignments):
-        return named, specs(distinct)
-    ordered = _ordered_names(bracket_sql)
-    anon = _to_anon(bracket_sql)
-    if _validate(anon, ordered, bracket_sql, assignments):
-        return anon, specs(ordered)
+    # Anonymous `?` markers are bound and typed by position, so they need one placeholder per
+    # occurrence in source order (a name that repeats, like Q6's [DATE], appears more than once;
+    # bind time enforces that its occurrences resolve to one consistent value).
+    anon = _to_anon(bracket_sql, literals)
+    anon_specs = specs(_ordered_names(bracket_sql))
+    if _validate(anon, anon_specs, bracket_sql, assignments):
+        return anon, anon_specs
     return None
 
 

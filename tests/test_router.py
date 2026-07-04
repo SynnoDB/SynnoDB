@@ -219,6 +219,81 @@ def test_guards_stop_at_first_failure():
     assert results == [("engine_ready_guard", False, "no live engine worker bound")]
 
 
+def _grouped_binding():
+    """A Q13-shaped binding: one SQL `?` carrying two specs packed in a single literal."""
+    template = "SELECT count(*) AS c FROM t WHERE b LIKE ?"
+    return EngineBinding(
+        template_id="eng13::13",
+        normalized_sql=normalize_sql(template),
+        query_id="13",
+        engine_id="eng13",
+        placeholders=(
+            PlaceholderSpec("W1", "VARCHAR", "%", "%", 0),
+            PlaceholderSpec("W2", "VARCHAR", "%", "%", 0),
+        ),
+        output_schema=(ColumnSpec("c", "BIGINT"),),
+        tables=frozenset({"t"}),
+        schema_fingerprint="fp",
+        template_sql=template,
+    )
+
+
+def test_arity_guard_counts_binding_groups_not_specs():
+    # A caller supplies one value per SQL `?`. Two specs packed in one literal are a single
+    # binding group, so one bound value must pass and two must fail.
+    from synnodb.router.guards import placeholder_arity_guard
+
+    b = _grouped_binding()
+    sql = "SELECT count(*) AS c FROM t WHERE b LIKE ?"
+    ok, detail = placeholder_arity_guard(
+        GuardContext(sql=sql, binding=b, conn=None, registry=None, parameters=["%x%y%"])
+    )
+    assert ok, detail
+    ok, _ = placeholder_arity_guard(
+        GuardContext(
+            sql=sql, binding=b, conn=None, registry=None, parameters=["%x%", "%y%"]
+        )
+    )
+    assert not ok
+
+
+def test_arity_guard_refuses_named_parameters():
+    # Router binding is positional; a dict of named parameters cannot be lined up with the
+    # specs, so the guard must fall back rather than let the dict bind as a value.
+    from synnodb.router.guards import placeholder_arity_guard
+
+    b = _binding()
+    ok, detail = placeholder_arity_guard(
+        GuardContext(
+            sql="SELECT a FROM t WHERE a = $p",
+            binding=b,
+            conn=None,
+            registry=None,
+            parameters={"p": 1},
+        )
+    )
+    assert not ok
+    assert "named" in detail
+
+
+def test_literalize_types_each_marker_by_its_binding_group():
+    # `_literalize` substitutes a typed NULL per `?` to describe the template's output schema.
+    # The i-th `?` is the i-th binding group: after Q13's packed literal (two VARCHAR specs,
+    # one `?`), a following INTEGER parameter must get its own type, not the group's second spec.
+    from synnodb.router.registration import _literalize
+
+    specs = [
+        PlaceholderSpec("W1", "VARCHAR", "%", "%", 0),
+        PlaceholderSpec("W2", "VARCHAR", "%", "%", 0),
+        PlaceholderSpec("P", "INTEGER"),
+    ]
+    sql = _literalize("SELECT count(*) AS c FROM t WHERE b LIKE ? AND a >= ?", specs)
+    assert sql == (
+        "SELECT COUNT(*) AS c FROM t "
+        "WHERE b LIKE CAST(NULL AS TEXT) AND a >= CAST(NULL AS INT)"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # SynnoResult: DuckDB-compatible cursor semantics over an Arrow table
 # --------------------------------------------------------------------------- #

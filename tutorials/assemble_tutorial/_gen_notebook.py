@@ -84,13 +84,20 @@ exist yet: the next cell generates the TPC-H parquet into it on first run.
 
 cells.append(
     code("""
+import logging
 import os, json, time, statistics
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from synnodb.utils.path_utils import repo_root
+from synnodb.observability.logging.logger import setup_logging
 load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come from a .env
+
+# Surface the library's INFO logs in the notebook. setup_logging installs a stdout handler, so
+# log lines interleave with print() output in the same cell instead of showing as a separate
+# stderr block; without it Jupyter only surfaces print statements and the logs stay hidden.
+setup_logging(logging.INFO)
 
 # The data root holds everything: parquet, engines, workspace. Honor SYNNO_DATA_DIR if set,
 # else default to a project-local .synno_data/. It need not exist yet - the next cell
@@ -99,7 +106,7 @@ DATA_ROOT = Path(os.environ.get("SYNNO_DATA_DIR") or repo_root() / ".synno_data"
 PARQUET_DIR = DATA_ROOT / "workloads" / "tpch" / "tpch_parquet"
 ENGINES_DIR = DATA_ROOT / "engines"
 
-SF = 20
+SF = 5
 SCALE_FACTORS = (1, 2, SF)        # sf1/sf2: cheap correctness rungs; sf20: benchmark + serving
 SF_DIR = PARQUET_DIR / f"sf{SF}"  # the benchmark scale factor's parquet
 
@@ -352,28 +359,47 @@ print(f"Engine published to: {ENGINES_DIR}")
 )
 
 # ── Step 3a - DuckDB baseline run ────────────────────────────────────────────
-cells.append(md("# Step 3a - Benchmark DuckDB\n### Run on DuckDB"))
+cells.append(
+    md("# Step 3a - Benchmark DuckDB\n### Run queries on DuckDB as comparison baseline")
+)
 
 cells.append(
     code("""
 import duckdb
+import tempfile
 from tqdm import tqdm
 
-duck = duckdb.connect(":memory:")
+# Threads both engines run at, so DuckDB and SynnoDB are compared at the same parallelism.
+NUM_THREADS = os.cpu_count()  # 1 for demo, else os.cpu_count() for benchmark
+assert NUM_THREADS is not None, "os.cpu_count() returned None"
+
+duck = duckdb.connect(":memory:", config={"threads": NUM_THREADS})
 duck.execute("PRAGMA disable_progress_bar")
+duck.execute("PRAGMA enable_profiling='json'")  # EXPLAIN ANALYZE returns its profile as JSON
+# enable_profiling also makes DuckDB dump a JSON profile to the console after *every* statement
+# (the CREATE TABLEs below, every EXPLAIN ANALYZE) - a wall of text in the notebook. Send those
+# automatic dumps to a throwaway file; the EXPLAIN ANALYZE result set still carries the profile
+# analyze_ms() reads, so the timings are unaffected.
+duck.execute(f"PRAGMA profiling_output='{Path(tempfile.gettempdir()) / 'duckdb_profile.json'}'")
+# Materialize each table fully in memory (CREATE TABLE, not a VIEW over the parquet), so the
+# measured query time is in-memory execution - not a fresh parquet scan on every run.
 for t in TABLES:
     duck.execute(
-        f"CREATE VIEW {t} AS SELECT * FROM read_parquet('{SF_DIR}/{t}.parquet')"
+        f"CREATE TABLE {t} AS SELECT * FROM read_parquet('{SF_DIR}/{t}.parquet')"
     )
 
+
+def analyze_ms(con, sql):
+    \"\"\"DuckDB's own execution latency for `sql`, via EXPLAIN ANALYZE - the server-side query
+    time, excluding the Python call and result-fetch overhead a wall-clock timer would include.
+    The json profile (whose `latency` is in seconds) is the second column of the result row.\"\"\"
+    profile = json.loads(con.execute("EXPLAIN ANALYZE " + sql).fetchone()[1])
+    return profile["latency"] * 1_000
+
+
 baseline_times = {}
-for qid, insts in tqdm(instantiations.items(), desc="Running baseline queries"):
-    times = []
-    for _, sql, _ in insts:
-        t0 = time.perf_counter()
-        duck.execute(sql).fetchall()
-        times.append((time.perf_counter() - t0) * 1_000)
-    baseline_times[qid] = times
+for qid, insts in tqdm(instantiations.items(), desc="Measuring DuckDB performance"):
+    baseline_times[qid] = [analyze_ms(duck, sql) for _, sql, _ in insts]
 
 duck.close()
 
@@ -394,21 +420,23 @@ cells.append(
 ---
 ## Step 3 - Drop In SynnoDB
 
-The only change is **one import line** and two extra keyword arguments to `connect()`:
+The only change is **one import line** and a few extra keyword arguments to `connect()`:
 
 ```diff
 - import duckdb
-+ import synnodb as duckdb
++ import synnodb
 + from synnodb.router import RouterMode, RouterPolicy
 
-  con = duckdb.connect(
+-  con = duckdb.connect(
++  con = synnodb.connect(
       ":memory:",
++     config={"threads": NUM_THREADS},   # same knob DuckDB got - fixes the engine's parallelism too
 +     engines=str(ENGINES_DIR),
 +     policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0),
   )
 ```
 
-Every other line - the view setup, the `execute()` calls, `fetchall()` - is identical.
+Every other line - the table setup, the `execute()` calls, `fetchall()` - is identical.
 """)
 )
 
@@ -416,23 +444,33 @@ cells.append(md("### Open the drop-in connection"))
 
 cells.append(
     code("""
-import synnodb as duckdb  # <- only change
+import synnodb
 from synnodb.router import RouterMode, RouterPolicy
 
-con = duckdb.connect(
+con = synnodb.connect(
     ":memory:",
+    config={"threads": NUM_THREADS},  # same thread budget as the DuckDB baseline above
     engines=str(ENGINES_DIR),
     policy=RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0),
 )
 
+# Same in-memory materialization as the DuckDB baseline (CREATE TABLE, not a VIEW), so both
+# systems query fully-resident data.
 for t in TABLES:
     con.duckdb.execute(
-        f"CREATE VIEW {t} AS SELECT * FROM read_parquet('{SF_DIR}/{t}.parquet')"
+        f"CREATE TABLE {t} AS SELECT * FROM read_parquet('{SF_DIR}/{t}.parquet')"
     )
 
 con.refresh_engines()
 n = con.router_stats()["registry"]["templates"]
 print(f"Discovered {n} engine template(s) under {ENGINES_DIR}")
+
+# Load each engine's data now - start its process, read the snapshot, build its in-memory
+# database - so this one-time cost is paid here as an explicit step instead of landing on the
+# first query. Without it the first query below would carry the whole warm-up (seconds at
+# scale) and read as a spurious slowdown; with it, every measured query is served warm.
+n_warmed = con.synno_ingest_data()
+print(f"Preloaded {n_warmed} engine(s) - first query is served warm")
 """)
 )
 
@@ -440,20 +478,30 @@ cells.append(
     md("""
 ### Run the same queries with the same parameter values
 
-We iterate over `instantiations` - the exact SQL strings from Step 1.
+We iterate over `instantiations` - the exact SQL strings from Step 1. For each we record the
+engine's **own execution latency** (`engine_ms`, as measured by the router), the same
+server-side basis the DuckDB baseline uses via `EXPLAIN ANALYZE` - so the two columns compare
+like with like rather than one wall-clock against another.
 """)
 )
 
 cells.append(
     code("""
 synno_times = {}
+routed_to = {}  # per query: "SynnoDB" if the bespoke engine served it, else "DuckDB"
 for qid, insts in instantiations.items():
     times = []
+    backends = []
     for _, sql, _ in insts:
-        t0 = time.perf_counter()
         con.execute(sql).fetchall()
-        times.append((time.perf_counter() - t0) * 1_000)
+        # `engine_ms` is present when the bespoke engine served the query;
+        # a query that falls back to DuckDB exposes `duckdb_ms` instead.
+        last = con._last
+        served_bespoke = "engine_ms" in last
+        times.append(last["engine_ms"] if served_bespoke else last["duckdb_ms"])
+        backends.append(served_bespoke)
     synno_times[qid] = times
+    routed_to[qid] = "SynnoDB" if all(backends) else "DuckDB"
 """)
 )
 
@@ -463,16 +511,19 @@ cells.append(
     code("""
 total_synno = sum(sum(v)/len(v) for v in synno_times.values())
 
-print(f"{'Query':<8} {'DuckDB (ms)':>12} {'SynnoDB (ms)':>14} {'Speedup':>9}")
-print("-" * 48)
+print(f"{'Query':<8} {'Routing':>8} {'DuckDB (ms)':>12} {'SynnoDB (ms)':>14} {'Speedup':>9}")
+print("-" * 55)
 for qid in spec.all_query_ids:
-    d = sum(baseline_times[qid])
-    s = sum(synno_times[qid])
-    speedup = d / s if s > 0 else float("inf")
-    print(f"Q{qid:<7} {d:>12.1f} {s:>14.1f} {speedup:>8.2f}x")
-print("-" * 48)
+    avg_d = sum(baseline_times[qid])/len(baseline_times[qid])
+    avg_s = sum(synno_times[qid])/len(synno_times[qid])
+    speedup = avg_d / avg_s if avg_s > 0 else float("inf")
+    # ⚡ marks queries the bespoke SynnoDB engine served; the rest fell back to DuckDB.
+    routing = routed_to[qid]
+    mark = " ⚡" if routing == "SynnoDB" else ""
+    print(f"Q{qid:<7} {routing:>8} {avg_d:>12.1f} {avg_s:>14.1f} {speedup:>8.2f}x{mark}")
+print("-" * 55)
 overall = total_duck / total_synno if total_synno > 0 else float("inf")
-print(f"{'TOTAL':<8} {total_duck:>12.1f} {total_synno:>14.1f} {overall:>8.2f}x")
+print(f"{'TOTAL':<8} {'':>8} {total_duck:>12.1f} {total_synno:>14.1f} {overall:>8.2f}x")
 """)
 )
 

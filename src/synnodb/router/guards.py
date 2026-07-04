@@ -11,10 +11,11 @@ keep the bespoke path inside the envelope an engine was built and validated for.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
-from .normalize import extract_literals, has_param_markers, is_select
+from .normalize import binding_groups, extract_literals, has_param_markers, is_select
 from .registry import EngineBinding, TemplateRegistry
 
 GuardOutcome = Tuple[bool, str]
@@ -52,17 +53,27 @@ def select_only_guard(ctx: GuardContext) -> GuardOutcome:
 
 
 def placeholder_arity_guard(ctx: GuardContext) -> GuardOutcome:
-    """The number of bound values must match the template's placeholder count.
+    """The number of bound values must match the template's ``?`` count.
 
-    For a template with explicit ``?`` / ``$name`` markers the bind step matches the query
-    against the template, which already checks arity, so this guard passes; the literal
-    count of an inline query has no fixed relation to the placeholder count (the template
-    has constants too, and a placeholder may repeat). Only the explicit-parameter and
-    concrete-example-template cases are checked here.
+    A caller supplies one value per SQL ``?`` - one per *binding group*, not one per engine
+    parameter: a literal that packs several parameters (Q13's ``'%[W1]%[W2]%'``) is a single
+    ``?`` whose bound value is split at bind time. Named (dict) parameters are refused:
+    binding is positional, and a mapping cannot be lined up with the template's specs.
+
+    For a template with explicit ``?`` / ``$name`` markers the inline-literal bind step
+    matches the query against the template, which already checks arity, so this guard
+    passes; the literal count of an inline query has no fixed relation to the placeholder
+    count (the template has constants too, and a placeholder may repeat). Only the
+    explicit-parameter and concrete-example-template cases are checked here.
     """
-    expected = len(ctx.binding.placeholders)
+    expected = len(binding_groups(ctx.binding.placeholders))
     if ctx.parameters is not None:
         params = ctx.parameters
+        if isinstance(params, Mapping):
+            return (
+                False,
+                "named (dict) parameters bind by name, not position; not routable",
+            )
         actual = len(params) if isinstance(params, (list, tuple)) else 1
         if actual == expected:
             return True, f"{actual} placeholders"

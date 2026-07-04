@@ -419,7 +419,7 @@ def _unify(
 
     if isinstance(t, exp.Placeholder):
         nm = t.name
-        if nm and nm != "?":  # named placeholder ($DATE, or the synthetic $__synpN)
+        if nm and nm != "?":  # named placeholder ($DATE, or the synthetic :synpN)
             return _record(nm, _value_of(i), bound)
         # anonymous ? — normally rewritten to a named one before we get here
         if counter[0] >= len(names):
@@ -459,47 +459,71 @@ def _unify_arg(
     return tv == iv  # plain scalar arg (a flag/keyword) must match
 
 
+def scan_string_literals(sql: str) -> List[tuple[int, int, str]]:
+    """Every quoted string/identifier as ``(open_index, close_index, inner_text)``, by a single
+    quote-aware left-to-right scan. Both ``'`` and ``"`` delimit; a doubled quote (``''`` / ``""``)
+    is an escape, not a boundary, and ``inner_text`` has those escapes collapsed.
+
+    A regex cannot do this: it has no notion of which ``'`` opens vs closes a literal, so it would
+    pair a *closing* quote with the next *opening* quote and treat the gap between two unrelated
+    literals as one string - sweeping up whatever sits between them."""
+    spans: List[tuple[int, int, str]] = []
+    i, n = 0, len(sql)
+    while i < n:
+        q = sql[i]
+        if q not in ("'", '"'):
+            i += 1
+            continue
+        j = i + 1
+        buf: List[str] = []
+        while j < n:
+            if sql[j] == q:
+                if j + 1 < n and sql[j + 1] == q:  # escaped '' or ""
+                    buf.append(q)
+                    j += 2
+                    continue
+                break
+            buf.append(sql[j])
+            j += 1
+        spans.append((i, j, "".join(buf)))
+        i = j + 1
+    return spans
+
+
 def _name_anonymous_placeholders(
     sql: str, names: Sequence[str]
 ) -> tuple[Optional[str], dict]:
     """Rewrite each anonymous ``?`` (in true *source* order, skipping string/identifier
-    literals) into a uniquely-named ``$__synpN`` parameter, returning the rewritten SQL
-    and ``{__synpN: user_name}``. This removes any dependence on AST traversal order for
+    literals) into a uniquely-named ``:synpN`` placeholder, returning the rewritten SQL
+    and ``{synpN: user_name}``. This removes any dependence on AST traversal order for
     mapping ``?`` to the user's positional placeholder names. Returns ``(None, {})`` if
-    the number of ``?`` does not match ``names``."""
+    the number of ``?`` does not match ``names``.
+
+    The ``:name`` form (not ``$name``) is deliberate: sqlglot's duckdb tokenizer rejects a
+    ``$name`` parameter inside an ``IN (...)`` list (e.g. TPC-H Q22's country-code list), whereas
+    ``:name`` parses as a Placeholder in every position a value can appear."""
     out: List[str] = []
     mapping: dict = {}
-    i = 0
     pi = 0
-    n = len(sql)
-    quote: Optional[str] = None
-    while i < n:
-        c = sql[i]
-        if quote is not None:
-            out.append(c)
-            if c == quote:
-                if i + 1 < n and sql[i + 1] == quote:  # escaped '' or ""
-                    out.append(sql[i + 1])
-                    i += 2
-                    continue
-                quote = None
-            i += 1
-            continue
-        if c in ("'", '"'):
-            quote = c
-            out.append(c)
-            i += 1
-            continue
-        if c == "?":
-            syn = f"__synp{pi}"
-            out.append("$" + syn)
+    last = 0
+
+    def rewrite_outside(segment: str) -> None:
+        # A `?` only ever appears outside a quoted literal here, so split is safe.
+        nonlocal pi
+        pieces = segment.split("?")
+        out.append(pieces[0])
+        for piece in pieces[1:]:
             if pi < len(names):
-                mapping[syn] = names[pi]
+                mapping[f"synp{pi}"] = names[pi]
+            out.append(f":synp{pi}")
             pi += 1
-            i += 1
-            continue
-        out.append(c)
-        i += 1
+            out.append(piece)
+
+    for open_i, close_i, _ in scan_string_literals(sql):
+        rewrite_outside(sql[last:open_i])
+        out.append(sql[open_i : close_i + 1])  # literal copied verbatim
+        last = close_i + 1
+    rewrite_outside(sql[last:])
     if pi != len(names):
         return None, {}
     return "".join(out), mapping
@@ -545,3 +569,86 @@ def unify_and_bind(
     if distinct - set(final):
         return None
     return final
+
+
+def binding_groups(specs: Sequence[Any]) -> List[List[Any]]:
+    """Partition placeholder *specs* into binding groups, in order - one group per SQL ``?``.
+
+    A standalone parameter (``group == -1``) is its own group; consecutive parameters that share a
+    non-negative ``group`` id come from one string literal (e.g. Q13's two words) and bind from a
+    single ``?``. The result drives both the marker/value arity and the per-literal splitting."""
+    groups: List[List[Any]] = []
+    for s in specs:
+        if s.group >= 0 and groups and groups[-1][0].group == s.group:
+            groups[-1].append(s)
+        else:
+            groups.append([s])
+    return groups
+
+
+def split_literal(value: Any, group: Sequence[Any]) -> Optional[dict]:
+    """Recover the parameter(s) a single bound literal carries, as ``{name: value}``.
+
+    *group* is the ordered specs sharing the literal; each carries the constant ``prefix`` before
+    it and ``suffix`` after it (the delimiter to the next parameter, or the literal's tail for the
+    last). Returns ``None`` when *value* does not carry exactly those constants around
+    wildcard-free cores - the correctness boundary. Two lookalikes share the coarse structural key
+    ``like <ph>`` but are different queries that must not route here: ``like 'BRASS'`` (missing
+    the template's ``%``), and ``like '%y%'`` against a ``'%[TYPE]'`` template (the core ``y%``
+    is a *pattern* to SQL but would reach the engine as a literal word).
+    """
+    if len(group) == 1 and not group[0].prefix and not group[0].suffix:
+        return {group[0].name: value}  # plain whole-literal parameter (any type)
+    if not isinstance(value, str):
+        return None
+    # One anchored regex does the whole check: the constants must appear verbatim, and each
+    # recovered core must be free of LIKE wildcards (which also makes the split unambiguous).
+    consts = [group[0].prefix] + [s.suffix for s in group]
+    m = re.fullmatch("([^%_]*)".join(re.escape(c) for c in consts), value)
+    if m is None:
+        return None
+    out: dict = {}
+    for s, core in zip(group, m.groups()):
+        if s.name in out and out[s.name] != core:
+            return None  # one literal using the same parameter twice, inconsistently
+        out[s.name] = core
+    return out
+
+
+def merge_split(
+    groups: Sequence[Sequence[Any]], values: Sequence[Any]
+) -> Optional[dict]:
+    """Split each group's bound *value* into its parameter(s) and merge into one ``{name: value}``,
+    rejecting (``None``) a repeated placeholder that resolves to two different values or a value
+    that does not carry its literal's constants. Shared by the two binding paths (a query's inline
+    literals via :func:`bind_template`, and caller-supplied ``parameters`` in the router)."""
+    out: dict = {}
+    for group, value in zip(groups, values):
+        parts = split_literal(value, group)
+        if parts is None:
+            return None
+        for name, val in parts.items():
+            if name in out and not _loose_eq(out[name], val):
+                return None
+            out[name] = val
+    return out
+
+
+def bind_template(
+    template_sql: str, incoming_sql: str, specs: Sequence[Any]
+) -> Optional[dict]:
+    """Bind *incoming_sql* against *template_sql*, unpacking any string-embedded parameters.
+
+    A wrapper over :func:`unify_and_bind` that also handles parameters living inside a string
+    literal (see :class:`PlaceholderSpec`). Each binding group is one ``?``: it binds the whole
+    literal, then :func:`split_literal` recovers the parameter(s) inside. Returns ``{name: value}``
+    or ``None`` when the query does not match the template or a literal lacks its constants.
+    """
+    groups = binding_groups(specs)
+    # One synthetic name per group so the ``?`` count matches even when a literal packs several
+    # parameters (Q13: two words, one ``?``). unify binds the whole literal to that name.
+    group_names = [f"__grp{i}" for i in range(len(groups))]
+    raw = unify_and_bind(template_sql, incoming_sql, group_names)
+    if raw is None:
+        return None
+    return merge_split(groups, [raw.get(n) for n in group_names])

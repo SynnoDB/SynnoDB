@@ -68,10 +68,18 @@ class QueryTemplate:
     placeholders: Tuple[PlaceholderSpec, ...] = ()
 
     def to_dict(self) -> dict:
+        # A placeholder embedded in a string literal (a LIKE affix, or one of several packed in
+        # one literal) carries its constant prefix/suffix and group id; an ordinary whole-literal
+        # placeholder omits them.
+        def row(p: PlaceholderSpec) -> list:
+            if p.prefix or p.suffix or p.group != -1:
+                return [p.name, p.type, p.prefix, p.suffix, p.group]
+            return [p.name, p.type]
+
         return {
             "query_id": self.query_id,
             "sql_template": self.sql_template,
-            "placeholders": [[p.name, p.type] for p in self.placeholders],
+            "placeholders": [row(p) for p in self.placeholders],
         }
 
     @classmethod
@@ -80,7 +88,7 @@ class QueryTemplate:
             query_id=str(d["query_id"]),
             sql_template=d["sql_template"],
             placeholders=tuple(
-                PlaceholderSpec(n, t) for n, t in d.get("placeholders", [])
+                PlaceholderSpec(*row) for row in d.get("placeholders", [])
             ),
         )
 

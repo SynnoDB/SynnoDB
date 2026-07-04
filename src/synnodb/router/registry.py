@@ -27,10 +27,26 @@ class ColumnSpec:
 
 @dataclass(frozen=True)
 class PlaceholderSpec:
-    """One typed query input (mirrors the engine's per-query ``Q<id>Args``)."""
+    """One typed query input (mirrors the engine's per-query ``Q<id>Args``).
+
+    Most parameters are a whole SQL literal (``interval ? day``, ``= ?``). A parameter can also
+    be embedded *inside* a string literal with constant text around it - a LIKE pattern such as
+    ``p_type like '%[TYPE]'``, where the engine wants ``BRASS`` but the literal is ``'%BRASS'``.
+    ``prefix``/``suffix`` record the constant text immediately before/after this parameter within
+    the literal (``'%'`` and ``''`` here) so binding can peel it off the recovered literal.
+
+    A single literal can pack *several* parameters separated by constants - TPC-H Q13's
+    ``o_comment not like '%[WORD1]%[WORD2]%'``. Such parameters share one ``group`` id (>= 0) and
+    are recovered together by splitting the literal on those constants; ``suffix`` then doubles as
+    the delimiter to the next parameter. ``group == -1`` marks a standalone parameter (the common
+    case: plain literal, or a lone LIKE affix). Both affixes empty is an ordinary placeholder.
+    """
 
     name: str
     type: str
+    prefix: str = ""
+    suffix: str = ""
+    group: int = -1
 
 
 @dataclass(frozen=True)
