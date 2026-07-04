@@ -84,6 +84,31 @@ const queryInlineLegendPlugin = {
 
 Chart.register(querySpeedupReferencePlugin);
 
+// Overlay copy per mode. Speedup needs both a bespoke runtime and a DuckDB
+// baseline; absolute needs only a bespoke runtime.
+const QC_EMPTY_COPY = {
+  speedup: {
+    title: 'No speedups collected yet',
+    sub: 'Speedups appear once benchmark queries have run against both the bespoke engine and the DuckDB baseline.',
+  },
+  absolute: {
+    title: 'No query runtimes collected yet',
+    sub: 'Runtimes appear once benchmark queries have run against the bespoke engine.',
+  },
+};
+
+// Overlay shown when the current mode has nothing to plot yet.
+function setQueryChartEmpty(show, mode) {
+  const el = document.getElementById('qc-empty');
+  if (!el) return;
+  el.hidden = !show;
+  const copy = QC_EMPTY_COPY[mode];
+  if (show && copy) {
+    el.querySelector('.chart-empty-title').textContent = copy.title;
+    el.querySelector('.chart-empty-sub').textContent = copy.sub;
+  }
+}
+
 function initQueryChart() {
   const ctx = document.getElementById('qc').getContext('2d');
   queryChart = new Chart(ctx, {
@@ -218,6 +243,7 @@ function updateQueryChart(steps, data) {
     queryChart.options.scales.y.min = 0;
     queryChart.options.scales.y.max = undefined;
     queryChart.options.scales.y.title.text = isSpeedup ? 'Speedup ×' : 'Runtime (ms)';
+    setQueryChartEmpty(true, queryChartMode);
     queryChart.update();
     return;
   }
@@ -243,5 +269,9 @@ function updateQueryChart(steps, data) {
   queryChart.options.scales.y.min = 0;
   queryChart.options.scales.y.max = getQueryAxisMax(latestQueries, isSpeedup);
   queryChart.options.scales.y.title.text = isSpeedup ? 'Speedup ×' : 'Runtime (ms)';
+  const activeData = isSpeedup
+    ? queryChart.data.datasets[0].data   // speedup ×DuckDB
+    : queryChart.data.datasets[1].data;  // bespoke runtimes (ms)
+  setQueryChartEmpty(!activeData.some(v => v != null), queryChartMode);
   queryChart.update();
 }

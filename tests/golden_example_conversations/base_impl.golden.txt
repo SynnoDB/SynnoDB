@@ -91,7 +91,7 @@ benchmark_sf: None
 ===== entry 4 =====
 kind: dynamic-stage
 class: OptimizeBuildStage
-descriptor: optimize build
+descriptor: optimize ingest
 max_turns: None
 --- prompt ---
 Optimize `db_loader.hpp` and `db_loader.cpp` build (ingest) time. The current build time is 12345 ms (ExecSettings()).
@@ -423,7 +423,7 @@ benchmark_sf: None
 ===== entry 20 =====
 kind: dynamic-stage
 class: OptimizeBuildStage
-descriptor: optimize build
+descriptor: optimize ingest
 max_turns: None
 --- prompt ---
 Optimize `db_loader.hpp` and `db_loader.cpp` build (ingest) time. The current build time is 12345 ms (ExecSettings()).

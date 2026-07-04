@@ -56,8 +56,8 @@
       <div class="card" id="c-turn"><div class="card-head"><label>Turn / Step</label><div id="v-timer" class="turn-timer">&#8212;</div></div><div class="val" id="v-turn">&#8212;</div></div>
       <div class="card" id="c-cost">
         <div class="card-head">
-          <label id="cost-label">USD Calculatorial</label>
-          <div id="cost-mode-toggle"><button class="cost-btn active" data-mode="calc">Calc.</button><button class="cost-btn" data-mode="real">Real</button></div>
+          <label id="cost-label">USD w/o local LLM cache</label>
+          <div id="cost-mode-toggle"><button class="cost-btn active" data-mode="calc">w/o cache</button><button class="cost-btn" data-mode="real">Real</button></div>
         </div>
         <div class="val" id="v-cost">&#8212;</div>
       </div>
@@ -66,7 +66,10 @@
     <div id="chart-box">
       <div id="chart-hdr">
         <span>Timeline</span>
-        <div id="timeline-mode-toggle"><button class="tlm-btn" data-mode="turn">Turns</button><button class="tlm-btn" data-mode="time">Time</button></div>
+        <div class="chart-hdr-actions">
+          <div id="timeline-mode-toggle"><button class="tlm-btn" data-mode="turn">Turns</button><button class="tlm-btn" data-mode="time">Time</button></div>
+          <button id="timeline-fullscreen-btn" class="fullscreen-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">&#x26F6;</button>
+        </div>
       </div>
       <div id="canvas-wrap">
         <canvas id="tc"></canvas>
@@ -84,7 +87,12 @@
         <div id="qc-sf-toggle" hidden></div>
         <div id="qc-mode-toggle"><button class="qcm-btn" data-mode="speedup">Speedup</button><button class="qcm-btn" data-mode="absolute">Absolute</button></div>
       </div>
-      <div id="qcanvas-wrap"><canvas id="qc"></canvas></div>
+      <div id="qcanvas-wrap"><canvas id="qc"></canvas>
+        <div id="qc-empty" class="chart-empty" hidden>
+          <div class="chart-empty-title">No speedups collected yet</div>
+          <div class="chart-empty-sub">Speedups appear once benchmark queries have run against both the bespoke engine and the DuckDB baseline.</div>
+        </div>
+      </div>
     </div>
   </div>
   <button class="panel-toggle right" id="log-toggle" title="Open activity log" aria-label="Open activity log">
