@@ -63,6 +63,7 @@ class OLAPSystemFactory(SystemFactory):
                     num_threads=general_system_config.num_threads,
                     db_storage=exec_settings.db_storage,
                     disk_db_dir=exec_settings.disk_db_dir,
+                    run_duckdb_on_parquet=False,
                 )
             return self.duckdb_cons[exec_settings.scale_factor]
         elif system_name == System.UMBRA:
