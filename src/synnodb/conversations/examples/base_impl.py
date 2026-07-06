@@ -57,13 +57,13 @@ def _validate_no_crazy_slow_queries(
         if metrics is None:
             continue
         try:
-            impl_rt_s, duckdb_rt_s, speedup = extract_speedup_of_last_snapshot(
+            bespoke_rt_s, duckdb_rt_s, speedup = extract_speedup_of_last_snapshot(
                 metrics, qid
             )
             if speedup < 0.2:
                 assert duckdb_rt_s is not None, "DuckDB runtime is None"
                 slow_queries.append(
-                    (qid, impl_rt_s * 1000, duckdb_rt_s * 1000, speedup)
+                    (qid, bespoke_rt_s * 1000, duckdb_rt_s * 1000, speedup)
                 )
         except (AssertionError, KeyError) as e:
             logger.warning(f"Could not extract speedup for query {qid}: {e}")
