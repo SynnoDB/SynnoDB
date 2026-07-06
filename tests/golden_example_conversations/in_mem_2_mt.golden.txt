@@ -195,7 +195,7 @@ If it produces errors, the most common causes when scaling to a larger dataset a
 
 - int32 overflow in row counts, offsets, or array indices (use int64/size_t)
 - int32 overflow in aggregation accumulators (e.g. SUM into int32)
-- Hardcoded or statically-sized buffers that were large enough at smaller SF
+- Hardcoded or statically-sized buffers that were large enough during earlier, smaller-scale validation
 - Hash table capacity not scaling with data size, causing OOM or rehash loops
 - Arrow/Parquet int32 column offset overflow when a column exceeds 2 GiB
 - Join build side exceeding available memory with no spill path
