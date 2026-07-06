@@ -25,9 +25,12 @@ UMBRA_PIN_CORE = 3
 
 
 class OLAPSystemFactory(SystemFactory):
-    # sf -> instance
-    duckdb_cons: dict[float, DuckDBConnectionManager] = dict()
-    umbra_runner: "Any | None" = None
+    def __init__(self) -> None:
+        # (sf, run_duckdb_on_parquet) -> instance. The parquet flag is part of the key because
+        # it changes how the DuckDBConnectionManager materializes data (parquet views vs flat
+        # tables); a manager built for one representation must not be reused for the other.
+        self.duckdb_cons: dict[tuple[float, bool], DuckDBConnectionManager] = dict()
+        self.umbra_runner: "Any | None" = None
 
     def get_system(
         self,
@@ -46,7 +49,23 @@ class OLAPSystemFactory(SystemFactory):
         )
 
         if system_name == System.DUCKDB:
-            if exec_settings.scale_factor not in self.duckdb_cons:
+            # The run's data source describes the bespoke engine; DuckDB (the oracle) reads
+            # parquet directly only when that source is parquet, otherwise it materializes
+            # tables flat - the ground-truth answer for a flat or bespoke run.
+            duckdb_source = (
+                DataSource.PARQUET
+                if exec_settings.data_source == DataSource.PARQUET
+                else DataSource.FLAT
+            )
+            validate_storage_combo(
+                System.DUCKDB, exec_settings.db_storage, duckdb_source
+            )
+            run_on_parquet = duckdb_source == DataSource.PARQUET
+
+            # Cache by (sf, run_on_parquet): the same SF can be queried against both parquet
+            # views and flat tables, and those are distinct physical representations.
+            con_key = (exec_settings.scale_factor, run_on_parquet)
+            if con_key not in self.duckdb_cons:
                 if general_system_config.num_threads == 1:
                     val_pin_worker = True
                     val_pin_core = DUCKDB_PIN_CORE
@@ -54,20 +73,7 @@ class OLAPSystemFactory(SystemFactory):
                     val_pin_worker = False
                     val_pin_core = None
 
-                # The run's data source describes the bespoke engine; DuckDB (the oracle) reads
-                # parquet directly only when that source is parquet, otherwise it materializes
-                # tables flat - the ground-truth answer for a flat or bespoke run.
-                duckdb_source = (
-                    DataSource.PARQUET
-                    if exec_settings.data_source == DataSource.PARQUET
-                    else DataSource.FLAT
-                )
-                validate_storage_combo(
-                    System.DUCKDB, exec_settings.db_storage, duckdb_source
-                )
-                run_on_parquet = duckdb_source == DataSource.PARQUET
-
-                self.duckdb_cons[exec_settings.scale_factor] = DuckDBConnectionManager(
+                self.duckdb_cons[con_key] = DuckDBConnectionManager(
                     benchmark=benchmark,
                     dataset_tables=OLAPWorkloadProvider._dataset_tables(benchmark),
                     pre_load_duckdb_tables=False,
@@ -80,7 +86,7 @@ class OLAPSystemFactory(SystemFactory):
                     disk_db_dir=exec_settings.disk_db_dir,
                     run_duckdb_on_parquet=run_on_parquet,
                 )
-            return self.duckdb_cons[exec_settings.scale_factor]
+            return self.duckdb_cons[con_key]
         elif system_name == System.UMBRA:
             if self.umbra_runner is None:
                 from synnodb.observability.benchmark.systems.umbra import UmbraRunner
