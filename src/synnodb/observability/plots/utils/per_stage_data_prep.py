@@ -125,7 +125,7 @@ def process_data(history_dict, config_dict, summary_dict, cmp_to: str = "duckdb"
         impl_total = 0.0
         for qid in query_ids:
             baseline_col = f"validation/query_{qid}/{cmp_to}_runtime_ms"
-            impl_col = f"validation/query_{qid}/impl_runtime_ms"
+            impl_col = f"validation/query_{qid}/bespoke_runtime_ms"
             if baseline_col not in rows.columns or impl_col not in rows.columns:
                 continue
             pairs = rows[[baseline_col, impl_col]].dropna()
@@ -166,7 +166,7 @@ def process_data(history_dict, config_dict, summary_dict, cmp_to: str = "duckdb"
         # Queries lacking baseline runtime data become NaN and drop out below.
         for qid in query_ids:
             baseline_col = f"validation/query_{qid}/{cmp_to}_runtime_ms"
-            impl_col = f"validation/query_{qid}/impl_runtime_ms"
+            impl_col = f"validation/query_{qid}/bespoke_runtime_ms"
             speedup_col = f"validation/query_{qid}/speedup"
             if baseline_col in val.columns and impl_col in val.columns:
                 impl_ms = val[impl_col].where(val[impl_col] > 0)
