@@ -161,17 +161,27 @@ class DuckDBConnectionManager:
         self._connect(self.duckdb_path)
         assert self.con is not None
 
+        # Resolve the tier directory under the parquet root (sampling-ratio ``ratio<f>`` or
+        # legacy ``sf<N>``); this is the only oracle parquet read.
+        from synnodb.workloads.workload_spec import find_sf_dir
+
+        tier_dir = find_sf_dir(self.parquet_path, self.sf)
+        if tier_dir is None:
+            raise FileNotFoundError(
+                f"No tier directory for ratio/SF {self.sf:g} under {self.parquet_path}."
+            )
+
         if self.run_duckdb_on_parquet:
             object_kind = "VIEW"
-            desc = f"Registering DuckDB parquet views for SF{self.sf}"
+            desc = f"Registering DuckDB parquet views for {tier_dir.name}"
         else:
             object_kind = "TABLE"
-            desc = f"Loading DuckDB tables for SF{self.sf}"
+            desc = f"Loading DuckDB tables for {tier_dir.name}"
 
         for table in tqdm(self.dataset_tables, desc=desc):
             self.con.execute(
                 f"CREATE {object_kind} {table} AS "
-                f"SELECT * FROM read_parquet('{self.parquet_path}/sf{self.sf}/{table}.parquet')"
+                f"SELECT * FROM read_parquet('{(tier_dir / f'{table}.parquet').as_posix()}')"
             )
         if self.duckdb_path is not None:
             self.con.execute("CHECKPOINT")

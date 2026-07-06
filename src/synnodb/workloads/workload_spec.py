@@ -96,7 +96,8 @@ class WorkloadSpec:
         return self.schema_factory()
 
     def parquet_root(self) -> Path:
-        """Absolute parquet root holding ``sf<sf>/<table>.parquet``. Bring-your-own
+        """Absolute parquet root holding one directory per tier (``ratio<f>/<table>.parquet``
+        for sampling-ratio tiers, or the legacy ``sf<N>/<table>.parquet``). Bring-your-own
         workloads carry it on the spec; built-ins derive it from the data-dir +
         workload-name convention (so this requires SYNNO_DATA_DIR to be configured)."""
         if self.base_parquet_dir is not None:
@@ -122,20 +123,40 @@ class WorkloadSpec:
         raise ValueError(f"Unknown run mode: {run_mode}")
 
 
-def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | None:
-    """The ``sf<N>`` directory for a scale factor under a parquet root, tolerant of
-    int/float name formatting (``sf1`` vs ``sf1.0``). None if neither spelling exists."""
-    base = Path(base_parquet_dir)
-    candidates = []
+def _tier_value_spellings(value: float) -> list[str]:
+    """The numeric part of a tier directory name, tolerant of int/float formatting
+    (``1`` vs ``1.0``); the integer spelling is tried first so ``5`` -> ``5`` not ``5.0``."""
+    spellings: list[str] = []
     try:
-        if float(scale_factor).is_integer():
-            candidates.append(f"sf{int(scale_factor)}")
+        if float(value).is_integer():
+            spellings.append(str(int(value)))
     except (TypeError, ValueError):
         pass
-    candidates.append(f"sf{scale_factor}")
-    for name in candidates:
-        if (base / name).exists():
-            return base / name
+    spellings.append(str(value))
+    return spellings
+
+
+def tier_dirname(value: float) -> str:
+    """The canonical tier directory name for a sampling ratio: ``ratio<f>`` (e.g. ``ratio0.02``
+    for a fraction, ``ratio1`` for the full benchmark tier). This is the name new tiers are
+    *created* under; the integer spelling is preferred so it matches :func:`find_sf_dir`'s
+    first-tried candidate when *reading* (which also resolves the legacy ``sf<N>`` spelling)."""
+    return f"ratio{_tier_value_spellings(value)[0]}"
+
+
+def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | None:
+    """The tier directory for a tier value under a parquet root.
+
+    Resolves the sampling-ratio convention (``ratio<f>``, written by the referential
+    downscaler) as well as the legacy scale-factor convention (``sf<N>``), tolerant of
+    int/float name formatting (``ratio1`` vs ``ratio1.0``, ``sf1`` vs ``sf1.0``). A given root
+    only ever holds one convention, so this is unambiguous. None if no spelling exists."""
+    base = Path(base_parquet_dir)
+    for prefix in ("ratio", "sf"):
+        for spelling in _tier_value_spellings(scale_factor):
+            candidate = base / f"{prefix}{spelling}"
+            if candidate.exists():
+                return candidate
     return None
 
 

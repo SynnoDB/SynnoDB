@@ -467,6 +467,90 @@ class SynnoDB:
         paths = [sf_dir / f"{table}.parquet" for table in spec.tables]
         return RamCheck.measure(f"sf{sf:g}", paths)
 
+    # ---- DuckDB-sourced workload registration ----------------------------
+    def sync_from_duckdb(
+        self,
+        con: "Any",
+        *,
+        name: str,
+        queries_json: "str | Path | dict",
+        downscale_tiers: tuple[float, ...] = (0.02, 0.1),
+        join_relationships: list | None = None,
+        dataset_name: str | None = None,
+        schema_example_table: str | None = None,
+        whole_table_threshold: int = 10_000,
+        set_as_workload: bool = True,
+    ):
+        """Register a workload straight from a live DuckDB connection - no pre-scaled parquet.
+
+        The caller owns a DuckDB connection (or a ``.duckdb`` file path); SynnoDB reads its
+        schema, tables, and queries, then derives the run's tiers by **FK-preserving
+        downscaling** (§6): the full dataset is the benchmark tier and each fraction in
+        ``downscale_tiers`` becomes a referentially-closed fast-check rung whose joins still
+        produce rows. The connection is only read - nothing is copied back into it.
+
+            import duckdb, synnodb
+            conn = duckdb.connect("tpch.duckdb")
+            db = synnodb.SynnoDB.in_memory(queries="1-5")
+            db.sync_from_duckdb(conn, name="tpch_byo", queries_json="queries.json",
+                                downscale_tiers=(0.02, 0.1))
+            plan = db.createStoragePlan()
+
+        Args:
+            con: a live ``duckdb.DuckDBPyConnection`` or a path to a ``.duckdb`` file (opened
+                read-only).
+            name: workload id to register under (becomes this driver's workload).
+            queries_json: a ``queries.json`` path or an already-parsed ``{qid: entry}`` dict;
+                its JOINs are the primary signal for the FK-preserving join graph.
+            downscale_tiers: sampling ratios of the largest table for the fast-check rungs.
+            join_relationships: optional explicit ``(table_a.col, table_b.col)`` equi-join pairs
+                unioned into the inferred join graph for anything inference misses.
+            whole_table_threshold: tables at or below this row count are kept whole per tier.
+            set_as_workload: point this driver's config at the new workload (default True).
+
+        Returns the registered :class:`~synnodb.workloads.workload_spec.WorkloadSpec`.
+
+        This is the parquet-fallback path: tiers are materialized to
+        ``<data_dir>/workloads/<name>/<dataset>_parquet/ratio<f>/`` and the factory + DuckDB
+        oracle run against them exactly as for a bring-your-own parquet workload.
+        """
+        import duckdb as _duckdb
+
+        from synnodb.workloads.byo_workload import register_workload_from_duckdb
+
+        opened: "_duckdb.DuckDBPyConnection | None" = None
+        if isinstance(con, (str, Path)):
+            opened = _duckdb.connect(str(con), read_only=True)
+            connection = opened
+        else:
+            connection = con
+
+        managed_root = (
+            Path(settings.get_data_dir())
+            / "workloads"
+            / name
+            / f"{dataset_name or name}_parquet"
+        )
+        try:
+            spec = register_workload_from_duckdb(
+                name=name,
+                con=connection,
+                queries_json=queries_json,
+                managed_root=managed_root,
+                downscale_tiers=downscale_tiers,
+                join_relationships=join_relationships,
+                dataset_name=dataset_name,
+                schema_example_table=schema_example_table,
+                whole_table_threshold=whole_table_threshold,
+            )
+        finally:
+            if opened is not None:
+                opened.close()
+
+        if set_as_workload:
+            self.config = dataclasses.replace(self.config, workload=WorkloadId(name))
+        return spec
+
     # ---- the single entry point ------------------------------------------
     def run_synthesis(
         self,

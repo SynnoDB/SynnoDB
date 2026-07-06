@@ -31,7 +31,11 @@ from synnodb.workloads.query_params import (
     parse_param_space,
     substitute,
 )
-from synnodb.workloads.workload_spec import WorkloadSpec, register_workload
+from synnodb.workloads.workload_spec import (
+    WorkloadSpec,
+    register_workload,
+    tier_dirname,
+)
 
 if TYPE_CHECKING:
     from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
@@ -194,8 +198,13 @@ def _natural_sort(ids: list[str]) -> list[str]:
 
 
 def _sf_dir(parquet_dir: Path, sf: float) -> Path:
-    # framework convention: <parquet_dir>/sf<sf>/<table>.parquet
-    return parquet_dir / f"sf{sf}"
+    """The existing tier directory for a tier value under a parquet root - the sampling-ratio
+    ``ratio<f>`` convention (written by the referential downscaler) or the legacy ``sf<N>``
+    one. Falls back to the ``sf<sf>`` spelling for error messages when nothing exists yet."""
+    from synnodb.workloads.workload_spec import find_sf_dir
+
+    resolved = find_sf_dir(parquet_dir, sf)
+    return resolved if resolved is not None else parquet_dir / f"sf{sf}"
 
 
 # Number of the smallest available scale factors to use as fast validation rungs when only a
@@ -205,21 +214,23 @@ _FAST_RUNG_COUNT = 2
 
 
 def _discover_available_sfs(parquet_dir: Path) -> list[float]:
-    """Scale factors that actually have data on disk, ascending.
+    """Tier values that actually have data on disk, ascending.
 
-    Convention is ``<parquet_dir>/sf<N>/<table>.parquet`` (see :func:`_sf_dir`); integral
-    SFs are returned as ints so they format back to ``sf50`` rather than ``sf50.0``."""
+    Convention is ``<parquet_dir>/<tier>/<table>.parquet`` where ``<tier>`` is ``ratio<f>``
+    (sampling ratio) or the legacy ``sf<N>``; integral values are returned as ints so they
+    format back to ``ratio1``/``sf50`` rather than ``ratio1.0``/``sf50.0``."""
     sfs: list[float] = []
     if not parquet_dir.is_dir():
         return sfs
-    for child in parquet_dir.glob("sf*"):
-        if not child.is_dir():
-            continue
-        try:
-            value = float(child.name[2:])
-        except ValueError:
-            continue
-        sfs.append(int(value) if value.is_integer() else value)
+    for prefix in ("ratio", "sf"):
+        for child in parquet_dir.glob(f"{prefix}*"):
+            if not child.is_dir():
+                continue
+            try:
+                value = float(child.name[len(prefix) :])
+            except ValueError:
+                continue
+            sfs.append(int(value) if value.is_integer() else value)
     return sorted(set(sfs))
 
 
@@ -235,12 +246,12 @@ def _derive_sf_ladder(
     honour it; when only the target is given we augment it with the smallest scale factors
     that exist on disk. Returns ``(fast_check_sfs, exhaustive_sfs, benchmark_sf, ingest_sfs)``.
 
-    TODO(byo-sampling): scanning for ``sf*`` directories is a TPC-H-ism. Real BYO data does
-    not arrive in scale-factor tiers, so there is nothing small to scan for and the warning
-    below fires. The durable fix is for the framework to *materialise* a small validation
-    sample of the user's own data at registration (a deterministic row fraction) and use that
-    as the fast rung, independent of any TPC-H-style SF layout. Until then this keeps
-    TPC-H-shaped inputs fast and fails loudly otherwise.
+    Note: for a workload sourced from a DuckDB connection this scanning is moot -
+    :func:`register_workload_from_duckdb` derives the fast rungs itself by FK-preserving
+    downscaling and hands us an explicit ``(ratio, …, 1.0)`` ladder, so the branch below that
+    honours an explicit multi-tier ladder is taken and no ``sf*`` scan happens. This function
+    still scans for the bring-your-own **parquet** entries, which supply their own tiers on disk;
+    those keep TPC-H-shaped inputs fast and fail loudly (the warning below) otherwise.
     """
     target = scale_factors[-1]
 
@@ -357,6 +368,43 @@ def register_workload_from_dir(
     )
 
 
+def _parse_queries_json(
+    raw: object, source: str
+) -> tuple[dict[str, str], dict[str, dict]]:
+    """Split a ``queries.json`` mapping into ``{qid: sql}`` and ``{qid: {"params"/"param_groups"}}``.
+
+    Each entry is either a plain SQL string (a static query) or an object with a ``"sql"`` key
+    plus optional ``params`` / ``param_groups``. Query ids are kept as written here; the shared
+    builder normalizes them (q1/Q1/query1/1) downstream.
+    """
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            f"{source} must be a non-empty JSON object mapping query-id -> "
+            f'{{"sql": ..., "params": ...}} (or a plain SQL string).'
+        )
+    sql_by_id: dict[str, str] = {}
+    params_by_id: dict[str, dict] = {}
+    for qid, entry in raw.items():
+        qid = str(qid)
+        if isinstance(entry, str):
+            sql_by_id[qid] = entry
+            continue
+        if not isinstance(entry, dict) or "sql" not in entry:
+            raise ValueError(
+                f"{source}: query {qid!r} must be a SQL string or an object with a "
+                f'"sql" key, got {type(entry).__name__}.'
+            )
+        sql_by_id[qid] = str(entry["sql"])
+        section: dict = {}
+        if entry.get("params"):
+            section["params"] = entry["params"]
+        if entry.get("param_groups"):
+            section["param_groups"] = entry["param_groups"]
+        if section:
+            params_by_id[qid] = section
+    return sql_by_id, params_by_id
+
+
 def register_workload_from_json(
     name: str,
     queries_json: str | Path,
@@ -382,32 +430,7 @@ def register_workload_from_json(
     """
     queries_json = Path(queries_json)
     raw = json.loads(queries_json.read_text())
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError(
-            f"{queries_json} must be a non-empty JSON object mapping query-id -> "
-            f'{{"sql": ..., "params": ...}} (or a plain SQL string).'
-        )
-
-    sql_by_id: dict[str, str] = {}
-    params_by_id: dict[str, dict] = {}
-    for qid, entry in raw.items():
-        qid = str(qid)
-        if isinstance(entry, str):
-            sql_by_id[qid] = entry
-            continue
-        if not isinstance(entry, dict) or "sql" not in entry:
-            raise ValueError(
-                f"{queries_json}: query {qid!r} must be a SQL string or an object with a "
-                f'"sql" key, got {type(entry).__name__}.'
-            )
-        sql_by_id[qid] = str(entry["sql"])
-        section: dict = {}
-        if entry.get("params"):
-            section["params"] = entry["params"]
-        if entry.get("param_groups"):
-            section["param_groups"] = entry["param_groups"]
-        if section:
-            params_by_id[qid] = section
+    sql_by_id, params_by_id = _parse_queries_json(raw, str(queries_json))
 
     return _register_static_workload(
         name=name,
@@ -433,6 +456,7 @@ def _register_static_workload(
     schema_example_table: str | None,
     params_by_id: dict[str, dict] | None = None,
     params_source: str = "params",
+    dataset_version: str | None = None,
 ) -> WorkloadSpec:
     """Shared builder: turn an ``{id: sql}`` map + parquet into a registered workload.
     Schema is derived from the parquet; tables inferred if not given. Templated queries are
@@ -513,6 +537,124 @@ def _register_static_workload(
         placeholders_factory=placeholders_factory,
         param_space_factory=param_space_factory,
         base_parquet_dir=parquet_dir,
+        dataset_version=dataset_version,
     )
     register_workload(spec)
     return spec
+
+
+# The referential downscaler's version. Bumped when its algorithm changes so a stale materialized
+# tier (and any LLM/snapshot cache keyed on ``dataset_version``) is invalidated.
+_DOWNSCALER_VERSION = "1"
+
+
+def _duckdb_dataset_version(
+    schema, tiers: tuple[float, ...], whole_table_threshold: int
+) -> str:
+    """A cache-busting fingerprint of the derived dataset: source table names + row counts,
+    the tier fractions, the whole-table threshold, and the downscaler version. Re-extraction
+    after any of these changes invalidates stale LLM/snapshot cache entries (§5.2)."""
+    import hashlib
+
+    payload = repr(
+        {
+            "tables": sorted(schema.row_counts.items()),
+            "tiers": sorted(tiers),
+            "whole_table_threshold": whole_table_threshold,
+            "downscaler": _DOWNSCALER_VERSION,
+        }
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def register_workload_from_duckdb(
+    name: str,
+    con,
+    queries_json: "str | Path | dict",
+    *,
+    managed_root: str | Path,
+    downscale_tiers: tuple[float, ...] = (0.02, 0.1),
+    join_relationships: list | None = None,
+    tables: list[str] | None = None,
+    dataset_name: str | None = None,
+    schema_example_table: str | None = None,
+    whole_table_threshold: int = 10_000,
+) -> WorkloadSpec:
+    """Register a workload sourced from a live DuckDB connection, deriving the tiers by
+    FK-preserving downscaling instead of taking pre-scaled parquet (the connection-sourced
+    sibling of :func:`register_workload_from_json`).
+
+    This is the internal **parquet-fallback** path: the referential downscaler
+    (:mod:`synnodb.workloads.dataset.custom_scaler.duckdb_downscale`) materializes each tier to
+    ``<managed_root>/ratio<f>/<table>.parquet`` - the full ``ratio1`` benchmark tier plus one
+    downscaled ``ratio<f>`` rung per fraction in ``downscale_tiers`` - and the workload is then
+    registered exactly like a bring-your-own parquet workload, so the whole factory + DuckDB
+    oracle run against it unchanged. The caller's database is only read; nothing is written back.
+
+    Args:
+        name: workload id (used as the benchmark name / WorkloadId).
+        con: a live ``duckdb.DuckDBPyConnection`` to source schema + data from.
+        queries_json: a ``queries.json`` path, or an already-parsed ``{qid: entry}`` dict; its
+            JOINs are the primary signal for the FK-preserving join graph.
+        managed_root: directory the materialized ``ratio<f>/`` tiers are written under.
+        downscale_tiers: sampling ratios of the anchor for the fast-check rungs.
+        join_relationships: optional explicit ``(table_a.col, table_b.col)`` equi-join pairs,
+            unioned into the inferred join graph for anything inference misses.
+        tables / dataset_name / schema_example_table: as in the parquet entry points.
+        whole_table_threshold: tables at or below this row count are kept whole in a tier.
+    """
+    from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
+        ReferentialDownscaler,
+    )
+
+    if isinstance(queries_json, dict):
+        raw: object = queries_json
+        source = f"{name} queries"
+    else:
+        raw = json.loads(Path(queries_json).read_text())
+        source = str(queries_json)
+    sql_by_id, params_by_id = _parse_queries_json(raw, source)
+
+    downscaler = ReferentialDownscaler(
+        con,
+        sql_by_id=sql_by_id,
+        join_relationships=join_relationships,
+        whole_table_threshold=whole_table_threshold,
+    )
+
+    # Tier ladder = the downscale ratios (fast-check rungs) plus the full ``1.0`` benchmark tier
+    # last (the shared builder treats the last scale factor as the benchmark/target).
+    tiers = tuple(sorted(set(downscale_tiers)))
+    if any(not (0.0 < t < 1.0) for t in tiers):
+        raise ValueError(
+            f"downscale_tiers must be fractions in (0, 1); got {downscale_tiers}."
+        )
+    scale_factors = tiers + (1.0,)
+
+    managed_root = Path(managed_root)
+    for fraction in scale_factors:
+        out_dir = managed_root / tier_dirname(fraction)
+        source_tables = tables or downscaler.schema.tables
+        if out_dir.is_dir() and all(
+            (out_dir / f"{t}.parquet").exists() for t in source_tables
+        ):
+            logger.info("Tier %s already materialized, skipping", out_dir.name)
+            continue
+        downscaler.copy_tier_to_parquet(fraction, out_dir)
+
+    dataset_version = _duckdb_dataset_version(
+        downscaler.schema, tiers, whole_table_threshold
+    )
+
+    return _register_static_workload(
+        name=name,
+        sql_by_id=sql_by_id,
+        parquet_dir=managed_root,
+        tables=tables or list(downscaler.schema.tables),
+        dataset_name=dataset_name,
+        scale_factors=scale_factors,
+        schema_example_table=schema_example_table,
+        params_by_id=params_by_id,
+        params_source=source,
+        dataset_version=dataset_version,
+    )

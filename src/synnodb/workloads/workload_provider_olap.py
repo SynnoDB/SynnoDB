@@ -313,8 +313,15 @@ class OLAPWorkloadProvider(WorkloadProvider):
                 DataSource.BESPOKE if storage_dir is not None else DataSource.FLAT
             )
 
-            # assemble parquet path where data is loaded from
-            parquet_dir = (self.base_parquet_dir / f"sf{scale_factor}").as_posix() + "/"
+            # assemble parquet path where data is loaded from - resolve the tier directory
+            # under the parquet root (sampling-ratio ``ratio<f>`` or legacy ``sf<N>``)
+            tier_dir = find_sf_dir(self.base_parquet_dir, scale_factor)
+            if tier_dir is None:
+                raise FileNotFoundError(
+                    f"No tier directory for scale/ratio {scale_factor:g} under "
+                    f"{self.base_parquet_dir} for workload {self.spec.name!r}."
+                )
+            parquet_dir = tier_dir.as_posix() + "/"
             assert parquet_dir.endswith("/"), (
                 f"Parquet directory must end with '/': {parquet_dir}"
             )
