@@ -17,3 +17,7 @@ TRACE_COUNT("counter_name", n);  // emit a COUNT line immediately
 ```
 
 Instrument all major operators and sub-phases: page I/O (pin_page calls), scan, decode, join build/probe, aggregation, sort. Track row counts at operator boundaries using `TRACE_COUNT` with meaningful names (e.g. `q1_scan_rows`, `join_rows_emitted`, `pages_pinned`, etc.). `TRACE_RESET()` and `TRACE_FLUSH()` are already inserted into `query_impl.cpp` automatically — do not add them again.
+
+# Interpreting Run Tool Timings
+
+The run tool's modes are not all sized the same: a quick-iteration mode processes much less data than a full-benchmark mode, and some modes sweep several data sizes within a single call. Only compare a runtime against a previous runtime measured in the SAME mode. A higher number from a bigger-data mode than a smaller-data mode is expected and does not by itself mean your change made anything slower - check the row counts in the tracing output before concluding there is a regression.
