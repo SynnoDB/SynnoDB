@@ -37,7 +37,9 @@ def _judge_storage_plan(model: str, schema: str, plan_text: str) -> str | None:
         )
         verdict = response.choices[0].message.content.strip()
     except Exception as e:
-        logger.warning(f"Storage plan validity judge call failed ({e}); skipping check.")
+        logger.warning(
+            f"Storage plan validity judge call failed ({e}); skipping check."
+        )
         return None
 
     if verdict.upper().startswith("VALID"):
