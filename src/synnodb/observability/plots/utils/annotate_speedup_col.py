@@ -50,10 +50,8 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
         # not yet reportet, i.e. not found in history
         filtered_history = history[history["type"] == "validate"]
 
-    # The implementation runtime column was renamed impl_ -> bespoke_; accept
-    # both so old and current runs render speedups.
     runtime_regex = re.compile(
-        rf"^validation/query_([a-zA-Z0-9]+)/(?P<kind>{re.escape(baseline_kind)}|impl_runtime_ms|bespoke_runtime_ms)$"
+        rf"^validation/query_([a-zA-Z0-9]+)/(?P<kind>{re.escape(baseline_kind)}|bespoke_runtime_ms)$"
     )
     total_speedup_regex = re.compile(
         r"^validation/sf(?P<sf>[0-9]+(?:\.[0-9]+)?)_all_queries_total_speedup$"
@@ -66,11 +64,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
         if not m:
             continue
         qid = _normalize_query_id(m.group(1))
-        kind = m.group("kind")
-        if kind not in (baseline_kind, "bespoke_runtime_ms"):
-            # older runs logged this column as impl_runtime_ms
-            kind = "bespoke_runtime_ms"
-        runtime_cols.setdefault(qid, {})[kind] = col
+        runtime_cols.setdefault(qid, {})[m.group("kind")] = col
 
     # The precomputed total-speedup columns are always logged against DuckDB.
     # For any other baseline we recompute the total from the per-query runtimes

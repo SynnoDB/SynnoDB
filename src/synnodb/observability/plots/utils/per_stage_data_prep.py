@@ -126,9 +126,6 @@ def process_data(history_dict, config_dict, summary_dict, cmp_to: str = "duckdb"
         for qid in query_ids:
             baseline_col = f"validation/query_{qid}/{cmp_to}_runtime_ms"
             impl_col = f"validation/query_{qid}/bespoke_runtime_ms"
-            if impl_col not in rows.columns:
-                # older runs logged this column as impl_runtime_ms
-                impl_col = f"validation/query_{qid}/impl_runtime_ms"
             if baseline_col not in rows.columns or impl_col not in rows.columns:
                 continue
             pairs = rows[[baseline_col, impl_col]].dropna()
@@ -170,9 +167,6 @@ def process_data(history_dict, config_dict, summary_dict, cmp_to: str = "duckdb"
         for qid in query_ids:
             baseline_col = f"validation/query_{qid}/{cmp_to}_runtime_ms"
             impl_col = f"validation/query_{qid}/bespoke_runtime_ms"
-            if impl_col not in val.columns:
-                # older runs logged this column as impl_runtime_ms
-                impl_col = f"validation/query_{qid}/impl_runtime_ms"
             speedup_col = f"validation/query_{qid}/speedup"
             if baseline_col in val.columns and impl_col in val.columns:
                 impl_ms = val[impl_col].where(val[impl_col] > 0)

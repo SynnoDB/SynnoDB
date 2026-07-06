@@ -107,7 +107,7 @@ The frontend mirrors this: the "Generated code" header button is shown only for 
 | `total/runtime` | Runtime card and per-stage time delta in sidebar |
 | `current_prompt_descriptor` | Section coloring + sidebar stage list |
 | `validation/correct` | Correctness strip (green/red dots) |
-| `validation/query_<id>/bespoke_runtime_ms` (older runs: `impl_runtime_ms`) | Per-query runtime bar chart (Bespoke) |
+| `validation/query_<id>/bespoke_runtime_ms` | Per-query runtime bar chart (Bespoke) |
 | `validation/query_<id>/duckdb_runtime_ms` | Per-query runtime bar chart (DuckDB baseline) |
 
 ## Section colours
