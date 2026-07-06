@@ -385,7 +385,7 @@ def plot_per_query_and_stage_runtimes(
                 continue
 
             for qid in query_ids:
-                impl_col = f"validation/query_{qid}/impl_runtime_ms"
+                impl_col = f"validation/query_{qid}/bespoke_runtime_ms"
                 if impl_col not in rows.columns:
                     continue
                 series = rows[impl_col].dropna()

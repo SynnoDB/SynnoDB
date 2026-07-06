@@ -467,7 +467,7 @@ class Conversation:
         runtimes_ms: Dict[str, float] = {}
         for query_id in self.all_query_ids:
             q_3d_str = query_id.zfill(3)
-            key = f"validation/query_{q_3d_str}/impl_runtime_ms"
+            key = f"validation/query_{q_3d_str}/bespoke_runtime_ms"
             assert key in metrics, (
                 f"Expected metric {key} not found in {metrics.keys()}"
             )
@@ -486,16 +486,16 @@ class Conversation:
         assert metrics is not None
 
         try:
-            impl_rt_s, _, _ = extract_speedup_of_last_snapshot(
+            bespoke_rt_s, _, _ = extract_speedup_of_last_snapshot(
                 statistics=metrics,
                 query=query_id,
             )
-            self.query_rt_log[query_id] = impl_rt_s
+            self.query_rt_log[query_id] = bespoke_rt_s
         except AssertionError as e:
             logger.warning(f"Failed to extract speedup for query {query_id}: {e}")
             # lookup runtime from a past run
-            impl_rt_s = self.query_rt_log[query_id]
-        return impl_rt_s
+            bespoke_rt_s = self.query_rt_log[query_id]
+        return bespoke_rt_s
 
     def _collect_tracing(self, query_ids: list[str] | None) -> str:
         """Collect fresh tracing data for the given queries (None = all)."""
@@ -1136,13 +1136,13 @@ def extract_speedup_of_last_snapshot(statistics: Dict, query: str):
     # prepend with zeros until three chars long
     query_3chars = query.zfill(3)
 
-    impl_key = f"validation/query_{query_3chars}/impl_runtime_ms"
+    bespoke_key = f"validation/query_{query_3chars}/bespoke_runtime_ms"
     duckdb_key = f"validation/query_{query_3chars}/duckdb_runtime_ms"
 
-    if impl_key not in statistics:
+    if bespoke_key not in statistics:
         logger.warning(
             "Key %s not found in statistics (query likely killed/timed out). Returning inf runtime.",
-            impl_key,
+            bespoke_key,
         )
         return float("inf"), None, 0.0
     if duckdb_key not in statistics:
@@ -1152,10 +1152,10 @@ def extract_speedup_of_last_snapshot(statistics: Dict, query: str):
         return float("inf"), None, 0.0
 
     # translate runtimes from ms to seconds
-    last_impl_rt = float(statistics[impl_key]) / 1000
+    last_bespoke_rt = float(statistics[bespoke_key]) / 1000
     duckdb_rt = float(statistics[duckdb_key]) / 1000
 
     # calculate speedup
-    speedup = duckdb_rt / last_impl_rt if last_impl_rt > 0 else float("inf")
+    speedup = duckdb_rt / last_bespoke_rt if last_bespoke_rt > 0 else float("inf")
 
-    return last_impl_rt, duckdb_rt, speedup
+    return last_bespoke_rt, duckdb_rt, speedup

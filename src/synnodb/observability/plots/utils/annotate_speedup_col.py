@@ -51,7 +51,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
         filtered_history = history[history["type"] == "validate"]
 
     runtime_regex = re.compile(
-        rf"^validation/query_([a-zA-Z0-9]+)/(?P<kind>{re.escape(baseline_kind)}|impl_runtime_ms)$"
+        rf"^validation/query_([a-zA-Z0-9]+)/(?P<kind>{re.escape(baseline_kind)}|bespoke_runtime_ms)$"
     )
     total_speedup_regex = re.compile(
         r"^validation/sf(?P<sf>[0-9]+(?:\.[0-9]+)?)_all_queries_total_speedup$"
@@ -94,7 +94,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
     available_query_pairs = {
         qid
         for qid, kinds in runtime_cols.items()
-        if baseline_kind in kinds and "impl_runtime_ms" in kinds
+        if baseline_kind in kinds and "bespoke_runtime_ms" in kinds
     }
     if expected_queries and available_query_pairs:
         expected_queries = expected_queries.intersection(available_query_pairs)
@@ -159,7 +159,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
             current_runtimes = runtimes_by_sf.setdefault(row_sf_float, {})
             for qid in expected_queries:
                 cols_for_query = runtime_cols.get(qid, {})
-                impl_col = cols_for_query.get("impl_runtime_ms")
+                impl_col = cols_for_query.get("bespoke_runtime_ms")
                 baseline_col = cols_for_query.get(baseline_kind)
                 if impl_col is None or baseline_col is None:
                     continue
@@ -168,7 +168,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
                 baseline_val = row.get(baseline_col)
 
                 if pd.notna(impl_val):
-                    current_runtimes.setdefault(qid, {})["impl_runtime_ms"] = float(
+                    current_runtimes.setdefault(qid, {})["bespoke_runtime_ms"] = float(
                         impl_val
                     )
                 if pd.notna(baseline_val):
@@ -178,7 +178,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
 
             have_all_for_row_sf = bool(expected_queries) and all(
                 qid in current_runtimes
-                and "impl_runtime_ms" in current_runtimes[qid]
+                and "bespoke_runtime_ms" in current_runtimes[qid]
                 and baseline_kind in current_runtimes[qid]
                 for qid in expected_queries
             )
@@ -198,7 +198,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
         current_runtimes = runtimes_by_sf.get(largest_computable_sf, {})
         have_all = bool(expected_queries) and all(
             qid in current_runtimes
-            and "impl_runtime_ms" in current_runtimes[qid]
+            and "bespoke_runtime_ms" in current_runtimes[qid]
             and baseline_kind in current_runtimes[qid]
             for qid in expected_queries
         )
@@ -208,7 +208,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
             continue
 
         total_impl = sum(
-            current_runtimes[qid]["impl_runtime_ms"] for qid in expected_queries
+            current_runtimes[qid]["bespoke_runtime_ms"] for qid in expected_queries
         )
         total_baseline = sum(
             current_runtimes[qid][baseline_kind] for qid in expected_queries

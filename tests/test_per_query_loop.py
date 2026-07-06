@@ -41,7 +41,7 @@ def _metrics(qid: str, impl_rt_ms: float, correct: bool = True) -> dict:
     q = qid.zfill(3)
     return {
         "validation/correct": correct,
-        f"validation/query_{q}/impl_runtime_ms": impl_rt_ms,
+        f"validation/query_{q}/bespoke_runtime_ms": impl_rt_ms,
         f"validation/query_{q}/duckdb_runtime_ms": 1000.0,
     }
 
