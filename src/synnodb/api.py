@@ -601,7 +601,7 @@ class SynnoDB:
         base_impl: Any = None,
         *,
         base_impl_wandb_id: Any = None,
-        plan_source: str = "umbra",
+        plan_source: str = "duckdb",
         verbose: bool | None = None,
     ) -> OptimizedImplementation:
         """Optimize a base implementation. Provide exactly one of:

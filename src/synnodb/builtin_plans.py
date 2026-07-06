@@ -52,7 +52,7 @@ def base_impl_plan(storage_plan_text: str | None = None) -> ConversationPlan:
     )
 
 
-def optim_plan(plan_source: str = "umbra") -> ConversationPlan:
+def optim_plan(plan_source: str = "duckdb") -> ConversationPlan:
     return ConversationPlan(
         name="runOptimLoop",
         prepare=PrepareFeatures.optim(),
