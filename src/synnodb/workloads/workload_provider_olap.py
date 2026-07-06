@@ -11,7 +11,12 @@ from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils import utils
 from synnodb.utils.gen_common import _parse_ceb_fuzzy_range
 from synnodb.utils.sql_utils import extract_order_by_columns
-from synnodb.utils.utils import DBStorage
+from synnodb.utils.utils import (
+    DataSource,
+    DBStorage,
+    is_persistent_storage,
+)
+from synnodb.workloads.system_factory import System
 from synnodb.workloads.dataset.gen_ceb.ceb_queries import ceb_templates
 from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from synnodb.workloads.workload_provider import (
@@ -53,12 +58,56 @@ class OLAPWorkload(Workload):
     CEB = "ceb"
 
 
+def allowed_data_sources(system: System, db_storage: DBStorage) -> set[DataSource]:
+    """Data sources a given system can use on a given storage medium.
+
+    DuckDB reads either flat (its native materialized tables) or, on disk, parquet views. The
+    bespoke engine additionally has its own on-disk storage plan. In-memory rules out anything
+    that needs disk (parquet views, the bespoke storage plan) - but the engine can still load
+    flat in memory. Returns an empty set for systems whose data source is not modelled here.
+    """
+    persistent = is_persistent_storage(db_storage)
+    if system == System.DUCKDB:
+        return (
+            {DataSource.FLAT, DataSource.PARQUET} if persistent else {DataSource.FLAT}
+        )
+    if system == System.BESPOKE:
+        return (
+            {DataSource.FLAT, DataSource.BESPOKE, DataSource.PARQUET}
+            if persistent
+            else {DataSource.FLAT, DataSource.BESPOKE}
+        )
+    return set()
+
+
+def validate_storage_combo(
+    system: System, db_storage: DBStorage, data_source: DataSource
+) -> None:
+    """Reject a (system, storage medium, data source) triple the system cannot run.
+
+    Validity is system-specific: e.g. DuckDB in-memory can only be flat, whereas the bespoke
+    engine in-memory can be flat or bespoke.
+    """
+    allowed = allowed_data_sources(system, db_storage)
+    if data_source not in allowed:
+        raise ValueError(
+            f"{system} on db_storage={db_storage.value} cannot use "
+            f"data_source={data_source.value}; allowed: "
+            f"{sorted(s.value for s in allowed)}."
+        )
+
+
 @dataclass
 class OLAPExecSettings(ExecSettings):
     scale_factor: float
     db_storage: DBStorage
     parquet_dir: Path
     disk_db_dir: Path | None
+    data_source: DataSource
+
+    def __post_init__(self) -> None:
+        # These settings drive a bespoke-engine run, so validate the source against that system.
+        validate_storage_combo(System.BESPOKE, self.db_storage, self.data_source)
 
 
 class OLAPWorkloadProvider(WorkloadProvider):
@@ -260,6 +309,10 @@ class OLAPWorkloadProvider(WorkloadProvider):
             else:
                 storage_dir = None
 
+            data_source = (
+                DataSource.BESPOKE if storage_dir is not None else DataSource.FLAT
+            )
+
             # assemble parquet path where data is loaded from
             parquet_dir = (self.base_parquet_dir / f"sf{scale_factor}").as_posix() + "/"
             assert parquet_dir.endswith("/"), (
@@ -342,6 +395,7 @@ class OLAPWorkloadProvider(WorkloadProvider):
                         db_storage=self.db_storage,
                         parquet_dir=Path(parquet_dir),
                         disk_db_dir=storage_dir,
+                        data_source=data_source,
                     ),
                 )
             )
