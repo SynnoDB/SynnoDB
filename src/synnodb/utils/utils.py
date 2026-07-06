@@ -32,6 +32,23 @@ def is_persistent_storage(db_storage: DBStorage) -> bool:
     return db_storage in (DBStorage.LABSTORE, DBStorage.SSD)
 
 
+class DataSource(str, enum.Enum):
+    """How the queried data is physically represented for a run.
+
+    - ``FLAT``: data loaded flat into memory (DuckDB's native materialized tables; the only
+      representation available for an in-memory run).
+    - ``PARQUET``: queries stream directly from parquet files on disk (DuckDB parquet views).
+    - ``BESPOKE``: the bespoke engine's on-disk storage plan.
+
+    This is part of the query-execution cache key: the DuckDB reference answer differs between
+    materialized tables and parquet views, so it must not be shared across sources.
+    """
+
+    FLAT = "flat"
+    PARQUET = "parquet"
+    BESPOKE = "bespoke"
+
+
 def storage_label(db_storage: DBStorage) -> str:
     """Canonical 'ssd' / 'in_memory' label, e.g. for debug-log paths."""
     return "ssd" if is_persistent_storage(db_storage) else "in_memory"
