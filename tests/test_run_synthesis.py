@@ -189,11 +189,11 @@ def test_run_optim_loop_bakes_plan_source_into_the_plan(tmp_path, monkeypatch):
     )
 
     db.runOptimLoop("basehash")  # default source
-    db.runOptimLoop("basehash", plan_source="duckdb")
+    db.runOptimLoop("basehash", plan_source="umbra")
 
-    assert seen[0].stages.keywords == {"plan_source": "umbra"}
-    assert seen[1].stages.keywords == {"plan_source": "duckdb"}
-    assert optim_plan("duckdb").stages.keywords == {"plan_source": "duckdb"}
+    assert seen[0].stages.keywords == {"plan_source": "duckdb"}
+    assert seen[1].stages.keywords == {"plan_source": "umbra"}
+    assert optim_plan("umbra").stages.keywords == {"plan_source": "umbra"}
 
 
 def test_builtin_plans_have_the_expected_shapes():
