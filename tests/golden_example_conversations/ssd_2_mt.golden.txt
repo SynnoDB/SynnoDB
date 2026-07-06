@@ -433,7 +433,7 @@ Process multiple elements per iteration using vectorized comparisons and masked 
 When the dataset is larger than the buffer pool, query runtime is often bounded by **bytes read from disk**, not by CPU cycles. The single-most-effective optimization is to read less. The second is to overlap reads with compute. Inner-loop micro-optimization gains nothing if the scan is bandwidth-bound: first determine the bottleneck, then optimize the right resource.
 
 20. Diagnose I/O vs CPU bottleneck before optimizing
-Use the buffer-pool read/pin timers and miss/bytes counters. If they dominate total query time, the query is I/O-bound — optimizing the compute kernel is wasted effort. If buffer-pool misses are low and the inner loop dominates, the query is CPU-bound. The two bottlenecks call for opposite strategies: I/O-bound queries want fewer/smaller reads and I/O parallelism; CPU-bound queries want SIMD, branchless inner loops, and tighter per-thread accumulators. Re-check at memory-pressure scale factors, not just at SFs where data fits in RAM — a change that wins at SF=1 but doubles bytes read at SF=100 is a regression.
+Use the buffer-pool read/pin timers and miss/bytes counters. If they dominate total query time, the query is I/O-bound — optimizing the compute kernel is wasted effort. If buffer-pool misses are low and the inner loop dominates, the query is CPU-bound. The two bottlenecks call for opposite strategies: I/O-bound queries want fewer/smaller reads and I/O parallelism; CPU-bound queries want SIMD, branchless inner loops, and tighter per-thread accumulators. Re-check under the EXHAUSTIVE run-tool mode, which sweeps memory-pressure conditions automatically — a change that wins where data fits in RAM but reads more bytes under memory pressure is a regression.
 
 21. Reduce bytes-on-disk before reducing cycles
 Every byte you do not write at ingest is a byte you do not read at query time. Concrete techniques, in priority order:
@@ -897,7 +897,7 @@ Process multiple elements per iteration using vectorized comparisons and masked 
 When the dataset is larger than the buffer pool, query runtime is often bounded by **bytes read from disk**, not by CPU cycles. The single-most-effective optimization is to read less. The second is to overlap reads with compute. Inner-loop micro-optimization gains nothing if the scan is bandwidth-bound: first determine the bottleneck, then optimize the right resource.
 
 20. Diagnose I/O vs CPU bottleneck before optimizing
-Use the buffer-pool read/pin timers and miss/bytes counters. If they dominate total query time, the query is I/O-bound — optimizing the compute kernel is wasted effort. If buffer-pool misses are low and the inner loop dominates, the query is CPU-bound. The two bottlenecks call for opposite strategies: I/O-bound queries want fewer/smaller reads and I/O parallelism; CPU-bound queries want SIMD, branchless inner loops, and tighter per-thread accumulators. Re-check at memory-pressure scale factors, not just at SFs where data fits in RAM — a change that wins at SF=1 but doubles bytes read at SF=100 is a regression.
+Use the buffer-pool read/pin timers and miss/bytes counters. If they dominate total query time, the query is I/O-bound — optimizing the compute kernel is wasted effort. If buffer-pool misses are low and the inner loop dominates, the query is CPU-bound. The two bottlenecks call for opposite strategies: I/O-bound queries want fewer/smaller reads and I/O parallelism; CPU-bound queries want SIMD, branchless inner loops, and tighter per-thread accumulators. Re-check under the EXHAUSTIVE run-tool mode, which sweeps memory-pressure conditions automatically — a change that wins where data fits in RAM but reads more bytes under memory pressure is a regression.
 
 21. Reduce bytes-on-disk before reducing cycles
 Every byte you do not write at ingest is a byte you do not read at query time. Concrete techniques, in priority order:
@@ -1068,7 +1068,7 @@ If it produces errors, the most common causes when scaling to a larger dataset a
 
 - int32 overflow in row counts, offsets, or array indices (use int64/size_t)
 - int32 overflow in aggregation accumulators (e.g. SUM into int32)
-- Hardcoded or statically-sized buffers that were large enough at smaller SF
+- Hardcoded or statically-sized buffers that were large enough during earlier, smaller-scale validation
 - Hash table capacity not scaling with data size, causing OOM or rehash loops
 - Arrow/Parquet int32 column offset overflow when a column exceeds 2 GiB
 - Join build side exceeding available memory with no spill path

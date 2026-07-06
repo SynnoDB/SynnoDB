@@ -51,7 +51,6 @@ def gen_incorrect_output_prompt(
 
     error_hints_persistent = """Before editing, classify the failure:
 - If the debug information mentions `ColumnHandle: computed range exceeds pinned page`, audit the storage representation and every `pin_range()`/`contiguous_rows()` use in the failing query before changing code. This usually means a page-layout invariant is broken or a multi-column scan chunk was not bounded by all pinned columns.
-- If the failure appears only at a larger scale factor, do not rely on smaller-scale success. Reproduce/fix against the larger-scale case.
 - If previous attempts fixed the same symptom, stop patching one suspected site at a time and inspect all accesses in the target query plus the relevant Database handles."""
 
     return template.substitute(
