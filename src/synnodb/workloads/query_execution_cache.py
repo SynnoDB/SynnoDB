@@ -172,6 +172,7 @@ class QueryExecutionCache:
             # Arrow) so stale float-coerced DataFrame caches are bypassed and re-executed.
             "result_format": "arrow_v1",
         }
+
         hash_payload = utils.stable_json(entry_dict)
         hash = utils.sha256(hash_payload)
 

@@ -41,7 +41,7 @@ from synnodb.conversations.stage_items import (
     PromptStage,
 )
 from synnodb.tools.run_tool_mode import RunToolMode
-from synnodb.utils.utils import DBStorage
+from synnodb.utils.utils import DataSource, DBStorage
 from synnodb.workloads.workload_provider import ExecSettings
 from synnodb.workloads.workload_provider_olap import OLAPExecSettings, OLAPWorkload
 
@@ -122,6 +122,7 @@ def _make_ctx(db_storage: DBStorage) -> ConvContext:
         db_storage=DBStorage.IN_MEMORY,
         parquet_dir=PARQUET_DIR / "sf20",
         disk_db_dir=None,
+        data_source=DataSource.FLAT,
     )
     ctx._reference_plans = {
         ("umbra", True): {

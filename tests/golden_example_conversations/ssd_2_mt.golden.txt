@@ -267,7 +267,7 @@ Optimize the implementation of query 1 using the tracing/profiling data collecte
 ```
 SYNTHETIC TRACING DATA (fixed for golden test)
 ```
-(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None, data_source=<DataSource.FLAT: 'flat'>))
 
 Analyze the tracing/profiling data to identify bottlenecks in the query execution, e.g. operators which consume the most time, cardinalities that require significant processing and optimized code implementation.
 - High `buffer_pool_read_page`, high `buffer_pool_page_misses`, or high `buffer_pool_bytes_read` indicates **I/O-bound** work. Reduce bytes read, improve zone-map skipping, or switch from one driver thread pinning all pages to page-range/chunk ownership by workers.
@@ -518,7 +518,7 @@ Tracing/profiling data collected for query 1:
 ```
 SYNTHETIC TRACING DATA (fixed for golden test)
 ```
-(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None, data_source=<DataSource.FLAT: 'flat'>))
 
 # Overall System
 
@@ -715,7 +715,7 @@ Optimize the implementation of query 6 using the tracing/profiling data collecte
 ```
 SYNTHETIC TRACING DATA (fixed for golden test)
 ```
-(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None, data_source=<DataSource.FLAT: 'flat'>))
 
 Analyze the tracing/profiling data to identify bottlenecks in the query execution, e.g. operators which consume the most time, cardinalities that require significant processing and optimized code implementation.
 - High `buffer_pool_read_page`, high `buffer_pool_page_misses`, or high `buffer_pool_bytes_read` indicates **I/O-bound** work. Reduce bytes read, improve zone-map skipping, or switch from one driver thread pinning all pages to page-range/chunk ownership by workers.
@@ -966,7 +966,7 @@ Tracing/profiling data collected for query 6:
 ```
 SYNTHETIC TRACING DATA (fixed for golden test)
 ```
-(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None, data_source=<DataSource.FLAT: 'flat'>))
 
 # Overall System
 

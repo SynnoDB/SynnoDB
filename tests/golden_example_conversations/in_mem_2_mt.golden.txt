@@ -41,7 +41,7 @@ Optimize the multi-threaded implementation of query 1 using the tracing/profilin
 ```
 SYNTHETIC TRACING DATA (fixed for golden test)
 ```
-(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None, data_source=<DataSource.FLAT: 'flat'>))
 
 Focus on multi-threading specific bottlenecks:
 - Load imbalance: threads finishing at different times (idle cores while work remains).
@@ -58,7 +58,7 @@ the parallel region, exact integer/fixed-point accumulation for DECIMAL/INT aggr
 pool calls, and no shared mutable accumulator/map/output vector in the hot loop.
 
 After making changes, validate correctness and confirm performance improved.
-Target: reduce runtime further from 1234ms (OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None)). Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: 4321ms).
+Target: reduce runtime further from 1234ms (OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None, data_source=<DataSource.FLAT: 'flat'>)). Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: 4321ms).
 
 Turn off trace instrumentation in the run-tool for reliable benchmarking. Call run-tool with trace to gather updated statistics for bottleneck identification.
 Make sure the performance improved. Otherwise, try again or remove your changes.
@@ -115,7 +115,7 @@ Optimize the multi-threaded implementation of query 6 using the tracing/profilin
 ```
 SYNTHETIC TRACING DATA (fixed for golden test)
 ```
-(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None))
+(exec settings: OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None, data_source=<DataSource.FLAT: 'flat'>))
 
 Focus on multi-threading specific bottlenecks:
 - Load imbalance: threads finishing at different times (idle cores while work remains).
@@ -132,7 +132,7 @@ the parallel region, exact integer/fixed-point accumulation for DECIMAL/INT aggr
 pool calls, and no shared mutable accumulator/map/output vector in the hot loop.
 
 After making changes, validate correctness and confirm performance improved.
-Target: reduce runtime further from 1234ms (OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None)). Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: 4321ms).
+Target: reduce runtime further from 1234ms (OLAPExecSettings(scale_factor=20.0, db_storage=<DBStorage.IN_MEMORY: 'in_memory'>, parquet_dir=PosixPath('/golden/data/tpch_parquet/sf20'), disk_db_dir=None, data_source=<DataSource.FLAT: 'flat'>)). Aim for NUM_THREADS x speedup i.e. linear speedup compared to the single-threaded performance (single threaded runtime: 4321ms).
 
 Turn off trace instrumentation in the run-tool for reliable benchmarking. Call run-tool with trace to gather updated statistics for bottleneck identification.
 Make sure the performance improved. Otherwise, try again or remove your changes.
