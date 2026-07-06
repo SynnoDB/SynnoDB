@@ -1,6 +1,6 @@
 [project]
 name = "synnodb"
-version = "0.1.2"
+version = "0.1.3"
 description = "Synthesizing Databases for your Workload"
 readme = "README.md"
 requires-python = ">=3.13"
