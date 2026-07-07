@@ -370,7 +370,12 @@ class OptimizeBuildStage(DynamicStageConfig):
             external_call=True,
         )
 
-        if not run_result.success or run_result.ingest_time_ms is None:
+        # `success` reflects query *correctness*, which is irrelevant here: no query has
+        # been implemented yet at this point in the stage list (that happens later, via
+        # ValidateAndFixStage and the per-query stages). Query stubs failing validation is
+        # normal and must not block this stage - only a missing ingest_time_ms means the
+        # build/ingest step itself didn't complete (compile error, crash, timeout).
+        if run_result.ingest_time_ms is None:
             self.ingest_fix_attempts += 1
             if self.ingest_fix_attempts > self.MAX_INGEST_FIX_ATTEMPTS:
                 raise ValidationStillFailsException(

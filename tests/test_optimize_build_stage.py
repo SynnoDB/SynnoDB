@@ -7,6 +7,13 @@ tests pin the fixed behaviour: a failed run_worker() call is fed back to the LLM
 retry prompt (up to MAX_INGEST_FIX_ATTEMPTS times), and only sustained failure raises
 ValidationStillFailsException, instead of the previous unconditional
 `assert run_result.ingest_time_ms is not None`.
+
+The retry/give-up condition keys ONLY on `ingest_time_ms is None` - never on
+`run_result.success`. `success` reflects query *correctness*, and no query has been
+implemented yet at the point this stage runs (that happens later, via
+ValidateAndFixStage and the per-query stages). A stub/incorrect query making `success`
+False is normal here and must not trigger a retry as long as the ingest step itself
+produced a real `ingest_time_ms`.
 """
 
 from __future__ import annotations
@@ -89,6 +96,29 @@ def test_compile_failure_retries_with_error_fed_back_instead_of_crashing():
     assert final_prompt != retry_prompt
     assert stage.executed is True
     assert run_tool.run_worker.call_count == 2
+
+
+def test_query_stub_failure_with_valid_ingest_time_proceeds_without_retry():
+    """success=False from not-yet-implemented/incorrect queries must NOT be treated as a
+    broken build: this stage only needs the ingest baseline, which is already available."""
+    run_tool = MagicMock(memory_budget_mb=16384)
+    run_tool.run_worker.return_value = RunWorkerResult(
+        msg="Query 1: expected [...], got [...]",
+        success=False,
+        ingest_time_ms=5541.0,
+        query_batch=SimpleNamespace(exec_settings=ExecSettings()),
+    )
+    stage = _make_stage(run_tool)
+
+    prompt = stage.next_prompt()
+
+    assert prompt is not None
+    assert (
+        "db_loader.cpp" in prompt
+    )  # the base_optimize_build prompt, not a retry prompt
+    assert stage.executed is True
+    assert stage.ingest_fix_attempts == 0
+    run_tool.run_worker.assert_called_once()
 
 
 def test_ingest_time_none_despite_success_is_treated_as_failure():
