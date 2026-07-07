@@ -1,3 +1,4 @@
+import difflib
 import logging
 import re
 import time
@@ -136,6 +137,40 @@ class WorkspaceEditor:
             ),
             legacy_activity=lambda _status, _output: None,
         )
+
+    def write_file(self, path: str, content: str) -> ApplyPatchResult:
+        # Full-content create/overwrite primitive (sibling of apply_patch
+        # create_file/update_file). Takes raw file content directly instead of a
+        # V4A diff, so it sidesteps both the "+"-prefixed-whole-file format for
+        # create and the byte-exact context matching for update. Routed through
+        # the same cache/snapshot wrapper.
+        return self._run_cached(
+            op_type="write_file",
+            path=path,
+            cache_extra={"content": content},
+            run_impl=lambda: self._write_file_impl(path, content),
+            legacy_activity=lambda _status, _output: None,
+        )
+
+    def read_file(
+        self, path: str, offset: int | None = None, limit: int | None = None
+    ) -> str:
+        # Read primitive (sibling of write_file/replace_in_file). Never mutates
+        # the workspace, so - unlike the ops above - it does not go through
+        # _run_cached: the underlying file content is already reproducible from
+        # the deterministic snapshot state, and routing reads through the cache
+        # would only bloat the cache dir for no benefit.
+        relative = self._relative_path(path)
+        target = self._resolve(path)
+        if not target.exists():
+            return f"Error: file {relative} does not exist."
+        if target.is_dir():
+            return f"Error: {relative} is a directory, not a file."
+
+        original = target.read_text(encoding="utf-8")
+        rendered = _render_numbered_lines(original, offset, limit)
+        self._record_activity_summary(f"read_file called: {path}")
+        return rendered
 
     # ---------- cache wrapper ----------
 
@@ -614,6 +649,79 @@ class WorkspaceEditor:
                 f"replace_in_file called: {path}",
             )
 
+    def _write_file_impl(
+        self, path: str, content: str
+    ) -> tuple[ApplyPatchResult, str | None]:
+        with custom_span(
+            f"write file ({path})",
+            {"file": path, "content_len": len(content)},
+        ):
+            relative = self._relative_path(path)
+            target = self._resolve(path, ensure_parent=True)
+            logger.info(f"Writing: {target} ({len(content)} bytes)")
+
+            if target in self._readonly_files:
+                return self._write_failed(
+                    path,
+                    f"Error: Attempting to write read-only file: {relative}",
+                    summary="read-only",
+                )
+
+            existed = target.exists()
+            original = target.read_text(encoding="utf-8") if existed else ""
+
+            if original == content:
+                return self._write_failed(
+                    path,
+                    f"Error: write produced no change in {relative}.",
+                    summary="no change",
+                )
+
+            diff = "\n".join(
+                difflib.unified_diff(
+                    original.splitlines(),
+                    content.splitlines(),
+                    lineterm="",
+                )
+            )
+            added, deleted = count_diff_operations(diff)
+
+            target.write_text(content, encoding="utf-8")
+
+            str_diff = f"=== WRITING: {target} ===\n{diff[:1000]}\n"
+            self._run_stats_collector.log_apply_patch_stats(
+                "write",
+                added_lines=added,
+                deleted_lines=deleted,
+                string_diff=str_diff,
+                file_touched=Path(path).name,
+            )
+
+            verb = "Overwrote" if existed else "Wrote"
+            return (
+                ApplyPatchResult(status="completed", output=f"{verb} {relative}"),
+                f"write_file called: {path}",
+            )
+
+    def _write_failed(
+        self,
+        path: str,
+        message: str,
+        summary: str,
+    ) -> tuple[ApplyPatchResult, str | None]:
+        self._run_stats_collector.log_apply_patch_stats(
+            "write",
+            added_lines=0,
+            deleted_lines=0,
+            string_diff="",
+            file_touched=Path(path).name,
+            failed=summary,
+        )
+        return (
+            ApplyPatchResult(status="failed", output=message),
+            f"write_file called: {path} (FAILED - {summary})",
+        )
+
     def _replace_failed(
         self,
         path: str,
@@ -705,19 +813,53 @@ def _strip_trailing_whitespace(text: str) -> str:
     return re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
 
 
+_DEFAULT_READ_MAX_LINES = 2000
+
+
 def _current_content_block(relative: str, original: str) -> str:
     """Render the current file content (bounded) for a failed-edit response so the
     model can re-anchor without an extra round-trip."""
     lines = original.splitlines()
-    MAX_LINES = 2000
-    if len(lines) <= MAX_LINES:
+    if len(lines) <= _DEFAULT_READ_MAX_LINES:
         current = original
     else:
         current = (
-            "\n".join(lines[:MAX_LINES])
+            "\n".join(lines[:_DEFAULT_READ_MAX_LINES])
             + f"\n... (truncated, {len(lines)} lines total — cat the file for the full content)"
         )
     return f"=== CURRENT CONTENT OF {relative} ===\n{current}\n=== END ==="
+
+
+def _render_numbered_lines(
+    content: str, offset: int | None, limit: int | None
+) -> str:
+    """Render file content `cat -n` style (1-based line numbers) for read_file.
+
+    `offset` is the 1-based line to start from (default 1). `limit` bounds how
+    many lines are returned (default _DEFAULT_READ_MAX_LINES). A trailing note
+    is appended when more lines remain past what was returned, mirroring
+    _current_content_block's truncation note.
+    """
+    lines = content.splitlines()
+    total = len(lines)
+    start = max(offset, 1) if offset is not None else 1
+    count = limit if limit is not None else _DEFAULT_READ_MAX_LINES
+    start_idx = start - 1
+    end_idx = min(start_idx + max(count, 0), total)
+
+    numbered = "\n".join(
+        f"{i + 1:6d}\t{lines[i]}" for i in range(start_idx, end_idx)
+    )
+
+    if start_idx >= total:
+        return f"(file has {total} lines; offset {start} is past the end of the file)"
+
+    if end_idx < total:
+        numbered += (
+            f"\n... (truncated, showing lines {start}-{end_idx} of {total} "
+            "total — pass offset/limit to read more)"
+        )
+    return numbered
 
 
 # Unicode lookalikes the model tends to transcribe as ASCII (or vice versa) when
