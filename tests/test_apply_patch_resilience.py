@@ -275,6 +275,35 @@ def test_create_file_rejects_empty_overwrite_before_any_cache_lookup(tmp_path):
     assert editor._snapshotter.current_hash != "poisoned-empty-snapshot"
 
 
+def test_create_file_with_malformed_diff_still_gets_the_normal_failure_handling(
+    tmp_path,
+):
+    # A genuinely malformed diff (a line that isn't '+'-prefixed) makes apply_diff
+    # raise - a different failure mode than "parsed to empty", and the pre-cache
+    # guard must not intercept it: it must fall through to the normal cached path
+    # so _run_cached's own exception handling (stats/cache/activity-summary) still
+    # runs, exactly as it did before this guard was added.
+    editor, workspace = _make_editor(tmp_path)
+    (workspace / "query1.cpp").write_text("// real implementation\n", encoding="utf-8")
+
+    op = ApplyPatchOperation(
+        type="create_file", path="query1.cpp", diff="not a plus line"
+    )
+    result = editor.create_file(op)
+
+    assert result.status == "failed"
+    assert "Invalid Add File Line" in result.output
+    assert (workspace / "query1.cpp").read_text(
+        encoding="utf-8"
+    ) == "// real implementation\n"
+    # Went through the normal _run_cached path (not the pre-cache short-circuit,
+    # which never touches the activity summary itself) - _run_cached's own
+    # exception handling recorded the failure the usual way.
+    assert any(
+        "FAILED" in entry for entry in editor._run_stats_collector.activity_summary
+    )
+
+
 def test_create_file_impl_still_blocks_readonly(tmp_path):
     # read-only framework files must never be overwritten via create_file.
     workspace = tmp_path / "ws"

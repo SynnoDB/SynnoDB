@@ -311,16 +311,26 @@ class WorkspaceEditor:
         if its diff parses to empty content AND the target already exists.
 
         A diff that is empty, whitespace-only, or otherwise degenerate parses to
-        "" via apply_diff with no exception raised (a diff with any genuinely
-        malformed line - one that is not '+'-prefixed - already raises loudly and
-        is unaffected by this). Writing that "" out would truncate an existing
-        file to 0 bytes while still reporting success. Creating a brand-new file
-        with empty content is harmless (nothing existing is lost), so only the
-        overwrite case is rejected - create_file's whole point is to overwrite
-        scaffolded/stub files with full content, and that must keep working.
+        "" via apply_diff with no exception raised. Writing that "" out would
+        truncate an existing file to 0 bytes while still reporting success.
+        Creating a brand-new file with empty content is harmless (nothing
+        existing is lost), so only the overwrite case is rejected -
+        create_file's whole point is to overwrite scaffolded/stub files with
+        full content, and that must keep working.
+
+        A diff with a genuinely malformed line (one that is not '+'-prefixed) is
+        a different failure mode - apply_diff raises for that - and is
+        deliberately NOT handled here: swallow the exception and defer to the
+        normal cached path below, which calls apply_diff again inside
+        _create_file_impl and lets _run_cached's own exception handling turn it
+        into a failed result with its usual stats/cache/activity-summary
+        bookkeeping, exactly as before this guard existed.
         """
         diff = operation.diff or ""
-        content = apply_diff("", diff, mode="create")
+        try:
+            content = apply_diff("", diff, mode="create")
+        except Exception:
+            return None
         if content:
             return None
         target = self._resolve(operation.path, ensure_parent=False)
