@@ -176,6 +176,34 @@ def test_create_file_impl_creates_new_file(tmp_path):
     assert (workspace / "new.cpp").read_text(encoding="utf-8") == "hello"
 
 
+def test_create_file_impl_rejects_empty_diff_without_truncating_existing_file(tmp_path):
+    # An empty diff parses to "" via apply_diff with no exception raised - nothing
+    # else signals the problem, so writing it out would silently truncate an
+    # existing file to 0 bytes while still reporting "completed". The model must
+    # get an explicit failure instead, and the original content must survive.
+    editor, workspace = _make_editor(tmp_path)
+    (workspace / "query1.cpp").write_text("// real implementation\n", encoding="utf-8")
+
+    op = ApplyPatchOperation(type="create_file", path="query1.cpp", diff="")
+    result, _ = editor._create_file_impl(op)
+
+    assert result.status == "failed"
+    assert "empty" in result.output.lower()
+    assert (workspace / "query1.cpp").read_text(
+        encoding="utf-8"
+    ) == "// real implementation\n"
+
+
+def test_create_file_impl_rejects_empty_diff_for_new_file(tmp_path):
+    editor, workspace = _make_editor(tmp_path)
+
+    op = ApplyPatchOperation(type="create_file", path="new.cpp", diff="")
+    result, _ = editor._create_file_impl(op)
+
+    assert result.status == "failed"
+    assert not (workspace / "new.cpp").exists()
+
+
 def test_create_file_impl_still_blocks_readonly(tmp_path):
     # read-only framework files must never be overwritten via create_file.
     workspace = tmp_path / "ws"

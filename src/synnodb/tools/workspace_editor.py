@@ -333,6 +333,25 @@ class WorkspaceEditor:
             overwrote_existing = target.exists()
 
             content = apply_diff("", diff, mode="create")
+            if not content:
+                # An empty/whitespace-only (or otherwise degenerate) diff parses to ""
+                # with no error from apply_diff - nothing signals that. Silently writing
+                # that out would truncate an existing file to 0 bytes while still
+                # reporting "completed", leaving the model to think its write succeeded.
+                activity_summary_entry = f"Apply_patch called: Create file {operation.path} (FAILED - diff produced empty content)"
+                return (
+                    ApplyPatchResult(
+                        status="failed",
+                        output=(
+                            f"Error: the diff for creating/overwriting {relative} parsed "
+                            "to empty content, so nothing was written (the file's previous "
+                            "content, if any, is unchanged). create_file diffs must consist "
+                            "only of '+'-prefixed lines carrying the full file content - "
+                            "resend the diff with the complete content."
+                        ),
+                    ),
+                    activity_summary_entry,
+                )
             print_colored_diff(diff, is_create=True)
             target.write_text(content, encoding="utf-8")
 
