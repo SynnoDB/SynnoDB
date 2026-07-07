@@ -830,9 +830,7 @@ def _current_content_block(relative: str, original: str) -> str:
     return f"=== CURRENT CONTENT OF {relative} ===\n{current}\n=== END ==="
 
 
-def _render_numbered_lines(
-    content: str, offset: int | None, limit: int | None
-) -> str:
+def _render_numbered_lines(content: str, offset: int | None, limit: int | None) -> str:
     """Render file content `cat -n` style (1-based line numbers) for read_file.
 
     `offset` is the 1-based line to start from (default 1). `limit` bounds how
@@ -847,9 +845,7 @@ def _render_numbered_lines(
     start_idx = start - 1
     end_idx = min(start_idx + max(count, 0), total)
 
-    numbered = "\n".join(
-        f"{i + 1:6d}\t{lines[i]}" for i in range(start_idx, end_idx)
-    )
+    numbered = "\n".join(f"{i + 1:6d}\t{lines[i]}" for i in range(start_idx, end_idx))
 
     if start_idx >= total:
         return f"(file has {total} lines; offset {start} is past the end of the file)"

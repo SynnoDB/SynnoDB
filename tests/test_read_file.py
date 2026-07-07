@@ -73,7 +73,10 @@ def test_offset_and_limit(tmp_path):
 
     result = editor.read_file("a.cpp", offset=3, limit=2)
 
-    assert result == "     3\tline3\n     4\tline4\n... (truncated, showing lines 3-4 of 10 total — pass offset/limit to read more)"
+    assert (
+        result
+        == "     3\tline3\n     4\tline4\n... (truncated, showing lines 3-4 of 10 total — pass offset/limit to read more)"
+    )
 
 
 def test_truncation_note_on_long_file(tmp_path):
