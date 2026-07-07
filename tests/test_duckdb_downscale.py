@@ -1,7 +1,7 @@
 """FK-preserving (referential) downscaling of a DuckDB source.
 
 Covers the design's test plan (§9): join-graph inference from the workload queries, the
-referential-closure properties of a downscaled tier (no dangling join keys, non-vacuous joins,
+referential-closure properties of a downscaled subset (no dangling join keys, non-vacuous joins,
 determinism, small/disconnected tables kept whole), and end-to-end registration of a workload
 sourced from a DuckDB connection via the parquet fallback.
 """
@@ -170,7 +170,7 @@ def _kept(con, downscaler, table):
 def test_no_dangling_join_keys(synthetic_con, downscaler):
     """After sampling, every kept child key must resolve to a kept parent along every
     traversed edge - the referential-closure guarantee."""
-    downscaler.materialize_temp_tier(0.2)
+    downscaler.materialize_temp_subset(0.2)
     K = downscaler.KEEP_PREFIX
     dangling_li_ord = synthetic_con.execute(
         f"SELECT COUNT(*) FROM {K}lineitem l "
@@ -191,8 +191,8 @@ def test_no_dangling_join_keys(synthetic_con, downscaler):
 
 
 def test_workload_joins_non_vacuous(synthetic_con, downscaler):
-    """The whole point: every workload join still produces rows on the downscaled tier."""
-    downscaler.materialize_temp_tier(0.2)
+    """The whole point: every workload join still produces rows on the downscaled subset."""
+    downscaler.materialize_temp_subset(0.2)
     K = downscaler.KEEP_PREFIX
     for sql in (
         f"SELECT COUNT(*) FROM {K}lineitem l JOIN {K}orders o ON l.l_orderkey = o.o_orderkey",
@@ -204,14 +204,14 @@ def test_workload_joins_non_vacuous(synthetic_con, downscaler):
 
 
 def test_anchor_actually_downscaled(synthetic_con, downscaler):
-    downscaler.materialize_temp_tier(0.2)
+    downscaler.materialize_temp_subset(0.2)
     kept = _kept(synthetic_con, downscaler, "lineitem")
     assert 0 < kept < 1000  # sampled, not whole, not empty
     downscaler.drop()
 
 
 def test_small_dims_and_disconnected_kept_whole(synthetic_con, downscaler):
-    plan = downscaler.materialize_temp_tier(0.2)
+    plan = downscaler.materialize_temp_subset(0.2)
     modes = {t.table: t.mode for t in plan.tables}
     assert modes["nation"] == "whole"  # below threshold
     assert modes["island"] == "whole"  # disconnected from the anchor
@@ -223,24 +223,24 @@ def test_small_dims_and_disconnected_kept_whole(synthetic_con, downscaler):
 
 
 def test_determinism(synthetic_con, downscaler):
-    first = {t.table: t.kept_rows for t in downscaler.materialize_temp_tier(0.2).tables}
+    first = {t.table: t.kept_rows for t in downscaler.materialize_temp_subset(0.2).tables}
     second = {
-        t.table: t.kept_rows for t in downscaler.materialize_temp_tier(0.2).tables
+        t.table: t.kept_rows for t in downscaler.materialize_temp_subset(0.2).tables
     }
     assert first == second
     downscaler.drop()
 
 
-def test_full_tier_keeps_everything(synthetic_con, downscaler):
-    plan = downscaler.plan_tier(1.0)
+def test_full_subset_keeps_everything(synthetic_con, downscaler):
+    plan = downscaler.plan_subset(1.0)
     assert all(t.mode == "whole" for t in plan.tables)
 
 
 def test_invalid_fraction_rejected(downscaler):
     with pytest.raises(ValueError):
-        downscaler.plan_tier(0.0)
+        downscaler.plan_subset(0.0)
     with pytest.raises(ValueError):
-        downscaler.plan_tier(1.5)
+        downscaler.plan_subset(1.5)
 
 
 def test_self_referential_edge_rejected(synthetic_con):
@@ -251,12 +251,12 @@ def test_self_referential_edge_rejected(synthetic_con):
         )
 
 
-def test_copy_tier_to_parquet_roundtrip(synthetic_con, downscaler, tmp_path):
-    out = tmp_path / "ratio0.2"
-    downscaler.copy_tier_to_parquet(0.2, out)
+def test_copy_subset_to_parquet_roundtrip(synthetic_con, downscaler, tmp_path):
+    out = tmp_path / "fraction0.2"
+    downscaler.copy_subset_to_parquet(0.2, out)
     for table in ("lineitem", "orders", "customer", "nation", "island"):
         assert (out / f"{table}.parquet").exists()
-    # the materialized parquet must preserve referential closure just like the temp tier
+    # the materialized parquet must preserve referential closure just like the temp subset
     rc = duckdb.connect()
     try:
         for table in ("lineitem", "orders"):
@@ -274,7 +274,7 @@ def test_copy_tier_to_parquet_roundtrip(synthetic_con, downscaler, tmp_path):
 
 # --------------------------------------------------------------------------- registration
 def test_register_workload_from_duckdb_end_to_end(tmp_path):
-    """A workload registered straight from a DuckDB connection materializes ratio tiers and
+    """A workload registered straight from a DuckDB connection materializes fraction subsets and
     exposes a small-first ladder whose downscaled rung has non-vacuous joins (the fallback
     path the whole factory + oracle run against)."""
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
@@ -282,13 +282,13 @@ def test_register_workload_from_duckdb_end_to_end(tmp_path):
 
     con = duckdb.connect()
     _make_synthetic(con)
-    managed = tmp_path / "tiers"
+    managed = tmp_path / "subsets"
     spec = register_workload_from_duckdb(
         name="synthetic_byo",
         con=con,
         queries_json=_SYNTHETIC_QUERIES,
         managed_root=managed,
-        downscale_tiers=(0.2,),
+        downscale_fractions=(0.2,),
         whole_table_threshold=10,
         serve_from="parquet",  # this test exercises the parquet fallback specifically
     )
@@ -299,18 +299,18 @@ def test_register_workload_from_duckdb_end_to_end(tmp_path):
     assert set(spec.tables) == {"lineitem", "orders", "customer", "nation", "island"}
     assert spec.dataset_version is not None
 
-    ratio_dir = find_sf_dir(managed, 0.2)
+    fraction_dir = find_sf_dir(managed, 0.2)
     full_dir = find_sf_dir(managed, 1.0)
-    assert ratio_dir is not None and ratio_dir.name == "ratio0.2"
-    assert full_dir is not None and full_dir.name == "ratio1"
+    assert fraction_dir is not None and fraction_dir.name == "fraction0.2"
+    assert full_dir is not None and full_dir.name == "fraction1"
 
-    # Oracle-style read of the downscaled tier: joins must be non-empty.
+    # Oracle-style read of the downscaled subset: joins must be non-empty.
     oc = duckdb.connect()
     try:
         for table in ("lineitem", "orders", "customer"):
             oc.execute(
                 f"CREATE VIEW {table} AS "
-                f"SELECT * FROM read_parquet('{(ratio_dir / f'{table}.parquet').as_posix()}')"
+                f"SELECT * FROM read_parquet('{(fraction_dir / f'{table}.parquet').as_posix()}')"
             )
         n = oc.execute(
             "SELECT COUNT(*) FROM lineitem l "
@@ -327,26 +327,26 @@ def test_register_workload_from_duckdb_is_idempotent(tmp_path):
 
     con = duckdb.connect()
     _make_synthetic(con)
-    managed = tmp_path / "tiers"
+    managed = tmp_path / "subsets"
     kwargs = dict(
         name="synthetic_byo_idem",
         con=con,
         queries_json=_SYNTHETIC_QUERIES,
         managed_root=managed,
-        downscale_tiers=(0.2,),
+        downscale_fractions=(0.2,),
         whole_table_threshold=10,
     )
     v1 = register_workload_from_duckdb(**kwargs).dataset_version
-    # second call reuses the already-materialized tiers and yields the same fingerprint
+    # second call reuses the already-materialized subsets and yields the same fingerprint
     v2 = register_workload_from_duckdb(**kwargs).dataset_version
     con.close()
     assert v1 == v2
 
 
-def test_factory_provider_resolves_ratio_tiers(tmp_path):
-    """The factory's OLAPWorkloadProvider must resolve the downscaler's ``ratio<f>`` tiers the
-    same way it resolves legacy ``sf<N>`` ones - the integration point that lets the whole
-    factory run unchanged against DuckDB-derived tiers."""
+def test_factory_provider_resolves_fraction_subsets(tmp_path):
+    """The factory's OLAPWorkloadProvider must resolve the downscaler's ``fraction<f>`` subsets
+    the same way it resolves legacy ``sf<N>`` ones - the integration point that lets the whole
+    factory run unchanged against DuckDB-derived subsets."""
     from synnodb.tools.run_tool_mode import RunToolMode
     from synnodb.utils.utils import DBStorage
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
@@ -354,15 +354,15 @@ def test_factory_provider_resolves_ratio_tiers(tmp_path):
 
     con = duckdb.connect()
     _make_synthetic(con)
-    managed = tmp_path / "tiers"
+    managed = tmp_path / "subsets"
     register_workload_from_duckdb(
         name="synthetic_factory",
         con=con,
         queries_json=_SYNTHETIC_QUERIES,
         managed_root=managed,
-        downscale_tiers=(0.2,),
+        downscale_fractions=(0.2,),
         whole_table_threshold=10,
-        serve_from="parquet",  # this test exercises the parquet-tier factory path specifically
+        serve_from="parquet",  # this test exercises the parquet-subset factory path specifically
     )
     con.close()
 
@@ -372,9 +372,9 @@ def test_factory_provider_resolves_ratio_tiers(tmp_path):
         db_storage=DBStorage.IN_MEMORY,
         query_ids=["1"],
     )
-    # every candidate tier present on disk is discovered under its ratio directory
+    # every candidate subset present on disk is discovered under its fraction directory
     on_disk = dict(prov._datasets_on_disk())
-    assert "ratio0.2" in on_disk and "ratio1" in on_disk
+    assert "fraction0.2" in on_disk and "fraction1" in on_disk
 
     # the fast-check sweep mints a parquet dir that actually exists (the path built at
     # provider load time, previously hardcoded to ``sf<N>``)
@@ -383,6 +383,6 @@ def test_factory_provider_resolves_ratio_tiers(tmp_path):
     )
     assert batches
     for batch in batches:
-        tier_dir = Path(batch.exec_settings.parquet_dir)
-        assert tier_dir.name.startswith("ratio")
-        assert (tier_dir / "lineitem.parquet").exists()
+        subset_dir = Path(batch.exec_settings.parquet_dir)
+        assert subset_dir.name.startswith("fraction")
+        assert (subset_dir / "lineitem.parquet").exists()

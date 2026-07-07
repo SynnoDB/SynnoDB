@@ -1,6 +1,6 @@
 """Referential (FK-preserving) downscaling of a DuckDB database.
 
-The pre-scaled small scale-factor tiers used to be supplied by the user. This module derives
+The pre-scaled small scale-factor subsets used to be supplied by the user. This module derives
 them instead: given a live DuckDB connection and the workload's queries, it produces a
 *referentially closed* downscaled sample - a fraction of the data whose joins still produce
 rows - so the cheap correctness rungs remain non-vacuous.
@@ -18,7 +18,7 @@ Stated over an arbitrary schema - a set of tables with row counts and a join gra
 undirected equi-join edges ``Ti.col <-> Tj.col``:
 
 1. ``ANCHOR`` = the largest table. Sample a deterministic fraction ``f`` of it by hashing its
-   key columns: ``hash(key) % K < round(f*K)``. Deterministic (no RNG) so a tier is
+   key columns: ``hash(key) % K < round(f*K)``. Deterministic (no RNG) so a subset is
    reproducible and cache-keyable.
 2. Tables at or below a small-row threshold, and tables with no join path to the anchor, are
    kept **whole** - cheap to keep, and dropping their rows would only lose join coverage.
@@ -36,7 +36,7 @@ undirected equi-join edges ``Ti.col <-> Tj.col``:
 Two deliberate refinements over "OR every incident edge":
 
 * **Parent-ward only.** Propagating along back-edges (child -> parent -> child ...) lets a
-  single kept fact row pull in a parent's entire fan-out and cascades to near-full tiers. We
+  single kept fact row pull in a parent's entire fan-out and cascades to near-full subsets. We
   only follow edges toward the anchor, which still keeps every join non-vacuous while bounding
   size.
 * **Whole neighbours don't restrict.** A whole table's key column already contains the full
@@ -44,16 +44,16 @@ Two deliberate refinements over "OR every incident edge":
   (it would make ``V`` whole too). We therefore never propagate *through* a whole table; the
   whole dimension is simply present so ``V``'s references resolve.
 
-Both directly address the "propagation blow-up" and low-cardinality-edge risks. Realized tier
+Both directly address the "propagation blow-up" and low-cardinality-edge risks. Realized subset
 size is emergent (propagation pulls in joinable rows) and is logged per table - no silent
 truncation.
 
 Sinks
 -----
 The same plan feeds three sinks (only the sink differs): ephemeral DuckDB **temp tables**
-(``keep_<table>``, the tier consumed in-connection); a standalone **tier.duckdb** database
-(``ratio<f>/tier.duckdb``, the DuckDB-native default the engine ingests over shm and the oracle
-materializes flat from); and a **parquet** materialization (``ratio<f>/<table>.parquet``, the
+(``keep_<table>``, the subset consumed in-connection); a standalone **subset.duckdb** database
+(``fraction<f>/subset.duckdb``, the DuckDB-native default the engine ingests over shm and the oracle
+materializes flat from); and a **parquet** materialization (``fraction<f>/<table>.parquet``, the
 internal fallback). Nothing is written back to the caller's database.
 """
 
@@ -76,7 +76,7 @@ from synnodb.workloads.dataset.custom_scaler.scale_parquet import (
 
 logger = logging.getLogger(__name__)
 
-# Hash-sample resolution: hash(key) % K < round(f*K). 1000 gives ratios to 0.1% granularity.
+# Hash-sample resolution: hash(key) % K < round(f*K). 1000 gives fractions to 0.1% granularity.
 _HASH_MODULUS = 1000
 
 # A [PLACEHOLDER] token in a BYO query template - replaced with a literal so the SQL parses.
@@ -300,8 +300,8 @@ def build_join_graph(
 
 # --------------------------------------------------------------------------- the downscaler
 @dataclass
-class TierTable:
-    """One table's contribution to a tier: how its kept set is defined."""
+class SubsetTable:
+    """One table's contribution to a subset: how its kept set is defined."""
 
     table: str
     mode: str  # "anchor" | "whole" | "sample"
@@ -310,17 +310,17 @@ class TierTable:
 
 
 @dataclass
-class TierResult:
+class SubsetResult:
     fraction: float
     anchor: str
-    tables: list[TierTable] = field(default_factory=list)
+    tables: list[SubsetTable] = field(default_factory=list)
 
 
 class ReferentialDownscaler:
-    """Builds referentially-closed downscaled tiers off a live DuckDB connection.
+    """Builds referentially-closed downscaled subsets off a live DuckDB connection.
 
-    Introspection and the join graph are computed once; :meth:`materialize_temp_tier` and
-    :meth:`copy_tier_to_parquet` then realize any fraction. The caller's database is only read;
+    Introspection and the join graph are computed once; :meth:`materialize_temp_subset` and
+    :meth:`copy_subset_to_parquet` then realize any fraction. The caller's database is only read;
     all intermediate state lives in session-local ``TEMP`` tables that are dropped when done.
     """
 
@@ -398,11 +398,11 @@ class ReferentialDownscaler:
     def _keep_name(self, table: str) -> str:
         return f"{self.KEEP_PREFIX}{table}"
 
-    def plan_tier(self, fraction: float) -> TierResult:
+    def plan_subset(self, fraction: float) -> SubsetResult:
         """Compute each table's kept-set SELECT for ``fraction`` without executing anything.
 
         The SELECTs reference source tables and the ``keep_*`` temp tables of *closer* tables,
-        so executing them in the returned order materializes a consistent tier.
+        so executing them in the returned order materializes a consistent subset.
         """
         if not (0.0 < fraction <= 1.0):
             raise ValueError(f"fraction must be in (0, 1], got {fraction}")
@@ -416,19 +416,19 @@ class ReferentialDownscaler:
             if t != anchor and counts[t] <= self.whole_table_threshold
         }
 
-        result = TierResult(fraction=fraction, anchor=anchor)
+        result = SubsetResult(fraction=fraction, anchor=anchor)
         if fraction >= 1.0:
-            # Benchmark tier: the full dataset, every table as-is.
+            # Benchmark subset: the full dataset, every table as-is.
             for t in self.schema.tables:
                 result.tables.append(
-                    TierTable(t, "whole", f"SELECT * FROM {_quote_ident(t)}")
+                    SubsetTable(t, "whole", f"SELECT * FROM {_quote_ident(t)}")
                 )
             return result
 
         # anchor: deterministic hash sample
         keep_cut = round(fraction * _HASH_MODULUS)
         result.tables.append(
-            TierTable(
+            SubsetTable(
                 anchor,
                 "anchor",
                 f"SELECT * FROM {_quote_ident(anchor)} "
@@ -467,11 +467,11 @@ class ReferentialDownscaler:
             if pred is None:
                 # small dim, disconnected, or reachable only through whole tables -> keep whole
                 result.tables.append(
-                    TierTable(t, "whole", f"SELECT * FROM {_quote_ident(t)}")
+                    SubsetTable(t, "whole", f"SELECT * FROM {_quote_ident(t)}")
                 )
             else:
                 result.tables.append(
-                    TierTable(
+                    SubsetTable(
                         t, "sample", f"SELECT * FROM {_quote_ident(t)} WHERE {pred}"
                     )
                 )
@@ -482,12 +482,12 @@ class ReferentialDownscaler:
         for t in self.schema.tables:
             self.con.execute(f"DROP TABLE IF EXISTS {self._keep_name(t)}")
 
-    def materialize_temp_tier(self, fraction: float) -> TierResult:
+    def materialize_temp_subset(self, fraction: float) -> SubsetResult:
         """Create one ``TEMP TABLE _synno_keep_<table>`` per table for ``fraction`` and return
-        the realized row counts. The temp tables are the tier (native sink); the caller reads
+        the realized row counts. The temp tables are the subset (native sink); the caller reads
         them and is responsible for cleanup via :meth:`drop`.
         """
-        plan = self.plan_tier(fraction)
+        plan = self.plan_subset(fraction)
         self._drop_keep_tables()
         # A single pass in plan order is the fixpoint: tables are materialized nearest-anchor
         # first, and each sampled table's predicate references only the keep_* sets of strictly
@@ -501,25 +501,25 @@ class ReferentialDownscaler:
             tt.kept_rows = self.con.execute(
                 f"SELECT COUNT(*) FROM {self._keep_name(tt.table)}"
             ).fetchone()[0]
-        self._log_tier(plan)
+        self._log_subset(plan)
         return plan
 
-    def _materialize_tier(
-        self, fraction: float, sink: Callable[[TierTable, str], None]
-    ) -> TierResult:
-        """Shared tier-materialization skeleton: resolve the plan for ``fraction`` and drive
-        ``sink(tier_table, source_relation)`` once per table.
+    def _materialize_subset(
+        self, fraction: float, sink: Callable[[SubsetTable, str], None]
+    ) -> SubsetResult:
+        """Shared subset-materialization skeleton: resolve the plan for ``fraction`` and drive
+        ``sink(subset_table, source_relation)`` once per table.
 
-        ``source_relation`` is the table's ``keep_*`` temp table for a fractional tier or the
-        source table itself for the full tier. Fractional tiers build the ``keep_*`` temp tables
-        up front and drop them afterwards; the full tier reads the source directly and back-fills
+        ``source_relation`` is the table's ``keep_*`` temp table for a fractional subset or the
+        source table itself for the full subset. Fractional subsets build the ``keep_*`` temp tables
+        up front and drop them afterwards; the full subset reads the source directly and back-fills
         row counts from the schema. Callers supply only the per-table sink and manage any output
         resource (a connection, a directory) around this call.
         """
         plan = (
-            self.materialize_temp_tier(fraction)
+            self.materialize_temp_subset(fraction)
             if fraction < 1.0
-            else self.plan_tier(fraction)
+            else self.plan_subset(fraction)
         )
         try:
             for tt in plan.tables:
@@ -533,34 +533,34 @@ class ReferentialDownscaler:
                 # No temp tables were created; count rows for the summary from the source.
                 for tt in plan.tables:
                     tt.kept_rows = self.schema.row_counts[tt.table]
-                self._log_tier(plan)
+                self._log_subset(plan)
         finally:
             if fraction < 1.0:
                 self._drop_keep_tables()
         return plan
 
-    def copy_tier_to_parquet(self, fraction: float, out_dir: Path | str) -> TierResult:
+    def copy_subset_to_parquet(self, fraction: float, out_dir: Path | str) -> SubsetResult:
         """Materialize ``fraction`` and write ``<out_dir>/<table>.parquet`` for every table.
 
         Whole tables are copied straight from the source (no temp table needed); sampled tables
-        are materialized as temp tables first so the parquet exactly matches what the tier
+        are materialized as temp tables first so the parquet exactly matches what the subset
         contains. Column types are preserved by ``COPY (SELECT * ...) TO parquet``.
         """
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
 
-        def sink(tt: TierTable, source: str) -> None:
+        def sink(tt: SubsetTable, source: str) -> None:
             dest = (out / f"{tt.table}.parquet").as_posix().replace("'", "''")
             self.con.execute(
                 f"COPY (SELECT * FROM {source}) TO '{dest}' (FORMAT 'parquet')"
             )
 
-        return self._materialize_tier(fraction, sink)
+        return self._materialize_subset(fraction, sink)
 
-    def copy_tier_to_duckdb(
+    def copy_subset_to_duckdb(
         self, fraction: float, out_db_path: Path | str
-    ) -> TierResult:
-        """Materialize ``fraction`` into a standalone ``tier.duckdb`` at ``out_db_path`` - the
+    ) -> SubsetResult:
+        """Materialize ``fraction`` into a standalone ``subset.duckdb`` at ``out_db_path`` - the
         DuckDB-native sink. Each kept table becomes a plainly-named table in the new database
         (``lineitem``, ``orders``, …), which the candidate engine ingests over the shm plane and
         the DuckDB oracle materializes flat from. No parquet is written.
@@ -572,31 +572,31 @@ class ReferentialDownscaler:
         """
         out_db = Path(out_db_path)
         if out_db.exists():
-            raise FileExistsError(f"tier database already exists: {out_db}")
+            raise FileExistsError(f"subset database already exists: {out_db}")
         out_db.parent.mkdir(parents=True, exist_ok=True)
-        tier_con = duckdb.connect(str(out_db))
+        subset_con = duckdb.connect(str(out_db))
 
-        def sink(tt: TierTable, source: str) -> None:
+        def sink(tt: SubsetTable, source: str) -> None:
             arrow_tbl = self.con.execute(f"SELECT * FROM {source}").to_arrow_table()
-            tier_con.register("_synno_src", arrow_tbl)
-            tier_con.execute(
+            subset_con.register("_synno_src", arrow_tbl)
+            subset_con.execute(
                 f"CREATE TABLE {_quote_ident(tt.table)} AS SELECT * FROM _synno_src"
             )
-            tier_con.unregister("_synno_src")
+            subset_con.unregister("_synno_src")
 
         try:
-            return self._materialize_tier(fraction, sink)
+            return self._materialize_subset(fraction, sink)
         finally:
-            tier_con.close()
+            subset_con.close()
 
     def drop(self) -> None:
         """Drop the ephemeral ``keep_*`` temp tables (idempotent)."""
         self._drop_keep_tables()
 
-    def _log_tier(self, plan: TierResult) -> None:
+    def _log_subset(self, plan: SubsetResult) -> None:
         total = sum(t.kept_rows or 0 for t in plan.tables)
         logger.info(
-            "Downscaled tier ratio=%s (anchor=%s): %d rows across %d tables",
+            "Downscaled subset fraction=%s (anchor=%s): %d rows across %d tables",
             plan.fraction,
             plan.anchor,
             total,

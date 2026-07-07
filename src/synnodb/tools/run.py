@@ -463,10 +463,10 @@ class RunTool:
         # assemble call cmd
         cmd = f"./db {batch.cli_call_args}"
 
-        # DuckDB-native tier: stage its tables into /dev/shm and set SYNNODB_SHM_INGEST so the
+        # DuckDB-native subset: stage its tables into /dev/shm and set SYNNODB_SHM_INGEST so the
         # in-memory loader ingests them over the shm plane instead of reading parquet (the env
         # flows to the loader via run_env exactly as STORAGE_DIR does for the SSD plane).
-        _stage_duckdb_tier_shm(batch)
+        _stage_duckdb_subset_shm(batch)
 
         # start with general extra env passed to the function - create copy
         extra_env = dict(general_extra_env)
@@ -728,8 +728,8 @@ def delete_result_files(workspace_path: Path):
             f.unlink()
 
 
-def _stage_duckdb_tier_shm(batch: QueryBatch) -> None:
-    """For a DuckDB-native tier batch, stage the tier's ``tier.duckdb`` into ``/dev/shm`` and set
+def _stage_duckdb_subset_shm(batch: QueryBatch) -> None:
+    """For a DuckDB-native subset batch, stage the subset's ``subset.duckdb`` into ``/dev/shm`` and set
     ``SYNNODB_SHM_INGEST`` on the batch so the in-memory engine ingests it over the shm plane. A
     no-op for every other data source, so the parquet path is untouched."""
     from synnodb.utils.utils import DataSource
@@ -738,10 +738,10 @@ def _stage_duckdb_tier_shm(batch: QueryBatch) -> None:
     if getattr(exec_settings, "data_source", None) != DataSource.DUCKDB:
         return
 
-    from synnodb.cpp_runner.shm_stage import stage_tier_duckdb_to_shm
+    from synnodb.cpp_runner.shm_stage import stage_subset_duckdb_to_shm
 
-    tier_db = Path(exec_settings.parquet_dir) / "tier.duckdb"  # type: ignore[attr-defined]
-    ingest_dir = stage_tier_duckdb_to_shm(tier_db)
+    subset_db = Path(exec_settings.parquet_dir) / "subset.duckdb"  # type: ignore[attr-defined]
+    ingest_dir = stage_subset_duckdb_to_shm(subset_db)
     env = dict(batch.extra_env or {})
     env["SYNNODB_SHM_INGEST"] = str(ingest_dir)
     batch.extra_env = env

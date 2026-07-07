@@ -37,10 +37,10 @@ class DuckDBConnectionManager:
         # parquet file, so queries stream the data from parquet at query time
         # and nothing is held in DuckDB. If False, each table is materialized
         # into DuckDB via CREATE TABLE (data lives in memory / the .duckdb file).
-        # Only consulted when the tier is served from PARQUET.
+        # Only consulted when the subset is served from PARQUET.
         self.run_duckdb_on_parquet = run_duckdb_on_parquet
-        # Where the oracle reads each tier from: ``ServeFrom.DUCKDB`` materializes the flat tables
-        # from the tier's ``tier.duckdb`` (ATTACH) instead of from parquet.
+        # Where the oracle reads each subset from: ``ServeFrom.DUCKDB`` materializes the flat tables
+        # from the subset's ``subset.duckdb`` (ATTACH) instead of from parquet.
         self.serve_from = serve_from
         self.parquet_path = parquet_path
         self.sf = sf
@@ -157,8 +157,8 @@ class DuckDBConnectionManager:
     def _ensure_tables_loaded(self) -> None:
         """Connect and make each dataset table available under its real name.
 
-        The tables resolve from one of three sources: a ``ServeFrom.DUCKDB`` tier's
-        ``tier.duckdb`` (materialized flat via ATTACH), a view over the tier's parquet
+        The tables resolve from one of three sources: a ``ServeFrom.DUCKDB`` subset's
+        ``subset.duckdb`` (materialized flat via ATTACH), a view over the subset's parquet
         (``run_duckdb_on_parquet`` - data streamed from parquet at query time), or a materialized
         table read from that parquet. Either way the (unchanged) SQL queries that reference bare
         table names resolve correctly.
@@ -166,55 +166,55 @@ class DuckDBConnectionManager:
         self._connect(self.duckdb_path)
         assert self.con is not None
 
-        # Resolve the tier directory under the parquet root (sampling-ratio ``ratio<f>`` or
-        # legacy ``sf<N>``).
+        # Resolve the subset directory under the parquet root (sampling-fraction ``fraction<f>``
+        # or legacy ``sf<N>``).
         from synnodb.workloads.workload_spec import find_sf_dir
 
-        tier_dir = find_sf_dir(self.parquet_path, self.sf)
-        if tier_dir is None:
+        subset_dir = find_sf_dir(self.parquet_path, self.sf)
+        if subset_dir is None:
             raise FileNotFoundError(
-                f"No tier directory for ratio/SF {self.sf:g} under {self.parquet_path}."
+                f"No subset directory for fraction/SF {self.sf:g} under {self.parquet_path}."
             )
 
         if self.serve_from == ServeFrom.DUCKDB:
-            self._load_tables_from_tier_duckdb(tier_dir)
+            self._load_tables_from_subset_duckdb(subset_dir)
         else:
             if self.run_duckdb_on_parquet:
                 object_kind = "VIEW"
-                desc = f"Registering DuckDB parquet views for {tier_dir.name}"
+                desc = f"Registering DuckDB parquet views for {subset_dir.name}"
             else:
                 object_kind = "TABLE"
-                desc = f"Loading DuckDB tables for {tier_dir.name}"
+                desc = f"Loading DuckDB tables for {subset_dir.name}"
 
             for table in tqdm(self.dataset_tables, desc=desc):
                 self.con.execute(
                     f"CREATE {object_kind} {table} AS "
-                    f"SELECT * FROM read_parquet('{(tier_dir / f'{table}.parquet').as_posix()}')"
+                    f"SELECT * FROM read_parquet('{(subset_dir / f'{table}.parquet').as_posix()}')"
                 )
         if self.duckdb_path is not None:
             self.con.execute("CHECKPOINT")
             self.con.close()
             self.con = None
 
-    def _load_tables_from_tier_duckdb(self, tier_dir: Path) -> None:
-        """Materialize each dataset table flat from the tier's ``tier.duckdb`` (DuckDB-native).
+    def _load_tables_from_subset_duckdb(self, subset_dir: Path) -> None:
+        """Materialize each dataset table flat from the subset's ``subset.duckdb`` (DuckDB-native).
 
-        The tier database is ATTACHed read-only and each table copied into a native table, so
+        The subset database is ATTACHed read-only and each table copied into a native table, so
         the oracle answers the exact same rows the engine ingests over shm - no parquet on disk.
         """
         assert self.con is not None
-        tier_db = tier_dir / "tier.duckdb"
-        if not tier_db.exists():
+        subset_db = subset_dir / "subset.duckdb"
+        if not subset_db.exists():
             raise FileNotFoundError(
-                f"No DuckDB-native tier database at {tier_db} (expected tier.duckdb)."
+                f"No DuckDB-native subset database at {subset_db} (expected subset.duckdb)."
             )
-        alias = "_synno_tier_src"
-        safe_db = tier_db.as_posix().replace("'", "''")
+        alias = "_synno_subset_src"
+        safe_db = subset_db.as_posix().replace("'", "''")
         self.con.execute(f"ATTACH '{safe_db}' AS {alias} (READ_ONLY)")
         try:
             for table in tqdm(
                 self.dataset_tables,
-                desc=f"Loading DuckDB tables for {tier_dir.name} (native)",
+                desc=f"Loading DuckDB tables for {subset_dir.name} (native)",
             ):
                 self.con.execute(
                     f'CREATE TABLE {table} AS SELECT * FROM {alias}."{table}"'

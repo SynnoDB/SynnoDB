@@ -474,7 +474,7 @@ class SynnoDB:
         *,
         name: str,
         queries_json: "str | Path | dict",
-        downscale_tiers: tuple[float, ...] = (0.02, 0.1),
+        downscale_fractions: tuple[float, ...] = (0.02, 0.1),
         join_relationships: list | None = None,
         dataset_name: str | None = None,
         schema_example_table: str | None = None,
@@ -485,16 +485,16 @@ class SynnoDB:
         """Register a workload straight from a live DuckDB connection - no pre-scaled parquet.
 
         The caller owns a DuckDB connection (or a ``.duckdb`` file path); SynnoDB reads its
-        schema, tables, and queries, then derives the run's tiers by **FK-preserving
-        downscaling** (§6): the full dataset is the benchmark tier and each fraction in
-        ``downscale_tiers`` becomes a referentially-closed fast-check rung whose joins still
+        schema, tables, and queries, then derives the run's subsets by **FK-preserving
+        downscaling** (§6): the full dataset is the benchmark subset and each fraction in
+        ``downscale_fractions`` becomes a referentially-closed fast-check rung whose joins still
         produce rows. The connection is only read - nothing is copied back into it.
 
             import duckdb, synnodb
             conn = duckdb.connect("tpch.duckdb")
             db = synnodb.SynnoDB.in_memory(queries="1-5")
             db.sync_from_duckdb(conn, name="tpch_byo", queries_json="queries.json",
-                                downscale_tiers=(0.02, 0.1))
+                                downscale_fractions=(0.02, 0.1))
             plan = db.createStoragePlan()
 
         Args:
@@ -503,22 +503,22 @@ class SynnoDB:
             name: workload id to register under (becomes this driver's workload).
             queries_json: a ``queries.json`` path or an already-parsed ``{qid: entry}`` dict;
                 its JOINs are the primary signal for the FK-preserving join graph.
-            downscale_tiers: sampling ratios of the largest table for the fast-check rungs.
+            downscale_fractions: sampling fractions of the largest table for the fast-check rungs.
             join_relationships: optional explicit ``(table_a.col, table_b.col)`` equi-join pairs
                 unioned into the inferred join graph for anything inference misses.
-            whole_table_threshold: tables at or below this row count are kept whole per tier.
-            serve_from: where the run's queries read their tiers from, a :class:`ServeFrom` (or
-                its string value). ``ServeFrom.DUCKDB`` (default) makes each tier a ``tier.duckdb``
+            whole_table_threshold: tables at or below this row count are kept whole per subset.
+            serve_from: where the run's queries read their subsets from, a :class:`ServeFrom` (or
+                its string value). ``ServeFrom.DUCKDB`` (default) makes each subset a ``subset.duckdb``
                 the engine ingests over the shm plane and the oracle materializes flat from, with
                 no parquet on disk (in-memory only); ``ServeFrom.PARQUET`` materializes
-                ``<table>.parquet`` files per tier (the fallback; also works on SSD). The
-                benchmark tier is a zero-copy symlink to the source when a path is given.
+                ``<table>.parquet`` files per subset (the fallback; also works on SSD). The
+                benchmark subset is a zero-copy symlink to the source when a path is given.
             set_as_workload: point this driver's config at the new workload (default True).
 
         Returns the registered :class:`~synnodb.workloads.workload_spec.WorkloadSpec`.
 
-        Tiers are materialized under
-        ``<data_dir>/workloads/<name>/<dataset>_parquet/ratio<f>/`` (a ``tier.duckdb`` for
+        Subsets are materialized under
+        ``<data_dir>/workloads/<name>/<dataset>_parquet/fraction<f>/`` (a ``subset.duckdb`` for
         ``serve_from="duckdb"``, ``<table>.parquet`` files for ``"parquet"``) and the factory +
         DuckDB oracle run against them.
         """
@@ -536,7 +536,7 @@ class SynnoDB:
         else:
             connection = con
             # A live connection opened from a file exposes it via database_list; use it to
-            # symlink the native benchmark tier zero-copy (None -> materialize a full copy).
+            # symlink the native benchmark subset zero-copy (None -> materialize a full copy).
             try:
                 rows = connection.execute("PRAGMA database_list").fetchall()
                 for row in rows:
@@ -554,7 +554,7 @@ class SynnoDB:
                 con=connection,
                 queries_json=queries_json,
                 managed_root=managed_root,
-                downscale_tiers=downscale_tiers,
+                downscale_fractions=downscale_fractions,
                 join_relationships=join_relationships,
                 dataset_name=dataset_name,
                 schema_example_table=schema_example_table,

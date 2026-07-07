@@ -35,7 +35,7 @@ from synnodb.workloads.query_params import (
 from synnodb.workloads.workload_spec import (
     WorkloadSpec,
     register_workload,
-    tier_dirname,
+    subset_dirname,
 )
 
 if TYPE_CHECKING:
@@ -199,9 +199,10 @@ def _natural_sort(ids: list[str]) -> list[str]:
 
 
 def _sf_dir(parquet_dir: Path, sf: float) -> Path:
-    """The existing tier directory for a tier value under a parquet root - the sampling-ratio
-    ``ratio<f>`` convention (written by the referential downscaler) or the legacy ``sf<N>``
-    one. Falls back to the ``sf<sf>`` spelling for error messages when nothing exists yet."""
+    """The existing subset directory for a subset value under a parquet root - the
+    sampling-fraction ``fraction<f>`` convention (written by the referential downscaler) or the
+    legacy ``sf<N>`` one. Falls back to the ``sf<sf>`` spelling for error messages when nothing
+    exists yet."""
     from synnodb.workloads.workload_spec import find_sf_dir
 
     resolved = find_sf_dir(parquet_dir, sf)
@@ -215,15 +216,15 @@ _FAST_RUNG_COUNT = 2
 
 
 def _discover_available_sfs(parquet_dir: Path) -> list[float]:
-    """Tier values that actually have data on disk, ascending.
+    """Subset values that actually have data on disk, ascending.
 
-    Convention is ``<parquet_dir>/<tier>/<table>.parquet`` where ``<tier>`` is ``ratio<f>``
-    (sampling ratio) or the legacy ``sf<N>``; integral values are returned as ints so they
-    format back to ``ratio1``/``sf50`` rather than ``ratio1.0``/``sf50.0``."""
+    Convention is ``<parquet_dir>/<subset>/<table>.parquet`` where ``<subset>`` is ``fraction<f>``
+    (sampling fraction) or the legacy ``sf<N>``; integral values are returned as ints so they
+    format back to ``fraction1``/``sf50`` rather than ``fraction1.0``/``sf50.0``."""
     sfs: list[float] = []
     if not parquet_dir.is_dir():
         return sfs
-    for prefix in ("ratio", "sf"):
+    for prefix in ("fraction", "sf"):
         for child in parquet_dir.glob(f"{prefix}*"):
             if not child.is_dir():
                 continue
@@ -249,9 +250,9 @@ def _derive_sf_ladder(
 
     Note: for a workload sourced from a DuckDB connection this scanning is moot -
     :func:`register_workload_from_duckdb` derives the fast rungs itself by FK-preserving
-    downscaling and hands us an explicit ``(ratio, …, 1.0)`` ladder, so the branch below that
-    honours an explicit multi-tier ladder is taken and no ``sf*`` scan happens. This function
-    still scans for the bring-your-own **parquet** entries, which supply their own tiers on disk;
+    downscaling and hands us an explicit ``(fraction, …, 1.0)`` ladder, so the branch below that
+    honours an explicit multi-subset ladder is taken and no ``sf*`` scan happens. This function
+    still scans for the bring-your-own **parquet** entries, which supply their own subsets on disk;
     those keep TPC-H-shaped inputs fast and fail loudly (the warning below) otherwise.
     """
     target = scale_factors[-1]
@@ -325,12 +326,12 @@ def schema_ddl_from_parquet(
         con.close()
 
 
-def schema_ddl_from_duckdb(tier_db_path: str | Path, tables: list[str]) -> str:
-    """Derive a CREATE TABLE DDL string for the planner from a DuckDB-native ``tier.duckdb``,
+def schema_ddl_from_duckdb(subset_db_path: str | Path, tables: list[str]) -> str:
+    """Derive a CREATE TABLE DDL string for the planner from a DuckDB-native ``subset.duckdb``,
     the DuckDB-native analogue of :func:`schema_ddl_from_parquet` (no parquet to describe)."""
     import duckdb
 
-    con = duckdb.connect(str(tier_db_path), read_only=True)
+    con = duckdb.connect(str(subset_db_path), read_only=True)
     try:
         return _ddl_from_describe(con, tables, lambda t: f'"{t}"')
     finally:
@@ -484,9 +485,9 @@ def _register_static_workload(
     schema_factory: "Callable[[], str] | None" = None,
     serve_from: ServeFrom = ServeFrom.PARQUET,
 ) -> WorkloadSpec:
-    """Shared builder: turn an ``{id: sql}`` map + a tier root into a registered workload.
-    Schema is derived from the parquet tier (or supplied via ``schema_factory`` for DuckDB-native
-    tiers); tables inferred if not given. Templated queries are filled by sampling their typed
+    """Shared builder: turn an ``{id: sql}`` map + a subset root into a registered workload.
+    Schema is derived from the parquet subset (or supplied via ``schema_factory`` for DuckDB-native
+    subsets); tables inferred if not given. Templated queries are filled by sampling their typed
     :class:`ParamSpace` at run time; static queries get an identity generator."""
     parquet_dir = Path(parquet_dir)
     # Normalize keys (q1/Q1/query1/1/2b) to canonical bare ids, reliably + reported.
@@ -575,18 +576,18 @@ def _register_static_workload(
 
 
 # The referential downscaler's version. Bumped when its algorithm changes so a stale materialized
-# tier (and any LLM/snapshot cache keyed on ``dataset_version``) is invalidated.
+# subset (and any LLM/snapshot cache keyed on ``dataset_version``) is invalidated.
 _DOWNSCALER_VERSION = "1"
 
 
 def _duckdb_dataset_version(
     schema,
-    tiers: tuple[float, ...],
+    subsets: tuple[float, ...],
     whole_table_threshold: int,
     serve_from: ServeFrom,
 ) -> str:
     """A cache-busting fingerprint of the derived dataset: source table names + row counts,
-    the tier fractions, the whole-table threshold, the tier storage format (duckdb vs parquet),
+    the subset fractions, the whole-table threshold, the subset storage format (duckdb vs parquet),
     and the downscaler version. Re-extraction after any of these changes invalidates stale
     LLM/snapshot cache entries (§5.2)."""
     import hashlib
@@ -594,7 +595,7 @@ def _duckdb_dataset_version(
     payload = repr(
         {
             "tables": sorted(schema.row_counts.items()),
-            "tiers": sorted(tiers),
+            "subsets": sorted(subsets),
             "whole_table_threshold": whole_table_threshold,
             "serve_from": serve_from.value,
             "downscaler": _DOWNSCALER_VERSION,
@@ -609,7 +610,7 @@ def register_workload_from_duckdb(
     queries_json: "str | Path | dict",
     *,
     managed_root: str | Path,
-    downscale_tiers: tuple[float, ...] = (0.02, 0.1),
+    downscale_fractions: tuple[float, ...] = (0.02, 0.1),
     join_relationships: list | None = None,
     tables: list[str] | None = None,
     dataset_name: str | None = None,
@@ -618,20 +619,20 @@ def register_workload_from_duckdb(
     serve_from: "ServeFrom | str" = ServeFrom.DUCKDB,
     source_db_path: str | Path | None = None,
 ) -> WorkloadSpec:
-    """Register a workload sourced from a live DuckDB connection, deriving the tiers by
+    """Register a workload sourced from a live DuckDB connection, deriving the subsets by
     FK-preserving downscaling instead of taking pre-scaled parquet (the connection-sourced
     sibling of :func:`register_workload_from_json`).
 
-    Two tier representations, selected by ``serve_from``:
+    Two subset representations, selected by ``serve_from``:
 
     * ``ServeFrom.DUCKDB`` (the default): the referential downscaler
       (:mod:`synnodb.workloads.dataset.custom_scaler.duckdb_downscale`) materializes each
-      downscaled tier as ``<managed_root>/ratio<f>/tier.duckdb``, and the full ``ratio1``
-      benchmark tier is a symlink to ``source_db_path`` when given (zero-copy) or a materialized
-      copy otherwise. No parquet touches disk: the candidate engine ingests the tier over the shm
+      downscaled subset as ``<managed_root>/fraction<f>/subset.duckdb``, and the full ``fraction1``
+      benchmark subset is a symlink to ``source_db_path`` when given (zero-copy) or a materialized
+      copy otherwise. No parquet touches disk: the candidate engine ingests the subset over the shm
       plane and the DuckDB oracle materializes flat tables from it.
     * ``ServeFrom.PARQUET``: the same downscaler writes
-      ``<managed_root>/ratio<f>/<table>.parquet`` and the workload is registered exactly like a
+      ``<managed_root>/fraction<f>/<table>.parquet`` and the workload is registered exactly like a
       bring-your-own parquet workload, so the whole factory + oracle run against it unchanged.
 
     The caller's database is only read; nothing is written back.
@@ -641,16 +642,16 @@ def register_workload_from_duckdb(
         con: a live ``duckdb.DuckDBPyConnection`` to source schema + data from.
         queries_json: a ``queries.json`` path, or an already-parsed ``{qid: entry}`` dict; its
             JOINs are the primary signal for the FK-preserving join graph.
-        managed_root: directory the materialized ``ratio<f>/`` tiers are written under.
-        downscale_tiers: sampling ratios of the anchor for the fast-check rungs.
+        managed_root: directory the materialized ``fraction<f>/`` subsets are written under.
+        downscale_fractions: sampling fractions of the anchor for the fast-check rungs.
         join_relationships: optional explicit ``(table_a.col, table_b.col)`` equi-join pairs,
             unioned into the inferred join graph for anything inference misses.
         tables / dataset_name / schema_example_table: as in the parquet entry points.
-        whole_table_threshold: tables at or below this row count are kept whole in a tier.
-        serve_from: an :class:`ServeFrom` (or its string value) selecting the tier
-            representation - ``DUCKDB`` (``tier.duckdb``) vs. ``PARQUET`` (parquet files).
+        whole_table_threshold: tables at or below this row count are kept whole in a subset.
+        serve_from: an :class:`ServeFrom` (or its string value) selecting the subset
+            representation - ``DUCKDB`` (``subset.duckdb``) vs. ``PARQUET`` (parquet files).
         source_db_path: the source ``.duckdb`` path, used only to symlink the DuckDB benchmark
-            tier zero-copy; None materializes a full copy instead.
+            subset zero-copy; None materializes a full copy instead.
     """
     from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
         ReferentialDownscaler,
@@ -673,47 +674,47 @@ def register_workload_from_duckdb(
         whole_table_threshold=whole_table_threshold,
     )
 
-    # Tier ladder = the downscale ratios (fast-check rungs) plus the full ``1.0`` benchmark tier
+    # Subset ladder = the downscale fractions (fast-check rungs) plus the full ``1.0`` benchmark subset
     # last (the shared builder treats the last scale factor as the benchmark/target).
-    tiers = tuple(sorted(set(downscale_tiers)))
-    if any(not (0.0 < t < 1.0) for t in tiers):
+    subsets = tuple(sorted(set(downscale_fractions)))
+    if any(not (0.0 < t < 1.0) for t in subsets):
         raise ValueError(
-            f"downscale_tiers must be fractions in (0, 1); got {downscale_tiers}."
+            f"downscale_fractions must be fractions in (0, 1); got {downscale_fractions}."
         )
-    scale_factors = tiers + (1.0,)
+    scale_factors = subsets + (1.0,)
     resolved_tables = tables or list(downscaler.schema.tables)
     managed_root = Path(managed_root)
 
     schema_factory: "Callable[[], str] | None" = None
     if serve_from == ServeFrom.DUCKDB:
         for fraction in scale_factors:
-            out_dir = managed_root / tier_dirname(fraction)
-            tier_db = out_dir / "tier.duckdb"
-            if tier_db.exists() or tier_db.is_symlink():
-                logger.info("Tier %s already materialized, skipping", out_dir.name)
+            out_dir = managed_root / subset_dirname(fraction)
+            subset_db = out_dir / "subset.duckdb"
+            if subset_db.exists() or subset_db.is_symlink():
+                logger.info("Subset %s already materialized, skipping", out_dir.name)
                 continue
             if fraction >= 1.0 and source_db_path is not None:
-                # Zero-copy benchmark tier: symlink to the source database (no full copy).
+                # Zero-copy benchmark subset: symlink to the source database (no full copy).
                 out_dir.mkdir(parents=True, exist_ok=True)
-                tier_db.symlink_to(Path(source_db_path).resolve())
+                subset_db.symlink_to(Path(source_db_path).resolve())
             else:
-                downscaler.copy_tier_to_duckdb(fraction, tier_db)
-        smallest_tier_db = managed_root / tier_dirname(scale_factors[0]) / "tier.duckdb"
+                downscaler.copy_subset_to_duckdb(fraction, subset_db)
+        smallest_subset_db = managed_root / subset_dirname(scale_factors[0]) / "subset.duckdb"
 
         def schema_factory() -> str:
-            return schema_ddl_from_duckdb(smallest_tier_db, resolved_tables)
+            return schema_ddl_from_duckdb(smallest_subset_db, resolved_tables)
     else:
         for fraction in scale_factors:
-            out_dir = managed_root / tier_dirname(fraction)
+            out_dir = managed_root / subset_dirname(fraction)
             if out_dir.is_dir() and all(
                 (out_dir / f"{t}.parquet").exists() for t in resolved_tables
             ):
-                logger.info("Tier %s already materialized, skipping", out_dir.name)
+                logger.info("Subset %s already materialized, skipping", out_dir.name)
                 continue
-            downscaler.copy_tier_to_parquet(fraction, out_dir)
+            downscaler.copy_subset_to_parquet(fraction, out_dir)
 
     dataset_version = _duckdb_dataset_version(
-        downscaler.schema, tiers, whole_table_threshold, serve_from
+        downscaler.schema, subsets, whole_table_threshold, serve_from
     )
 
     return _register_static_workload(

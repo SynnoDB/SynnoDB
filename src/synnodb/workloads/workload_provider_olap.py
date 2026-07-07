@@ -65,8 +65,8 @@ def allowed_data_sources(system: System, db_storage: DBStorage) -> set[DataSourc
     DuckDB reads either flat (its native materialized tables) or, on disk, parquet views. The
     bespoke engine additionally has its own on-disk storage plan. In-memory rules out anything
     that needs disk (parquet views, the bespoke storage plan) - but the engine can still load
-    flat in memory. ``DUCKDB`` (DuckDB-native tiers, ingested over the shm plane / materialized
-    flat from a ``tier.duckdb``) is an in-memory-only representation for both systems - the SSD
+    flat in memory. ``DUCKDB`` (DuckDB-native subsets, ingested over the shm plane / materialized
+    flat from a ``subset.duckdb``) is an in-memory-only representation for both systems - the SSD
     plane has no shm ingest branch yet. Returns an empty set for systems not modelled here.
     """
     persistent = is_persistent_storage(db_storage)
@@ -245,10 +245,10 @@ class OLAPWorkloadProvider(WorkloadProvider):
             if sf_dir is None:
                 continue
             if self.spec.serve_from == ServeFrom.DUCKDB:
-                # DuckDB-native tier: a single ``tier.duckdb`` stands in for the parquet files.
-                tier_db = sf_dir / "tier.duckdb"
-                if tier_db.exists():
-                    yield sf_dir.name, [tier_db]
+                # DuckDB-native subset: a single ``subset.duckdb`` stands in for the parquet files.
+                subset_db = sf_dir / "subset.duckdb"
+                if subset_db.exists():
+                    yield sf_dir.name, [subset_db]
                 continue
             paths = [sf_dir / f"{table}.parquet" for table in self.spec.tables]
             if all(p.exists() for p in paths):
@@ -321,31 +321,31 @@ class OLAPWorkloadProvider(WorkloadProvider):
                 storage_dir = None
 
             if storage_dir is not None:
-                # SSD/persistent: the bespoke engine's on-disk storage plan. DuckDB-native tiers
+                # SSD/persistent: the bespoke engine's on-disk storage plan. DuckDB-native subsets
                 # have no shm/parquet on the SSD plane yet, so reject that combination clearly.
                 if self.spec.serve_from == ServeFrom.DUCKDB:
                     raise ValueError(
-                        f"Workload {self.spec.name!r} uses DuckDB-native tiers, which are "
+                        f"Workload {self.spec.name!r} uses DuckDB-native subsets, which are "
                         "in-memory only (the SSD plane has no shm ingest branch). Run it with "
                         "in_memory storage, or register it via the parquet fallback for SSD."
                     )
                 data_source = DataSource.BESPOKE
             elif self.spec.serve_from == ServeFrom.DUCKDB:
-                # In-memory DuckDB-native: the tier is a ``tier.duckdb`` in the tier dir; the
+                # In-memory DuckDB-native: the subset is a ``subset.duckdb`` in the subset dir; the
                 # engine ingests it over shm and the oracle materializes flat tables from it.
                 data_source = DataSource.DUCKDB
             else:
                 data_source = DataSource.FLAT
 
-            # assemble parquet path where data is loaded from - resolve the tier directory
-            # under the parquet root (sampling-ratio ``ratio<f>`` or legacy ``sf<N>``)
-            tier_dir = find_sf_dir(self.base_parquet_dir, scale_factor)
-            if tier_dir is None:
+            # assemble parquet path where data is loaded from - resolve the subset directory
+            # under the parquet root (sampling-fraction ``fraction<f>`` or legacy ``sf<N>``)
+            subset_dir = find_sf_dir(self.base_parquet_dir, scale_factor)
+            if subset_dir is None:
                 raise FileNotFoundError(
-                    f"No tier directory for scale/ratio {scale_factor:g} under "
+                    f"No subset directory for fraction/SF {scale_factor:g} under "
                     f"{self.base_parquet_dir} for workload {self.spec.name!r}."
                 )
-            parquet_dir = tier_dir.as_posix() + "/"
+            parquet_dir = subset_dir.as_posix() + "/"
             assert parquet_dir.endswith("/"), (
                 f"Parquet directory must end with '/': {parquet_dir}"
             )

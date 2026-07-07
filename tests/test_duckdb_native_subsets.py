@@ -1,9 +1,9 @@
-"""DuckDB-native tiers (Step 2): the tier is a ``tier.duckdb`` instead of parquet.
+"""DuckDB-native subsets (Step 2): the subset is a ``subset.duckdb`` instead of parquet.
 
-Covers the tier.duckdb sink, DuckDB-native registration + the ``DataSource.DUCKDB`` wiring
+Covers the subset.duckdb sink, DuckDB-native registration + the ``DataSource.DUCKDB`` wiring
 through the provider, the shm staging that feeds the synthesis engine, and - the load-bearing
-cross-check (design §9) - that the DuckDB oracle returns identical rows whether the tier is a
-``tier.duckdb`` (native) or parquet (fallback).
+cross-check (design §9) - that the DuckDB oracle returns identical rows whether the subset is a
+``subset.duckdb`` (native) or parquet (fallback).
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def _register(name, managed_root, source_db, *, serve_from):
             con=con,
             queries_json=_QUERIES,
             managed_root=managed_root,
-            downscale_tiers=(0.2,),
+            downscale_fractions=(0.2,),
             whole_table_threshold=10,
             serve_from=serve_from,
             source_db_path=str(source_db) if is_duckdb else None,
@@ -91,29 +91,29 @@ def test_duckdb_source_allowed_in_memory_only():
 
 
 # --------------------------------------------------------------------- native registration
-def test_native_registration_materializes_tier_duckdb(tmp_path, source_db):
+def test_native_registration_materializes_subset_duckdb(tmp_path, source_db):
     managed = tmp_path / "managed"
     spec = _register("nat_reg", managed, source_db, serve_from=ServeFrom.DUCKDB)
 
     assert spec.serve_from == ServeFrom.DUCKDB
     assert spec.fast_check_sfs == (0.2,)
     assert spec.benchmark_sf == 1.0
-    # downscaled tier is a real tier.duckdb; the benchmark tier is a zero-copy symlink to source
-    downscaled = managed / "ratio0.2" / "tier.duckdb"
-    full = managed / "ratio1" / "tier.duckdb"
+    # downscaled subset is a real subset.duckdb; the benchmark subset is a zero-copy symlink to source
+    downscaled = managed / "fraction0.2" / "subset.duckdb"
+    full = managed / "fraction1" / "subset.duckdb"
     assert downscaled.exists() and not downscaled.is_symlink()
     assert full.is_symlink() and full.resolve() == source_db.resolve()
     # no parquet was written
     assert not list(managed.rglob("*.parquet"))
-    # schema derived from the tier.duckdb
+    # schema derived from the subset.duckdb
     assert "CREATE TABLE lineitem" in spec.schema()
 
 
-def test_native_tier_duckdb_joins_non_vacuous(tmp_path, source_db):
+def test_native_subset_duckdb_joins_non_vacuous(tmp_path, source_db):
     managed = tmp_path / "managed"
     _register("nat_join", managed, source_db, serve_from=ServeFrom.DUCKDB)
-    tier_db = managed / "ratio0.2" / "tier.duckdb"
-    con = duckdb.connect(str(tier_db), read_only=True)
+    subset_db = managed / "fraction0.2" / "subset.duckdb"
+    con = duckdb.connect(str(subset_db), read_only=True)
     try:
         n = con.execute(
             "SELECT COUNT(*) FROM lineitem l "
@@ -138,7 +138,7 @@ def test_provider_native_emits_duckdb_data_source(tmp_path, source_db):
         query_ids=["1"],
     )
     on_disk = dict(prov._datasets_on_disk())
-    assert "ratio0.2" in on_disk and "ratio1" in on_disk
+    assert "fraction0.2" in on_disk and "fraction1" in on_disk
 
     from synnodb.tools.run_tool_mode import RunToolMode
 
@@ -148,8 +148,8 @@ def test_provider_native_emits_duckdb_data_source(tmp_path, source_db):
     assert batches
     for batch in batches:
         assert batch.exec_settings.data_source == DataSource.DUCKDB
-        tier_dir = Path(batch.exec_settings.parquet_dir)
-        assert (tier_dir / "tier.duckdb").exists()
+        subset_dir = Path(batch.exec_settings.parquet_dir)
+        assert (subset_dir / "subset.duckdb").exists()
 
 
 def test_provider_native_rejects_ssd(tmp_path, source_db):
@@ -198,8 +198,8 @@ def _oracle_result(base, sf, serve_from, sql):
 
 
 def test_oracle_native_matches_parquet(tmp_path, source_db):
-    """Design §9: the DuckDB oracle must return identical rows whether the tier is a
-    ``tier.duckdb`` (native) or parquet (fallback) - the fallback keeps the native path honest."""
+    """Design §9: the DuckDB oracle must return identical rows whether the subset is a
+    ``subset.duckdb`` (native) or parquet (fallback) - the fallback keeps the native path honest."""
     managed_native = tmp_path / "native"
     managed_parquet = tmp_path / "parquet"
     _register("ora_native", managed_native, source_db, serve_from=ServeFrom.DUCKDB)
@@ -221,11 +221,11 @@ def test_shm_staging_produces_loader_segments():
     import pyarrow as pa
     import pyarrow.ipc as ipc
 
-    from synnodb.cpp_runner.shm_stage import stage_tier_duckdb_to_shm
+    from synnodb.cpp_runner.shm_stage import stage_subset_duckdb_to_shm
 
     tmp = Path(tempfile.mkdtemp())
-    tier_db = tmp / "tier.duckdb"
-    con = duckdb.connect(str(tier_db))
+    subset_db = tmp / "subset.duckdb"
+    con = duckdb.connect(str(subset_db))
     con.execute(
         "CREATE TABLE lineitem AS "
         "SELECT i AS l_id, (i % 7)::DECIMAL(10,2) AS amt FROM range(100) t(i)"
@@ -233,7 +233,7 @@ def test_shm_staging_produces_loader_segments():
     con.execute("CREATE TABLE orders AS SELECT i AS o_id FROM range(20) t(i)")
     con.close()
 
-    ingest = stage_tier_duckdb_to_shm(tier_db)
+    ingest = stage_subset_duckdb_to_shm(subset_db)
     try:
         # one Arrow IPC file per table, exactly what ReadArrowTableFromShm maps
         for table, rows in (("lineitem", 100), ("orders", 20)):
@@ -247,7 +247,7 @@ def test_shm_staging_produces_loader_segments():
             li = ipc.open_file(src).read_all()
         assert str(li.schema.field("amt").type) == "decimal128(10, 2)"
         # idempotent: same dir, marker present, no rebuild needed
-        assert stage_tier_duckdb_to_shm(tier_db) == ingest
+        assert stage_subset_duckdb_to_shm(subset_db) == ingest
         assert (ingest / ".complete").exists()
     finally:
         import shutil

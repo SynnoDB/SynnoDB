@@ -76,11 +76,11 @@ class WorkloadSpec:
     # cache key so regenerating a dataset (or changing its scale-up code / arg syntax)
     # invalidates stale cache entries. None means "unversioned".
     dataset_version: str | None = None
-    # Where this workload's queries read their tiers from. ``ServeFrom.DUCKDB`` -> each tier
-    # directory holds a ``tier.duckdb`` (produced by the referential downscaler); in-memory runs
+    # Where this workload's queries read their subsets from. ``ServeFrom.DUCKDB`` -> each subset
+    # directory holds a ``subset.duckdb`` (produced by the referential downscaler); in-memory runs
     # then serve the candidate engine over the shm plane and the DuckDB oracle from that database,
     # so no parquet touches disk (in-memory only). ``ServeFrom.PARQUET`` -> the classic
-    # ``<table>.parquet`` tier layout.
+    # ``<table>.parquet`` subset layout.
     serve_from: ServeFrom = ServeFrom.PARQUET
     # Scale factor at which the multi-threading stage runs its large-scale correctness /
     # performance check. None means the framework picks a sensible default.
@@ -103,8 +103,8 @@ class WorkloadSpec:
         return self.schema_factory()
 
     def parquet_root(self) -> Path:
-        """Absolute parquet root holding one directory per tier (``ratio<f>/<table>.parquet``
-        for sampling-ratio tiers, or the legacy ``sf<N>/<table>.parquet``). Bring-your-own
+        """Absolute parquet root holding one directory per subset (``fraction<f>/<table>.parquet``
+        for sampling-fraction subsets, or the legacy ``sf<N>/<table>.parquet``). Bring-your-own
         workloads carry it on the spec; built-ins derive it from the data-dir +
         workload-name convention (so this requires SYNNO_DATA_DIR to be configured)."""
         if self.base_parquet_dir is not None:
@@ -123,8 +123,8 @@ class WorkloadSpec:
         raise ValueError(f"Unknown run mode: {run_mode}")
 
 
-def _tier_value_spellings(value: float) -> list[str]:
-    """The numeric part of a tier directory name, tolerant of int/float formatting
+def _subset_value_spellings(value: float) -> list[str]:
+    """The numeric part of a subset directory name, tolerant of int/float formatting
     (``1`` vs ``1.0``); the integer spelling is tried first so ``5`` -> ``5`` not ``5.0``."""
     spellings: list[str] = []
     try:
@@ -136,24 +136,25 @@ def _tier_value_spellings(value: float) -> list[str]:
     return spellings
 
 
-def tier_dirname(value: float) -> str:
-    """The canonical tier directory name for a sampling ratio: ``ratio<f>`` (e.g. ``ratio0.02``
-    for a fraction, ``ratio1`` for the full benchmark tier). This is the name new tiers are
-    *created* under; the integer spelling is preferred so it matches :func:`find_sf_dir`'s
-    first-tried candidate when *reading* (which also resolves the legacy ``sf<N>`` spelling)."""
-    return f"ratio{_tier_value_spellings(value)[0]}"
+def subset_dirname(value: float) -> str:
+    """The canonical subset directory name for a sampling fraction: ``fraction<f>`` (e.g.
+    ``fraction0.02`` for a downscaled subset, ``fraction1`` for the full benchmark subset). This is
+    the name new subsets are *created* under; the integer spelling is preferred so it matches
+    :func:`find_sf_dir`'s first-tried candidate when *reading* (which also resolves the legacy
+    ``sf<N>`` spelling)."""
+    return f"fraction{_subset_value_spellings(value)[0]}"
 
 
 def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | None:
-    """The tier directory for a tier value under a parquet root.
+    """The subset directory for a subset value under a parquet root.
 
-    Resolves the sampling-ratio convention (``ratio<f>``, written by the referential
+    Resolves the sampling-fraction convention (``fraction<f>``, written by the referential
     downscaler) as well as the legacy scale-factor convention (``sf<N>``), tolerant of
-    int/float name formatting (``ratio1`` vs ``ratio1.0``, ``sf1`` vs ``sf1.0``). A given root
-    only ever holds one convention, so this is unambiguous. None if no spelling exists."""
+    int/float name formatting (``fraction1`` vs ``fraction1.0``, ``sf1`` vs ``sf1.0``). A given
+    root only ever holds one convention, so this is unambiguous. None if no spelling exists."""
     base = Path(base_parquet_dir)
-    for prefix in ("ratio", "sf"):
-        for spelling in _tier_value_spellings(scale_factor):
+    for prefix in ("fraction", "sf"):
+        for spelling in _subset_value_spellings(scale_factor):
             candidate = base / f"{prefix}{spelling}"
             if candidate.exists():
                 return candidate

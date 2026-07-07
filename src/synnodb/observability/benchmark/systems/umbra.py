@@ -241,16 +241,16 @@ class UmbraRunner:
 
         from synnodb.workloads.workload_spec import find_sf_dir
 
-        tier_dir = find_sf_dir(self._parquet_path, scale_factor)
-        if tier_dir is None:
+        subset_dir = find_sf_dir(self._parquet_path, scale_factor)
+        if subset_dir is None:
             raise FileNotFoundError(
-                f"No tier directory for ratio/SF {scale_factor:g} under {self._parquet_path}."
+                f"No subset directory for fraction/SF {scale_factor:g} under {self._parquet_path}."
             )
         for table in tqdm(
             tables,
-            desc=f"Loading Umbra tables for {tier_dir.name} ({db_name})",
+            desc=f"Loading Umbra tables for {subset_dir.name} ({db_name})",
         ):
-            parquet_file = tier_dir / f"{table}.parquet"
+            parquet_file = subset_dir / f"{table}.parquet"
             self._copy_table_via_duckdb_csv(
                 cur=cur,
                 table=table,

@@ -2,21 +2,21 @@
 
 > **Status: Steps 1-2 implemented; Step 3 still design.** This scopes the switch from a
 > parquet-file data source to a user-provided DuckDB database, and the FK-preserving
-> downscaling that replaces the pre-existing small scale-factor tiers.
+> downscaling that replaces the pre-existing small scale-factor subsets.
 >
-> **Step 2 (§8) has landed** - DuckDB-native is now `sync_from_duckdb`'s default. A tier is a
-> `ratio<f>/tier.duckdb` (downscaler `copy_tier_to_duckdb`; the benchmark tier a zero-copy
+> **Step 2 (§8) has landed** - DuckDB-native is now `sync_from_duckdb`'s default. A subset is a
+> `fraction<f>/subset.duckdb` (downscaler `copy_subset_to_duckdb`; the benchmark subset a zero-copy
 > symlink to the source), discriminated by a new `DataSource.DUCKDB`
 > ([utils.py](../src/synnodb/utils/utils.py)). The DuckDB oracle materializes flat tables from it
 > via ATTACH ([duckdb_connection_manager.py](../src/synnodb/observability/benchmark/systems/duckdb_connection_manager.py),
 > keyed into the oracle cache in [system_factory_olap.py](../src/synnodb/workloads/system_factory_olap.py)),
 > and the candidate engine ingests it over the shm plane -
-> [shm_stage.py](../src/synnodb/cpp_runner/shm_stage.py) stages the tier's tables to `/dev/shm`
+> [shm_stage.py](../src/synnodb/cpp_runner/shm_stage.py) stages the subset's tables to `/dev/shm`
 > and [tools/run.py](../src/synnodb/tools/run.py) sets `SYNNODB_SHM_INGEST` (which reaches the
 > in-memory loader via `run_env`, exactly as `STORAGE_DIR` does for SSD; the loader's shm branch
 > was already generated). No parquet on disk. In-memory only (SSD rejected with a clear message);
 > the parquet fallback (`serve_from="parquet"`) is retained and is the honest cross-check
-> ([test_duckdb_native_tiers.py](../tests/test_duckdb_native_tiers.py) asserts the DuckDB oracle
+> ([test_duckdb_native_subsets.py](../tests/test_duckdb_native_subsets.py) asserts the DuckDB oracle
 > returns identical rows either way, §9).
 >
 > **Verification boundary:** every piece is unit-tested except the *end-to-end* engine-over-shm
@@ -29,8 +29,8 @@
 > ([duckdb_downscale.py](../src/synnodb/workloads/dataset/custom_scaler/duckdb_downscale.py)),
 > the `SynnoDB.sync_from_duckdb` front door ([api.py](../src/synnodb/api.py)) backed by the
 > connection-sourced `register_workload_from_duckdb`
-> ([byo_workload.py](../src/synnodb/workloads/byo_workload.py)), the `ratio<f>` tier convention
-> ([workload_spec.py](../src/synnodb/workloads/workload_spec.py) `tier_dirname`/`find_sf_dir`,
+> ([byo_workload.py](../src/synnodb/workloads/byo_workload.py)), the `fraction<f>` subset convention
+> ([workload_spec.py](../src/synnodb/workloads/workload_spec.py) `subset_dirname`/`find_sf_dir`,
 > routed through the provider + DuckDB oracle), the internal parquet fallback, the rewritten
 > [tutorial notebook](../tutorials/gen_tpch_demo.ipynb), and the test suite
 > ([test_duckdb_downscale.py](../tests/test_duckdb_downscale.py)). Steps 2-3 (DuckDB-native
@@ -41,7 +41,7 @@
 > **parent-ward only** (follow edges toward the anchor) and **AND-s multiple edges to the same
 > neighbour** (composite relationships), with whole neighbours never used as filters. This is
 > what actually delivers the §11 "propagation blow-up" and low-cardinality-edge guards - without
-> it a 10% tier of TPC-H comes back at ~99% of full. See the module docstring.
+> it a 10% subset of TPC-H comes back at ~99% of full. See the module docstring.
 >
 > **Feedback welcome inline** - the resolved calls are collected in
 > [§10 Resolved decisions](#10-resolved-decisions); leave notes there or against any section.
@@ -68,15 +68,15 @@ user holds a live DuckDB connection  ──passed to the driver (no copy)──�
         │
         │  SynnoDB(duckdb=conn).sync_from_duckdb(queries_json=...)
         ▼
-  derive tiers FROM the live connection (never written back to it):
-     - benchmark tier  = the full dataset, read zero-copy as-is
-     - fast-check tiers = FK-preserving DOWNSCALED samples (fractions), derived, not supplied
+  derive subsets FROM the live connection (never written back to it):
+     - benchmark subset  = the full dataset, read zero-copy as-is
+     - fast-check subsets = FK-preserving DOWNSCALED samples (fractions), derived, not supplied
         ▼
-  synthesis pipeline + oracle consume those tiers - straight from DuckDB, no parquet
+  synthesis pipeline + oracle consume those subsets - straight from DuckDB, no parquet
   runtime: engine ingests directly from the connection's tables
 ```
 
-The user no longer supplies pre-scaled parquet tiers. They hand us **one live DuckDB connection**; we
+The user no longer supplies pre-scaled parquet subsets. They hand us **one live DuckDB connection**; we
 derive everything - schema, tables, the full-scale benchmark data, and the small validation rungs -
 from it, without copying it or writing anything back.
 
@@ -107,30 +107,30 @@ the DuckDB the engine ingests from. **The engine already eats from DuckDB at ser
 
 1. **Entry / connection** - let the user hand in a live DuckDB connection and have both the factory
    and the runtime source from it directly (instead of hand-loaded parquet tables).
-2. **Synthesis pipeline** - the factory needs benchmark + small-validation tiers for the
-   candidate-engine build and the DuckDB oracle. These tiers must now be **derived from the
+2. **Synthesis pipeline** - the factory needs benchmark + small-validation subsets for the
+   candidate-engine build and the DuckDB oracle. These subsets must now be **derived from the
    connection** - the default feeds them straight from DuckDB (shm ingest + a DuckDB oracle, §5.3),
-   the internal fallback materializes them to `ratio<N>/<table>.parquet` - and the small tiers must be
+   the internal fallback materializes them to `fraction<N>/<table>.parquet` - and the small subsets must be
    **FK-preserving downscales**.
 
 ---
 
 ## 3. The one convention everything hangs off
 
-Every data access in the factory funnels through a **parquet root** holding one directory per tier.
+Every data access in the factory funnels through a **parquet root** holding one directory per subset.
 Today that directory is `sf<N>/<table>.parquet`; this design **retires the scale-factor concept** for
-a **sampling-ratio** one, so the tier directory becomes `ratio<N>/<table>.parquet` (§6, resolved
+a **sampling-fraction** one, so the subset directory becomes `fraction<N>/<table>.parquet` (§6, resolved
 decision 5). The single resolution primitives:
 
 - [workload_spec.py:98-111](../src/synnodb/workloads/workload_spec.py#L98-L111) `parquet_root()`
 - [workload_spec.py:125-139](../src/synnodb/workloads/workload_spec.py#L125-L139) `find_sf_dir(sf)` -
-  retargeted to build `ratio<N>` dirs (and renamed accordingly, e.g. `find_ratio_dir(ratio)`).
+  retargeted to build `fraction<N>` dirs (and renamed accordingly, e.g. `find_fraction_dir(fraction)`).
 - `WorkloadSpec.base_parquet_dir` carries the absolute root for bring-your-own workloads.
 
-Tier ladders live on the spec:
+Subset ladders live on the spec:
 [workload_spec.py:113-122](../src/synnodb/workloads/workload_spec.py#L113-L122)
 `scale_factors_for(run_mode)` → `fast_check_sfs` / `exhaustive_sfs` / `ingest_sfs` / `benchmark_sf`,
-whose values become **sampling ratios** rather than scale factors (the SF-flavored names are renamed to
+whose values become **sampling fractions** rather than scale factors (the SF-flavored names are renamed to
 match).
 
 ### 3.1 The change surface (every site that assumes `sf<N>/<table>.parquet` on disk)
@@ -150,10 +150,10 @@ match).
 | Publish expected_tables | `main.py:713-742` | `sf_dir/f"{t}.parquet"` |
 
 **Design lever:** the rows above funnel through the two resolution primitives, so retiring `sf<N>` for
-`ratio<N>` is a **concentrated rename** in `parquet_root()`/`find_sf_dir()` (plus the few sites that
+`fraction<N>` is a **concentrated rename** in `parquet_root()`/`find_sf_dir()` (plus the few sites that
 hardcode the `sf` prefix or read `read_parquet('.../sf{sf}/...')`); callers that go through the
-primitives are untouched. Once the primitives resolve `ratio<N>`, if the **internal parquet fallback**
-materializes real `ratio<N>/<table>.parquet` tiers from the DuckDB, the rest of the factory keeps
+primitives are untouched. Once the primitives resolve `fraction<N>`, if the **internal parquet fallback**
+materializes real `fraction<N>/<table>.parquet` subsets from the DuckDB, the rest of the factory keeps
 working unchanged (§5.2). The exposed default instead *replaces* these sites with DuckDB-native
 equivalents (shm ingest + a `DataSource.DUCKDB` oracle, §5.3), so no scale-factor labels or on-disk
 parquet remain in the shipped path (resolved decisions 4 & 5). Either way the change collapses into the
@@ -208,21 +208,21 @@ db = synnodb.SynnoDB.in_memory(duckdb=conn)   # the driver is handed the live co
 db.sync_from_duckdb(                           # runs ingest with the connection's data
     name="tpch_byo",
     queries_json="queries.json",
-    downscale_tiers=(0.02, 0.1),              # sampling ratios -> fast-check rungs, via referential closure
+    downscale_fractions=(0.02, 0.1),              # sampling fractions -> fast-check rungs, via referential closure
     join_relationships=None,                  # optional explicit join edges when inference misses (§6)
 )
 ```
 
 `sync_from_duckdb` (a) reads schema + tables + row counts off the connection, (b) infers the join
-graph (§6, primarily from `queries.json`), (c) derives the benchmark + downscaled tiers (§5.2) as
+graph (§6, primarily from `queries.json`), (c) derives the benchmark + downscaled subsets (§5.2) as
 **ephemeral DuckDB tables off that connection** - nothing is copied to disk and nothing is written
 back to the user's store - and (d) registers a `WorkloadSpec` (via an internal
 `register_workload_from_duckdb`, the connection-sourced sibling of `register_workload_from_json`)
-whose tier ladder is `{downscale ratios} ∪ {1.0 (full)}`, then sets it as the driver's workload.
+whose subset ladder is `{downscale fractions} ∪ {1.0 (full)}`, then sets it as the driver's workload.
 Everything downstream is unchanged.
 
 The connection is the **single source of truth and the only representation** - "not copying,
-whatsoever." The benchmark tier is the connection's tables read zero-copy; the downscaled tiers are
+whatsoever." The benchmark subset is the connection's tables read zero-copy; the downscaled subsets are
 temp tables derived from it and dropped with the session. A parquet materialize/load path is retained
 internally only (§5.2), never the default.
 
@@ -234,19 +234,19 @@ tables first). Small, and mostly done - see §7.
 ### 5.2 Registration-time extraction: DuckDB-native, with an internal parquet fallback
 
 Registration derives everything from the live connection - table list, per-table schema (`DESCRIBE`),
-join graph (§6) - and builds the benchmark + downscaled validation tiers with the downscaler (§6.3).
+join graph (§6) - and builds the benchmark + downscaled validation subsets with the downscaler (§6.3).
 
-**DuckDB-native (the path - resolved decision 4).** Tiers stay inside DuckDB and are keyed by their
-**sampling ratio**, not a scale-factor label (resolved decision 5). The sampler writes each downscaled tier as
+**DuckDB-native (the path - resolved decision 4).** Subsets stay inside DuckDB and are keyed by their
+**sampling fraction**, not a scale-factor label (resolved decision 5). The sampler writes each downscaled subset as
 ephemeral DuckDB tables (temp tables / a scratch in-memory DB) derived off the connection; the
-benchmark tier is the connection's tables as-is. Synthesis feeds the candidate engine over the **shm
-plane** (the Arrow hot-load that already exists for serving, §2) and the DuckDB oracle reads the tier
+benchmark subset is the connection's tables as-is. Synthesis feeds the candidate engine over the **shm
+plane** (the Arrow hot-load that already exists for serving, §2) and the DuckDB oracle reads the subset
 tables directly. No parquet touches disk. This is the only exposed mode.
 
-**Internal parquet fallback (retained, not exposed).** The same downscaler can `COPY` each tier to
-`<managed_root>/ratio<fraction>/<table>.parquet` (e.g. `ratio0.02/`, `ratio1.0/` - the folder names
-the sampling ratio, no `sf`), and registration sets `base_parquet_dir=<managed_root>`; the whole
-factory + oracle + the retargeted `find_ratio_dir` (§3) then run against the tier dirs unchanged. This
+**Internal parquet fallback (retained, not exposed).** The same downscaler can `COPY` each subset to
+`<managed_root>/fraction<f>/<table>.parquet` (e.g. `fraction0.02/`, `fraction1.0/` - the folder names
+the sampling fraction, no `sf`), and registration sets `base_parquet_dir=<managed_root>`; the whole
+factory + oracle + the retargeted `find_fraction_dir` (§3) then run against the subset dirs unchanged. This
 path lives behind an internal flag - not the default, not user-facing - as a fallback and to validate
 the sampler against the working factory end-to-end. It is also what `register_workload_from_json` (the
 bring-your-own-parquet entry, kept per resolved decision 6) uses.
@@ -254,19 +254,19 @@ bring-your-own-parquet entry, kept per resolved decision 6) uses.
 ```
 live conn ──read (no copy)──▶  derive schema + join graph (§6)
    │
-   ├── benchmark tier   = full dataset (the connection's tables, read zero-copy)
+   ├── benchmark subset   = full dataset (the connection's tables, read zero-copy)
    └── each fraction f  ──▶ largest-table-anchored sample (§6.3)
                  │
                  ├─ DuckDB-native (default): kept sets are ephemeral DuckDB tables ─▶ shm-fed synthesis + attached oracle
-                 └─ internal fallback     : COPY kept sets TO <managed_root>/ratio<f>/<table>.parquet
+                 └─ internal fallback     : COPY kept sets TO <managed_root>/fraction<f>/<table>.parquet
    ▼
- WorkloadSpec(tier ladder = {<f1>, <f2>, …, full},
-              dataset_version=<hash of source tables + tier params>)   # cache-busting
+ WorkloadSpec(subset ladder = {<f1>, <f2>, …, full},
+              dataset_version=<hash of source tables + subset params>)   # cache-busting
 ```
 
 - One downscaler; only the sink differs (ephemeral DuckDB tables vs. `COPY ... TO parquet`).
 - **Idempotent / cached** like `ensure_tpch_parquet`; the `dataset_version` (hash of the source tables
-  + tier fractions + downscaler version) feeds the LLM/snapshot cache key so re-extraction invalidates
+  + subset fractions + downscaler version) feeds the LLM/snapshot cache key so re-extraction invalidates
   stale caches.
 
 ### 5.3 What "remove parquet everywhere" requires
@@ -277,7 +277,7 @@ that **already exists** elsewhere in the codebase - so this is routing, not a ne
 | Parquet-bound today | DuckDB-native replacement (already exists) |
 |---|---|
 | Candidate engine launched `./db <parquet_dir>`; loader calls `ReadParquetTable` (`db_olap.cpp:63,97`; `prepare_workspace_olap.py:218-221`) | Feed the **shm plane** during synthesis - the same `SYNNODB_SHM_INGEST` Arrow hot-load the router uses at serving time (`process_engine.py:349-424`); the loader's shm branch is *already generated* (`prepare_workspace_olap.py:213-217`) |
-| DuckDB oracle reads `read_parquet('{path}/sf{sf}/{table}.parquet')` (`duckdb_connection_manager.py:172-175`) | Oracle reads the **attached** tier tables - a new `DataSource.DUCKDB` variant (§8) has it `ATTACH` the tier DB instead of `read_parquet` |
+| DuckDB oracle reads `read_parquet('{path}/sf{sf}/{table}.parquet')` (`duckdb_connection_manager.py:172-175`) | Oracle reads the **attached** subset tables - a new `DataSource.DUCKDB` variant (§8) has it `ATTACH` the subset DB instead of `read_parquet` |
 
 Caveat: the **SSD/persistent** engine template has no shm branch yet (`templates/olap/ssd`), so
 DuckDB-native lands **in-memory first**; SSD gets its own non-parquet ingest branch so it too samples
@@ -413,15 +413,15 @@ for V in bfs_order(G, start=anchor):                      # nearest-to-anchor fi
 
 Fed TPC-H, this same loop expands to `keep_lineitem` (anchor) → `keep_orders/part/supplier` →
 `keep_partsupp/customer` → `keep_nation` (OR-ed over customer+supplier) → `keep_region`; fed any other
-database it expands to that schema's tables and edges. DuckDB-native, the `keep_*` sets *are* the tier
+database it expands to that schema's tables and edges. DuckDB-native, the `keep_*` sets *are* the subset
 (oracle attaches them, engine shm-ingests them); in the internal parquet fallback each is `COPY`'d to
-`ratio<fraction>/<table>.parquet`.
+`fraction<f>/<table>.parquet`.
 
 **Properties & caveats:**
 
 - **Non-vacuous joins**: every table a kept anchor row joins to is kept, so the workload's joins
   produce rows - the point of the exercise.
-- **Deterministic** (`hash(key) % K`, no `USING SAMPLE` RNG) → a tier is reproducible and cache-keyable.
+- **Deterministic** (`hash(key) % K`, no `USING SAMPLE` RNG) → a subset is reproducible and cache-keyable.
 - **Fan-out from the non-anchor side is a sample, not a full subtree**: a kept parent row retains only
   the child rows that were reached (the child was sampled at the anchor, not the parent). Deliberate
   cost of anchoring on the largest table; raise `f` where complete per-parent groups matter (§10).
@@ -436,9 +436,9 @@ database it expands to that schema's tables and edges. DuckDB-native, the `keep_
 
 ### 6.4 Sizing
 
-`downscale_tiers` are **sampling ratios of the anchor**, not absolute rows and not scale factors, and
-each tier is named by its ratio (`0.02`, `0.1`, …; the internal-fallback folder is `ratio0.02/` etc.) -
-no `sf` labels anywhere (resolved decision 5). Realized tier size is emergent (propagation pulls in
+`downscale_fractions` are **sampling fractions of the anchor**, not absolute rows and not scale factors, and
+each subset is named by its fraction (`0.02`, `0.1`, …; the internal-fallback folder is `fraction0.02/` etc.) -
+no `sf` labels anywhere (resolved decision 5). Realized subset size is emergent (propagation pulls in
 joinable rows), so we log per-table row counts and total bytes and expose them - no silent truncation.
 
 ---
@@ -474,8 +474,8 @@ fallback** (§5.2, resolved decision 4). Suggested sequencing - each step indepe
 - `duckdb_downscale.py` - the largest-table-anchored propagation sampler (§6.3), beside
   `scale_parquet.py`, reusing its introspection helpers and adding the join-graph builder
   (query-join inference ∪ declared constraints ∪ explicit `join_relationships`).
-- Validate via the **internal parquet fallback** first (sampler `COPY`s tiers to
-  `ratio<fraction>/<table>.parquet`), so the whole factory is exercised end-to-end with **zero downstream
+- Validate via the **internal parquet fallback** first (sampler `COPY`s subsets to
+  `fraction<f>/<table>.parquet`), so the whole factory is exercised end-to-end with **zero downstream
   change** - the fastest way to check the sampler and the notebook against a real DuckDB source. This
   is a dev scaffold, not a shipped mode.
 - Notebook rewrite: drop `ensure_tpch_parquet` + the manual `CREATE TABLE ... read_parquet`; open (or
@@ -484,14 +484,14 @@ fallback** (§5.2, resolved decision 4). Suggested sequencing - each step indepe
 
 ### Step 2 - DuckDB-native synthesis (the default path) ✅ **implemented**
 
-- Add `DataSource.DUCKDB`; the oracle attaches the tier tables instead of `read_parquet`
+- Add `DataSource.DUCKDB`; the oracle attaches the subset tables instead of `read_parquet`
   ([duckdb_connection_manager.py:172-175](../src/synnodb/observability/benchmark/systems/duckdb_connection_manager.py#L172-L175),
   [system_factory_olap.py:80-97](../src/synnodb/workloads/system_factory_olap.py#L80-L97)). Thread it
   through the oracle cache key (as the parquet/flat flag already is).
 - Route the candidate engine through the **shm plane during synthesis** - reuse the serving-time
   `ShmHotLoadEngine` / `SYNNODB_SHM_INGEST` path
   ([process_engine.py:349-424](../src/synnodb/router/process_engine.py#L349-L424)). In-memory storage
-  first. Tiers stay as ephemeral DuckDB tables; nothing is materialized to parquet.
+  first. Subsets stay as ephemeral DuckDB tables; nothing is materialized to parquet.
 
 ### Step 3 - remove parquet from the remaining corners
 
@@ -516,8 +516,8 @@ as what the retained `register_workload_from_json` entry uses, resolved decision
   match the known TPC-H relationships with no declared constraints and no explicit
   `join_relationships`.
 - **End-to-end, native vs. fallback**: `db.sync_from_duckdb(conn)` on a `dbgen` `tpch.duckdb`
-  connection; run the base-impl stage at the small tiers and confirm the correctness check is
-  **non-vacuous** (joins non-empty) and passes, then benchmark at the full tier. Run it once
+  connection; run the base-impl stage at the small subsets and confirm the correctness check is
+  **non-vacuous** (joins non-empty) and passes, then benchmark at the full subset. Run it once
   **DuckDB-native** (the shipped path) and once through the **internal parquet fallback**, and assert
   the validation outcome is identical - the fallback is the cross-check that keeps the native path
   honest.
@@ -529,8 +529,8 @@ as what the retained `register_workload_from_json` entry uses, resolved decision
 
 1. **Attach ownership → there is no file to own.** The `SynnoDB` driver is passed a **live DuckDB
    connection object**; it neither copies nor moves anything. A `sync_from_duckdb` method runs the
-   ingest straight from the connection's data (§5.1). The benchmark tier is read zero-copy; the
-   derived downscale tiers are ephemeral and never written back. This dissolves the
+   ingest straight from the connection's data (§5.1). The benchmark subset is read zero-copy; the
+   derived downscale subsets are ephemeral and never written back. This dissolves the
    read-only-attach vs. adopt-the-file question entirely.
 
 2. **Join graph is built primarily from the queries** (§6.2), unioning in declared constraints and
@@ -546,10 +546,10 @@ as what the retained `register_workload_from_json` entry uses, resolved decision
    engine package references the source DB (no bundled parquet snapshot), and SSD/persistent storage
    gets its own non-parquet ingest branch.
 
-5. **Move off scale factors to sampling ratios.** Tiers are named by their **sampling ratio** (`0.02`,
-   `0.1`, …, plus `1.0`/`full` for the benchmark tier); the `sf1`/`sf2`/`sf<N>` labels are gone
-   everywhere, **including the internal-fallback folder prefix**, which becomes `ratio<N>/` (e.g.
-   `ratio0.02/`). The directory-resolution primitive and the SF-flavored spec fields are retargeted and
+5. **Move off scale factors to sampling fractions.** Subsets are named by their **sampling fraction** (`0.02`,
+   `0.1`, …, plus `1.0`/`full` for the benchmark subset); the `sf1`/`sf2`/`sf<N>` labels are gone
+   everywhere, **including the internal-fallback folder prefix**, which becomes `fraction<N>/` (e.g.
+   `fraction0.02/`). The directory-resolution primitive and the SF-flavored spec fields are retargeted and
    renamed to match (§3, §5.2, §6.4).
 
 6. **Keep the parquet entry path.** `register_workload_from_json` (bring-your-own-parquet) stays
@@ -561,8 +561,8 @@ as what the retained `register_workload_from_json` entry uses, resolved decision
 ## 11. Risks
 
 - **Propagation blow-up**: if the largest table is a *hub* everything joins to, propagation can pull
-  in most of the DB. Guard: keep small dims whole below a threshold; log realized tier sizes; lower
-  `f` if a tier overshoots.
+  in most of the DB. Guard: keep small dims whole below a threshold; log realized subset sizes; lower
+  `f` if a subset overshoots.
 - **Partial fan-out** from anchoring on the largest table (kept parents keep only sampled children,
   §6.3). Acceptable for correctness rungs; raise `f` where complete per-parent groups matter.
 - **Disconnected tables** (no join path to the anchor) get no rows by propagation. Guard: keep such

@@ -95,7 +95,7 @@ def ensure_tpch_duckdb(
 ) -> Path:
     """Materialize a single ``tpch.duckdb`` file holding the TPC-H tables at ``scale_factor``
     via DuckDB's built-in ``dbgen`` - the source of truth the new DuckDB-rooted flow downscales
-    from (no pre-scaled parquet tiers).
+    from (no pre-scaled parquet subsets).
 
     Idempotent: an existing file with all tables present is reused. Generation runs with a
     memory cap and a spill directory so even large scale factors do not OOM.
