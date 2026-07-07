@@ -61,7 +61,9 @@ def test_succeeds_first_try_returns_optimize_prompt_and_stops():
     prompt = stage.next_prompt()
 
     assert prompt is not None
-    assert "db_loader.cpp" in prompt  # the base_optimize_build prompt names the builder file
+    assert (
+        "db_loader.cpp" in prompt
+    )  # the base_optimize_build prompt names the builder file
     run_tool.run_worker.assert_called_once()
     assert run_tool.run_worker.call_args.kwargs["mode"] == RunToolMode.INGEST
 
@@ -116,4 +118,6 @@ def test_gives_up_after_max_attempts_with_last_error_in_message():
     with pytest.raises(ValidationStillFailsException, match="persistent compile error"):
         stage.next_prompt()
 
-    assert run_tool.run_worker.call_count == OptimizeBuildStage.MAX_INGEST_FIX_ATTEMPTS + 1
+    assert (
+        run_tool.run_worker.call_count == OptimizeBuildStage.MAX_INGEST_FIX_ATTEMPTS + 1
+    )
