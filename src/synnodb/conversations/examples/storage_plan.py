@@ -7,16 +7,21 @@ import litellm
 from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.prompts_gen import gen_storage_plan_prompt
 from synnodb.conversations.stage_items import PromptStage, StageItem
+from synnodb.utils.model_setup import setup_model_config
 
 logger = logging.getLogger(__name__)
 
 
-def _judge_storage_plan(model: str, schema: str, plan_text: str) -> str | None:
+def _judge_storage_plan(ctx: ConvContext, schema: str, plan_text: str) -> str | None:
     """One-off LLM check: does ``plan_text`` look like a real storage-layout plan
     for ``schema``? Returns None if it looks valid, else a short reason it doesn't.
 
-    A single lightweight completion (no tools, no session) - separate from the
-    main conversation so a bad judgment can't derail the stage's turn budget.
+    A single lightweight completion (no tools, no session, not cached) - separate
+    from the main conversation so a bad judgment can't derail the stage's turn
+    budget. Still resolves api_base/api_key the same way the main conversation's
+    model wrapper does (setup_model_config), so a self-hosted/local model actually
+    gets reached instead of silently falling through to the provider's cloud
+    default, and reports its cost to the run's stats collector.
     """
     judge_prompt = (
         "You are reviewing a storage-layout design document an engineer just wrote "
@@ -29,18 +34,33 @@ def _judge_storage_plan(model: str, schema: str, plan_text: str) -> str | None:
         "`INVALID: <one-sentence reason>` if it is empty, boilerplate, or does not "
         "describe a storage layout for this schema."
     )
+
+    _use_litellm, model_name, api_key, _openai_client, api_base = setup_model_config(
+        ctx.model
+    )
+
     try:
         response = litellm.completion(
-            model=model,
+            model=model_name,
             messages=[{"role": "user", "content": judge_prompt}],
             max_tokens=200,
+            api_key=api_key,
+            api_base=api_base,
         )
         verdict = response.choices[0].message.content.strip()
+        cost = litellm.completion_cost(response)
     except Exception as e:
         logger.warning(
             f"Storage plan validity judge call failed ({e}); skipping check."
         )
         return None
+
+    logger.info(f"Storage plan judge cost: ${cost:.6f}")
+    run_stats_collector = ctx.run_tool.run_stats_collector
+    if run_stats_collector is not None:
+        run_stats_collector.add_to_activity_summary(
+            f"Storage plan judge: {verdict.splitlines()[0]} (${cost:.6f})"
+        )
 
     if verdict.upper().startswith("VALID"):
         return None
@@ -71,7 +91,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 f"an actual storage layout summary to `{storage_plan_filename}` before proceeding."
             )
 
-        invalid_reason = _judge_storage_plan(ctx.model, schema, plan_text)
+        invalid_reason = _judge_storage_plan(ctx, schema, plan_text)
         if invalid_reason is not None:
             logger.error(f"Storage plan {plan_path} judged invalid: {invalid_reason}")
             return (
