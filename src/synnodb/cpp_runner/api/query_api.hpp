@@ -7,8 +7,9 @@
 
 // Per-query result returned by query().
 // Contains the trace data collected only during this query's execution,
-// the wall-clock runtime in milliseconds, and a non-empty error message
-// when the query threw (otherwise empty).
+// the wall-clock runtime in milliseconds (rounded up, so real but
+// sub-millisecond work reports as 1ms rather than truncating to 0), and a
+// non-empty error message when the query threw (otherwise empty).
 struct QueryResult {
     std::string query_id;
     std::string req_id;
