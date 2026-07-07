@@ -1,20 +1,22 @@
-"""_judge_storage_plan(): model resolution and stats-collector logging.
+"""_judge_storage_plan(): backend-agnostic via the agent SDK wrapper.
 
-The judge is a one-off LLM completion outside the main conversation, so it's easy for
-it to silently drift from how every other LLM call in the pipeline behaves. These tests
-pin the fixed behaviour:
-- it resolves api_base/api_key the same way the main conversation's model wrapper does
-  (setup_model_config), instead of calling litellm with just a bare model string;
-- it reports cost/verdict through ctx.run_tool.run_stats_collector instead of being
-  invisible to cost/observability tracking;
+The judge is a one-off LLM completion outside the main conversation. It used to call
+litellm directly (only supporting litellm-routed models) and compute its own cost via
+litellm.completion_cost. These tests pin the current behaviour:
+- it goes through ctx.agent_sdk_wrapper.run_one_off_completion, so it automatically
+  supports whichever backend the run actually uses (litellm or native OpenAI) instead
+  of hand-resolving litellm-specific config;
 - a call failure (bad endpoint, transient error) still degrades to "skip the check"
-  rather than crashing the stage.
+  rather than crashing the stage;
+- no agent_sdk_wrapper configured (e.g. a bare test ConvContext) also degrades to
+  "skip the check" rather than crashing.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.examples.storage_plan import _judge_storage_plan
@@ -25,17 +27,7 @@ SCHEMA = "CREATE TABLE lineitem (l_orderkey BIGINT);"
 PLAN_TEXT = "l_orderkey stored as int64, sorted ascending, zone-mapped per 64k block."
 
 
-def _fake_response(content: str):
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-    )
-
-
-def _make_ctx(run_stats_collector=None) -> ConvContext:
-    run_tool = MagicMock(name="run_tool")
-    run_tool.run_stats_collector = run_stats_collector or MagicMock(
-        name="run_stats_collector"
-    )
+def _make_ctx(agent_sdk_wrapper=None) -> ConvContext:
     return ConvContext(
         query_ids=["1"],
         filenames=Filenames.for_usecase(),
@@ -43,81 +35,58 @@ def _make_ctx(run_stats_collector=None) -> ConvContext:
         db_storage=DBStorage.IN_MEMORY,
         threads=1,
         model="openai/unsloth/MiniMax-M3",
-        run_tool=run_tool,
+        run_tool=MagicMock(name="run_tool"),
         workload_provider=MagicMock(name="workload_provider"),
         sql_dict={},
         workload=None,
+        agent_sdk_wrapper=agent_sdk_wrapper,
     )
 
 
-def test_resolves_api_base_and_key_instead_of_bare_model_string(monkeypatch):
-    """The exact bug from the review: a bare `litellm.completion(model=ctx.model)` call
-    misses the self-hosted api_base/api_key that setup_model_config resolves, so it would
-    silently try to hit the real provider's cloud endpoint for a local model name."""
-    import synnodb.conversations.examples.storage_plan as sp
+@pytest.mark.asyncio
+async def test_routes_through_agent_sdk_wrapper_not_litellm_directly():
+    wrapper = MagicMock(name="agent_sdk_wrapper")
+    wrapper.run_one_off_completion = AsyncMock(return_value="VALID")
+    ctx = _make_ctx(agent_sdk_wrapper=wrapper)
 
-    monkeypatch.setattr(
-        sp,
-        "setup_model_config",
-        lambda model_arg: (
-            True,
-            model_arg,
-            "resolved-key",
-            None,
-            "http://local:1234/v1",
-        ),
-    )
-    completion_calls = []
-
-    def fake_completion(**kwargs):
-        completion_calls.append(kwargs)
-        return _fake_response("VALID")
-
-    monkeypatch.setattr(sp.litellm, "completion", fake_completion)
-    monkeypatch.setattr(sp.litellm, "completion_cost", lambda resp: 0.001)
-
-    ctx = _make_ctx()
-    result = _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
+    result = await _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
 
     assert result is None  # VALID
-    assert len(completion_calls) == 1
-    assert completion_calls[0]["api_base"] == "http://local:1234/v1"
-    assert completion_calls[0]["api_key"] == "resolved-key"
+    wrapper.run_one_off_completion.assert_awaited_once()
+    call = wrapper.run_one_off_completion.await_args
+    assert SCHEMA in call.args[0]
+    assert PLAN_TEXT in call.args[0]
+    assert call.kwargs["max_tokens"] == 200
 
 
-def test_reports_cost_and_verdict_to_stats_collector(monkeypatch):
-    import synnodb.conversations.examples.storage_plan as sp
+@pytest.mark.asyncio
+async def test_returns_the_invalid_reason():
+    wrapper = MagicMock(name="agent_sdk_wrapper")
+    wrapper.run_one_off_completion = AsyncMock(return_value="INVALID: just says 'TODO'")
+    ctx = _make_ctx(agent_sdk_wrapper=wrapper)
 
-    monkeypatch.setattr(
-        sp, "setup_model_config", lambda model_arg: (True, model_arg, "k", None, None)
+    result = await _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
+
+    assert result == "INVALID: just says 'TODO'"
+
+
+@pytest.mark.asyncio
+async def test_call_failure_skips_the_check_without_crashing():
+    wrapper = MagicMock(name="agent_sdk_wrapper")
+    wrapper.run_one_off_completion = AsyncMock(
+        side_effect=RuntimeError("connection refused")
     )
-    monkeypatch.setattr(
-        sp.litellm, "completion", lambda **kwargs: _fake_response("VALID")
-    )
-    monkeypatch.setattr(sp.litellm, "completion_cost", lambda resp: 0.0042)
+    ctx = _make_ctx(agent_sdk_wrapper=wrapper)
 
-    stats = MagicMock(name="run_stats_collector")
-    ctx = _make_ctx(run_stats_collector=stats)
-
-    _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
-
-    activity_entries = [c.args[0] for c in stats.add_to_activity_summary.call_args_list]
-    assert any("VALID" in e and "0.0042" in e for e in activity_entries)
-
-
-def test_call_failure_skips_the_check_without_crashing(monkeypatch):
-    import synnodb.conversations.examples.storage_plan as sp
-
-    monkeypatch.setattr(
-        sp, "setup_model_config", lambda model_arg: (True, model_arg, "k", None, None)
-    )
-
-    def raising_completion(**kwargs):
-        raise RuntimeError("connection refused")
-
-    monkeypatch.setattr(sp.litellm, "completion", raising_completion)
-
-    ctx = _make_ctx()
-    result = _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
+    result = await _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
 
     assert result is None  # treated as "skip the check", not a crash
+
+
+@pytest.mark.asyncio
+async def test_missing_agent_sdk_wrapper_skips_the_check_without_crashing():
+    ctx = _make_ctx(agent_sdk_wrapper=None)
+
+    result = await _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
+
+    assert result is None
