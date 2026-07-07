@@ -34,18 +34,10 @@ def _shm_base() -> Path:
     return SHM_DIR
 
 
-def _proc_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def _sweep_orphans(base: Path) -> None:
     """Remove ``synno-synth-<pid>-*`` dirs whose owning process is gone (crash cleanup)."""
+    from synnodb.router.shm_transport import _pid_alive
+
     try:
         children = list(base.glob(f"{_PREFIX}*"))
     except OSError:
@@ -56,7 +48,7 @@ def _sweep_orphans(base: Path) -> None:
             pid = int(parts[0])
         except (ValueError, IndexError):
             continue
-        if pid != os.getpid() and not _proc_alive(pid):
+        if pid != os.getpid() and not _pid_alive(pid):
             shutil.rmtree(child, ignore_errors=True)
 
 

@@ -109,14 +109,7 @@ class WorkloadSpec:
         workload-name convention (so this requires SYNNO_DATA_DIR to be configured)."""
         if self.base_parquet_dir is not None:
             return Path(self.base_parquet_dir)
-        from synnodb import settings
-
-        return (
-            settings.get_data_dir()
-            / "workloads"
-            / self.name
-            / f"{self.dataset_name}_parquet"
-        )
+        return managed_parquet_root(self.name, self.dataset_name)
 
     def scale_factors_for(self, run_mode: RunToolMode) -> list[float]:
         if run_mode == RunToolMode.FAST_CHECK:
@@ -165,6 +158,15 @@ def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | Non
             if candidate.exists():
                 return candidate
     return None
+
+
+def managed_parquet_root(name: str, dataset_name: str) -> Path:
+    """The managed parquet root for a workload:
+    ``<data-dir>/workloads/<name>/<dataset>_parquet``. The single source of this convention,
+    shared by registration and :meth:`WorkloadSpec.parquet_root` (requires SYNNO_DATA_DIR)."""
+    from synnodb import settings
+
+    return settings.get_data_dir() / "workloads" / name / f"{dataset_name}_parquet"
 
 
 _REGISTRY: dict[str, WorkloadSpec] = {}

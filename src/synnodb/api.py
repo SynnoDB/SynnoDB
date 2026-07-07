@@ -525,6 +525,7 @@ class SynnoDB:
         import duckdb as _duckdb
 
         from synnodb.workloads.byo_workload import register_workload_from_duckdb
+        from synnodb.workloads.workload_spec import managed_parquet_root
 
         opened: "_duckdb.DuckDBPyConnection | None" = None
         source_db_path: str | None = None
@@ -546,12 +547,7 @@ class SynnoDB:
             except Exception:
                 source_db_path = None
 
-        managed_root = (
-            Path(settings.get_data_dir())
-            / "workloads"
-            / name
-            / f"{dataset_name or name}_parquet"
-        )
+        managed_root = managed_parquet_root(name, dataset_name or name)
         try:
             spec = register_workload_from_duckdb(
                 name=name,

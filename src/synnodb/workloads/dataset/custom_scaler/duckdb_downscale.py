@@ -31,8 +31,7 @@ undirected equi-join edges ``Ti.col <-> Tj.col``:
 
    Multiple edges to the *same* neighbour are ``AND``-ed (a composite relationship - keep only
    rows matching on every shared column); edges to *different* neighbours are ``OR``-ed (a
-   table referenced from two sides is not dropped). A short fixpoint pass closes any residual
-   growth.
+   table referenced from two sides is not dropped).
 
 Two deliberate refinements over "OR every incident edge":
 
@@ -65,7 +64,7 @@ import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import duckdb
 
@@ -316,9 +315,6 @@ class TierResult:
     anchor: str
     tables: list[TierTable] = field(default_factory=list)
 
-    def row_counts(self) -> dict[str, int]:
-        return {t.table: (t.kept_rows or 0) for t in self.tables}
-
 
 class ReferentialDownscaler:
     """Builds referentially-closed downscaled tiers off a live DuckDB connection.
@@ -348,7 +344,7 @@ class ReferentialDownscaler:
             explicit_relationships=join_relationships,
         )
         self.whole_table_threshold = whole_table_threshold
-        self._reject_composite_only_tables()
+        self._reject_self_referential_edges()
         self.adjacency = self._build_adjacency()
 
     # -- graph helpers ------------------------------------------------------
@@ -363,7 +359,7 @@ class ReferentialDownscaler:
             adj[e.table_b].append(e.other(e.table_b))  # type: ignore[arg-type]
         return adj
 
-    def _reject_composite_only_tables(self) -> None:
+    def _reject_self_referential_edges(self) -> None:
         """Self-referential edges are unsupported in v1 (§11); reject with a clear message."""
         for e in self.edges:
             if e.table_a == e.table_b:
@@ -493,25 +489,14 @@ class ReferentialDownscaler:
         """
         plan = self.plan_tier(fraction)
         self._drop_keep_tables()
-        # Initial pass in plan order (each table's parents already materialized).
+        # A single pass in plan order is the fixpoint: tables are materialized nearest-anchor
+        # first, and each sampled table's predicate references only the keep_* sets of strictly
+        # closer tables, which are already final. Parent-ward propagation follows no back-edges,
+        # so no keep_* set can grow once built - re-evaluation would be a no-op.
         for tt in plan.tables:
             self.con.execute(
                 f"CREATE TEMP TABLE {self._keep_name(tt.table)} AS {tt.sql}"
             )
-        # Fixpoint: re-evaluate sampled tables until none grows. Parent-ward propagation is
-        # already ordered, so this usually converges immediately; it defensively closes any
-        # residual growth from cross-edges.
-        sampled = [tt for tt in plan.tables if tt.mode == "sample"]
-        for _ in range(len(self.schema.tables) + 2):
-            grew = False
-            for tt in sampled:
-                name = self._keep_name(tt.table)
-                before = self.con.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
-                self.con.execute(f"CREATE OR REPLACE TEMP TABLE {name} AS {tt.sql}")
-                after = self.con.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
-                grew = grew or after > before
-            if not grew:
-                break
         for tt in plan.tables:
             tt.kept_rows = self.con.execute(
                 f"SELECT COUNT(*) FROM {self._keep_name(tt.table)}"
@@ -519,15 +504,18 @@ class ReferentialDownscaler:
         self._log_tier(plan)
         return plan
 
-    def copy_tier_to_parquet(self, fraction: float, out_dir: Path | str) -> TierResult:
-        """Materialize ``fraction`` and write ``<out_dir>/<table>.parquet`` for every table.
+    def _materialize_tier(
+        self, fraction: float, sink: Callable[[TierTable, str], None]
+    ) -> TierResult:
+        """Shared tier-materialization skeleton: resolve the plan for ``fraction`` and drive
+        ``sink(tier_table, source_relation)`` once per table.
 
-        Whole tables are copied straight from the source (no temp table needed); sampled tables
-        are materialized as temp tables first so the parquet exactly matches what the tier
-        contains. Column types are preserved by ``COPY (SELECT * ...) TO parquet``.
+        ``source_relation`` is the table's ``keep_*`` temp table for a fractional tier or the
+        source table itself for the full tier. Fractional tiers build the ``keep_*`` temp tables
+        up front and drop them afterwards; the full tier reads the source directly and back-fills
+        row counts from the schema. Callers supply only the per-table sink and manage any output
+        resource (a connection, a directory) around this call.
         """
-        out = Path(out_dir)
-        out.mkdir(parents=True, exist_ok=True)
         plan = (
             self.materialize_temp_tier(fraction)
             if fraction < 1.0
@@ -540,12 +528,9 @@ class ReferentialDownscaler:
                     if fraction < 1.0
                     else _quote_ident(tt.table)
                 )
-                dest = (out / f"{tt.table}.parquet").as_posix().replace("'", "''")
-                self.con.execute(
-                    f"COPY (SELECT * FROM {source}) TO '{dest}' (FORMAT 'parquet')"
-                )
+                sink(tt, source)
             if fraction >= 1.0:
-                # count rows for the summary (no temp tables were created)
+                # No temp tables were created; count rows for the summary from the source.
                 for tt in plan.tables:
                     tt.kept_rows = self.schema.row_counts[tt.table]
                 self._log_tier(plan)
@@ -553,6 +538,24 @@ class ReferentialDownscaler:
             if fraction < 1.0:
                 self._drop_keep_tables()
         return plan
+
+    def copy_tier_to_parquet(self, fraction: float, out_dir: Path | str) -> TierResult:
+        """Materialize ``fraction`` and write ``<out_dir>/<table>.parquet`` for every table.
+
+        Whole tables are copied straight from the source (no temp table needed); sampled tables
+        are materialized as temp tables first so the parquet exactly matches what the tier
+        contains. Column types are preserved by ``COPY (SELECT * ...) TO parquet``.
+        """
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        def sink(tt: TierTable, source: str) -> None:
+            dest = (out / f"{tt.table}.parquet").as_posix().replace("'", "''")
+            self.con.execute(
+                f"COPY (SELECT * FROM {source}) TO '{dest}' (FORMAT 'parquet')"
+            )
+
+        return self._materialize_tier(fraction, sink)
 
     def copy_tier_to_duckdb(
         self, fraction: float, out_db_path: Path | str
@@ -571,34 +574,20 @@ class ReferentialDownscaler:
         if out_db.exists():
             raise FileExistsError(f"tier database already exists: {out_db}")
         out_db.parent.mkdir(parents=True, exist_ok=True)
-        plan = (
-            self.materialize_temp_tier(fraction)
-            if fraction < 1.0
-            else self.plan_tier(fraction)
-        )
         tier_con = duckdb.connect(str(out_db))
+
+        def sink(tt: TierTable, source: str) -> None:
+            arrow_tbl = self.con.execute(f"SELECT * FROM {source}").to_arrow_table()
+            tier_con.register("_synno_src", arrow_tbl)
+            tier_con.execute(
+                f"CREATE TABLE {_quote_ident(tt.table)} AS SELECT * FROM _synno_src"
+            )
+            tier_con.unregister("_synno_src")
+
         try:
-            for tt in plan.tables:
-                source = (
-                    self._keep_name(tt.table)
-                    if fraction < 1.0
-                    else _quote_ident(tt.table)
-                )
-                arrow_tbl = self.con.execute(f"SELECT * FROM {source}").to_arrow_table()
-                tier_con.register("_synno_src", arrow_tbl)
-                tier_con.execute(
-                    f"CREATE TABLE {_quote_ident(tt.table)} AS SELECT * FROM _synno_src"
-                )
-                tier_con.unregister("_synno_src")
-            if fraction >= 1.0:
-                for tt in plan.tables:
-                    tt.kept_rows = self.schema.row_counts[tt.table]
-                self._log_tier(plan)
+            return self._materialize_tier(fraction, sink)
         finally:
             tier_con.close()
-            if fraction < 1.0:
-                self._drop_keep_tables()
-        return plan
 
     def drop(self) -> None:
         """Drop the ephemeral ``keep_*`` temp tables (idempotent)."""

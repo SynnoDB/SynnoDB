@@ -53,12 +53,12 @@ class OLAPSystemFactory(SystemFactory):
             # a parquet run streams parquet views, a DuckDB-native run materializes flat tables
             # from the tier's tier.duckdb, and a flat/bespoke run materializes flat from parquet -
             # the ground-truth answer for whatever the engine ingested.
-            if exec_settings.data_source == DataSource.PARQUET:
-                duckdb_source = DataSource.PARQUET
-            elif exec_settings.data_source == DataSource.DUCKDB:
-                duckdb_source = DataSource.DUCKDB
-            else:
-                duckdb_source = DataSource.FLAT
+            duckdb_source = (
+                exec_settings.data_source
+                if exec_settings.data_source
+                in (DataSource.PARQUET, DataSource.DUCKDB)
+                else DataSource.FLAT
+            )
             validate_storage_combo(
                 System.DUCKDB, exec_settings.db_storage, duckdb_source
             )

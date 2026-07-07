@@ -23,7 +23,7 @@ import logging
 import random
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from synnodb.utils.utils import ServeFrom
 from synnodb.workloads.query_params import (
@@ -293,6 +293,19 @@ def infer_tables_from_parquet(parquet_dir: str | Path, sf: float) -> list[str]:
     return tables
 
 
+def _ddl_from_describe(
+    con: Any, tables: list[str], from_sql: Callable[[str], str]
+) -> str:
+    """Build ``CREATE TABLE`` DDL by DESCRIBEing ``SELECT * FROM <from_sql(table)>`` for each
+    table, so the schema is derived from the data itself with nothing to hand-maintain."""
+    parts: list[str] = []
+    for t in tables:
+        rows = con.execute(f"DESCRIBE SELECT * FROM {from_sql(t)}").fetchall()
+        cols = ",\n    ".join(f"{r[0]} {r[1]}" for r in rows)
+        parts.append(f"CREATE TABLE {t} (\n    {cols}\n);")
+    return "\n\n".join(parts)
+
+
 def schema_ddl_from_parquet(
     parquet_dir: str | Path, tables: list[str], sf: float
 ) -> str:
@@ -302,16 +315,14 @@ def schema_ddl_from_parquet(
 
     base = _sf_dir(Path(parquet_dir), sf)
     con = duckdb.connect()
-    parts: list[str] = []
-    for t in tables:
-        path = base / f"{t}.parquet"
-        rows = con.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{path.as_posix()}')"
-        ).fetchall()
-        cols = ",\n    ".join(f"{r[0]} {r[1]}" for r in rows)
-        parts.append(f"CREATE TABLE {t} (\n    {cols}\n);")
-    con.close()
-    return "\n\n".join(parts)
+    try:
+        return _ddl_from_describe(
+            con,
+            tables,
+            lambda t: f"read_parquet('{(base / f'{t}.parquet').as_posix()}')",
+        )
+    finally:
+        con.close()
 
 
 def schema_ddl_from_duckdb(tier_db_path: str | Path, tables: list[str]) -> str:
@@ -320,15 +331,10 @@ def schema_ddl_from_duckdb(tier_db_path: str | Path, tables: list[str]) -> str:
     import duckdb
 
     con = duckdb.connect(str(tier_db_path), read_only=True)
-    parts: list[str] = []
     try:
-        for t in tables:
-            rows = con.execute(f'DESCRIBE SELECT * FROM "{t}"').fetchall()
-            cols = ",\n    ".join(f"{r[0]} {r[1]}" for r in rows)
-            parts.append(f"CREATE TABLE {t} (\n    {cols}\n);")
+        return _ddl_from_describe(con, tables, lambda t: f'"{t}"')
     finally:
         con.close()
-    return "\n\n".join(parts)
 
 
 def register_workload_from_dir(
