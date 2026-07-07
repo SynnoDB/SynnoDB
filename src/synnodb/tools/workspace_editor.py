@@ -104,6 +104,17 @@ class WorkspaceEditor:
     # ---------- public ops (cached) ----------
 
     def create_file(self, operation: ApplyPatchOperation) -> ApplyPatchResult:
+        # Checked BEFORE any cache lookup, not just inside _create_file_impl: the
+        # cache key (see _run_cached) is unaware of this rejection, so a cache
+        # entry recorded by a pre-fix version of this tool for this exact empty
+        # diff would otherwise still be replayed - restoring the old truncated
+        # snapshot and reporting the old "completed" result, silently bypassing
+        # the rejection in exactly the persisted-cache case it exists to guard.
+        # The check itself is pure/cheap (no file write, no git snapshot), so
+        # running it unconditionally ahead of the cache costs nothing.
+        rejection = self._reject_if_empty_overwrite(operation)
+        if rejection is not None:
+            return rejection
         return self._cached_op("create_file", operation, self._create_file_impl)
 
     def update_file(self, operation: ApplyPatchOperation) -> ApplyPatchResult:
@@ -291,6 +302,42 @@ class WorkspaceEditor:
 
         return None
 
+    # ---------- pre-cache guards ----------
+
+    def _reject_if_empty_overwrite(
+        self, operation: ApplyPatchOperation
+    ) -> Optional[ApplyPatchResult]:
+        """None if create_file should proceed as normal; a failed ApplyPatchResult
+        if its diff parses to empty content AND the target already exists.
+
+        A diff that is empty, whitespace-only, or otherwise degenerate parses to
+        "" via apply_diff with no exception raised (a diff with any genuinely
+        malformed line - one that is not '+'-prefixed - already raises loudly and
+        is unaffected by this). Writing that "" out would truncate an existing
+        file to 0 bytes while still reporting success. Creating a brand-new file
+        with empty content is harmless (nothing existing is lost), so only the
+        overwrite case is rejected - create_file's whole point is to overwrite
+        scaffolded/stub files with full content, and that must keep working.
+        """
+        diff = operation.diff or ""
+        content = apply_diff("", diff, mode="create")
+        if content:
+            return None
+        target = self._resolve(operation.path, ensure_parent=False)
+        if not target.exists():
+            return None
+        relative = self._relative_path(operation.path)
+        return ApplyPatchResult(
+            status="failed",
+            output=(
+                f"Error: the diff for overwriting {relative} parsed to empty "
+                "content, so nothing was written (the file's existing content is "
+                "unchanged). create_file diffs must consist only of '+'-prefixed "
+                "lines carrying the full file content - resend the diff with the "
+                "complete content."
+            ),
+        )
+
     # ---------- raw operations ----------
 
     def _create_file_impl(
@@ -333,21 +380,24 @@ class WorkspaceEditor:
             overwrote_existing = target.exists()
 
             content = apply_diff("", diff, mode="create")
-            if not content:
+            if not content and overwrote_existing:
                 # An empty/whitespace-only (or otherwise degenerate) diff parses to ""
                 # with no error from apply_diff - nothing signals that. Silently writing
                 # that out would truncate an existing file to 0 bytes while still
                 # reporting "completed", leaving the model to think its write succeeded.
+                # (create_file() already rejects this case before the cache lookup;
+                # this is a second guard for direct/uncached callers.) A brand-new
+                # empty file is allowed through - nothing existing is lost.
                 activity_summary_entry = f"Apply_patch called: Create file {operation.path} (FAILED - diff produced empty content)"
                 return (
                     ApplyPatchResult(
                         status="failed",
                         output=(
-                            f"Error: the diff for creating/overwriting {relative} parsed "
-                            "to empty content, so nothing was written (the file's previous "
-                            "content, if any, is unchanged). create_file diffs must consist "
-                            "only of '+'-prefixed lines carrying the full file content - "
-                            "resend the diff with the complete content."
+                            f"Error: the diff for overwriting {relative} parsed to empty "
+                            "content, so nothing was written (the file's existing content "
+                            "is unchanged). create_file diffs must consist only of "
+                            "'+'-prefixed lines carrying the full file content - resend "
+                            "the diff with the complete content."
                         ),
                     ),
                     activity_summary_entry,

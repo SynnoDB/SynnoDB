@@ -194,14 +194,85 @@ def test_create_file_impl_rejects_empty_diff_without_truncating_existing_file(tm
     ) == "// real implementation\n"
 
 
-def test_create_file_impl_rejects_empty_diff_for_new_file(tmp_path):
+def test_create_file_impl_rejects_missing_diff_without_truncating_existing_file(
+    tmp_path,
+):
+    # operation.diff is str | None in the SDK's own ApplyPatchOperation - a model
+    # can omit it entirely, not just send "". `diff = operation.diff or ""` must
+    # route None through the exact same rejection as an explicit empty string.
+    editor, workspace = _make_editor(tmp_path)
+    (workspace / "query1.cpp").write_text("// real implementation\n", encoding="utf-8")
+
+    op = ApplyPatchOperation(type="create_file", path="query1.cpp", diff=None)
+    result, _ = editor._create_file_impl(op)
+
+    assert result.status == "failed"
+    assert (workspace / "query1.cpp").read_text(
+        encoding="utf-8"
+    ) == "// real implementation\n"
+
+
+def test_create_file_impl_allows_empty_diff_for_a_brand_new_file(tmp_path):
+    # Nothing existing is lost by creating an empty new file, unlike overwriting
+    # one that already had content - only the overwrite case is destructive, so
+    # only that case is rejected.
     editor, workspace = _make_editor(tmp_path)
 
     op = ApplyPatchOperation(type="create_file", path="new.cpp", diff="")
     result, _ = editor._create_file_impl(op)
 
+    assert result.status == "completed"
+    assert (workspace / "new.cpp").read_text(encoding="utf-8") == ""
+
+
+def test_create_file_rejects_empty_overwrite_before_any_cache_lookup(tmp_path):
+    # The empty-diff rejection lives in create_file() itself, ahead of the cache
+    # lookup in _cached_op/_run_cached - not only inside _create_file_impl - so a
+    # cache entry recorded by a pre-fix version of this tool for this exact empty
+    # diff can never be replayed (the cache key has no notion of this rejection
+    # and would otherwise happily restore the old truncated-file snapshot and
+    # report the old "completed" result).
+    editor, workspace = _make_editor(tmp_path)
+    (workspace / "query1.cpp").write_text("// real implementation\n", encoding="utf-8")
+
+    op = ApplyPatchOperation(type="create_file", path="query1.cpp", diff="")
+
+    # Simulate a pre-fix cache entry: a prior (buggy) run recorded "completed" for
+    # this exact empty-diff overwrite, snapshotting the post-truncation (now-empty)
+    # file state.
+    payload = {
+        "snapshotter_hash": editor._snapshotter.current_hash,
+        "op_type": "create_file",
+        "path": "query1.cpp",
+        "diff": "",
+        "untracked_cpp_runner_content": editor._untracked_cpp_runner_content,
+    }
+    from synnodb.tools.workspace_editor import ApplyPatchCacheType
+    from synnodb.utils import utils
+
+    hash_payload = utils.stable_json(payload)
+    cache_path = editor._cache_path_for(utils.sha256(hash_payload))
+    utils.dump_pickle(
+        cache_path,
+        ApplyPatchCacheType(
+            result_output="Overwrote existing file query1.cpp",
+            result_status="completed",
+            snapshot_hash="poisoned-empty-snapshot",
+            hash_payload=hash_payload,
+            runtime_seconds=0.01,
+        ),
+        do_not_cache=False,
+    )
+
+    result = editor.create_file(op)
+
     assert result.status == "failed"
-    assert not (workspace / "new.cpp").exists()
+    assert (workspace / "query1.cpp").read_text(
+        encoding="utf-8"
+    ) == "// real implementation\n"
+    # The stale cache entry must not have been replayed (which would have called
+    # restore() and pointed the snapshotter at the poisoned snapshot).
+    assert editor._snapshotter.current_hash != "poisoned-empty-snapshot"
 
 
 def test_create_file_impl_still_blocks_readonly(tmp_path):
