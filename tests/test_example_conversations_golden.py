@@ -81,6 +81,7 @@ def _mock_run_tool() -> MagicMock:
     run_tool.memory_budget_mb = 16384
 
     ingest_result = SimpleNamespace(
+        success=True,
         ingest_time_ms=12345.0,
         query_batch=SimpleNamespace(exec_settings=ExecSettings()),
     )
