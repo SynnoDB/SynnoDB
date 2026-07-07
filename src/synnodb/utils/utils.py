@@ -35,10 +35,13 @@ def is_persistent_storage(db_storage: DBStorage) -> bool:
 class DataSource(str, enum.Enum):
     """How the queried data is physically represented for a run.
 
-    - ``FLAT``: data loaded flat into memory (DuckDB's native materialized tables; the only
-      representation available for an in-memory run).
+    - ``FLAT``: data loaded flat into memory (DuckDB's native materialized tables), sourced from
+      the tier's parquet files.
     - ``PARQUET``: queries stream directly from parquet files on disk (DuckDB parquet views).
     - ``BESPOKE``: the bespoke engine's on-disk storage plan.
+    - ``DUCKDB``: DuckDB-native tiers - the tier is a ``tier.duckdb`` database (produced by the
+      referential downscaler), not parquet. The candidate engine ingests it over the shm plane
+      and the DuckDB oracle materializes flat tables from it (no parquet on disk). In-memory only.
 
     This is part of the query-execution cache key: the DuckDB reference answer differs between
     materialized tables and parquet views, so it must not be shared across sources.
@@ -47,6 +50,37 @@ class DataSource(str, enum.Enum):
     FLAT = "flat"
     PARQUET = "parquet"
     BESPOKE = "bespoke"
+    DUCKDB = "duckdb"
+
+
+class ServeFrom(str, enum.Enum):
+    """Where a DuckDB-sourced workload's queries read their data from (chosen at registration).
+
+    Both the candidate engine and the DuckDB oracle read each tier from this backing:
+
+    - ``DUCKDB``: each tier is a ``tier.duckdb`` database (the referential downscaler's output);
+      the engine ingests it over the shm plane and the oracle materializes flat tables from it.
+      No parquet on disk. In-memory only.
+    - ``PARQUET``: each tier is a directory of ``<table>.parquet`` files (the fallback; also
+      runs on SSD).
+
+    Distinct from :class:`DataSource`, the broader per-run *physical* representation the factory
+    threads through the oracle cache (it also has ``FLAT``/``BESPOKE``); ``ServeFrom`` is just the
+    tier backing the workload was registered with.
+    """
+
+    DUCKDB = "duckdb"
+    PARQUET = "parquet"
+
+    @classmethod
+    def coerce(cls, value: "ServeFrom | str") -> "ServeFrom":
+        """Accept a ``ServeFrom`` member or its string value, with a clear error otherwise."""
+        try:
+            return cls(value)
+        except ValueError:
+            raise ValueError(
+                f"serve_from must be one of {[m.value for m in cls]}, got {value!r}."
+            ) from None
 
 
 def storage_label(db_storage: DBStorage) -> str:

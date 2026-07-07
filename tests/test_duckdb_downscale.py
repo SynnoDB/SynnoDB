@@ -290,6 +290,7 @@ def test_register_workload_from_duckdb_end_to_end(tmp_path):
         managed_root=managed,
         downscale_tiers=(0.2,),
         whole_table_threshold=10,
+        serve_from="parquet",  # this test exercises the parquet fallback specifically
     )
     con.close()
 
@@ -361,6 +362,7 @@ def test_factory_provider_resolves_ratio_tiers(tmp_path):
         managed_root=managed,
         downscale_tiers=(0.2,),
         whole_table_threshold=10,
+        serve_from="parquet",  # this test exercises the parquet-tier factory path specifically
     )
     con.close()
 

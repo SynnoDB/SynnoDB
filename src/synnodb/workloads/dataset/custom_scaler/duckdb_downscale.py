@@ -51,10 +51,11 @@ truncation.
 
 Sinks
 -----
-The same plan feeds two sinks (only the sink differs): ephemeral DuckDB **temp tables**
-(``keep_<table>``, the tier consumed in-connection) and a **parquet** materialization
-(``COPY ... TO ratio<f>/<table>.parquet``) used by the registration-time parquet fallback.
-Nothing is written back to the caller's database.
+The same plan feeds three sinks (only the sink differs): ephemeral DuckDB **temp tables**
+(``keep_<table>``, the tier consumed in-connection); a standalone **tier.duckdb** database
+(``ratio<f>/tier.duckdb``, the DuckDB-native default the engine ingests over shm and the oracle
+materializes flat from); and a **parquet** materialization (``ratio<f>/<table>.parquet``, the
+internal fallback). Nothing is written back to the caller's database.
 """
 
 from __future__ import annotations
@@ -549,6 +550,52 @@ class ReferentialDownscaler:
                     tt.kept_rows = self.schema.row_counts[tt.table]
                 self._log_tier(plan)
         finally:
+            if fraction < 1.0:
+                self._drop_keep_tables()
+        return plan
+
+    def copy_tier_to_duckdb(
+        self, fraction: float, out_db_path: Path | str
+    ) -> TierResult:
+        """Materialize ``fraction`` into a standalone ``tier.duckdb`` at ``out_db_path`` - the
+        DuckDB-native sink. Each kept table becomes a plainly-named table in the new database
+        (``lineitem``, ``orders``, …), which the candidate engine ingests over the shm plane and
+        the DuckDB oracle materializes flat from. No parquet is written.
+
+        Rows are transferred table-by-table as Arrow into a fresh *writable* connection, so this
+        works even when the caller's source connection is read-only (a direct ``ATTACH`` from a
+        read-only connection cannot create the new file). Arrow preserves DuckDB's exact column
+        types. The output file must not already exist; the caller handles idempotency.
+        """
+        out_db = Path(out_db_path)
+        if out_db.exists():
+            raise FileExistsError(f"tier database already exists: {out_db}")
+        out_db.parent.mkdir(parents=True, exist_ok=True)
+        plan = (
+            self.materialize_temp_tier(fraction)
+            if fraction < 1.0
+            else self.plan_tier(fraction)
+        )
+        tier_con = duckdb.connect(str(out_db))
+        try:
+            for tt in plan.tables:
+                source = (
+                    self._keep_name(tt.table)
+                    if fraction < 1.0
+                    else _quote_ident(tt.table)
+                )
+                arrow_tbl = self.con.execute(f"SELECT * FROM {source}").to_arrow_table()
+                tier_con.register("_synno_src", arrow_tbl)
+                tier_con.execute(
+                    f"CREATE TABLE {_quote_ident(tt.table)} AS SELECT * FROM _synno_src"
+                )
+                tier_con.unregister("_synno_src")
+            if fraction >= 1.0:
+                for tt in plan.tables:
+                    tt.kept_rows = self.schema.row_counts[tt.table]
+                self._log_tier(plan)
+        finally:
+            tier_con.close()
             if fraction < 1.0:
                 self._drop_keep_tables()
         return plan

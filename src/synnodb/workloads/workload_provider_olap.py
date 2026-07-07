@@ -14,6 +14,7 @@ from synnodb.utils.sql_utils import extract_order_by_columns
 from synnodb.utils.utils import (
     DataSource,
     DBStorage,
+    ServeFrom,
     is_persistent_storage,
 )
 from synnodb.workloads.system_factory import System
@@ -64,18 +65,22 @@ def allowed_data_sources(system: System, db_storage: DBStorage) -> set[DataSourc
     DuckDB reads either flat (its native materialized tables) or, on disk, parquet views. The
     bespoke engine additionally has its own on-disk storage plan. In-memory rules out anything
     that needs disk (parquet views, the bespoke storage plan) - but the engine can still load
-    flat in memory. Returns an empty set for systems whose data source is not modelled here.
+    flat in memory. ``DUCKDB`` (DuckDB-native tiers, ingested over the shm plane / materialized
+    flat from a ``tier.duckdb``) is an in-memory-only representation for both systems - the SSD
+    plane has no shm ingest branch yet. Returns an empty set for systems not modelled here.
     """
     persistent = is_persistent_storage(db_storage)
     if system == System.DUCKDB:
         return (
-            {DataSource.FLAT, DataSource.PARQUET} if persistent else {DataSource.FLAT}
+            {DataSource.FLAT, DataSource.PARQUET}
+            if persistent
+            else {DataSource.FLAT, DataSource.DUCKDB}
         )
     if system == System.BESPOKE:
         return (
             {DataSource.FLAT, DataSource.BESPOKE, DataSource.PARQUET}
             if persistent
-            else {DataSource.FLAT, DataSource.BESPOKE}
+            else {DataSource.FLAT, DataSource.BESPOKE, DataSource.DUCKDB}
         )
     return set()
 
@@ -239,6 +244,12 @@ class OLAPWorkloadProvider(WorkloadProvider):
             sf_dir = find_sf_dir(self.base_parquet_dir, sf)
             if sf_dir is None:
                 continue
+            if self.spec.serve_from == ServeFrom.DUCKDB:
+                # DuckDB-native tier: a single ``tier.duckdb`` stands in for the parquet files.
+                tier_db = sf_dir / "tier.duckdb"
+                if tier_db.exists():
+                    yield sf_dir.name, [tier_db]
+                continue
             paths = [sf_dir / f"{table}.parquet" for table in self.spec.tables]
             if all(p.exists() for p in paths):
                 yield sf_dir.name, paths
@@ -309,9 +320,22 @@ class OLAPWorkloadProvider(WorkloadProvider):
             else:
                 storage_dir = None
 
-            data_source = (
-                DataSource.BESPOKE if storage_dir is not None else DataSource.FLAT
-            )
+            if storage_dir is not None:
+                # SSD/persistent: the bespoke engine's on-disk storage plan. DuckDB-native tiers
+                # have no shm/parquet on the SSD plane yet, so reject that combination clearly.
+                if self.spec.serve_from == ServeFrom.DUCKDB:
+                    raise ValueError(
+                        f"Workload {self.spec.name!r} uses DuckDB-native tiers, which are "
+                        "in-memory only (the SSD plane has no shm ingest branch). Run it with "
+                        "in_memory storage, or register it via the parquet fallback for SSD."
+                    )
+                data_source = DataSource.BESPOKE
+            elif self.spec.serve_from == ServeFrom.DUCKDB:
+                # In-memory DuckDB-native: the tier is a ``tier.duckdb`` in the tier dir; the
+                # engine ingests it over shm and the oracle materializes flat tables from it.
+                data_source = DataSource.DUCKDB
+            else:
+                data_source = DataSource.FLAT
 
             # assemble parquet path where data is loaded from - resolve the tier directory
             # under the parquet root (sampling-ratio ``ratio<f>`` or legacy ``sf<N>``)

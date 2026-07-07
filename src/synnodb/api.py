@@ -37,7 +37,7 @@ from synnodb.results import (
     StoragePlan,
 )
 from synnodb.utils.cli_config import DEFAULT_MODEL, RunConfig, Usecase
-from synnodb.utils.utils import DBStorage
+from synnodb.utils.utils import DBStorage, ServeFrom
 from synnodb.workloads.workload_provider import Workload, WorkloadId
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
@@ -479,6 +479,7 @@ class SynnoDB:
         dataset_name: str | None = None,
         schema_example_table: str | None = None,
         whole_table_threshold: int = 10_000,
+        serve_from: "ServeFrom | str" = ServeFrom.DUCKDB,
         set_as_workload: bool = True,
     ):
         """Register a workload straight from a live DuckDB connection - no pre-scaled parquet.
@@ -506,24 +507,44 @@ class SynnoDB:
             join_relationships: optional explicit ``(table_a.col, table_b.col)`` equi-join pairs
                 unioned into the inferred join graph for anything inference misses.
             whole_table_threshold: tables at or below this row count are kept whole per tier.
+            serve_from: where the run's queries read their tiers from, a :class:`ServeFrom` (or
+                its string value). ``ServeFrom.DUCKDB`` (default) makes each tier a ``tier.duckdb``
+                the engine ingests over the shm plane and the oracle materializes flat from, with
+                no parquet on disk (in-memory only); ``ServeFrom.PARQUET`` materializes
+                ``<table>.parquet`` files per tier (the fallback; also works on SSD). The
+                benchmark tier is a zero-copy symlink to the source when a path is given.
             set_as_workload: point this driver's config at the new workload (default True).
 
         Returns the registered :class:`~synnodb.workloads.workload_spec.WorkloadSpec`.
 
-        This is the parquet-fallback path: tiers are materialized to
-        ``<data_dir>/workloads/<name>/<dataset>_parquet/ratio<f>/`` and the factory + DuckDB
-        oracle run against them exactly as for a bring-your-own parquet workload.
+        Tiers are materialized under
+        ``<data_dir>/workloads/<name>/<dataset>_parquet/ratio<f>/`` (a ``tier.duckdb`` for
+        ``serve_from="duckdb"``, ``<table>.parquet`` files for ``"parquet"``) and the factory +
+        DuckDB oracle run against them.
         """
         import duckdb as _duckdb
 
         from synnodb.workloads.byo_workload import register_workload_from_duckdb
 
         opened: "_duckdb.DuckDBPyConnection | None" = None
+        source_db_path: str | None = None
         if isinstance(con, (str, Path)):
+            source_db_path = str(con)
             opened = _duckdb.connect(str(con), read_only=True)
             connection = opened
         else:
             connection = con
+            # A live connection opened from a file exposes it via database_list; use it to
+            # symlink the native benchmark tier zero-copy (None -> materialize a full copy).
+            try:
+                rows = connection.execute("PRAGMA database_list").fetchall()
+                for row in rows:
+                    file_path = row[2]  # (seq, name, file)
+                    if row[1] == "main" and file_path:
+                        source_db_path = str(file_path)
+                        break
+            except Exception:
+                source_db_path = None
 
         managed_root = (
             Path(settings.get_data_dir())
@@ -542,6 +563,8 @@ class SynnoDB:
                 dataset_name=dataset_name,
                 schema_example_table=schema_example_table,
                 whole_table_threshold=whole_table_threshold,
+                serve_from=serve_from,
+                source_db_path=source_db_path,
             )
         finally:
             if opened is not None:

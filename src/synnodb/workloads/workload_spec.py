@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils.utils import ServeFrom
 
 if TYPE_CHECKING:  # avoid an import cycle; only used for type hints
     from synnodb.workloads.query_params import ParamSpace
@@ -75,6 +76,12 @@ class WorkloadSpec:
     # cache key so regenerating a dataset (or changing its scale-up code / arg syntax)
     # invalidates stale cache entries. None means "unversioned".
     dataset_version: str | None = None
+    # Where this workload's queries read their tiers from. ``ServeFrom.DUCKDB`` -> each tier
+    # directory holds a ``tier.duckdb`` (produced by the referential downscaler); in-memory runs
+    # then serve the candidate engine over the shm plane and the DuckDB oracle from that database,
+    # so no parquet touches disk (in-memory only). ``ServeFrom.PARQUET`` -> the classic
+    # ``<table>.parquet`` tier layout.
+    serve_from: ServeFrom = ServeFrom.PARQUET
     # Scale factor at which the multi-threading stage runs its large-scale correctness /
     # performance check. None means the framework picks a sensible default.
     large_check_sf: float | None = None

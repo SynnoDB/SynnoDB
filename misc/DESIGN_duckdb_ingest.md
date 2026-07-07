@@ -1,8 +1,29 @@
 # SynnoDB - DuckDB-native ingestion & referential downscaling
 
-> **Status: Step 1 implemented; Steps 2-3 still design.** This scopes the switch from a
+> **Status: Steps 1-2 implemented; Step 3 still design.** This scopes the switch from a
 > parquet-file data source to a user-provided DuckDB database, and the FK-preserving
 > downscaling that replaces the pre-existing small scale-factor tiers.
+>
+> **Step 2 (§8) has landed** - DuckDB-native is now `sync_from_duckdb`'s default. A tier is a
+> `ratio<f>/tier.duckdb` (downscaler `copy_tier_to_duckdb`; the benchmark tier a zero-copy
+> symlink to the source), discriminated by a new `DataSource.DUCKDB`
+> ([utils.py](../src/synnodb/utils/utils.py)). The DuckDB oracle materializes flat tables from it
+> via ATTACH ([duckdb_connection_manager.py](../src/synnodb/observability/benchmark/systems/duckdb_connection_manager.py),
+> keyed into the oracle cache in [system_factory_olap.py](../src/synnodb/workloads/system_factory_olap.py)),
+> and the candidate engine ingests it over the shm plane -
+> [shm_stage.py](../src/synnodb/cpp_runner/shm_stage.py) stages the tier's tables to `/dev/shm`
+> and [tools/run.py](../src/synnodb/tools/run.py) sets `SYNNODB_SHM_INGEST` (which reaches the
+> in-memory loader via `run_env`, exactly as `STORAGE_DIR` does for SSD; the loader's shm branch
+> was already generated). No parquet on disk. In-memory only (SSD rejected with a clear message);
+> the parquet fallback (`serve_from="parquet"`) is retained and is the honest cross-check
+> ([test_duckdb_native_tiers.py](../tests/test_duckdb_native_tiers.py) asserts the DuckDB oracle
+> returns identical rows either way, §9).
+>
+> **Verification boundary:** every piece is unit-tested except the *end-to-end* engine-over-shm
+> synthesis, which needs a real compiled-engine build (LLM + C++ toolchain) to confirm. The shm
+> segment format and the `run_env` env delivery both reuse paths proven elsewhere (serving-time
+> `ShmHotLoadEngine`; the SSD `STORAGE_DIR` loader), so the risk is contained, but a green
+> notebook engine build is the first true validation.
 >
 > **Step 1 (§8) has landed** - the referential downscaler
 > ([duckdb_downscale.py](../src/synnodb/workloads/dataset/custom_scaler/duckdb_downscale.py)),
@@ -461,7 +482,7 @@ fallback** (§5.2, resolved decision 4). Suggested sequencing - each step indepe
   build) a `tpch.duckdb` connection, call `db.sync_from_duckdb(...)`, and
   `synnodb.connect("tpch.duckdb", ...)`.
 
-### Step 2 - DuckDB-native synthesis (the default path)
+### Step 2 - DuckDB-native synthesis (the default path) ✅ **implemented**
 
 - Add `DataSource.DUCKDB`; the oracle attaches the tier tables instead of `read_parquet`
   ([duckdb_connection_manager.py:172-175](../src/synnodb/observability/benchmark/systems/duckdb_connection_manager.py#L172-L175),
