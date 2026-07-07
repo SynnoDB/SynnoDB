@@ -855,14 +855,18 @@ _DEV_HINTS_PROMPT_INSTRUCTION = (
     'Write "None" inside the tags if nothing noteworthy stood out.'
 )
 
-_RUN_SUMMARY_RE = re.compile(r"<run_summary>(.*?)</run_summary>", re.IGNORECASE | re.DOTALL)
+_RUN_SUMMARY_RE = re.compile(
+    r"<run_summary>(.*?)</run_summary>", re.IGNORECASE | re.DOTALL
+)
 _DEV_HINTS_RE = re.compile(r"<dev_hints>(.*?)</dev_hints>", re.IGNORECASE | re.DOTALL)
 
 
 @dataclass
 class SupervisionResult:
     approved: bool
-    feedback_text: str  # `output` with the <run_summary>/<dev_hints> blocks stripped out
+    feedback_text: (
+        str  # `output` with the <run_summary>/<dev_hints> blocks stripped out
+    )
     run_summary: str | None
     dev_hints: str | None  # None if absent or literally "None"
 
@@ -925,7 +929,9 @@ def supervision_agent_prompt(
         llm_output=llm_output,
         stage_overview=stage_overview,
         success_keyword=SUPERVISION_SUCCESS_KW,
-        dev_hints_instruction=_DEV_HINTS_PROMPT_INSTRUCTION if generate_dev_hints else "",
+        dev_hints_instruction=_DEV_HINTS_PROMPT_INSTRUCTION
+        if generate_dev_hints
+        else "",
         misc=misc,
     )
 
