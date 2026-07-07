@@ -23,6 +23,7 @@ from synnodb.conversations.filenames import Filenames
 from synnodb.utils.utils import DBStorage, is_persistent_storage
 
 if TYPE_CHECKING:
+    from synnodb.llm.sdk.sdk_wrapper import SDKWrapper
     from synnodb.tools.run import RunTool
     from synnodb.tools.validate.query_validator_class import QueryValidator
     from synnodb.workloads.workload_provider import ExecSettings, Workload
@@ -50,6 +51,11 @@ class ConvContext:
     query_validator: "QueryValidator | None" = None
     # where the engine persists the conversation JSON (list of accepted prompts)
     conversation_json_path: Path | None = None
+    # The run's model wrapper (backend-agnostic: litellm or native OpenAI), for a
+    # stage builder that needs a one-off LLM call (e.g. an LLM-as-judge validation)
+    # outside the main conversation's session/tools. None in tests that build a
+    # bare ConvContext.
+    agent_sdk_wrapper: "SDKWrapper | None" = None
 
     # Runtime scratchpad written by declarative items during execution
     # (MeasureBaselines stores {query_id: runtime_ms} here by default).

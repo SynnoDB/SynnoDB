@@ -92,6 +92,17 @@ class SDKWrapper:
         pass
 
     @abstractmethod
+    async def run_one_off_completion(
+        self, prompt: str, max_tokens: int | None = None
+    ) -> str:
+        """A single, isolated LLM turn outside any agent session and with no tool
+        access - for one-off checks (e.g. an LLM-as-judge validation) that must not
+        share history or tools with the main conversation or the supervisor agent,
+        but should still resolve the model/backend, cache, and cost/logging the same
+        way every other LLM call in the run does."""
+        pass
+
+    @abstractmethod
     async def run_compaction(self):
         """Compact the session: summarize history and replace it with the summary.
 

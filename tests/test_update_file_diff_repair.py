@@ -207,3 +207,34 @@ def test_update_file_impl_unmatchable_diff_echoes_current_content(
     # rebuild the diff without an extra read round-trip
     assert "CURRENT CONTENT OF f.txt" in result.output
     assert "real line A" in result.output
+
+
+def test_update_file_impl_unmatchable_diff_logs_error_without_raising(
+    tmp_path, monkeypatch
+):
+    # Regression test: the failure path calls the REAL log_tool_call_error
+    # (not monkeypatched away) with extra={...}. This previously raised
+    # TypeError("log_tool_call_error() got an unexpected keyword argument
+    # 'extra'") from inside the except block, masking the actual diff-mismatch
+    # error and crashing the tool call instead of returning the recovery
+    # message asserted above.
+    monkeypatch.chdir(tmp_path)
+    editor, workspace = _make_editor(tmp_path)
+    (workspace / "f.txt").write_text("real line A\nreal line B\n", encoding="utf-8")
+
+    op = ApplyPatchOperation(
+        type="update_file",
+        path="f.txt",
+        diff=" totally different context\n-real line B\n+X",
+    )
+    result, _activity = editor._update_file_impl(op)
+
+    assert result.status == "failed"
+    assert "CURRENT CONTENT OF f.txt" in result.output
+
+    log_files = list(Path("tool_call_errors").glob("*.log"))
+    assert len(log_files) == 1
+    content = log_files[0].read_text()
+    assert "Type: ApplyPatchFailed" in content
+    assert "--- Extra ---" in content
+    assert "file:" in content

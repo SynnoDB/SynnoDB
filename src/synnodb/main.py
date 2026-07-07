@@ -595,6 +595,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
             query_validator=query_validator,
             conversation_json_path=conversations_dir
             / f"{args.conv_name_withdatetime}.json",
+            agent_sdk_wrapper=agent_sdk_wrapper,
         )
         conv = Conversation(
             plan_stages=plan.stages,

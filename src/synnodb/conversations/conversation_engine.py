@@ -855,6 +855,8 @@ class Conversation:
         while True:
             attempts -= 1
             feedback = stage_config.post_stage_validate()
+            if inspect.isawaitable(feedback):
+                feedback = await feedback
             if feedback is None:
                 break
 

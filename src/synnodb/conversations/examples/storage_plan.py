@@ -2,8 +2,6 @@
 
 import logging
 
-import litellm
-
 from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.prompts_gen import gen_storage_plan_prompt
 from synnodb.conversations.stage_items import PromptStage, StageItem
@@ -11,13 +9,32 @@ from synnodb.conversations.stage_items import PromptStage, StageItem
 logger = logging.getLogger(__name__)
 
 
-def _judge_storage_plan(model: str, schema: str, plan_text: str) -> str | None:
+async def _judge_storage_plan(
+    ctx: ConvContext, schema: str, plan_text: str
+) -> str | None:
     """One-off LLM check: does ``plan_text`` look like a real storage-layout plan
     for ``schema``? Returns None if it looks valid, else a short reason it doesn't.
 
-    A single lightweight completion (no tools, no session) - separate from the
-    main conversation so a bad judgment can't derail the stage's turn budget.
+    A single, isolated LLM turn (no tools, no shared session) - separate from the
+    main conversation so a bad judgment can't derail the stage's turn budget. Goes
+    through the run's own agent-SDK wrapper (run_one_off_completion) rather than
+    calling litellm directly, so it automatically supports whichever backend the
+    run is actually using (litellm or native OpenAI) and gets that backend's model
+    resolution, response caching, and cost/logging for free - the same as every
+    other LLM call in the run - instead of hand-rolling (and only supporting) one
+    of them.
     """
+    # Unlike the try/except below (which tolerates genuine runtime failures - a bad
+    # endpoint, a timeout - by design, so a transient issue can't block the stage),
+    # a missing wrapper is a wiring bug, not a runtime condition: main.py always
+    # constructs one or raises before ConvContext is even built. Assert instead of
+    # silently skipping, so a future wiring regression fails loudly instead of
+    # quietly letting boilerplate storage plans pass validation.
+    assert ctx.agent_sdk_wrapper is not None, (
+        "ConvContext.agent_sdk_wrapper is None - this should not happen, "
+        "main.py always constructs one before building ConvContext."
+    )
+
     judge_prompt = (
         "You are reviewing a storage-layout design document an engineer just wrote "
         "for a columnar query engine, given the schema below. Judge ONLY whether the "
@@ -29,19 +46,20 @@ def _judge_storage_plan(model: str, schema: str, plan_text: str) -> str | None:
         "`INVALID: <one-sentence reason>` if it is empty, boilerplate, or does not "
         "describe a storage layout for this schema."
     )
+
     try:
-        response = litellm.completion(
-            model=model,
-            messages=[{"role": "user", "content": judge_prompt}],
-            max_tokens=200,
-        )
-        verdict = response.choices[0].message.content.strip()
+        verdict = (
+            await ctx.agent_sdk_wrapper.run_one_off_completion(
+                judge_prompt, max_tokens=200
+            )
+        ).strip()
     except Exception as e:
         logger.warning(
             f"Storage plan validity judge call failed ({e}); skipping check."
         )
         return None
 
+    logger.info(f"Storage plan judge verdict: {verdict.splitlines()[0]}")
     if verdict.upper().startswith("VALID"):
         return None
     return verdict
@@ -51,7 +69,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
     storage_plan_filename = ctx.filenames.plan_filename
     schema = ctx.workload_provider.dataset_schema
 
-    def _validate_storage_plan() -> str | None:
+    async def _validate_storage_plan() -> str | None:
         plan_path = ctx.workspace_path / storage_plan_filename
         if not plan_path.exists():
             logger.error(
@@ -71,7 +89,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 f"an actual storage layout summary to `{storage_plan_filename}` before proceeding."
             )
 
-        invalid_reason = _judge_storage_plan(ctx.model, schema, plan_text)
+        invalid_reason = await _judge_storage_plan(ctx, schema, plan_text)
         if invalid_reason is not None:
             logger.error(f"Storage plan {plan_path} judged invalid: {invalid_reason}")
             return (
