@@ -7,9 +7,10 @@ litellm.completion_cost. These tests pin the current behaviour:
   supports whichever backend the run actually uses (litellm or native OpenAI) instead
   of hand-resolving litellm-specific config;
 - a call failure (bad endpoint, transient error) still degrades to "skip the check"
-  rather than crashing the stage;
-- no agent_sdk_wrapper configured (e.g. a bare test ConvContext) also degrades to
-  "skip the check" rather than crashing.
+  rather than crashing the stage - that's a runtime condition and must not block;
+- a missing agent_sdk_wrapper is a wiring bug, not a runtime condition (main.py
+  always constructs one before building ConvContext), so it asserts loudly instead
+  of silently skipping the check.
 """
 
 from __future__ import annotations
@@ -84,9 +85,8 @@ async def test_call_failure_skips_the_check_without_crashing():
 
 
 @pytest.mark.asyncio
-async def test_missing_agent_sdk_wrapper_skips_the_check_without_crashing():
+async def test_missing_agent_sdk_wrapper_asserts_instead_of_skipping():
     ctx = _make_ctx(agent_sdk_wrapper=None)
 
-    result = await _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
-
-    assert result is None
+    with pytest.raises(AssertionError):
+        await _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)

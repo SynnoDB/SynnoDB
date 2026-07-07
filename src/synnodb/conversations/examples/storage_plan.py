@@ -24,9 +24,16 @@ async def _judge_storage_plan(
     other LLM call in the run - instead of hand-rolling (and only supporting) one
     of them.
     """
-    if ctx.agent_sdk_wrapper is None:
-        logger.warning("No agent SDK wrapper available; skipping storage plan check.")
-        return None
+    # Unlike the try/except below (which tolerates genuine runtime failures - a bad
+    # endpoint, a timeout - by design, so a transient issue can't block the stage),
+    # a missing wrapper is a wiring bug, not a runtime condition: main.py always
+    # constructs one or raises before ConvContext is even built. Assert instead of
+    # silently skipping, so a future wiring regression fails loudly instead of
+    # quietly letting boilerplate storage plans pass validation.
+    assert ctx.agent_sdk_wrapper is not None, (
+        "ConvContext.agent_sdk_wrapper is None - this should not happen, "
+        "main.py always constructs one before building ConvContext."
+    )
 
     judge_prompt = (
         "You are reviewing a storage-layout design document an engineer just wrote "
