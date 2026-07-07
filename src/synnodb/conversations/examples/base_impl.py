@@ -7,6 +7,7 @@ from typing import Optional
 
 from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.conversation_engine import (
+    ValidationStillFailsException,
     extract_speedup_of_last_snapshot,
 )
 from synnodb.conversations.prompts_gen import (
@@ -327,6 +328,12 @@ def build(ctx: ConvContext) -> list[StageItem]:
 
 
 class OptimizeBuildStage(DynamicStageConfig):
+    # The preceding "base impl storage" stage has no gate confirming the build actually
+    # compiles/runs before handing off here, so a broken db_loader.cpp is a normal, expected
+    # state to see on entry - retry with the compile/run error fed back to the LLM instead of
+    # crashing, and give up loudly only after repeated failures.
+    MAX_INGEST_FIX_ATTEMPTS = 3
+
     def __init__(
         self,
         builder_path_cpp: str,
@@ -344,6 +351,7 @@ class OptimizeBuildStage(DynamicStageConfig):
         self.builder_path_hpp = builder_path_hpp
         self.run_tool = run_tool
         self.executed = False
+        self.ingest_fix_attempts = 0
         self.persistent_storage = persistent_storage
         self.allow_storage_restructuring = allow_storage_restructuring
         self.storage_plan_filename = storage_plan_filename
@@ -353,7 +361,6 @@ class OptimizeBuildStage(DynamicStageConfig):
     def next_prompt(self) -> Optional[str]:
         if self.executed:
             return None
-        self.executed = True
 
         run_result = self.run_tool.run_worker(
             mode=RunToolMode.INGEST,
@@ -363,9 +370,29 @@ class OptimizeBuildStage(DynamicStageConfig):
             external_call=True,
         )
 
-        assert run_result.ingest_time_ms is not None, (
-            "Ingest time must be available for optimize build stage"
-        )
+        # `success` reflects query *correctness*, which is irrelevant here: no query has
+        # been implemented yet at this point in the stage list (that happens later, via
+        # ValidateAndFixStage and the per-query stages). Query stubs failing validation is
+        # normal and must not block this stage - only a missing ingest_time_ms means the
+        # build/ingest step itself didn't complete (compile error, crash, timeout).
+        if run_result.ingest_time_ms is None:
+            self.ingest_fix_attempts += 1
+            if self.ingest_fix_attempts > self.MAX_INGEST_FIX_ATTEMPTS:
+                raise ValidationStillFailsException(
+                    "Ingest/build still does not compile or run cleanly after "
+                    f"{self.ingest_fix_attempts - 1} fix attempts. Last error:\n"
+                    f"{run_result.err or run_result.msg}"
+                )
+            err = run_result.err or run_result.msg or "unknown error"
+            return (
+                "The build does not compile or run cleanly yet, so its ingest time "
+                f"cannot be measured for the optimize-build baseline:\n\n{err}\n\n"
+                "Fix `db_loader.cpp`/`db_loader.hpp` (and the storage plan if needed) so "
+                "the build compiles and the ingest run completes. Do not start on query "
+                "implementations yet - the ingest run will be retried automatically."
+            )
+
+        self.executed = True
         assert run_result.query_batch is not None, (
             "Query batch must be available for optimize build stage"
         )
