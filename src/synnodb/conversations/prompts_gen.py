@@ -390,6 +390,26 @@ def base_exec_validate_prompt(
     )
 
 
+def base_validate_mt_prompt(
+    query_id: str,
+    num_threads: int,
+    builder_path: str,
+    error: str,
+) -> str:
+    """Per-query fix prompt for the multi-threaded correctness gate: query
+    ``query_id`` was correct single-threaded but diverges at ``num_threads``
+    threads (a data race in its parallel section)."""
+    template_str = _load_txt(_PROMPTS_DIR / "base_validate_mt.txt")
+    template = Template(template_str)
+    return template.substitute(
+        query_id=query_id,
+        query_file=f"query{query_id}.cpp",
+        num_threads=num_threads,
+        builder_path=builder_path,
+        error=error,
+    )
+
+
 def base_impl_query_prompt(
     is_first_query: bool,
     sample_query_args_dict: dict | None,

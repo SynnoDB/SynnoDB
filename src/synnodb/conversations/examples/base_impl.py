@@ -20,6 +20,7 @@ from synnodb.conversations.prompts_gen import (
     base_optimize_build,
     base_planner_prompt,
     base_run_all_and_fix_prompt,
+    base_validate_mt_prompt,
 )
 from synnodb.conversations.stage_items import (
     Benchmark,
@@ -34,6 +35,7 @@ from synnodb.conversations.stage_items import (
 )
 from synnodb.tools.run import RunTool
 from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils.core_utils import resolve_target_cores
 from synnodb.workloads.workload_spec import get_workload_spec
 
 logger = logging.getLogger(__name__)
@@ -306,6 +308,28 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 ),
                 max_turns=ctx.max_turns,
             ),
+        ]
+    )
+
+    # The base impl is now serially correct. Validate each query at the target
+    # serving parallelism (ctx.threads) - the first time generation runs the engine
+    # multi-threaded - and fix any query whose result diverges under threads with a
+    # minimal change. In-memory only (SSD base impls are not parallel-ready) and
+    # skipped when the engine is served single-threaded.
+    if ctx.threads > 1 and not ctx.persistent_storage:
+        _, serving_core_ids = resolve_target_cores(ctx.threads)
+        stage_list.append(
+            ValidateMultiThreadedStage(
+                run_tool=ctx.run_tool,
+                core_ids=serving_core_ids,
+                query_ids=ctx.query_ids,
+                builder_path=builder_path,
+                max_turns=ctx.max_turns,
+            )
+        )
+
+    stage_list.extend(
+        [
             Benchmark(),
             # # VALIDATE_MAX_SF_REP1_ON,  # only single repetition with largest (benchmarking) scale factor - we don't care if measured query rt is noisy
             # ValidateStdoutOff(),
@@ -460,3 +484,101 @@ class ValidateAndFixStage(DynamicStageConfig):
             builder_path=self.builder_path,
         )
         return prompt
+
+
+class ValidateMultiThreadedStage(DynamicStageConfig):
+    """Per-query multi-threaded correctness gate for the finished base impl.
+
+    The storage/base/optim stages all validate serially (CORE_IDS=1), so the
+    engine's ``parallel_for`` / ``parallel_reduce`` paths take the serial fast
+    path throughout generation - a data race only surfaces once the engine is
+    served at ``config={'threads': N}``. This stage walks the queries and runs each
+    one at ``len(core_ids)`` (>1) pinned cores: a query still correct there costs no
+    LLM turn, while one whose result diverges gets a fix loop scoped to that query,
+    re-validated at that thread count after every edit and giving up loudly after
+    ``MAX_FIX_ATTEMPTS``. The thread count is always ``len(core_ids)`` - the count
+    the engine actually runs at - not a separately tracked number.
+
+    Entering this stage switches the run tool into multi-threaded mode (like the
+    VALIDATE_ON/OFF run-tool toggles) for this stage and everything after it, so both
+    this gate's checks AND the LLM's own ``run`` calls during a fix execute at the
+    serving parallelism - a single-threaded run cannot reproduce, or confirm the fix
+    of, a data race.
+
+    The walk is forward-only: once a query passes it is not re-checked. A fix is
+    normally scoped to that query's own file; a fix that instead edits the shared
+    builder could in principle regress an already-passed query, which this
+    single-sweep pass would not catch (an accepted, rare tradeoff).
+    """
+
+    MAX_FIX_ATTEMPTS = 3
+
+    def __init__(
+        self,
+        run_tool: RunTool,
+        core_ids: list[int],
+        query_ids: list[str],
+        builder_path: str,
+        max_turns: int | None = None,
+    ):
+        super().__init__(
+            descriptor="validate multi-threaded correctness", max_turns=max_turns
+        )
+        self.run_tool = run_tool
+        self.core_ids = core_ids
+        self.query_ids = list(query_ids)
+        self.builder_path = builder_path
+        self.idx = 0  # index of the query currently under validation
+        self.fix_attempts = 0  # fix attempts for the query at self.idx
+
+    def next_prompt(self) -> Optional[str]:
+        # len(core_ids) is the count the engine actually runs at. The build gate
+        # already required >1, but guard defensively so a degenerate core set (e.g.
+        # a 1-core host) never silently downgrades this to a serial (no-op) run.
+        num_threads = len(self.core_ids)
+        if num_threads <= 1:
+            return None
+
+        # Switch the run tool to multi-threaded so this gate's runs and the LLM's own
+        # `run` calls both execute at the serving parallelism (single source of truth
+        # for the thread count from here on: run_tool.parallelism/core_ids).
+        self.run_tool.parallelism = True
+        self.run_tool.core_ids = self.core_ids
+
+        while self.idx < len(self.query_ids):
+            qid = self.query_ids[self.idx]
+            # force_live: never replay QueryValidator's cache here. A data race is
+            # nondeterministic, so a single lucky pass (from the LLM's own run during a
+            # fix, or an earlier check of this snapshot) must not be cached and replayed
+            # as the gate's verdict - each attempt re-executes the engine at N threads.
+            result = self.run_tool.run_worker(
+                mode=RunToolMode.EXHAUSTIVE,
+                optimize=True,
+                query_ids=[qid],
+                trace_mode=False,
+                force_live=True,
+            )
+
+            if result.success:
+                logger.info("Query %s correct at %d threads.", qid, num_threads)
+                self.idx += 1
+                self.fix_attempts = 0
+                continue
+
+            self.fix_attempts += 1
+            error = result.msg or result.err or "results diverged from the reference"
+            if self.fix_attempts > self.MAX_FIX_ATTEMPTS:
+                raise ValidationStillFailsException(
+                    f"Query {qid} still produces incorrect results at {num_threads} "
+                    f"threads after {self.fix_attempts - 1} fix attempt(s) - a data "
+                    f"race in its parallelization remains. Last error:\n{error}"
+                )
+
+            return base_validate_mt_prompt(
+                query_id=qid,
+                num_threads=num_threads,
+                builder_path=self.builder_path,
+                error=error,
+            )
+
+        return None
