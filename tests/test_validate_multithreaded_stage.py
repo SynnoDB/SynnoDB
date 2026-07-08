@@ -55,6 +55,8 @@ def test_all_queries_correct_advances_without_prompt():
     kwargs = run_tool.run_worker.call_args.kwargs
     assert kwargs["mode"] == RunToolMode.EXHAUSTIVE
     assert kwargs["query_ids"] == ["6"]  # last query, checked in isolation
+    # Never replay a cached (possibly lucky) verdict for a nondeterministic race.
+    assert kwargs["force_live"] is True
 
 
 def test_diverging_query_returns_scoped_fix_prompt_then_advances():

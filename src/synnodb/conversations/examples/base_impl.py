@@ -545,11 +545,16 @@ class ValidateMultiThreadedStage(DynamicStageConfig):
 
         while self.idx < len(self.query_ids):
             qid = self.query_ids[self.idx]
+            # force_live: never replay QueryValidator's cache here. A data race is
+            # nondeterministic, so a single lucky pass (from the LLM's own run during a
+            # fix, or an earlier check of this snapshot) must not be cached and replayed
+            # as the gate's verdict - each attempt re-executes the engine at N threads.
             result = self.run_tool.run_worker(
                 mode=RunToolMode.EXHAUSTIVE,
                 optimize=True,
                 query_ids=[qid],
                 trace_mode=False,
+                force_live=True,
             )
 
             if result.success:
