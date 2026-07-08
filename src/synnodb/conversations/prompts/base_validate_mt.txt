@@ -1,0 +1,16 @@
+Query ${query_id} produced CORRECT results single-threaded, but its results DIVERGE from the reference when executed with ${num_threads} worker threads. This is a data race in query ${query_id}'s parallelization: the `parallel_for` / `parallel_reduce` code in `${query_file}` that took the serial fast path during single-threaded validation now runs concurrently, and some shared mutable state is read or written without proper isolation.
+
+Divergence reported by the multi-threaded run:
+${error}
+
+The run tool now executes at ${num_threads} threads, so you can reproduce this divergence and confirm your fix by calling it yourself (mode exhaustive). A race is non-deterministic, so a single run may pass by luck - do not treat one clean run as proof; the exhaustive run exercises many instantiations, which is your signal.
+
+Audit query ${query_id}'s parallel code for the usual causes and fix the offending one:
+- A shared accumulator, output buffer, or counter written by multiple threads without a private per-thread partial that is merged deterministically afterwards.
+- A structure built lazily or mutated during the parallel scan (a shared hash map, dictionary, zone-map, or cursor). Build it once up front and treat it as read-only while the threads run.
+- Overlapping or non-deterministic row-range assignment, or two threads writing into the same output slot.
+- Reused scratch state that must be per-thread (indexed by the thread id) instead of shared.
+
+Keep ONE code path: do not add a separate single-threaded branch and do not disable threading. The fix must keep query ${query_id} correct at BOTH 1 and ${num_threads} threads.
+
+Limit changes to `${query_file}` (and `${builder_path}` only if the race is in shared state it builds). Make the smallest change that removes the race, then re-run at ${num_threads} threads to verify it now matches.
