@@ -13,6 +13,7 @@ from synnodb.cpp_runner.hotpatch.hotpatch_proc import (
     HotpatchProcRunResult,
 )
 from synnodb.cpp_runner.hotpatch.pool import HotpatchPool
+from synnodb.cpp_runner.runtime_reset import warm_runtime_in_use
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.tools.validate.query_validator_class import (
@@ -333,28 +334,30 @@ class RunTool:
         # RUN & VALIDATE QUERIES
         #################
 
+        # Guard the warm runtime against a concurrent resync for this whole run (see runtime_reset).
         result_list = []
-        for batch in query_batches:
-            result = self.run_query_batch(
-                batch,
-                echo_output=echo_output,
-                compile_used_cache=compile_used_cache,
-                current_git_snapshot=current_git_snapshot,
-                optimize=optimize,
-                trace_mode=trace_mode,
-                compile_key_hash=compile_key_hash,
-                general_extra_env=extra_env,
-                external_call=external_call,
-                current_parallelism=current_parallelism,
-                current_core_ids=current_core_ids,
-                run_tool_mode=mode,
-                force_live=force_live,
-            )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
-            result_list.append(result)
+        with warm_runtime_in_use():
+            for batch in query_batches:
+                result = self.run_query_batch(
+                    batch,
+                    echo_output=echo_output,
+                    compile_used_cache=compile_used_cache,
+                    current_git_snapshot=current_git_snapshot,
+                    optimize=optimize,
+                    trace_mode=trace_mode,
+                    compile_key_hash=compile_key_hash,
+                    general_extra_env=extra_env,
+                    external_call=external_call,
+                    current_parallelism=current_parallelism,
+                    current_core_ids=current_core_ids,
+                    run_tool_mode=mode,
+                    force_live=force_live,
+                )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
+                result_list.append(result)
 
-            if not result.success:
-                # early return
-                break
+                if not result.success:
+                    # early return
+                    break
 
         return result_list[-1]
 

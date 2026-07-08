@@ -190,6 +190,44 @@ def test_no_dangling_join_keys(synthetic_con, downscaler):
     downscaler.drop()
 
 
+def test_composite_key_matched_as_tuple():
+    """A composite relationship must match its column pairs as one tuple: a child row survives
+    only if its whole key exists on a single kept parent row, not if each component appears
+    somewhere in the kept parent. Independent per-column ``IN`` checks would keep a phantom like
+    ``(partkey=1, suppkey=20)`` drawn from two different parent rows - a dangling composite FK.
+    """
+    con = duckdb.connect()
+    try:
+        # psupp (100 rows) is the anchor; li (50) is sampled against it over the composite key.
+        con.execute("CREATE TABLE psupp AS SELECT i AS pk, i * 10 AS sk FROM range(100) t(i)")
+        con.execute("CREATE TABLE li AS SELECT i AS pk, i * 10 AS sk, i AS extra FROM range(50) t(i)")
+        queries = {"1": "SELECT * FROM li JOIN psupp ON li.pk = psupp.pk AND li.sk = psupp.sk"}
+        ds = ReferentialDownscaler(con, sql_by_id=queries, whole_table_threshold=1)
+        assert ds.anchor() == "psupp"
+
+        plan = ds.plan_subset(0.5)
+        li_sql = next(t.sql for t in plan.tables if t.table == "li")
+        assert "EXISTS" in li_sql, li_sql  # tuple semantics, not two independent IN checks
+
+        # Force a cross-pattern parent keep-set so component values span rows that share no tuple.
+        ds._drop_keep_tables()
+        con.execute(
+            f"CREATE TEMP TABLE {ds._keep_name('psupp')} AS "
+            "SELECT * FROM (VALUES (1, 10), (2, 20)) v(pk, sk)"
+        )
+        con.execute("DROP TABLE li")
+        con.execute(
+            "CREATE TABLE li AS "
+            "SELECT * FROM (VALUES (1, 10, 1), (1, 20, 2), (2, 20, 3)) v(pk, sk, extra)"
+        )
+
+        kept = {(pk, sk) for pk, sk, _ in con.execute(li_sql).fetchall()}
+        # (1,20) is the phantom: pk=1 from one parent row, sk=20 from another, no matching tuple.
+        assert kept == {(1, 10), (2, 20)}
+    finally:
+        con.close()
+
+
 def test_workload_joins_non_vacuous(synthetic_con, downscaler):
     """The whole point: every workload join still produces rows on the downscaled subset."""
     downscaler.materialize_temp_subset(0.2)

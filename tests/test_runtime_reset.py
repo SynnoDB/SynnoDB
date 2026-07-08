@@ -6,9 +6,15 @@ tests pin that teardown with fakes (no real engine launched, no real shm needed)
 
 from pathlib import Path
 
+import pytest
+
 import synnodb.cpp_runner.shm_stage as shm_stage
 from synnodb.cpp_runner.hotpatch.pool import HotpatchPool
-from synnodb.cpp_runner.runtime_reset import reset_warm_runtime
+from synnodb.cpp_runner.runtime_reset import (
+    ResyncInFlightError,
+    reset_warm_runtime,
+    warm_runtime_in_use,
+)
 
 
 class _FakeRunner:
@@ -67,3 +73,32 @@ def test_reset_warm_runtime_is_a_safe_noop_when_cold():
     reset_warm_runtime()
     assert HotpatchPool._runners == {}
     assert shm_stage._STAGED == set()
+
+
+def test_resync_refuses_while_a_run_is_in_flight():
+    runner = _FakeRunner()
+    HotpatchPool.get("k", factory=lambda: runner, fingerprint="id")
+    try:
+        with warm_runtime_in_use():
+            with pytest.raises(ResyncInFlightError):
+                reset_warm_runtime()
+            # The warm runtime is left untouched: the in-flight run keeps its process.
+            assert runner.terminated is False
+            assert "k" in HotpatchPool._runners
+        # Once the run scope exits, a resync is allowed again and tears the proc down.
+        reset_warm_runtime()
+        assert runner.terminated is True
+        assert HotpatchPool._runners == {}
+    finally:
+        HotpatchPool.terminate_all()
+
+
+def test_warm_runtime_in_use_is_reentrant():
+    # Nested run scopes must both have to exit before a resync is allowed (depth count, not a flag).
+    with warm_runtime_in_use():
+        with warm_runtime_in_use():
+            with pytest.raises(ResyncInFlightError):
+                reset_warm_runtime()
+        with pytest.raises(ResyncInFlightError):
+            reset_warm_runtime()
+    reset_warm_runtime()  # all scopes exited: no longer blocked

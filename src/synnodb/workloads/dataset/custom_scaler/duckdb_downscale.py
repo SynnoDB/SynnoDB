@@ -591,10 +591,13 @@ class ReferentialDownscaler:
         order_index = {t: i for i, t in enumerate([anchor, *ordered])}
 
         def semi_join_predicate(table: str) -> str | None:
-            """OR-across-relationships / AND-within-relationship semi-join predicate over
-            already-processed, sampled neighbours. None if the table has no such neighbour, so it
-            is kept whole. A composite relationship ANDs its column pairs; alternative join paths
+            """OR-across-relationships semi-join predicate over already-processed, sampled
+            neighbours. None if the table has no such neighbour, so it is kept whole. A composite
+            relationship matches its column pairs as one tuple - the whole key must come from a
+            single kept parent row (a correlated EXISTS), not each column independently, or a
+            composite child key could survive with no matching parent. Alternative join paths
             between the same tables are separate relationships and are ORed."""
+            own_quoted = _quote_ident(table)
             terms: list[str] = []
             for rel in self.relationships:
                 side = rel.other(table)
@@ -603,12 +606,12 @@ class ReferentialDownscaler:
                 own_cols, other, other_cols = side
                 if other in whole or order_index.get(other, 1 << 30) >= order_index[table]:
                     continue  # whole neighbours don't restrict; only earlier-processed ones
-                ands = " AND ".join(
-                    f"{_quote_ident(oc)} IN "
-                    f"(SELECT {_quote_ident(rc)} FROM {self._keep_name(other)})"
+                keep = self._keep_name(other)
+                match = " AND ".join(
+                    f"{keep}.{_quote_ident(rc)} = {own_quoted}.{_quote_ident(oc)}"
                     for oc, rc in zip(own_cols, other_cols)
                 )
-                terms.append(f"({ands})")
+                terms.append(f"EXISTS (SELECT 1 FROM {keep} WHERE {match})")
             if not terms:
                 return None
             return " OR ".join(dict.fromkeys(terms))
