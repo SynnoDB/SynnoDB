@@ -60,12 +60,11 @@ def source_db(tmp_path):
     return path
 
 
-def _register(name, managed_root, source_db, *, serve_from, allow_benchmark_symlink=True):
+def _register(name, managed_root, source_db, *, serve_from):
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
 
-    is_duckdb = ServeFrom.coerce(serve_from) == ServeFrom.DUCKDB
-    # Opened read-only and closed below, so no read-write connection outlives registration -
-    # the zero-copy benchmark symlink is safe (allow_benchmark_symlink defaults True here).
+    # Opened read-only and closed below: a SynnoDB-owned static source, so it is read in place
+    # (no snapshot) and the DuckDB benchmark subset is a zero-copy symlink to it.
     con = duckdb.connect(str(source_db), read_only=True)
     try:
         return register_workload_from_duckdb(
@@ -76,8 +75,8 @@ def _register(name, managed_root, source_db, *, serve_from, allow_benchmark_syml
             downscale_fractions=(0.2,),
             whole_table_threshold=10,
             serve_from=serve_from,
-            source_db_path=str(source_db) if is_duckdb else None,
-            allow_benchmark_symlink=allow_benchmark_symlink and is_duckdb,
+            source_db_path=str(source_db),
+            source_is_static=True,
         )
     finally:
         con.close()
@@ -112,19 +111,20 @@ def test_native_registration_materializes_subset_duckdb(tmp_path, source_db):
     assert "CREATE TABLE lineitem" in spec.schema()
 
 
-def test_benchmark_subset_default_is_independent_copy(tmp_path, source_db):
-    """Without ``allow_benchmark_symlink`` the ``fraction1`` benchmark subset is an independent
-    copy, not a symlink to the source - so the framework's later read-only opens never collide
-    with a still-open read-write connection to the source (the documented live-connection flow)."""
+def test_benchmark_subset_is_frozen_snapshot(tmp_path, source_db):
+    """A caller-supplied live connection (which they may keep writing to) is frozen into a
+    point-in-time snapshot SynnoDB owns. The ``fraction1`` benchmark subset resolves to that
+    snapshot, not the caller's live file, so later read-only opens never collide with the
+    still-open read-write connection and never see the caller's subsequent writes."""
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
 
     managed = tmp_path / "managed"
-    # A read-write connection to the source stays open across registration and the reads below,
+    # A read-write connection to the source stays open across registration and the writes below,
     # exactly as a notebook keeps ``conn = duckdb.connect(path)`` open and hands it to SynnoDB.
     live_rw = duckdb.connect(str(source_db))
     try:
         register_workload_from_duckdb(
-            name="nat_copy",
+            name="nat_snap",
             con=live_rw,
             queries_json=_QUERIES,
             managed_root=managed,
@@ -132,11 +132,21 @@ def test_benchmark_subset_default_is_independent_copy(tmp_path, source_db):
             whole_table_threshold=10,
             serve_from=ServeFrom.DUCKDB,
             source_db_path=str(source_db),
-            allow_benchmark_symlink=False,
+            source_is_static=False,
         )
         full = managed / "fraction1" / "subset.duckdb"
-        assert full.exists() and not full.is_symlink()
-        # Independent file: opening it read-only does not collide with the live read-write conn.
+        # The benchmark subset symlinks the frozen snapshot we own, never the caller's live file.
+        assert full.is_symlink()
+        assert full.resolve() != source_db.resolve()
+        assert full.resolve() == (managed / ".source_snapshot.duckdb").resolve()
+
+        # The caller keeps writing to their live database in parallel...
+        live_rw.execute(
+            "INSERT INTO lineitem SELECT i AS l_id, (i % 200) AS l_orderkey, "
+            "(i % 7)::DECIMAL(10,2) AS l_amt FROM range(1000, 2000) t(i)"
+        )
+        # ...but the frozen benchmark subset still reflects the snapshot instant (1000 rows), and
+        # opening it read-only does not collide with the live read-write connection.
         con = duckdb.connect(str(full), read_only=True)
         try:
             assert con.execute("SELECT COUNT(*) FROM lineitem").fetchone()[0] == 1000
@@ -167,7 +177,7 @@ def test_stale_subsets_rebuilt_when_source_changes(tmp_path):
                 whole_table_threshold=10,
                 serve_from=ServeFrom.DUCKDB,
                 source_db_path=str(src),
-                allow_benchmark_symlink=False,
+                source_is_static=False,
             )
         finally:
             con.close()
@@ -188,6 +198,89 @@ def test_stale_subsets_rebuilt_when_source_changes(tmp_path):
         assert con.execute("SELECT COUNT(*) FROM lineitem").fetchone()[0] == 3000
     finally:
         con.close()
+
+
+def test_reuse_existing_subsets_reuses_unchanged_live_source(tmp_path):
+    """``reuse_existing_subsets`` reuses an on-disk materialization for a *live* source when its
+    fingerprint is unchanged - no re-snapshot, no re-downscale - yet still rebuilds once the source
+    changes. A sentinel dropped inside a subset dir survives a reuse (the dir is left untouched) but
+    not a rebuild (``_clear_managed_subsets`` rmtrees every ``fraction*`` dir first)."""
+    from synnodb.workloads.byo_workload import register_workload_from_duckdb
+
+    src = tmp_path / "src.duckdb"
+    _make_source(src)
+    managed = tmp_path / "managed"
+
+    def reg():
+        con = duckdb.connect(str(src))
+        try:
+            return register_workload_from_duckdb(
+                name="reuse_test",
+                con=con,
+                queries_json=_QUERIES,
+                managed_root=managed,
+                downscale_fractions=(0.2,),
+                whole_table_threshold=10,
+                serve_from=ServeFrom.DUCKDB,
+                source_db_path=str(src),
+                source_is_static=False,
+                reuse_existing_subsets=True,
+            )
+        finally:
+            con.close()
+
+    v1 = reg().dataset_version
+    sentinel = managed / "fraction0.2" / "_sentinel"
+    sentinel.write_text("keep")
+
+    # Re-registering an unchanged live source reuses verbatim: same fingerprint, sentinel survives.
+    v2 = reg().dataset_version
+    assert v2 == v1
+    assert sentinel.exists()
+
+    # Changing the source moves the fingerprint and forces a full rebuild (sentinel is gone).
+    grow = duckdb.connect(str(src))
+    grow.execute(
+        "INSERT INTO lineitem SELECT i AS l_id, (i % 200) AS l_orderkey, "
+        "(i % 7)::DECIMAL(10,2) AS l_amt FROM range(1000, 3000) t(i)"
+    )
+    grow.close()
+    v3 = reg().dataset_version
+    assert v3 != v1
+    assert not sentinel.exists()
+
+
+def test_live_source_rebuilds_without_reuse_flag(tmp_path):
+    """Without ``reuse_existing_subsets`` a live source rebuilds every run even when unchanged: the
+    default freezes a new snapshot and re-downscales, so a sentinel in a subset dir does not survive."""
+    from synnodb.workloads.byo_workload import register_workload_from_duckdb
+
+    src = tmp_path / "src.duckdb"
+    _make_source(src)
+    managed = tmp_path / "managed"
+
+    def reg():
+        con = duckdb.connect(str(src))
+        try:
+            return register_workload_from_duckdb(
+                name="no_reuse_test",
+                con=con,
+                queries_json=_QUERIES,
+                managed_root=managed,
+                downscale_fractions=(0.2,),
+                whole_table_threshold=10,
+                serve_from=ServeFrom.DUCKDB,
+                source_db_path=str(src),
+                source_is_static=False,
+            )
+        finally:
+            con.close()
+
+    reg()
+    sentinel = managed / "fraction0.2" / "_sentinel"
+    sentinel.write_text("keep")
+    reg()
+    assert not sentinel.exists()  # rebuilt from a fresh snapshot despite the unchanged source
 
 
 def test_native_spec_subset_files_and_ram_check(tmp_path, source_db):

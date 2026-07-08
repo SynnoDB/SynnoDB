@@ -780,3 +780,87 @@ class ReferentialDownscaler:
                 pct,
                 tt.mode,
             )
+
+
+# --------------------------------------------------------------------------- source snapshot
+def _unlink_duckdb_files(db_path: Path) -> None:
+    """Remove a DuckDB database file and its sidecar WAL, if present."""
+    db_path.unlink(missing_ok=True)
+    db_path.with_name(db_path.name + ".wal").unlink(missing_ok=True)
+
+
+def _snapshot_via_copy_database(source_con: duckdb.DuckDBPyConnection, out_db: Path) -> None:
+    """Snapshot with ``COPY FROM DATABASE`` - one statement, one transaction, full schema
+    (including declared constraints). Needs a read-write source connection to attach a writable
+    target; raises for a read-only one, which cannot."""
+    rows = source_con.execute("PRAGMA database_list").fetchall()
+    if not rows:
+        raise RuntimeError("source connection exposes no database to snapshot")
+    src_name = rows[0][1]  # (seq, name, file): the primary database's catalog name
+    alias = _quote_ident("synno_snapshot_target")
+    attach_path = str(out_db).replace("'", "''")
+    source_con.execute(f"ATTACH '{attach_path}' AS {alias}")
+    try:
+        source_con.execute(f"COPY FROM DATABASE {_quote_ident(src_name)} TO {alias}")
+        source_con.execute(f"CHECKPOINT {alias}")  # fold the WAL so the file is self-contained
+    finally:
+        source_con.execute(f"DETACH {alias}")
+
+
+def _snapshot_via_arrow(source_con: duckdb.DuckDBPyConnection, out_db: Path) -> None:
+    """Snapshot table-by-table as Arrow, wrapped in a single source transaction so the copy is
+    internally consistent. The fallback for a read-only source connection (COPY FROM DATABASE
+    cannot attach a writable target through one). Exact column types are preserved; declared
+    constraints - optional join-graph signal - are not."""
+    dest = duckdb.connect(str(out_db))
+    source_con.execute("BEGIN TRANSACTION")
+    try:
+        for table in _list_tables(source_con):
+            arrow_tbl = source_con.execute(
+                f"SELECT * FROM {_quote_ident(table)}"
+            ).to_arrow_table()
+            dest.register("_synno_src", arrow_tbl)
+            dest.execute(
+                f"CREATE TABLE {_quote_ident(table)} AS SELECT * FROM _synno_src"
+            )
+            dest.unregister("_synno_src")
+        dest.execute("CHECKPOINT")
+    finally:
+        source_con.execute("ROLLBACK")  # read-only snapshot: never commit
+        dest.close()
+
+
+def snapshot_source_database(
+    source_con: duckdb.DuckDBPyConnection, out_db_path: Path | str
+) -> None:
+    """Copy a consistent point-in-time snapshot of ``source_con``'s primary database to a
+    standalone DuckDB file at ``out_db_path`` that SynnoDB then owns.
+
+    This is what lets a caller keep *writing* to their database in parallel with benchmark
+    building: the benchmark subset and every downscaled rung are derived from this frozen image,
+    never from the moving source. The snapshot is taken under a single transaction (DuckDB
+    snapshot isolation), so it is internally consistent across all tables - no table can reflect a
+    newer commit than another.
+
+    ``COPY FROM DATABASE`` is preferred (it also reproduces declared constraints, extra signal for
+    the join graph); a read-only source connection - which cannot attach a writable target - falls
+    back to a transaction-wrapped Arrow copy. The database is built in a ``.partial`` sibling and
+    atomically renamed into place, so an interrupted snapshot never leaves a complete-looking file
+    behind.
+    """
+    out_db = Path(out_db_path)
+    out_db.parent.mkdir(parents=True, exist_ok=True)
+    tmp_db = out_db.with_name(out_db.name + ".partial")
+    _unlink_duckdb_files(tmp_db)
+    try:
+        _snapshot_via_copy_database(source_con, tmp_db)
+    except Exception as exc:
+        logger.info(
+            "COPY FROM DATABASE snapshot unavailable (%s); falling back to Arrow snapshot",
+            exc,
+        )
+        _unlink_duckdb_files(tmp_db)
+        _snapshot_via_arrow(source_con, tmp_db)
+    tmp_db.with_name(tmp_db.name + ".wal").unlink(missing_ok=True)
+    _unlink_duckdb_files(out_db)
+    tmp_db.replace(out_db)

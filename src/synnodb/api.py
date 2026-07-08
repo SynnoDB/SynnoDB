@@ -481,6 +481,7 @@ class SynnoDB:
         schema_example_table: str | None = None,
         whole_table_threshold: int = 10_000,
         serve_from: "ServeFrom | str" = ServeFrom.DUCKDB,
+        reuse_existing_subsets: bool = False,
         set_as_workload: bool = True,
     ):
         """Register a workload straight from a live DuckDB connection - no pre-scaled parquet.
@@ -491,11 +492,18 @@ class SynnoDB:
         ``downscale_fractions`` becomes a referentially-closed fast-check rung whose joins still
         produce rows. The connection is only read - nothing is copied back into it.
 
+        The caller may keep working on their database in parallel. A live connection is frozen into
+        a consistent point-in-time snapshot SynnoDB owns before anything is read from it, and every
+        subset (benchmark included) is derived from that immutable image - so writes the caller
+        makes after this call never perturb the run. A ``.duckdb`` path is opened read-only and, as
+        a static source nothing writes, read in place.
+
             import duckdb, synnodb
             conn = duckdb.connect("tpch.duckdb")
             db = synnodb.SynnoDB.in_memory(queries="1-5")
             db.sync_from_duckdb(conn, name="tpch_byo", queries_json="queries.json",
                                 downscale_fractions=(0.02, 0.1))
+            # conn stays yours - keep querying/writing it while the run proceeds
             plan = db.createStoragePlan()
 
         Args:
@@ -512,11 +520,18 @@ class SynnoDB:
                 its string value). ``ServeFrom.DUCKDB`` (default) makes each subset a ``subset.duckdb``
                 the engine ingests over the shm plane and the oracle materializes flat from, with
                 no parquet on disk (in-memory only); ``ServeFrom.PARQUET`` materializes
-                ``<table>.parquet`` files per subset (the fallback; also works on SSD). When
-                ``con`` is a path (SynnoDB opens and closes it), the native benchmark subset is a
-                zero-copy symlink to the source; for a caller-supplied live connection it is an
-                independent copy, so the framework's later read-only opens cannot collide with a
-                read-write handle the caller may still hold.
+                ``<table>.parquet`` files per subset (the fallback; also works on SSD). The native
+                benchmark subset is a zero-copy symlink to the frozen source - the caller's
+                read-only file for a path, or the snapshot SynnoDB owns for a live connection -
+                never the caller's live database, so the framework's later read-only opens cannot
+                collide with a read-write handle the caller may still hold.
+            reuse_existing_subsets: skip re-snapshotting and re-downscaling a *live* connection when
+                a materialization for an unchanged source already exists on disk (no effect on a
+                ``.duckdb`` path, which is static and already reuses when current). The live source
+                is fingerprinted in place and its subsets are reused only when that fingerprint -
+                schema, per-table row counts, join graph, fractions, threshold, format and DuckDB
+                version - still matches; any change rebuilds. Enable it to make re-running the same
+                notebook cheap; leave it off (default) to always rebuild from a fresh snapshot.
             set_as_workload: point this driver's config at the new workload (default True).
 
         Returns the registered :class:`~synnodb.workloads.workload_spec.WorkloadSpec`.
@@ -533,16 +548,16 @@ class SynnoDB:
 
         opened: "_duckdb.DuckDBPyConnection | None" = None
         source_db_path: str | None = None
-        # The zero-copy benchmark symlink is safe only when no read-write connection to the
-        # source outlives registration. That holds when SynnoDB owns the connection (a path we
-        # open read-only and close below); for a caller-supplied live connection it may not, so
-        # the benchmark subset is materialized as an independent copy instead.
-        allow_benchmark_symlink = False
+        # A path SynnoDB opens read-only and closes below is a static source nothing writes: it is
+        # read in place and its DuckDB benchmark subset is a zero-copy symlink. A caller-supplied
+        # live connection may still be written to in parallel, so it is treated as non-static and
+        # frozen into a point-in-time snapshot before anything is read from it.
+        source_is_static = False
         if isinstance(con, (str, Path)):
             source_db_path = str(Path(con).resolve())
             opened = _duckdb.connect(str(con), read_only=True)
             connection = opened
-            allow_benchmark_symlink = True
+            source_is_static = True
         else:
             connection = con
             # A file-backed connection exposes its file via database_list. The primary database is
@@ -569,7 +584,8 @@ class SynnoDB:
                 whole_table_threshold=whole_table_threshold,
                 serve_from=serve_from,
                 source_db_path=source_db_path,
-                allow_benchmark_symlink=allow_benchmark_symlink,
+                source_is_static=source_is_static,
+                reuse_existing_subsets=reuse_existing_subsets,
             )
         finally:
             if opened is not None:

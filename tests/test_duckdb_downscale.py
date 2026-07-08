@@ -337,7 +337,8 @@ def test_register_workload_from_duckdb_is_idempotent(tmp_path):
         whole_table_threshold=10,
     )
     v1 = register_workload_from_duckdb(**kwargs).dataset_version
-    # second call reuses the already-materialized subsets and yields the same fingerprint
+    # A live (in-memory) source is re-snapshotted and rebuilt each call, but identical data yields
+    # the same deterministic fingerprint.
     v2 = register_workload_from_duckdb(**kwargs).dataset_version
     con.close()
     assert v1 == v2

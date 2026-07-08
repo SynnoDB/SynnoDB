@@ -322,7 +322,7 @@ def test_factory_publish_native_ships_shm_only(tmp_path, monkeypatch):
             downscale_fractions=(0.1,),
             serve_from="duckdb",
             source_db_path=str(src),
-            allow_benchmark_symlink=True,
+            source_is_static=True,
         )
     finally:
         con.close()
