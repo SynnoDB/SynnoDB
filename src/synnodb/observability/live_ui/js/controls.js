@@ -162,7 +162,9 @@ distModal.addEventListener('click', e => { if (e.target === distModal) distModal
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     const codeModal = document.getElementById('code-modal');
+    const logDetailModal = document.getElementById('log-detail-modal');
     if (codeModal && !codeModal.hidden) codeModal.hidden = true;
+    else if (logDetailModal && !logDetailModal.hidden) logDetailModal.hidden = true;
     else if (!promptModal.hidden) promptModal.hidden = true;
     else if (!distModal.hidden) distModal.hidden = true;
     else if (timeTravelStep != null) setTimeTravelStep(null);

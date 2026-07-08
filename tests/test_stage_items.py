@@ -125,6 +125,55 @@ def test_run_stages_lowers_markers_and_skips_supervision_horizon(tmp_path):
     assert json.dumps(conv.used, ensure_ascii=False, indent=2) == expected_json
 
 
+def test_post_stage_validate_awaits_an_async_callback(tmp_path):
+    # storage_plan.py's _validate_storage_plan is async (it awaits a one-off LLM
+    # judge call); _run_post_stage_validate must await it, not treat the returned
+    # coroutine object itself as "truthy feedback" and loop forever.
+    conv = _make_conv(tmp_path)
+    calls = {"n": 0}
+
+    async def flaky_then_ok() -> str | None:
+        calls["n"] += 1
+        return None if calls["n"] > 1 else "fix it"
+
+    stage = PromptStage(
+        descriptor="stage A",
+        get_prompt=lambda _s, _rt: "PROMPT A",
+        measure_performance_after_stage=False,
+        auto_revert_on_regression=False,
+        post_stage_validate=flaky_then_ok,
+    )
+
+    asyncio.run(conv._run_post_stage_validate(stage, current_stage_nr=0))
+
+    assert calls["n"] == 2
+    assert conv.exec_calls == [("fix it", "stage A", 0)]
+
+
+def test_post_stage_validate_still_supports_a_sync_callback(tmp_path):
+    # Backward compatibility: every pre-existing post_stage_validate is a plain
+    # sync function: this must keep working unchanged.
+    conv = _make_conv(tmp_path)
+    calls = {"n": 0}
+
+    def flaky_then_ok() -> str | None:
+        calls["n"] += 1
+        return None if calls["n"] > 1 else "fix it"
+
+    stage = PromptStage(
+        descriptor="stage A",
+        get_prompt=lambda _s, _rt: "PROMPT A",
+        measure_performance_after_stage=False,
+        auto_revert_on_regression=False,
+        post_stage_validate=flaky_then_ok,
+    )
+
+    asyncio.run(conv._run_post_stage_validate(stage, current_stage_nr=0))
+
+    assert calls["n"] == 2
+    assert conv.exec_calls == [("fix it", "stage A", 0)]
+
+
 def test_supervision_agent_registers_typed_items():
     agent = SupervisionAgent(
         run_stats_collector=MagicMock(),

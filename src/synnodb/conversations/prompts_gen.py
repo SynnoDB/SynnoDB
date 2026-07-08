@@ -1,4 +1,6 @@
+import re
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
@@ -107,6 +109,7 @@ def base_planner_prompt(
     base_impl_todo_file: str,
     persistent_storage: bool,
     schema_example_table: str,
+    num_threads: int,
     serve_from: "str" = "parquet",
     schema_ddl: str | None = None,
 ) -> str:
@@ -193,6 +196,7 @@ def base_planner_prompt(
         args_path=args_path,
         base_impl_todo_file=base_impl_todo_file,
         schema_hint=schema_hint,
+        num_threads=num_threads,
     )
 
 
@@ -861,6 +865,64 @@ def optim2_prompt_optimize_w_trace(
 
 SUPERVISION_SUCCESS_KW = "Success."
 
+_DEV_HINTS_PROMPT_INSTRUCTION = (
+    "\n- Also assess whether the supervised agent seemed confused, contradicted "
+    "itself, or whether you noticed a likely bug or ambiguity in the pipeline or "
+    "prompts themselves (as opposed to the agent simply doing a poor job) — this "
+    "is meant to help the developers of this system, not the supervised agent. "
+    "Wrap it in <dev_hints></dev_hints> tags, placed right after </run_summary>. "
+    'Write "None" inside the tags if nothing noteworthy stood out.'
+)
+
+_RUN_SUMMARY_RE = re.compile(
+    r"<run_summary>(.*?)</run_summary>", re.IGNORECASE | re.DOTALL
+)
+_DEV_HINTS_RE = re.compile(r"<dev_hints>(.*?)</dev_hints>", re.IGNORECASE | re.DOTALL)
+
+
+@dataclass
+class SupervisionResult:
+    approved: bool
+    feedback_text: (
+        str  # `output` with the <run_summary>/<dev_hints> blocks stripped out
+    )
+    run_summary: str | None
+    dev_hints: str | None  # None if absent or literally "None"
+
+
+def parse_supervision_output(output: str) -> SupervisionResult:
+    """Parse a supervisor agent's raw response into its structured parts.
+
+    The supervisor is prompted to emit a `<run_summary>` (always) and a
+    `<dev_hints>` (only when enabled) block ahead of the final verdict line.
+    Those blocks are meta-information for the dashboard/developers — they are
+    stripped out of `feedback_text`, which is what gets echoed back to the
+    *supervised* agent as feedback when the stage isn't approved.
+    """
+    run_summary_match = _RUN_SUMMARY_RE.search(output)
+    run_summary = run_summary_match.group(1).strip() if run_summary_match else None
+
+    dev_hints_match = _DEV_HINTS_RE.search(output)
+    dev_hints_raw = dev_hints_match.group(1).strip() if dev_hints_match else None
+    dev_hints = (
+        None
+        if not dev_hints_raw or dev_hints_raw.strip().lower() == "none"
+        else dev_hints_raw
+    )
+
+    feedback_text = _RUN_SUMMARY_RE.sub("", output)
+    feedback_text = _DEV_HINTS_RE.sub("", feedback_text).strip()
+
+    last_line = feedback_text.rsplit("\n", 1)[-1].strip()
+    approved = last_line.lower() == SUPERVISION_SUCCESS_KW.strip().lower()
+
+    return SupervisionResult(
+        approved=approved,
+        feedback_text=feedback_text,
+        run_summary=run_summary,
+        dev_hints=dev_hints,
+    )
+
 
 def supervision_agent_prompt(
     user_prompt: str,
@@ -868,6 +930,7 @@ def supervision_agent_prompt(
     llm_output: str,
     stage_overview: str,
     be_relaxed_if_runtime_goal_not_reached: bool = False,
+    generate_dev_hints: bool = False,
 ) -> str:
     template_str = _load_txt(_PROMPTS_DIR / "supervision_prompt.txt")
     template = Template(template_str)
@@ -885,6 +948,9 @@ def supervision_agent_prompt(
         llm_output=llm_output,
         stage_overview=stage_overview,
         success_keyword=SUPERVISION_SUCCESS_KW,
+        dev_hints_instruction=_DEV_HINTS_PROMPT_INSTRUCTION
+        if generate_dev_hints
+        else "",
         misc=misc,
     )
 

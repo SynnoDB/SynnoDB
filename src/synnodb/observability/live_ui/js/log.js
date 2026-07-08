@@ -14,6 +14,22 @@ const LOG_TYPE_META = {
   compaction: { label:'Compaction', cls:'lt-compaction'},
 };
 
+// Body text is long enough to be worth a dedicated viewer window rather than
+// the cramped, fixed-height .log-body scroll box.
+const LOG_DETAIL_THRESHOLD = 500;
+
+// step -> raw (unescaped) body text, for the "View full output" modal. Kept
+// out of the DOM (rather than a data-attribute) since bodies can be tens of
+// thousands of characters.
+let _logBodyText = new Map();
+
+function logTruncated(type, d) {
+  if (type === 'llm') return !!d['llm/output_truncated'];
+  if (type === 'apply_patch') return !!d['apply_patch/truncated'];
+  if (type === 'shell') return !!d['shell/truncated'];
+  return false;
+}
+
 function logDesc(type, d) {
   if (type === 'llm') {
     const parts = [d['current_prompt_descriptor'], d['agent_name']].filter(Boolean);
@@ -157,6 +173,10 @@ function updateLog(steps, data) {
     const desc = logDesc(type, d);
     const body = logBody(type, d);
     const expandedMeta = logExpandedMeta(type, d, steps, data, idx);
+    _logBodyText.set(String(s), body);
+    const viewFullBtn = body.length > LOG_DETAIL_THRESHOLD
+      ? `<button class="log-view-full-btn" type="button" data-step="${s}">View full output</button>`
+      : '';
     const details = document.createElement('details');
     details.className = 'log-entry';
     details.dataset.step = s;
@@ -166,10 +186,63 @@ function updateLog(steps, data) {
         <span class="log-turn">#${s}</span>
         <span class="log-chevron">&#9654;</span>
       </summary>
-      <div class="log-body"><div class="log-expanded-meta">${esc(expandedMeta)}</div><pre>${esc(body)}</pre></div>`;
+      <div class="log-body"><div class="log-expanded-meta">${esc(expandedMeta)}</div>${viewFullBtn}<pre>${esc(body)}</pre></div>`;
     frag.appendChild(details);
   }
   el.appendChild(frag);
 
   if (atBottom) el.scrollTop = el.scrollHeight;
 }
+
+// ── "View full output" modal ────────────────────────────────────────────
+const logDetailModal      = document.getElementById('log-detail-modal');
+const logDetailModalTitle = document.getElementById('log-detail-modal-title');
+const logDetailModalNote  = document.getElementById('log-detail-modal-note');
+const logDetailModalBody  = document.getElementById('log-detail-modal-body');
+const logDetailModalCopy  = document.getElementById('log-detail-modal-copy');
+const logDetailModalClose = document.getElementById('log-detail-modal-close');
+
+let _logDetailText = '';
+
+function openLogDetailModal(step) {
+  const d = (_lastData && _lastData[step]) || {};
+  const type = (d['type'] || 'other').toLowerCase();
+  const meta = LOG_TYPE_META[type] || { label: type.toUpperCase() };
+  const text = _logBodyText.get(String(step)) || '';
+
+  _logDetailText = text;
+  logDetailModalTitle.textContent = `${meta.label} · #${step}`;
+  logDetailModalBody.textContent = text;
+  logDetailModalBody.scrollTop = 0;
+  if (logTruncated(type, d)) {
+    logDetailModalNote.hidden = false;
+    logDetailModalNote.textContent = 'Output exceeded the logging limit — showing as much as was captured.';
+  } else {
+    logDetailModalNote.hidden = true;
+  }
+  logDetailModalCopy.textContent = 'Copy';
+  logDetailModal.hidden = false;
+}
+
+document.getElementById('log-list').addEventListener('click', e => {
+  const btn = e.target.closest('.log-view-full-btn');
+  if (btn) openLogDetailModal(btn.dataset.step);
+});
+
+logDetailModalClose.addEventListener('click', () => { logDetailModal.hidden = true; });
+logDetailModal.addEventListener('click', e => { if (e.target === logDetailModal) logDetailModal.hidden = true; });
+
+logDetailModalCopy.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(_logDetailText);
+  } catch (_) {
+    const ta = document.createElement('textarea');
+    ta.value = _logDetailText;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  logDetailModalCopy.textContent = 'Copied!';
+  setTimeout(() => { logDetailModalCopy.textContent = 'Copy'; }, 1500);
+});
