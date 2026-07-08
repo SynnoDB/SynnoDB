@@ -14,7 +14,7 @@ stop being the authoring format.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Callable, Literal, Optional
+from typing import Awaitable, Callable, Literal, Optional, Union
 
 from synnodb.workloads.workload_provider import ExecSettings
 
@@ -165,9 +165,9 @@ class PromptStage(StageConfig):
     auto_revert_on_regression: bool = True  # automatically revert if no improvement (requires measure_performance_after_stage)
     feedback_on_incorrect: bool = False  # retry loop if implementation is incorrect (requires measure_performance_after_stage)
     throw_exception_on_incorrect: bool = False  # raise if incorrect after stage (requires measure_performance_after_stage)
-    post_stage_validate: Optional[Callable[[], Optional[str]]] = (
-        None  # called after stage; return None if valid, or a feedback string for the LLM
-    )
+    post_stage_validate: Optional[
+        Union[Callable[[], Optional[str]], Callable[[], Awaitable[Optional[str]]]]
+    ] = None  # called after stage (sync or async); return/await None if valid, or a feedback string for the LLM
     exec_settings: Optional[ExecSettings] = (
         None  # exec settings to use for providing current runtime statistics to the prompt
     )

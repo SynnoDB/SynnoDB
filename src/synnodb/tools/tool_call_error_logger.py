@@ -14,6 +14,7 @@ def log_tool_call_error(
     model: str = "",
     turn: int | None = None,
     raw_tool_calls: list | None = None,
+    extra: dict | None = None,
 ):
     global _error_counter
     _error_counter += 1
@@ -40,12 +41,19 @@ def log_tool_call_error(
             raw_section += f"Tool: {tc.get('name', 'unknown')}\n"
             raw_section += f"Arguments:\n{tc.get('arguments', '')}\n\n"
 
+    extra_section = ""
+    if extra:
+        extra_section = "\n--- Extra ---\n"
+        for key, value in extra.items():
+            extra_section += f"{key}:\n{value}\n\n"
+
     entry = (
         f"=== Error #{_error_counter} @ {datetime.now().isoformat()} ===\n"
         f"Type: {error_type}\n"
         f"Turn: {turn or 'unknown'}\n"
         f"Message: {str(error)}\n"
-        f"{raw_section}\n"
+        f"{raw_section}"
+        f"{extra_section}\n"
     )
 
     with open(filepath, mode) as f:
