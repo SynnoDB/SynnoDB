@@ -106,6 +106,23 @@
       <button class="panel-close" id="log-close" title="Close activity log" aria-label="Close activity log">&#x203A;</button>
     </div>
     <div id="log-list"><div class="log-empty">No activity yet&#8230;</div></div>
+    <div id="sup-summary-panel" hidden>
+      <div class="sup-summary-hdr">
+        <span class="sup-summary-title">Supervisor</span>
+        <div class="sup-summary-nav">
+          <button class="sup-nav-btn" id="sup-prev" title="Older summary" aria-label="Older summary">&#8249;</button>
+          <span class="sup-summary-pos" id="sup-summary-pos"></span>
+          <button class="sup-nav-btn" id="sup-next" title="Newer summary" aria-label="Newer summary">&#8250;</button>
+        </div>
+      </div>
+      <div class="sup-summary-body" id="sup-summary-body">
+        <div class="sup-summary-text" id="sup-summary-text"></div>
+        <div class="sup-dev-hints" id="sup-dev-hints" hidden>
+          <span class="sup-dev-hints-label">&#9888; Dev hint</span>
+          <div class="sup-dev-hints-text" id="sup-dev-hints-text"></div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -188,6 +205,19 @@
     </div>
   </div>
 </div>
+<div id="log-detail-modal" class="modal-overlay" hidden>
+  <div class="modal-box log-detail-modal-box">
+    <div class="modal-hdr">
+      <span class="modal-title" id="log-detail-modal-title"></span>
+      <div class="modal-hdr-actions">
+        <button class="modal-copy" id="log-detail-modal-copy" title="Copy output">Copy</button>
+        <button class="modal-close" id="log-detail-modal-close" aria-label="Close">&#10005;</button>
+      </div>
+    </div>
+    <div id="log-detail-modal-note" class="log-detail-modal-note" hidden></div>
+    <pre id="log-detail-modal-body" class="log-detail-modal-pre"></pre>
+  </div>
+</div>
 
 <script src="js/state.js"></script>
 <script src="js/util.js"></script>
@@ -197,6 +227,7 @@
 <script src="js/chart-query.js"></script>
 <script src="js/chart-dist.js"></script>
 <script src="js/log.js"></script>
+<script src="js/supervisor-summary.js"></script>
 <script src="js/cards.js"></script>
 <script src="js/source.js"></script>
 <script src="js/controls.js"></script>

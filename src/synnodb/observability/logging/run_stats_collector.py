@@ -14,7 +14,7 @@ from openai.types.responses.response_function_shell_tool_call import (
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_output_message import ResponseOutputMessage
 
-from synnodb.conversations.prompts_gen import SUPERVISION_SUCCESS_KW
+from synnodb.conversations.prompts_gen import parse_supervision_output
 from synnodb.llm.sdk.agents_sdk.openai_token_usage import (
     openai_get_tokens_context_and_dollar_info,
 )
@@ -328,7 +328,12 @@ class RunStatsCollector(RunHooks):
             # add additional metrics for supervisor
             metrics["supervisor"] = True
 
-            metrics["supervisor/approved"] = output_text == SUPERVISION_SUCCESS_KW
+            supervision_result = parse_supervision_output(output_text)
+            metrics["supervisor/approved"] = supervision_result.approved
+            if supervision_result.run_summary:
+                metrics["supervisor/summary"] = supervision_result.run_summary
+            if supervision_result.dev_hints:
+                metrics["supervisor/dev_hints"] = supervision_result.dev_hints
 
         # Reset per-turn prompt state. current_stage_prompt is deliberately NOT
         # cleared here: it must survive across turns so a mid-loop compaction can
@@ -351,9 +356,8 @@ class RunStatsCollector(RunHooks):
                 "total/reasoning_tokens": self.total_stats["reasoning_tokens"],
                 "total/cost_usd": self.total_stats["cost_usd"],
                 "total/real_cost_usd": self.total_stats["real_cost_usd"],
-                "llm/output_text": output_text[
-                    :1000
-                ],  # log only first 1000 chars of output
+                "llm/output_text": output_text[:20000],
+                "llm/output_truncated": len(output_text) > 20000,
             }
         )
 
@@ -408,7 +412,8 @@ class RunStatsCollector(RunHooks):
                     "type": "apply_patch",
                     "apply_patch/added_loc_count": self.apply_patch_added_ctr,
                     "apply_patch/deleted_loc_count": self.apply_patch_deleted_ctr,
-                    "apply_patch/string": self.apply_patch_str[:1000],
+                    "apply_patch/string": self.apply_patch_str[:20000],
+                    "apply_patch/truncated": len(self.apply_patch_str) > 20000,
                     "apply_patch/files": sorted(list(self.apply_patch_files)),
                     "apply_patch/failed": self.apply_patch_failed
                     if len(self.apply_patch_failed) > 0

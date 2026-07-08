@@ -337,7 +337,7 @@ class WorkspaceEditor:
             target.write_text(content, encoding="utf-8")
 
             # report stats
-            str_diff = f"=== CREATING: {target} ===\n{operation.diff[:1000] if operation.diff else ''}\n"
+            str_diff = f"=== CREATING: {target} ===\n{operation.diff[:8000] if operation.diff else ''}\n"
             assert deleted == 0, "Create operation should not have deleted lines"
             self._run_stats_collector.log_apply_patch_stats(
                 "create",
@@ -436,7 +436,7 @@ class WorkspaceEditor:
                 )
 
             # report stats
-            str_diff = f"=== UPDATING: {target} ===\n{operation.diff[:1000] if operation.diff else ''}\n"
+            str_diff = f"=== UPDATING: {target} ===\n{operation.diff[:8000] if operation.diff else ''}\n"
 
             self._run_stats_collector.log_apply_patch_stats(
                 "update",
@@ -595,7 +595,7 @@ class WorkspaceEditor:
             deleted = actual_old.count("\n") + 1
             str_diff = (
                 f"=== REPLACE_IN_FILE: {target} (x{n_repl}) ===\n"
-                f"- {actual_old[:500]}\n+ {new_final[:500]}\n"
+                f"- {actual_old[:4000]}\n+ {new_final[:4000]}\n"
             )
             self._run_stats_collector.log_apply_patch_stats(
                 "replace",

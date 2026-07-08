@@ -1,8 +1,9 @@
 import logging
+import os
 
 
 from synnodb.conversations.prompts_gen import (
-    SUPERVISION_SUCCESS_KW,
+    parse_supervision_output,
     supervision_agent_prompt,
 )
 from synnodb.conversations.stage_items import (
@@ -29,6 +30,7 @@ class SupervisionAgent:
         run_stats_collector: RunStatsCollector,
         agent_sdk_wrapper: SDKWrapper,
         be_relaxed_if_runtime_goal_not_reached: bool = False,
+        generate_dev_hints: bool | None = None,
     ):
 
         # # session
@@ -50,6 +52,11 @@ class SupervisionAgent:
             be_relaxed_if_runtime_goal_not_reached
         )
         self.agent_sdk_wrapper = agent_sdk_wrapper
+        self.generate_dev_hints = (
+            generate_dev_hints
+            if generate_dev_hints is not None
+            else os.environ.get("GENERATE_DEV_HINTS") == "1"
+        )
 
     def register_workload_info(self, stages: list[StageItem | str]):
         # Lower typed marker items to their legacy strings: the scoping and
@@ -127,6 +134,7 @@ class SupervisionAgent:
             llm_output=llm_output,
             stage_overview=stage_overview_str,
             be_relaxed_if_runtime_goal_not_reached=self.be_relaxed_if_runtime_goal_not_reached,
+            generate_dev_hints=self.generate_dev_hints,
         )
 
         # run the supervision agent
@@ -137,12 +145,14 @@ class SupervisionAgent:
         # Approval is signalled by the last non-empty line being exactly the
         # success keyword (as the prompt instructs). Checking only the last line
         # prevents rejection responses that mention "success" in passing (e.g.
-        # "Run Tool called: success") from being misread as approvals.
-        last_line = output.strip().rsplit("\n", 1)[-1].strip()
-        if last_line.lower() == SUPERVISION_SUCCESS_KW.strip().lower():
+        # "Run Tool called: success") from being misread as approvals. The
+        # <run_summary>/<dev_hints> meta blocks are stripped out of feedback_text
+        # before it's echoed back to the supervised agent.
+        result = parse_supervision_output(output)
+        if result.approved:
             return None
         else:
-            return output
+            return result.feedback_text
 
 
 def scope_stages_for_supervisor(
