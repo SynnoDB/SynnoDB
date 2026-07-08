@@ -262,10 +262,11 @@ class ShellExecutor:
 
         # shorten output
         output_str = "\n".join(
-            f"$ {out.command}\nstdout: {out.stdout[:200]}\nstderr: {out.stderr[:200]}"
+            f"$ {out.command}\nstdout: {out.stdout[:4000]}\nstderr: {out.stderr[:4000]}"
             for out in outputs
         )
-        output_str = output_str[:1000]
+        output_truncated = len(output_str) > 20000
+        output_str = output_str[:20000]
 
         # report stats
         log_cmd_list = [c[:500] for c in request.data.action.commands]
@@ -275,6 +276,7 @@ class ShellExecutor:
                 "shell/num_commands": len(request.data.action.commands),
                 "shell/commands": log_cmd_list,
                 "shell/outputs": output_str,
+                "shell/truncated": output_truncated,
             },
             log_and_increment=True,
         )
