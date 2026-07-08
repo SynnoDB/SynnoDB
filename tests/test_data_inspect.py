@@ -51,7 +51,14 @@ def _make_parquet_subset(base: Path) -> None:
 
 
 def _provider(base: Path, serve_from: ServeFrom) -> SimpleNamespace:
-    spec = SimpleNamespace(serve_from=serve_from, tables=_TABLES, fast_check_sfs=())
+    spec = SimpleNamespace(
+        name="testwl",
+        dataset_name="testds",
+        dataset_version=None,
+        serve_from=serve_from,
+        tables=_TABLES,
+        fast_check_sfs=(),
+    )
     return SimpleNamespace(
         spec=spec,
         benchmark_sf=1.0,
@@ -166,6 +173,133 @@ def test_expensive_query_hits_wallclock_budget(tool, monkeypatch):
     assert "inspection budget" in out and "cancelled" in out
     # The cached connection survives: the interrupt hit only the throwaway cursor.
     assert "200" in tool("SELECT count(*) AS n FROM orders")
+
+
+def test_cache_hit_replays_without_touching_data(tmp_path):
+    """A repeated query is served from the disk cache: deleting the subset afterwards proves the
+    second call never re-opened the data."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )
+
+    first = tool("SELECT count(*) AS n FROM orders")
+    assert "200" in first
+    assert list(cache_dir.glob("*.pkl")), "expected a cache entry to be written"
+
+    # A fresh tool (no live connection) forced to answer from cache alone must reproduce it,
+    # even though the underlying database is now gone.
+    import shutil
+
+    shutil.rmtree(base)
+    replay = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        only_from_cache=True,
+    )
+    assert replay("SELECT count(*) AS n FROM orders") == first
+
+
+def test_only_from_cache_raises_on_miss(tmp_path):
+    """Under only_from_cache an uncached query cannot run - it raises rather than touch data."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=tmp_path / "cache",
+        only_from_cache=True,
+    )
+    with pytest.raises(ValueError, match="only_from_cache"):
+        tool("SELECT count(*) AS n FROM orders")
+
+
+def test_row_cap_is_part_of_cache_key(tmp_path):
+    """The row cap participates in the key, so the same SQL at a different cap is not served the
+    wrong cached rendering."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=tmp_path / "cache"
+    )
+    # nation has 5 rows: a cap of 2 truncates, a cap of 100 shows them all. If the row cap were
+    # not in the key, the second call would wrongly replay the first call's truncated rendering.
+    capped = tool("SELECT n_nationkey FROM nation ORDER BY n_nationkey", max_rows=2)
+    wide = tool("SELECT n_nationkey FROM nation ORDER BY n_nationkey", max_rows=100)
+    assert "more rows exist" in capped
+    assert "more rows exist" not in wide
+
+
+def test_do_not_cache_never_writes(tmp_path):
+    """do_not_cache runs live but leaves no cache files behind."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        do_not_cache=True,
+    )
+    assert "200" in tool("SELECT count(*) AS n FROM orders")
+    assert not list(cache_dir.glob("*.pkl"))
+
+
+def test_timeout_is_not_cached(tmp_path, monkeypatch):
+    """A timeout is a host-dependent guard, not a property of the data, so it is never cached."""
+    import synnodb.tools.data_inspect as di
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )
+    out = tool(
+        "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b"
+    )
+    assert "inspection budget" in out
+    assert not list(cache_dir.glob("*.pkl"))
+
+
+def test_runtime_tracker_credited_on_cache_hit(tmp_path):
+    """A cache hit credits the original query's wall-clock back to the runtime tracker as skipped
+    time, matching the shell tool's accounting."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    skipped: list[float] = []
+    tracker = SimpleNamespace(add_skipped_time=lambda t: skipped.append(t))
+
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )("SELECT count(*) AS n FROM orders")
+    assert not skipped  # first run executed live - nothing skipped
+
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        runtime_tracker=tracker,
+    )("SELECT count(*) AS n FROM orders")
+    assert len(skipped) == 1 and skipped[0] >= 0.0
 
 
 def test_factory_invokes_tool(tmp_path):

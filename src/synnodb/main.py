@@ -46,6 +46,7 @@ from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.handle_prompt import handle_prompt
 from synnodb.synth_framework.runtime_tracker import RuntimeTracker
 from synnodb.tools.compile import CompileTool
+from synnodb.tools.data_inspect import DataInspectTool
 from synnodb.tools.run import RunTool
 from synnodb.tools.shell_executor import ShellExecutor
 from synnodb.tools.validate.query_validator_class import QueryValidator
@@ -108,6 +109,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     validate_cache_dir = cache_dir / "tool" / "validate"
     apply_patch_cache_dir = cache_dir / "tool" / "apply_patch"
     shell_cache_dir = cache_dir / "tool" / "shell"
+    data_inspect_cache_dir = cache_dir / "tool" / "data_inspect"
     llm_cache_dir = cache_dir / "llm"
 
     create_dir_and_set_permissions(prepare_workspace_cache_dir)
@@ -117,6 +119,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     create_dir_and_set_permissions(validate_cache_dir)
     create_dir_and_set_permissions(apply_patch_cache_dir)
     create_dir_and_set_permissions(shell_cache_dir)
+    create_dir_and_set_permissions(data_inspect_cache_dir)
     create_dir_and_set_permissions(llm_cache_dir)
 
     # create git snapshot dir
@@ -516,6 +519,20 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         # framework code not necessary here: is chained via compile hash
     )
 
+    # A read-only SQL window into the actual benchmark data (DuckDB), so the agent can ground
+    # physical-design choices in real distributions/cardinalities rather than schema alone. Only
+    # built for OLAP-style providers that expose the benchmark subset. Cached on disk like the
+    # other tools so repeated look-ups (and full-run replays) never re-touch the data.
+    data_inspect_tool = None
+    if hasattr(workload_provider, "spec") and hasattr(workload_provider, "benchmark_sf"):
+        data_inspect_tool = DataInspectTool(
+            workload_provider=workload_provider,
+            cache_dir=data_inspect_cache_dir,
+            do_not_cache=args.do_not_cache,
+            only_from_cache=args.only_from_cache,
+            runtime_tracker=runtime_tracker,
+        )
+
     # #########################
     # # Prepare Model and Agent
     # #########################
@@ -543,6 +560,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
             shell=shell,
             compile_tool=compile_tool,
             run_tool=run_tool,
+            data_inspect_tool=data_inspect_tool,
             args=args,
             cache_path=llm_cache_dir,
             config_kwargs=config_kwargs,

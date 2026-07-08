@@ -16,6 +16,13 @@ an isolated cursor so that interrupt never touches the cached connection.
 It is strictly read-only: every statement is gated by the same read-only classifier the
 DuckDB-compat write guard uses, and DuckDB-native subsets are additionally opened
 ``read_only=True``. No statement can mutate the source data or leave scratch state behind.
+
+Results are cached on disk keyed by the query, its row cap, and the identity of the inspected
+subset (workload, scale factor, dataset version). The subset is read-only benchmark data that
+never changes within a run, so a repeated inspection replays instantly - and, under
+``only_from_cache``, a whole run replays deterministically without re-touching the data. This
+mirrors the shell / compile / apply-patch tool caches. Timeouts are never cached: the wall-clock
+budget is a host-dependent guard, not a property of the data.
 """
 
 from __future__ import annotations
@@ -29,6 +36,8 @@ from typing import Any
 import duckdb
 
 from synnodb.router.normalize import is_read_only_query
+from synnodb.synth_framework.runtime_tracker import RuntimeTracker
+from synnodb.utils import utils
 from synnodb.utils.utils import ServeFrom
 from synnodb.workloads.workload_spec import SUBSET_DUCKDB_FILENAME, find_sf_dir
 
@@ -52,10 +61,29 @@ def _short_sql(sql: str) -> str:
     return collapsed if len(collapsed) <= LOG_SQL_LIMIT else collapsed[:LOG_SQL_LIMIT] + "..."
 
 
+class DataInspectCacheType:
+    """One cached inspection: the rendered output text plus the payload it was keyed on (for
+    debugging cache hits) and the wall-clock it originally took (credited back to the runtime
+    tracker as skipped time on a cache hit, exactly like the shell tool)."""
+
+    def __init__(self, output: str, hash_payload: str, runtime_seconds: float):
+        self.output = output
+        self.hash_payload = hash_payload
+        self.runtime_seconds = runtime_seconds
+
+
 class DataInspectTool:
     """Runs a strictly read-only SQL query against the workload's benchmark-scale data."""
 
-    def __init__(self, workload_provider: Any, sf: float | None = None):
+    def __init__(
+        self,
+        workload_provider: Any,
+        sf: float | None = None,
+        cache_dir: Path | None = None,
+        do_not_cache: bool = False,
+        only_from_cache: bool = False,
+        runtime_tracker: RuntimeTracker | None = None,
+    ):
         self.workload_provider = workload_provider
         self.spec = workload_provider.spec
         # Inspect the smallest representative subset by default (the smallest fast-check rung, which
@@ -65,6 +93,16 @@ class DataInspectTool:
         # instead of chewing every core on tens of millions of rows.
         self.sf: float = sf if sf is not None else self._default_inspect_sf(workload_provider)
         self._con: duckdb.DuckDBPyConnection | None = None
+
+        # Disk cache, keyed by query + row cap + subset identity. Disabled (None) when no cache
+        # dir is supplied, so the tool still works standalone. do_not_cache runs live but never
+        # writes; only_from_cache refuses to run anything not already cached (deterministic replay).
+        self.cache_dir = cache_dir
+        self.do_not_cache = do_not_cache
+        self.only_from_cache = only_from_cache
+        self.runtime_tracker = runtime_tracker
+        if self.cache_dir is not None:
+            utils.create_dir_and_set_permissions(self.cache_dir)
 
     @staticmethod
     def _default_inspect_sf(workload_provider: Any) -> float:
@@ -112,6 +150,23 @@ class DataInspectTool:
         self._con = con
         return con
 
+    def _cache_key(self, sql: str, row_limit: int) -> tuple[str, str]:
+        """Build the (payload, hash) the result is cached under. The payload pins the query text,
+        its row cap, and the identity of the inspected subset - workload, scale factor, and dataset
+        version - so an unrelated workload or a regenerated dataset can never collide with a stale
+        entry, while re-running the same query against the same read-only subset always hits."""
+        payload = {
+            "sql": sql,
+            "row_limit": row_limit,
+            "sf": self.sf,
+            "workload": getattr(self.spec, "name", None),
+            "dataset_name": getattr(self.spec, "dataset_name", None),
+            "dataset_version": getattr(self.spec, "dataset_version", None),
+            "serve_from": getattr(self.spec.serve_from, "value", str(self.spec.serve_from)),
+        }
+        hash_payload = utils.stable_json(payload)
+        return hash_payload, utils.sha256(hash_payload)
+
     def __call__(self, sql: str, max_rows: int | None = None) -> str:
         row_limit = (
             DEFAULT_MAX_ROWS
@@ -128,15 +183,54 @@ class DataInspectTool:
                 "DESCRIBE / SUMMARIZE / VALUES and read-only PRAGMA statements are allowed; this "
                 "statement would write or change state."
             )
+
+        hash_payload, cache_path = "", None
+        if self.cache_dir is not None:
+            hash_payload, hash = self._cache_key(sql, row_limit)
+            cache_path = self.cache_dir / f"{hash}.pkl"
+            if cache_path.exists():
+                cached = utils.load_pickle(cache_path, DataInspectCacheType)
+                assert cached is not None
+                if self.runtime_tracker is not None:
+                    self.runtime_tracker.add_skipped_time(cached.runtime_seconds)
+                logger.debug("query_data served from cache: %s", cache_path.name)
+                return cached.output
+            if self.only_from_cache:
+                raise ValueError(
+                    "query_data result not found in cache and only_from_cache is enabled. "
+                    f"Cache path: {cache_path}\nPayload: {hash_payload}"
+                )
+
         try:
             con = self._connect()
         except Exception as exc:  # noqa: BLE001 - surface setup failure to the agent as text
             logger.warning("query_data could not prepare data (sf=%g): %s", self.sf, exc)
             return f"Error preparing data for inspection: {exc}"
-        # Run on a throwaway cursor under a wall-clock budget: a timer interrupts the cursor if the
-        # query overruns. Interrupting the cursor (never the cached connection) means a late
-        # interrupt that races query completion cannot poison a later inspection; Timer.cancel()
-        # is a no-op once the timer has already fired.
+
+        output, cacheable, elapsed = self._run_and_render(con, sql, row_limit)
+        # Cache only deterministic outcomes (a result set or a SQL error - both fixed by the
+        # query and the read-only subset). Timeouts are host-dependent, so caching one would
+        # permanently pin a query that might succeed on a less busy host.
+        if cache_path is not None and cacheable and not self.do_not_cache:
+            utils.dump_pickle(
+                cache_path,
+                DataInspectCacheType(
+                    output=output, hash_payload=hash_payload, runtime_seconds=elapsed
+                ),
+                do_not_cache=self.do_not_cache,
+            )
+        return output
+
+    def _run_and_render(
+        self, con: duckdb.DuckDBPyConnection, sql: str, row_limit: int
+    ) -> tuple[str, bool, float]:
+        """Execute *sql* on a throwaway cursor under the wall-clock budget and render the result.
+
+        Returns ``(output_text, cacheable, elapsed_seconds)``. Interrupting the cursor (never the
+        cached connection) means a late interrupt that races query completion cannot poison a later
+        inspection; ``Timer.cancel()`` is a no-op once the timer has already fired. A timeout is
+        reported as ``cacheable=False`` (the budget is a host-dependent guard); everything else is
+        deterministic given the read-only subset and is cached."""
         cur = con.cursor()
         timer = threading.Timer(QUERY_TIMEOUT_S, cur.interrupt)
         timer.daemon = True
@@ -148,32 +242,35 @@ class DataInspectTool:
             rows = cur.fetchmany(row_limit + 1)
             column_names = [d[0] for d in cur.description] if cur.description else []
         except duckdb.InterruptException:
+            elapsed = time.perf_counter() - started
             logger.warning(
                 "query_data exceeded the %gs budget, cancelled after %.1fs: %s",
                 QUERY_TIMEOUT_S,
-                time.perf_counter() - started,
+                elapsed,
                 _short_sql(sql),
             )
             return (
                 f"Error: query exceeded the {QUERY_TIMEOUT_S:g}s inspection budget and was "
                 "cancelled. query_data is for simple, cheap look-ups - narrow it with a WHERE "
                 "filter, add LIMIT, aggregate fewer columns, or use SUMMARIZE/DESCRIBE on a single "
-                "table instead of scanning or joining large tables."
+                "table instead of scanning or joining large tables.",
+                False,
+                elapsed,
             )
         except Exception as exc:  # noqa: BLE001 - return DuckDB's message so the agent can fix it
-            logger.info(
-                "query_data SQL error after %.2fs: %s", time.perf_counter() - started, exc
-            )
-            return f"SQL error: {exc}"
+            elapsed = time.perf_counter() - started
+            logger.debug("query_data SQL error after %.2fs: %s", elapsed, exc)
+            return f"SQL error: {exc}", True, elapsed
         finally:
             timer.cancel()
+        elapsed = time.perf_counter() - started
         logger.debug(
             "query_data ok in %.2fs: %d row(s), %d column(s)",
-            time.perf_counter() - started,
+            elapsed,
             len(rows),
             len(column_names),
         )
-        return _render_result(column_names, rows, row_limit)
+        return _render_result(column_names, rows, row_limit), True, elapsed
 
 
 def _fmt_value(value: Any) -> str:

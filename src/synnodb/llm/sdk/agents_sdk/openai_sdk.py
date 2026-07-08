@@ -29,7 +29,6 @@ from synnodb.llm.sdk.agents_sdk.openai_make_data_inspect_tool import (
     make_openai_data_inspect_tool,
 )
 from synnodb.llm.sdk.agents_sdk.openai_make_run_tool import make_openai_run_tool
-from synnodb.tools.data_inspect import DataInspectTool
 from synnodb.llm.sdk.agents_sdk.openai_sdk_tools import (
     make_custom_openai_apply_patch_tool,
     make_custom_openai_replace_in_file_tool,
@@ -73,16 +72,12 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
 
         # A read-only SQL window into the actual benchmark data (DuckDB), so the agent can
         # ground physical-design choices in real distributions/cardinalities rather than schema
-        # alone. Only built for OLAP-style providers that expose the benchmark subset.
-        workload_provider = getattr(self.run_tool, "workload_provider", None)
+        # alone. Built (and disk-cached) in main.py for OLAP-style providers that expose the
+        # benchmark subset; None when the workload has no inspectable subset.
         openai_data_inspect_tool = None
-        if (
-            workload_provider is not None
-            and hasattr(workload_provider, "spec")
-            and hasattr(workload_provider, "benchmark_sf")
-        ):
+        if self.data_inspect_tool is not None:
             openai_data_inspect_tool = make_openai_data_inspect_tool(
-                data_inspect_tool=DataInspectTool(workload_provider=workload_provider),
+                data_inspect_tool=self.data_inspect_tool,
                 defer_loading=self.args.tool_search_tool,  # deferred alongside run/compile when the tool search tool is enabled
             )
 
