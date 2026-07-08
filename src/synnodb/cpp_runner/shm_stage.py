@@ -49,6 +49,14 @@ def _cleanup() -> None:
     _STAGED.clear()
 
 
+def clear_staged_segments() -> None:
+    """Drop every ``/dev/shm`` segment this process has staged, reclaiming the RAM (tmpfs) they
+    occupy. Called at a resync boundary - once the warm engine processes that mapped them are gone -
+    so a stale snapshot does not keep sitting resident until interpreter exit. The next run re-stages
+    the fresh subset content under a new content-fingerprinted dir."""
+    _cleanup()
+
+
 def stage_subset_duckdb_to_shm(subset_db_path: Path | str) -> Path:
     """Materialize ``subset.duckdb``'s tables as ``/dev/shm`` Arrow segments and return the ingest
     directory (the value for ``SYNNODB_SHM_INGEST``).

@@ -651,6 +651,41 @@ def test_shm_staging_produces_loader_segments():
         shutil.rmtree(ingest, ignore_errors=True)
 
 
+def test_run_env_injects_shm_ingest_for_duckdb_subset():
+    """Both execution paths in ``run_worker`` - the validated path and the benchmark/no-validator
+    path - build their run env through ``_run_env_with_optional_shm_ingest``. For a DuckDB batch it
+    must stage the subset and add ``SYNNODB_SHM_INGEST`` on top of the merged base env; for a
+    non-DuckDB batch it must return the base env untouched. The benchmark path regressed here: it
+    never staged the subset, so the loader fell back to a non-existent ``<table>.parquet`` and the
+    run failed instead of executing."""
+    import shutil
+
+    from synnodb.tools.run import _run_env_with_optional_shm_ingest
+
+    tmp = Path(tempfile.mkdtemp())
+    subset_db = tmp / "subset.duckdb"
+    con = duckdb.connect(str(subset_db))
+    con.execute("CREATE TABLE lineitem AS SELECT i AS l_id FROM range(10) t(i)")
+    con.close()
+
+    # base env carries CORE_IDS (the merged general env) - the benchmark path used to drop it.
+    base_env = {"CORE_IDS": "0,1"}
+
+    # non-DuckDB batch (subset_db is None): env passes through untouched, nothing staged.
+    assert _run_env_with_optional_shm_ingest(base_env, None) is base_env
+
+    ingest = None
+    try:
+        run_env = _run_env_with_optional_shm_ingest(base_env, subset_db)
+        ingest = Path(run_env["SYNNODB_SHM_INGEST"])
+        assert run_env["CORE_IDS"] == "0,1"  # merged base env preserved (core pinning survives)
+        assert "SYNNODB_SHM_INGEST" not in base_env  # caller's dict is not mutated
+        assert (ingest / "lineitem.arrow").exists()  # loader has a real segment to map
+    finally:
+        if ingest is not None:
+            shutil.rmtree(ingest, ignore_errors=True)
+
+
 def test_shm_staging_restages_when_subset_content_changes():
     """A subset rebuilt in place (new content at the same path) must re-stage into a fresh ingest
     dir, not serve the first staging's stale segments - the ingest key includes the file content."""

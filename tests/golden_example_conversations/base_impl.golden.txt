@@ -41,6 +41,8 @@ The output of each query should be written to `result<RUN_NR>.csv` (where `<RUN_
 
 Table schemas can be inspected with: parquet-dump-schema `/golden/data/tpch_parquet/sf20/lineitem.parquet`
 
+With the query_data tool you can execute any read-only SQL query against the actual benchmark data. You can also run SUMMARIZE to get data statistics and DESCRIBE to show a table's schema.
+
 # Your Task
 Create a TODO plan for implementing this database engine. Write your plan to `base_impl_todo.txt`. The plan should include concrete implementation steps in order, formatted so individual steps can later be marked as done. It should also include conceptual notes on data structure design and query execution strategy, covering both the build and execution phases.
 

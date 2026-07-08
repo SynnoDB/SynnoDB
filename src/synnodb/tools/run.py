@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import logging
 import os
 from dataclasses import asdict, dataclass
@@ -534,6 +533,15 @@ class RunTool:
             fingerprint=loader_build_id,
         )
 
+        # A DuckDB batch ships only ``subset.duckdb`` (no parquet), so EVERY execution path must
+        # stage it into /dev/shm and point ``SYNNODB_SHM_INGEST`` at it - both the validated path
+        # and the benchmark/no-validator path below. Otherwise the generated loader falls back to
+        # reading ``<table>.parquet``, finds nothing, and the run fails instead of executing.
+        # Staging is done lazily at execute time via ``_run_env_with_optional_shm_ingest`` (see
+        # its docstring), so a cached replay stages nothing and the pid-scoped ingest path stays
+        # out of the hashed ``batch.extra_env``.
+        subset_db = _duckdb_subset_db(batch)
+
         # validate output correctness
         # in case query-validator is not provided or manual-stdin args are provided, just execute without validation
         if self.query_validator is not None:
@@ -550,29 +558,12 @@ class RunTool:
                         current_git_snapshot=current_git_snapshot,
                     )
 
-            # A DuckDB-native subset is staged into /dev/shm lazily, inside the execute callback,
-            # so it happens only on a real (cache-miss) run - a cached replay stages nothing. The
-            # per-process ``SYNNODB_SHM_INGEST`` path is injected into the run env here, never into
-            # ``batch.extra_env`` (which is hashed into the validate-cache key), so the cache still
-            # replays across processes despite the pid-scoped ingest directory.
-            subset_db = _duckdb_subset_db(batch)
-            if subset_db is not None:
-                from synnodb.cpp_runner.shm_stage import stage_subset_duckdb_to_shm
-
-                def execute_fn(*, args_list, timeout_s):
-                    ingest_dir = stage_subset_duckdb_to_shm(subset_db)
-                    return call_hotpatch_proc(
-                        runner=runner,
-                        args_list=args_list,
-                        timeout_s=timeout_s,
-                        extra_env={**extra_env, "SYNNODB_SHM_INGEST": str(ingest_dir)},
-                        echo_output=echo_output,
-                    )
-            else:
-                execute_fn = functools.partial(
-                    call_hotpatch_proc,
+            def execute_fn(*, args_list, timeout_s):
+                return call_hotpatch_proc(
                     runner=runner,
-                    extra_env=extra_env,
+                    args_list=args_list,
+                    timeout_s=timeout_s,
+                    extra_env=_run_env_with_optional_shm_ingest(extra_env, subset_db),
                     echo_output=echo_output,
                 )
 
@@ -625,7 +616,7 @@ class RunTool:
 
             run_result: ExecCallbackResult = call_hotpatch_proc(
                 runner=runner,
-                extra_env=batch.extra_env if batch.extra_env is not None else {},
+                extra_env=_run_env_with_optional_shm_ingest(extra_env, subset_db),
                 echo_output=echo_output,
                 args_list=args_list,
                 timeout_s=batch.timeout_s,
@@ -764,6 +755,23 @@ def _duckdb_subset_db(batch: QueryBatch) -> Path | None:
     if getattr(exec_settings, "data_source", None) != DataSource.DUCKDB:
         return None
     return Path(exec_settings.parquet_dir) / SUBSET_DUCKDB_FILENAME  # type: ignore[attr-defined]
+
+
+def _run_env_with_optional_shm_ingest(
+    base_env: dict[str, str], subset_db: Path | None
+) -> dict[str, str]:
+    """The env for a single execution. For a non-DuckDB batch (``subset_db is None``) this is
+    ``base_env`` unchanged. For a DuckDB-native batch it is ``base_env`` plus a freshly staged
+    ``SYNNODB_SHM_INGEST`` pointing at the /dev/shm Arrow segment the generated loader maps
+    zero-copy. Call once per execution: staging happens here (lazily, so a cached replay never
+    stages) and the pid-scoped ingest path is added to the run env only, never to the hashed
+    ``batch.extra_env``, keeping the validate cache replayable across processes."""
+    if subset_db is None:
+        return base_env
+    from synnodb.cpp_runner.shm_stage import stage_subset_duckdb_to_shm
+
+    ingest_dir = stage_subset_duckdb_to_shm(subset_db)
+    return {**base_env, "SYNNODB_SHM_INGEST": str(ingest_dir)}
 
 
 # callback executing the query

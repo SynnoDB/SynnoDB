@@ -139,6 +139,13 @@ def base_planner_prompt(
             f"`{parquet_path}/{schema_example_table}.parquet`"
         )
 
+    # Beyond the schema, the agent can read the actual data to ground its physical-design choices.
+    schema_hint += (
+        "\n\nWith the query_data tool you can execute any read-only SQL query against the actual "
+        "benchmark data. You can also run SUMMARIZE to get data statistics and DESCRIBE to show a "
+        "table's schema."
+    )
+
     # In-memory loading: the framework owns turning Arrow columns into typed C++ vectors,
     # which is easy to get wrong. The agent composes these helpers rather than decoding
     # Arrow itself; the helpers cast via Arrow, so physical representations are handled

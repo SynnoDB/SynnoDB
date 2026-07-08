@@ -935,6 +935,14 @@ def register_workload_from_duckdb(
             dataset_version,
         )
     else:
+        # This is a resync: the source data is being swapped out. Any warm engine process from a
+        # previous run still holds the old snapshot resident (the loader ingests once per process and
+        # never re-reads its input), so retire the whole warm runtime now - the next run spawns fresh
+        # processes that load the rebuilt subsets instead of serving stale rows from RAM.
+        from synnodb.cpp_runner.runtime_reset import reset_warm_runtime
+
+        reset_warm_runtime()
+
         # Freeze the source, then read the schema/join graph and materialize the benchmark subset
         # from that frozen image only - never from a database the caller might still be mutating. A
         # live source that changed between the in-place probe and this freeze is re-fingerprinted
