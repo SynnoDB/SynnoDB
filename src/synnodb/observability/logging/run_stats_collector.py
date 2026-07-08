@@ -29,6 +29,51 @@ logger = logging.getLogger(__name__)
 
 SUPERVISOR_AGENT_NAME = "Supervision Agent"
 
+# Per-tool-call argument cap for the activity-log summary. The full shell command
+# / apply-patch diff already has its own dedicated activity-log row, so the LLM
+# row only needs a readable preview of what the model invoked.
+_TOOL_CALL_ARGS_PREVIEW = 2000
+
+# Friendly labels for the native (non-litellm) tool-call types, which carry no
+# `.name` field — without this they would surface as their raw class name.
+_NATIVE_TOOL_LABELS = {
+    ResponseFunctionShellToolCall: "shell",
+    ResponseApplyPatchToolCall: "apply_patch",
+}
+
+
+def _summarize_tool_call(output_obj) -> str:
+    """One-line-ish summary of a tool call the model issued this turn.
+
+    Used to populate the dashboard's LLM activity-log row for tool-only turns,
+    which carry no assistant text. Best-effort and defensive: the exact shape of
+    the call object varies by backend (litellm custom ``FunctionTool`` calls vs.
+    native OpenAI shell/apply_patch calls), so unknown fields degrade to a repr
+    rather than raising inside the run's LLM hook.
+    """
+    name = (
+        getattr(output_obj, "name", None)
+        or _NATIVE_TOOL_LABELS.get(type(output_obj))
+        or type(output_obj).__name__
+    )
+    args = getattr(output_obj, "arguments", None)
+    if args is None:
+        # Native shell/apply_patch calls expose the payload under action/operation
+        # rather than a JSON `arguments` string.
+        payload = getattr(output_obj, "action", None) or getattr(
+            output_obj, "operation", None
+        )
+        args = "" if payload is None else str(payload)
+    args = str(args)
+    if len(args) > _TOOL_CALL_ARGS_PREVIEW:
+        dropped = len(args) - _TOOL_CALL_ARGS_PREVIEW
+        # Slice before stripping so a multi-MB diff/argument isn't copied whole
+        # only to keep a short preview.
+        args = args[:_TOOL_CALL_ARGS_PREVIEW].strip() + f"\n…(+{dropped} chars)"
+    else:
+        args = args.strip()
+    return f"→ {name}: {args}" if args else f"→ {name}"
+
 
 class RunStatsCollector(RunHooks):
     """Base hooks class for tracking agent execution metrics"""
@@ -300,6 +345,7 @@ class RunStatsCollector(RunHooks):
             f"Expected at least one output object from LLM response. Got {len(output.output)}"
         )
         output_text = []
+        tool_calls: list[str] = []
         for output_obj in output.output:
             if isinstance(output_obj, ResponseOutputMessage):
                 assert isinstance(output_obj, ResponseOutputMessage), (
@@ -317,13 +363,24 @@ class RunStatsCollector(RunHooks):
                     ResponseFunctionToolCall,
                 ),
             ):
+                tool_calls.append(_summarize_tool_call(output_obj))
                 continue
             else:
                 output_text.append(str(output_obj))
         # join outputs together
         output_text = "\n".join(output_text)
+        has_text = bool(output_text.strip())
 
-        if output_text.strip() != "":
+        # Text shown in the dashboard's activity-log LLM row. Turns are frequently
+        # pure tool calls with no assistant text (common for tool-heavy agents /
+        # some models), which would otherwise render as "(no text output)" and hide
+        # what the model actually did. Fall back to (and, when text is present,
+        # append) a compact summary of the tool call(s) the model issued so the row
+        # always reflects the turn. Kept separate from output_text, which feeds the
+        # supervisor parser / debug log and must stay the raw assistant text only.
+        display_text = "\n".join(([output_text] if has_text else []) + tool_calls)
+
+        if has_text:
             logger.info(f"LLM output: {output_text}")
 
         if self.debug_logger:
@@ -361,8 +418,8 @@ class RunStatsCollector(RunHooks):
                 "total/reasoning_tokens": self.total_stats["reasoning_tokens"],
                 "total/cost_usd": self.total_stats["cost_usd"],
                 "total/real_cost_usd": self.total_stats["real_cost_usd"],
-                "llm/output_text": output_text[:20000],
-                "llm/output_truncated": len(output_text) > 20000,
+                "llm/output_text": display_text[:20000],
+                "llm/output_truncated": len(display_text) > 20000,
             }
         )
 
