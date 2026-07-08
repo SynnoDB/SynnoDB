@@ -109,6 +109,7 @@ def base_planner_prompt(
     base_impl_todo_file: str,
     persistent_storage: bool,
     schema_example_table: str,
+    num_threads: int,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_planner_ssd.txt"
@@ -178,6 +179,7 @@ def base_planner_prompt(
         parquet_path=parquet_path,
         base_impl_todo_file=base_impl_todo_file,
         schema_example_table=schema_example_table,
+        num_threads=num_threads,
     )
 
 

@@ -155,11 +155,11 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
+
 
 # Final Instructions
 
@@ -225,11 +225,11 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
+
 - Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
 - Read each file at most once per round. Do not re-read files to look up details you already saw.
 - Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
@@ -363,11 +363,11 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
+
 - Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
 - Read each file at most once per round. Do not re-read files to look up details you already saw.
 - Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
@@ -423,11 +423,11 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
+
 - Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
 - Read each file at most once per round. Do not re-read files to look up details you already saw.
 - Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
@@ -490,11 +490,11 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
+
 
 # Final Instructions
 
@@ -560,11 +560,11 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
+
 - Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
 - Read each file at most once per round. Do not re-read files to look up details you already saw.
 - Be carefull with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
@@ -698,11 +698,11 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
+
 - Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
 - Read each file at most once per round. Do not re-read files to look up details you already saw.
 - Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.
@@ -758,11 +758,11 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
+
 - Call run-tool only after significant edits. Do not call run-tool after every small change. A single call to the run-tool is sufficient to evaluate a change. Calling in trace mode will provide updated tracing/profiling information.
 - Read each file at most once per round. Do not re-read files to look up details you already saw.
 - Be careful with changes that affect other queries e.g. changes to the storage layout and especially ordering of columns. Avoid regressions on the other queries.

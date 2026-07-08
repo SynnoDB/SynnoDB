@@ -163,7 +163,6 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format. They enable page skipping for range filters without cheating.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
@@ -245,7 +244,6 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Single-threaded C++ only.
 - Do not cheat by shifting work from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
 - Per-page zone maps (min/max values stored in a sidecar file alongside the column file) are permitted as part of the storage format. They enable page skipping for range filters without cheating.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
