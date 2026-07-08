@@ -107,6 +107,8 @@ def base_planner_prompt(
     base_impl_todo_file: str,
     persistent_storage: bool,
     schema_example_table: str,
+    serve_from: "str" = "parquet",
+    schema_ddl: str | None = None,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_planner_ssd.txt"
@@ -117,6 +119,22 @@ def base_planner_prompt(
     template = Template(template_str)
 
     query_str = f"{num_queries} {'query' if num_queries == 1 else 'queries'}"
+
+    # How the planner reads the table schemas. A parquet workload dumps them from a parquet file;
+    # a DuckDB-native subset has no parquet, so the schema DDL is inlined directly (the subset is a
+    # single ``subset.duckdb`` there is no per-table file to point a dumper at).
+    from synnodb.utils.utils import ServeFrom
+
+    if ServeFrom.coerce(serve_from) == ServeFrom.DUCKDB:
+        schema_hint = (
+            "The table schemas (from the source DuckDB) are:\n\n"
+            f"{schema_ddl or '(schema unavailable)'}"
+        )
+    else:
+        schema_hint = (
+            "Table schemas can be inspected with: parquet-dump-schema "
+            f"`{parquet_path}/{schema_example_table}.parquet`"
+        )
 
     # In-memory loading: the framework owns turning Arrow columns into typed C++ vectors,
     # which is easy to get wrong. The agent composes these helpers rather than decoding
@@ -173,9 +191,8 @@ def base_planner_prompt(
         example_query=example_query,
         example_query_params=example_query_params,
         args_path=args_path,
-        parquet_path=parquet_path,
         base_impl_todo_file=base_impl_todo_file,
-        schema_example_table=schema_example_table,
+        schema_hint=schema_hint,
     )
 
 

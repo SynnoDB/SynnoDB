@@ -163,6 +163,8 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 base_impl_todo_file=base_impl_todo_filename,
                 persistent_storage=ctx.persistent_storage,
                 schema_example_table=schema_example_table,
+                serve_from=spec.serve_from.value,
+                schema_ddl=spec.schema(),
             ),
             measure_performance_after_stage=False,
             auto_revert_on_regression=False,

@@ -17,6 +17,7 @@ from synnodb.main import (
     _publish_generated_engine,
 )
 from synnodb.router.manifest import EngineManifest
+from synnodb.utils.utils import ServeFrom
 from synnodb.workloads.validation_receipt import (
     PASS,
     PLANE_PARQUET,
@@ -34,10 +35,11 @@ class _FakeRunTool:
     parquet plane only), so these tests exercise the stamping/downgrade logic without compiling a
     real engine."""
 
-    def __init__(self, workspace, scale_factor, verdict=PASS):
+    def __init__(self, workspace, scale_factor, verdict=PASS, planes=(PLANE_PARQUET,)):
         self._workspace = workspace
         self._scale_factor = scale_factor
         self._verdict = verdict
+        self._planes = planes
 
     def validate_for_publish(self, query_ids, **_):
         return ValidationReceipt(
@@ -45,7 +47,7 @@ class _FakeRunTool:
             build_ids=engine_build_ids(self._workspace),
             validated_queries=tuple(ValidatedQuery(str(q), ()) for q in query_ids),
             coverage_policy="test",
-            data_planes=(PLANE_PARQUET,),
+            data_planes=tuple(self._planes),
             dataset="tpch",
             validated_scale_factors=(float(self._scale_factor),),
             mode="exhaustive",
@@ -97,7 +99,7 @@ def test_derive_expected_tables_matches_information_schema(tmp_path):
     sf_dir.mkdir()
     con.execute(f"COPY lineitem TO '{sf_dir / 'lineitem.parquet'}' (FORMAT parquet)")
 
-    got = _derive_expected_tables(sf_dir, ["lineitem"])
+    got = _derive_expected_tables(sf_dir, ["lineitem"], ServeFrom.PARQUET)
     assert set(got) == {"lineitem"}
     names = [c.name for c in got["lineitem"]]
     assert names[0] == "l_orderkey" and "l_shipdate" in names and len(names) == 16
@@ -114,7 +116,29 @@ def test_derive_expected_tables_matches_information_schema(tmp_path):
 
 def test_derive_expected_tables_is_none_when_a_parquet_is_missing(tmp_path):
     # A half-declared schema would let the shm gate serve wrong data, so signal "no shm".
-    assert _derive_expected_tables(tmp_path, ["absent"]) is None
+    assert _derive_expected_tables(tmp_path, ["absent"], ServeFrom.PARQUET) is None
+
+
+def test_derive_expected_tables_native_reads_subset_duckdb(tmp_path):
+    """For a DuckDB-native workload the schema is read from ``subset.duckdb`` (no parquet), and it
+    matches what the serving compat gate reads from the same tables in a live connection."""
+    sf_dir = tmp_path / "fraction1"
+    sf_dir.mkdir()
+    subset_db = sf_dir / "subset.duckdb"
+    con = duckdb.connect(str(subset_db))
+    con.execute(
+        "CREATE TABLE lineitem AS SELECT 1 AS l_id, (1.5)::DECIMAL(15,2) AS l_amt"
+    )
+    con.close()
+
+    got = _derive_expected_tables(sf_dir, ["lineitem"], ServeFrom.DUCKDB)
+    assert set(got) == {"lineitem"}
+    assert [(c.name, c.type) for c in got["lineitem"]] == [
+        ("l_id", "INTEGER"),
+        ("l_amt", "DECIMAL(15,2)"),
+    ]
+    # missing subset.duckdb -> None (withhold the shm plane rather than half-declare a schema)
+    assert _derive_expected_tables(tmp_path / "nope", ["lineitem"], ServeFrom.DUCKDB) is None
 
 
 # ── the auto-publish wires both into the manifest ──────────────────────────
@@ -269,3 +293,68 @@ def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch)
     man = EngineManifest.read(next(engines.glob("*/manifest.json")))
     assert man.shm_capable is False
     assert not man.expected_tables
+
+
+@needs_tpch
+def test_factory_publish_native_ships_shm_only(tmp_path, monkeypatch):
+    """A DuckDB-native workload validates over shm, so it publishes as a pure shm engine: shm
+    plane on, no parquet plane, expected_tables declared, and source_db pointing at subset.duckdb -
+    never a parquet manifest pointing at a directory that holds none (the F5 regression)."""
+    from synnodb.utils.utils import DBStorage
+    from synnodb.workloads.byo_workload import register_workload_from_duckdb
+    from synnodb.workloads.validation_receipt import PLANE_SHM
+    from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
+    from synnodb.workloads.workload_spec import get_workload_spec
+
+    src = tmp_path / "src.duckdb"
+    con = duckdb.connect(str(src))
+    con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
+    con.close()
+
+    managed = tmp_path / "managed"
+    con = duckdb.connect(str(src), read_only=True)
+    try:
+        spec = register_workload_from_duckdb(
+            name="native_pub",
+            con=con,
+            queries_json={"1": "SELECT count(*) FROM lineitem"},
+            managed_root=managed,
+            downscale_fractions=(0.1,),
+            serve_from="duckdb",
+            source_db_path=str(src),
+            allow_benchmark_symlink=True,
+        )
+    finally:
+        con.close()
+
+    prov = OLAPWorkloadProvider(
+        benchmark="native_pub",
+        base_parquet_dir=managed,
+        db_storage=DBStorage.IN_MEMORY,
+        query_ids=["1"],
+    )
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    write_fake_engine_db(ws / "db")
+    (ws / "parquet_reader.cpp").write_text(
+        "if (synnodb::shm_ingest_enabled()) { /* shm */ } else { /* parquet */ }"
+    )
+    engines = tmp_path / "engines"
+    monkeypatch.setenv("SYNNO_ENGINES_DIR", str(engines))
+
+    _publish_generated_engine(
+        ws,
+        prov,
+        ["1"],
+        managed,
+        get_workload_spec("native_pub"),
+        "run-native",
+        run_tool=_FakeRunTool(ws, 1.0, planes=(PLANE_SHM,)),
+    )
+
+    man = EngineManifest.read(next(engines.glob("*/manifest.json")))
+    assert man.shm_capable is True
+    assert set(man.expected_tables) == set(prov.dataset_tables)
+    assert man.parquet_dir is None  # a native engine ships no parquet plane
+    assert man.source_db == str(managed / "fraction1" / "subset.duckdb")

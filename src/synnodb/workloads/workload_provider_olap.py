@@ -298,12 +298,13 @@ class OLAPWorkloadProvider(WorkloadProvider):
         else:
             raise ValueError(f"Unknown run mode: {run_mode}")
 
-        extra_env = dict()
-        # assemble storage dir path
-
         query_batch_list = []
         rnd = random.Random(42)
         for scale_factor in scale_factors:
+            # Fresh per scale factor: each batch owns its env. A single shared dict would leave
+            # every batch pointing at the last scale factor's STORAGE_DIR (they hold the same
+            # object, mutated in place each iteration).
+            extra_env: dict[str, str] = {}
             if self.db_storage in [DBStorage.SSD, DBStorage.LABSTORE]:
                 assert self.bespoke_ssd_storage_dir is not None
                 storage_dir = self.bespoke_ssd_storage_dir / f"sf{scale_factor}"
@@ -419,7 +420,13 @@ class OLAPWorkloadProvider(WorkloadProvider):
                         core_ids=core_ids,
                     ),
                     timeout_s=approx_timeout_for_validation(
-                        scale_factor, len(query_list)
+                        scale_factor,
+                        len(query_list),
+                        subset_bytes=sum(
+                            f.stat().st_size
+                            for f in self.spec.subset_files(subset_dir)
+                            if f.exists()
+                        ),
                     ),
                     exec_settings=OLAPExecSettings(
                         scale_factor=scale_factor,
@@ -700,11 +707,16 @@ register_workload(CEB_SPEC)
 def approx_timeout_for_validation(
     scale_factor: float,
     num_executions: int,
+    subset_bytes: int = 0,
 ) -> int:
-    # approximate a timeout for validation based on scale factor and number of queries
+    # approximate a timeout for validation based on data volume and number of queries. The scale
+    # factor is a decent ~GB proxy for the classic ``sf<N>`` convention, but a DuckDB-native
+    # fraction ladder (0.02..1.0) does not reflect the source's real size, so also derive a volume
+    # estimate from the subset's on-disk bytes and use whichever is larger (never shrink a timeout).
+    volume = max(scale_factor, subset_bytes / 1e9)
     timeout = (
-        scale_factor * num_executions * 2
-    )  # 2 seconds per query with sf=1 as a rough estimate, can be adjusted as needed
+        volume * num_executions * 2
+    )  # 2 seconds per query at ~1GB as a rough estimate, can be adjusted as needed
     timeout = max(timeout, 120)  # at least 1 minute total timeout
     timeout = min(
         timeout, 1200

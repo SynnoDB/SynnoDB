@@ -688,13 +688,18 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     return snapshotter.current_hash
 
 
-def _resolve_sf_dir(base_parquet_dir, scale_factor):
-    """The ``sf<N>`` data directory for a scale factor, tolerant of int/float formatting
-    (``sf1`` vs ``sf1.0``); falls back to the first ``sf*`` present. None if there is none."""
+def _resolve_subset_dir(base_parquet_dir, scale_factor):
+    """The subset directory for a scale factor, tolerant of int/float formatting (``fraction1``
+    vs ``fraction1.0``, ``sf1`` vs ``sf1.0``); falls back to the first ``fraction*``/``sf*``
+    present. None if there is none."""
     resolved = find_sf_dir(base_parquet_dir, scale_factor)
     if resolved is not None:
         return resolved
-    found = sorted(Path(base_parquet_dir).glob("sf*"))
+    found = sorted(
+        d
+        for d in Path(base_parquet_dir).glob("*")
+        if d.is_dir() and (d.name.startswith("fraction") or d.name.startswith("sf"))
+    )
     return found[0] if found else None
 
 
@@ -710,16 +715,44 @@ def _loader_is_shm_capable(workspace_path) -> bool:
         return False
 
 
-def _derive_expected_tables(sf_dir, tables):
+def _derive_expected_tables(sf_dir, tables, serve_from):
     """The manifest's ``expected_tables`` (column name + DuckDB type) for the engine's tables,
-    read from the published parquet the *same way* the serving compatibility gate reads the live
-    schema (``information_schema.columns`` + ``check_compatibility``), so an engine never rejects
-    its own build. Returns ``None`` if any table's parquet is absent, so the caller publishes
-    without the shm plane rather than shipping a half-declared schema (the shm gate refuses an
-    engine whose ``expected_tables`` does not cover every table its loader reads)."""
+    read the *same way* the serving compatibility gate reads the live schema
+    (``information_schema.columns`` + ``check_compatibility``), so an engine never rejects its own
+    build. Source of the schema follows ``serve_from``: each table's parquet for a parquet
+    workload, or the ``subset.duckdb`` for a DuckDB-native one. Returns ``None`` if any table's
+    schema is unavailable, so the caller publishes without the shm plane rather than shipping a
+    half-declared schema (the shm gate refuses an engine whose ``expected_tables`` does not cover
+    every table its loader reads)."""
     import duckdb
 
     from synnodb.router.registry import ColumnSpec
+    from synnodb.utils.utils import ServeFrom
+    from synnodb.workloads.workload_spec import SUBSET_DUCKDB_FILENAME
+
+    def _cols(con, table) -> tuple:
+        rows = con.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE lower(table_name) = ? ORDER BY ordinal_position",
+            [table.lower()],
+        ).fetchall()
+        return tuple(ColumnSpec(n, str(dt)) for n, dt in rows)
+
+    if serve_from == ServeFrom.DUCKDB:
+        subset_db = Path(sf_dir) / SUBSET_DUCKDB_FILENAME
+        if not subset_db.exists():
+            return None
+        con = duckdb.connect(str(subset_db), read_only=True)
+        try:
+            out = {}
+            for t in tables:
+                cols = _cols(con, t)
+                if not cols:
+                    return None
+                out[t] = cols
+            return out
+        finally:
+            con.close()
 
     con = duckdb.connect()
     try:
@@ -731,12 +764,7 @@ def _derive_expected_tables(sf_dir, tables):
             ident = '"' + t.replace('"', '""') + '"'
             lit = "'" + str(pq).replace("'", "''") + "'"
             con.execute(f"CREATE TABLE {ident} AS SELECT * FROM read_parquet({lit})")
-            rows = con.execute(
-                "SELECT column_name, data_type FROM information_schema.columns "
-                "WHERE lower(table_name) = ? ORDER BY ordinal_position",
-                [t.lower()],
-            ).fetchall()
-            out[t] = tuple(ColumnSpec(n, str(dt)) for n, dt in rows)
+            out[t] = _cols(con, t)
         return out
     finally:
         con.close()
@@ -764,10 +792,13 @@ def _publish_generated_engine(
     engine is *not* published - this is what stops a since-broken build (e.g. one that OOM-failed
     to load) from shipping on the strength of an earlier cached success.
 
-    An in-memory engine is published as shm-capable (the zero-copy ``/dev/shm`` hot-load plane)
-    with the ``expected_tables`` the plane requires; the disk-backed parquet snapshot stays as the
-    fallback plane. The shm plane is not exercised by generation (which runs over parquet), so the
-    parquet-only receipt downgrades it to parquet-only at publish time.
+    A parquet workload is published as shm-capable (the zero-copy ``/dev/shm`` hot-load plane)
+    with the ``expected_tables`` the plane requires and the disk-backed parquet snapshot as the
+    fallback plane; because generation ran over parquet, the receipt covers only the parquet plane
+    and the shm plane is downgraded to parquet-only at publish time. A DuckDB-native workload
+    (``serve_from=DUCKDB``) instead validates over shm during generation, so it publishes as a
+    pure shm engine (no parquet plane) whose receipt covers the shm plane; if its loader is not
+    shm-capable there is no parquet fallback, so it is not published at all.
     """
     try:
         if not (workspace_path / "db").exists():
@@ -781,11 +812,16 @@ def _publish_generated_engine(
                 "publish: no engines dir (SYNNO_ENGINES_DIR / SYNNO_DATA_DIR); skipping"
             )
             return
+        from synnodb.utils.utils import ServeFrom
+        from synnodb.workloads.workload_spec import SUBSET_DUCKDB_FILENAME
+
+        serve_from = getattr(workload_spec, "serve_from", ServeFrom.PARQUET)
+        native = serve_from == ServeFrom.DUCKDB
         sf = workload_spec.benchmark_sf
-        sf_dir = _resolve_sf_dir(base_parquet_dir, sf)
+        sf_dir = _resolve_subset_dir(base_parquet_dir, sf)
         if sf_dir is None:
             logger.info(
-                "publish: no parquet under %s; skipping engine publish",
+                "publish: no subset under %s; skipping engine publish",
                 base_parquet_dir,
             )
             return
@@ -806,25 +842,45 @@ def _publish_generated_engine(
         expected_tables = None
         if _loader_is_shm_capable(workspace_path):
             expected_tables = _derive_expected_tables(
-                sf_dir, list(workload_provider.dataset_tables)
+                sf_dir, list(workload_provider.dataset_tables), serve_from
             )
             shm_capable = expected_tables is not None
             if not shm_capable:
                 logger.info(
-                    "publish: loader is shm-capable but a table parquet is missing under "
-                    "%s; publishing the parquet plane only",
+                    "publish: loader is shm-capable but the subset schema under %s is "
+                    "incomplete; withholding the shm plane",
                     sf_dir,
                 )
+
+        if native:
+            # A DuckDB-native engine serves only over shm (it ingests the connection's own live
+            # tables); it has no parquet plane. Without a shm-capable loader there is nothing safe
+            # to serve, so skip rather than ship a non-servable engine. source_db records the
+            # benchmark subset the engine was built from.
+            if not shm_capable:
+                logger.info(
+                    "publish: DuckDB-native engine is not shm-capable (no parquet fallback "
+                    "exists); skipping publish for %s",
+                    workspace_path,
+                )
+                return
+            parquet_dir = None
+            source_db = str(Path(sf_dir) / SUBSET_DUCKDB_FILENAME)
+        else:
+            parquet_dir = sf_dir
+            source_db = None
+
         dest = publish_from_provider(
             workspace_path,
             workload_provider,
             query_list,
             receipt=receipt,
-            parquet_dir=sf_dir,
+            parquet_dir=parquet_dir,
             scale_factor=sf,
             source_run_id=run_id,
             shm_capable=shm_capable,
             expected_tables=expected_tables,
+            source_db=source_db,
             threads=threads,
         )
         if dest is not None:

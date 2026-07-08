@@ -581,27 +581,93 @@ _DOWNSCALER_VERSION = "1"
 
 
 def _duckdb_dataset_version(
-    schema,
+    downscaler,
     subsets: tuple[float, ...],
     whole_table_threshold: int,
     serve_from: ServeFrom,
 ) -> str:
-    """A cache-busting fingerprint of the derived dataset: source table names + row counts,
-    the subset fractions, the whole-table threshold, the subset storage format (duckdb vs parquet),
-    and the downscaler version. Re-extraction after any of these changes invalidates stale
-    LLM/snapshot cache entries (§5.2)."""
+    """A cache-busting fingerprint of the *derived* dataset - everything that changes which rows
+    a subset contains: source table names + row counts, the inferred join relationships (they
+    drive which rows are kept), the subset fractions, the whole-table threshold, the subset
+    storage format (duckdb vs parquet), the installed DuckDB version (its ``hash()`` defines the
+    deterministic anchor sample and is not guaranteed stable across versions), and the downscaler
+    version. Any change re-extracts and invalidates stale LLM/snapshot cache entries (§5.2)."""
     import hashlib
 
+    import duckdb
+
+    relationships = sorted(
+        (r.table_a, r.table_b, r.pairs) for r in downscaler.relationships
+    )
     payload = repr(
         {
-            "tables": sorted(schema.row_counts.items()),
+            "tables": sorted(downscaler.schema.row_counts.items()),
+            "relationships": relationships,
             "subsets": sorted(subsets),
             "whole_table_threshold": whole_table_threshold,
             "serve_from": serve_from.value,
+            "duckdb": duckdb.__version__,
             "downscaler": _DOWNSCALER_VERSION,
         }
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+# Manifest written next to the materialized subsets, recording the ``dataset_version`` they were
+# built from. Reused only when it still matches, so a changed source/params/algorithm rebuilds.
+_SUBSET_MANIFEST = ".synno_dataset.json"
+
+
+def _subset_artifacts(
+    managed_root: Path, fraction: float, serve_from: ServeFrom, tables: list[str]
+) -> list[Path]:
+    """The files that must all exist for ``fraction``'s subset to count as materialized."""
+    out_dir = managed_root / subset_dirname(fraction)
+    if serve_from == ServeFrom.DUCKDB:
+        return [out_dir / "subset.duckdb"]
+    return [out_dir / f"{t}.parquet" for t in tables]
+
+
+def _materialization_is_current(
+    managed_root: Path,
+    dataset_version: str,
+    scale_factors: tuple[float, ...],
+    serve_from: ServeFrom,
+    tables: list[str],
+) -> bool:
+    """True iff a prior materialization under ``managed_root`` was built from ``dataset_version``
+    and every subset artifact it should have is present - so it can be reused verbatim. A missing
+    manifest, a mismatched version (source/params/algorithm changed), or any missing artifact (a
+    partial or interrupted build) all return False so the caller rebuilds from scratch."""
+    manifest = managed_root / _SUBSET_MANIFEST
+    if not manifest.exists():
+        return False
+    try:
+        recorded = json.loads(manifest.read_text()).get("dataset_version")
+    except (OSError, ValueError):
+        return False
+    if recorded != dataset_version:
+        return False
+    return all(
+        art.exists()
+        for f in scale_factors
+        for art in _subset_artifacts(managed_root, f, serve_from, tables)
+    )
+
+
+def _clear_managed_subsets(managed_root: Path) -> None:
+    """Remove every ``fraction*``/``sf*`` subset directory under ``managed_root`` (and the
+    manifest), so a rebuild never mixes stale rows from an earlier source/algorithm with fresh
+    ones or leaves orphaned subset dirs for fractions no longer requested."""
+    import shutil
+
+    if managed_root.is_dir():
+        for child in managed_root.iterdir():
+            if child.is_dir() and (
+                child.name.startswith("fraction") or child.name.startswith("sf")
+            ):
+                shutil.rmtree(child, ignore_errors=True)
+    (managed_root / _SUBSET_MANIFEST).unlink(missing_ok=True)
 
 
 def register_workload_from_duckdb(
@@ -618,6 +684,7 @@ def register_workload_from_duckdb(
     whole_table_threshold: int = 10_000,
     serve_from: "ServeFrom | str" = ServeFrom.DUCKDB,
     source_db_path: str | Path | None = None,
+    allow_benchmark_symlink: bool = False,
 ) -> WorkloadSpec:
     """Register a workload sourced from a live DuckDB connection, deriving the subsets by
     FK-preserving downscaling instead of taking pre-scaled parquet (the connection-sourced
@@ -627,10 +694,13 @@ def register_workload_from_duckdb(
 
     * ``ServeFrom.DUCKDB`` (the default): the referential downscaler
       (:mod:`synnodb.workloads.dataset.custom_scaler.duckdb_downscale`) materializes each
-      downscaled subset as ``<managed_root>/fraction<f>/subset.duckdb``, and the full ``fraction1``
-      benchmark subset is a symlink to ``source_db_path`` when given (zero-copy) or a materialized
-      copy otherwise. No parquet touches disk: the candidate engine ingests the subset over the shm
-      plane and the DuckDB oracle materializes flat tables from it.
+      downscaled subset as ``<managed_root>/fraction<f>/subset.duckdb``. The full ``fraction1``
+      benchmark subset is an independent materialized copy by default; it is a zero-copy symlink
+      to ``source_db_path`` only when ``allow_benchmark_symlink`` is set, which the caller may do
+      only when no read-write connection to the source stays open (else the framework's later
+      read-only opens of the symlinked file collide with it). No parquet touches disk: the
+      candidate engine ingests the subset over the shm plane and the DuckDB oracle materializes
+      flat tables from it.
     * ``ServeFrom.PARQUET``: the same downscaler writes
       ``<managed_root>/fraction<f>/<table>.parquet`` and the workload is registered exactly like a
       bring-your-own parquet workload, so the whole factory + oracle run against it unchanged.
@@ -651,7 +721,12 @@ def register_workload_from_duckdb(
         serve_from: an :class:`ServeFrom` (or its string value) selecting the subset
             representation - ``DUCKDB`` (``subset.duckdb``) vs. ``PARQUET`` (parquet files).
         source_db_path: the source ``.duckdb`` path, used only to symlink the DuckDB benchmark
-            subset zero-copy; None materializes a full copy instead.
+            subset zero-copy; None (or ``allow_benchmark_symlink=False``) materializes a full
+            independent copy instead.
+        allow_benchmark_symlink: permit the zero-copy ``fraction1`` symlink to ``source_db_path``.
+            Safe only when the caller holds no read-write connection to the source for the
+            lifetime of the workload (e.g. it was opened from a path SynnoDB itself owns and
+            closes). Defaults to False - an independent copy is always safe.
     """
     from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
         ReferentialDownscaler,
@@ -685,37 +760,61 @@ def register_workload_from_duckdb(
     resolved_tables = tables or list(downscaler.schema.tables)
     managed_root = Path(managed_root)
 
-    schema_factory: "Callable[[], str] | None" = None
-    if serve_from == ServeFrom.DUCKDB:
+    dataset_version = _duckdb_dataset_version(
+        downscaler, subsets, whole_table_threshold, serve_from
+    )
+
+    # Reuse the on-disk subsets only when they were built from this exact dataset_version and are
+    # all present; otherwise rebuild every subset from scratch (a changed source, params, join
+    # graph, threshold, or DuckDB version, or a partial/interrupted prior run).
+    if _materialization_is_current(
+        managed_root, dataset_version, scale_factors, serve_from, resolved_tables
+    ):
+        logger.info(
+            "Subsets under %s already current (dataset_version=%s); skipping materialization",
+            managed_root,
+            dataset_version,
+        )
+    else:
+        _clear_managed_subsets(managed_root)
+        managed_root.mkdir(parents=True, exist_ok=True)
         for fraction in scale_factors:
             out_dir = managed_root / subset_dirname(fraction)
-            subset_db = out_dir / "subset.duckdb"
-            if subset_db.exists() or subset_db.is_symlink():
-                logger.info("Subset %s already materialized, skipping", out_dir.name)
-                continue
-            if fraction >= 1.0 and source_db_path is not None:
-                # Zero-copy benchmark subset: symlink to the source database (no full copy).
-                out_dir.mkdir(parents=True, exist_ok=True)
-                subset_db.symlink_to(Path(source_db_path).resolve())
+            logger.info(
+                "Creating %s",
+                "benchmark subset (full data)"
+                if fraction >= 1.0
+                else f"downscale subset fraction={fraction:g}",
+            )
+            if serve_from == ServeFrom.DUCKDB:
+                subset_db = out_dir / "subset.duckdb"
+                if (
+                    fraction >= 1.0
+                    and allow_benchmark_symlink
+                    and source_db_path is not None
+                ):
+                    # Zero-copy benchmark subset: safe only because the caller vouched no
+                    # read-write connection to the source stays open (allow_benchmark_symlink).
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    subset_db.symlink_to(Path(source_db_path).resolve())
+                else:
+                    downscaler.copy_subset_to_duckdb(fraction, subset_db)
             else:
-                downscaler.copy_subset_to_duckdb(fraction, subset_db)
-        smallest_subset_db = managed_root / subset_dirname(scale_factors[0]) / "subset.duckdb"
+                downscaler.copy_subset_to_parquet(fraction, out_dir)
+        (managed_root / _SUBSET_MANIFEST).write_text(
+            json.dumps(
+                {"dataset_version": dataset_version, "serve_from": serve_from.value}
+            )
+        )
+
+    schema_factory: "Callable[[], str] | None" = None
+    if serve_from == ServeFrom.DUCKDB:
+        smallest_subset_db = (
+            managed_root / subset_dirname(scale_factors[0]) / "subset.duckdb"
+        )
 
         def schema_factory() -> str:
             return schema_ddl_from_duckdb(smallest_subset_db, resolved_tables)
-    else:
-        for fraction in scale_factors:
-            out_dir = managed_root / subset_dirname(fraction)
-            if out_dir.is_dir() and all(
-                (out_dir / f"{t}.parquet").exists() for t in resolved_tables
-            ):
-                logger.info("Subset %s already materialized, skipping", out_dir.name)
-                continue
-            downscaler.copy_subset_to_parquet(fraction, out_dir)
-
-    dataset_version = _duckdb_dataset_version(
-        downscaler.schema, subsets, whole_table_threshold, serve_from
-    )
 
     return _register_static_workload(
         name=name,
@@ -725,7 +824,7 @@ def register_workload_from_duckdb(
         dataset_name=dataset_name,
         scale_factors=scale_factors,
         schema_example_table=schema_example_table,
-        params_by_id=params_by_id,
+        params_by_id=_normalize_params(params_by_id, source),
         params_source=source,
         dataset_version=dataset_version,
         schema_factory=schema_factory,

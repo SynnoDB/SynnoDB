@@ -378,6 +378,7 @@ class RunTool:
             FAIL,
             PASS,
             PLANE_PARQUET,
+            PLANE_SHM,
             ValidatedQuery,
             ValidationReceipt,
             engine_build_ids,
@@ -411,10 +412,12 @@ class RunTool:
         )
         bindings_by_qid: dict[str, list[dict]] = {}
         scale_factors: list[float] = []
+        data_sources: set = set()
         for batch in batches:
             sf = getattr(batch.exec_settings, "scale_factor", None)
             if sf is not None and not any(abs(sf - s) < 1e-9 for s in scale_factors):
                 scale_factors.append(float(sf))
+            data_sources.add(getattr(batch.exec_settings, "data_source", None))
             for entry in batch.query_list:
                 seen = bindings_by_qid.setdefault(entry.query_id, [])
                 if entry.placeholders not in seen:
@@ -422,6 +425,13 @@ class RunTool:
         validated_queries = tuple(
             ValidatedQuery(qid, tuple(binds)) for qid, binds in bindings_by_qid.items()
         )
+
+        # Record the plane the engine actually ingested over during this validation: a
+        # DuckDB-native subset is staged into /dev/shm (the shm hot-load plane), everything else
+        # streams from parquet. Publishing keys the served plane off this, so it must be truthful.
+        from synnodb.utils.utils import DataSource
+
+        plane = PLANE_SHM if DataSource.DUCKDB in data_sources else PLANE_PARQUET
 
         snapshotter = getattr(self.query_validator, "git_snapshotter", None)
         snapshot_id = (
@@ -436,7 +446,7 @@ class RunTool:
                 f"deterministic workload generator (fixed seed), {mode.value} mode; proves the "
                 "listed bindings per query, not every possible template value"
             ),
-            data_planes=(PLANE_PARQUET,),
+            data_planes=(plane,),
             dataset=self.dataset_name,
             validated_scale_factors=tuple(scale_factors),
             mode=mode.value,
@@ -462,11 +472,6 @@ class RunTool:
     ) -> RunWorkerResult:
         # assemble call cmd
         cmd = f"./db {batch.cli_call_args}"
-
-        # DuckDB-native subset: stage its tables into /dev/shm and set SYNNODB_SHM_INGEST so the
-        # in-memory loader ingests them over the shm plane instead of reading parquet (the env
-        # flows to the loader via run_env exactly as STORAGE_DIR does for the SSD plane).
-        _stage_duckdb_subset_shm(batch)
 
         # start with general extra env passed to the function - create copy
         extra_env = dict(general_extra_env)
@@ -545,12 +550,31 @@ class RunTool:
                         current_git_snapshot=current_git_snapshot,
                     )
 
-            execute_fn = functools.partial(
-                call_hotpatch_proc,
-                runner=runner,
-                extra_env=extra_env,
-                echo_output=echo_output,
-            )
+            # A DuckDB-native subset is staged into /dev/shm lazily, inside the execute callback,
+            # so it happens only on a real (cache-miss) run - a cached replay stages nothing. The
+            # per-process ``SYNNODB_SHM_INGEST`` path is injected into the run env here, never into
+            # ``batch.extra_env`` (which is hashed into the validate-cache key), so the cache still
+            # replays across processes despite the pid-scoped ingest directory.
+            subset_db = _duckdb_subset_db(batch)
+            if subset_db is not None:
+                from synnodb.cpp_runner.shm_stage import stage_subset_duckdb_to_shm
+
+                def execute_fn(*, args_list, timeout_s):
+                    ingest_dir = stage_subset_duckdb_to_shm(subset_db)
+                    return call_hotpatch_proc(
+                        runner=runner,
+                        args_list=args_list,
+                        timeout_s=timeout_s,
+                        extra_env={**extra_env, "SYNNODB_SHM_INGEST": str(ingest_dir)},
+                        echo_output=echo_output,
+                    )
+            else:
+                execute_fn = functools.partial(
+                    call_hotpatch_proc,
+                    runner=runner,
+                    extra_env=extra_env,
+                    echo_output=echo_output,
+                )
 
             # this branch is cached via validation tool cache
             val_result = self.query_validator.exec_and_validate(
@@ -728,23 +752,18 @@ def delete_result_files(workspace_path: Path):
             f.unlink()
 
 
-def _stage_duckdb_subset_shm(batch: QueryBatch) -> None:
-    """For a DuckDB-native subset batch, stage the subset's ``subset.duckdb`` into ``/dev/shm`` and set
-    ``SYNNODB_SHM_INGEST`` on the batch so the in-memory engine ingests it over the shm plane. A
-    no-op for every other data source, so the parquet path is untouched."""
+def _duckdb_subset_db(batch: QueryBatch) -> Path | None:
+    """The ``subset.duckdb`` a DuckDB-native batch should stage into ``/dev/shm``, or None for
+    every other data source (whose loader reads parquet and needs no staging). Reads only - the
+    staging itself happens lazily in the execute callback so a cached replay stages nothing, and
+    the pid-scoped ingest path stays out of the hashed batch."""
     from synnodb.utils.utils import DataSource
+    from synnodb.workloads.workload_spec import SUBSET_DUCKDB_FILENAME
 
     exec_settings = batch.exec_settings
     if getattr(exec_settings, "data_source", None) != DataSource.DUCKDB:
-        return
-
-    from synnodb.cpp_runner.shm_stage import stage_subset_duckdb_to_shm
-
-    subset_db = Path(exec_settings.parquet_dir) / "subset.duckdb"  # type: ignore[attr-defined]
-    ingest_dir = stage_subset_duckdb_to_shm(subset_db)
-    env = dict(batch.extra_env or {})
-    env["SYNNODB_SHM_INGEST"] = str(ingest_dir)
-    batch.extra_env = env
+        return None
+    return Path(exec_settings.parquet_dir) / SUBSET_DUCKDB_FILENAME  # type: ignore[attr-defined]
 
 
 # callback executing the query

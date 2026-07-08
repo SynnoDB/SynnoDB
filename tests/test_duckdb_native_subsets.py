@@ -1,4 +1,4 @@
-"""DuckDB-native subsets (Step 2): the subset is a ``subset.duckdb`` instead of parquet.
+"""DuckDB-native subsets: the subset is a ``subset.duckdb`` instead of parquet.
 
 Covers the subset.duckdb sink, DuckDB-native registration + the ``DataSource.DUCKDB`` wiring
 through the provider, the shm staging that feeds the synthesis engine, and - the load-bearing
@@ -60,10 +60,12 @@ def source_db(tmp_path):
     return path
 
 
-def _register(name, managed_root, source_db, *, serve_from):
+def _register(name, managed_root, source_db, *, serve_from, allow_benchmark_symlink=True):
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
 
     is_duckdb = ServeFrom.coerce(serve_from) == ServeFrom.DUCKDB
+    # Opened read-only and closed below, so no read-write connection outlives registration -
+    # the zero-copy benchmark symlink is safe (allow_benchmark_symlink defaults True here).
     con = duckdb.connect(str(source_db), read_only=True)
     try:
         return register_workload_from_duckdb(
@@ -75,6 +77,7 @@ def _register(name, managed_root, source_db, *, serve_from):
             whole_table_threshold=10,
             serve_from=serve_from,
             source_db_path=str(source_db) if is_duckdb else None,
+            allow_benchmark_symlink=allow_benchmark_symlink and is_duckdb,
         )
     finally:
         con.close()
@@ -107,6 +110,175 @@ def test_native_registration_materializes_subset_duckdb(tmp_path, source_db):
     assert not list(managed.rglob("*.parquet"))
     # schema derived from the subset.duckdb
     assert "CREATE TABLE lineitem" in spec.schema()
+
+
+def test_benchmark_subset_default_is_independent_copy(tmp_path, source_db):
+    """Without ``allow_benchmark_symlink`` the ``fraction1`` benchmark subset is an independent
+    copy, not a symlink to the source - so the framework's later read-only opens never collide
+    with a still-open read-write connection to the source (the documented live-connection flow)."""
+    from synnodb.workloads.byo_workload import register_workload_from_duckdb
+
+    managed = tmp_path / "managed"
+    # A read-write connection to the source stays open across registration and the reads below,
+    # exactly as a notebook keeps ``conn = duckdb.connect(path)`` open and hands it to SynnoDB.
+    live_rw = duckdb.connect(str(source_db))
+    try:
+        register_workload_from_duckdb(
+            name="nat_copy",
+            con=live_rw,
+            queries_json=_QUERIES,
+            managed_root=managed,
+            downscale_fractions=(0.2,),
+            whole_table_threshold=10,
+            serve_from=ServeFrom.DUCKDB,
+            source_db_path=str(source_db),
+            allow_benchmark_symlink=False,
+        )
+        full = managed / "fraction1" / "subset.duckdb"
+        assert full.exists() and not full.is_symlink()
+        # Independent file: opening it read-only does not collide with the live read-write conn.
+        con = duckdb.connect(str(full), read_only=True)
+        try:
+            assert con.execute("SELECT COUNT(*) FROM lineitem").fetchone()[0] == 1000
+        finally:
+            con.close()
+    finally:
+        live_rw.close()
+
+
+def test_stale_subsets_rebuilt_when_source_changes(tmp_path):
+    """Re-registering after the source data changes must rebuild the subsets, not reuse the old
+    ones: the fingerprint tracks the change and the fraction1 copy reflects the new rows."""
+    from synnodb.workloads.byo_workload import register_workload_from_duckdb
+
+    src = tmp_path / "src.duckdb"
+    _make_source(src)
+    managed = tmp_path / "managed"
+
+    def reg():
+        con = duckdb.connect(str(src))
+        try:
+            return register_workload_from_duckdb(
+                name="stale_test",
+                con=con,
+                queries_json=_QUERIES,
+                managed_root=managed,
+                downscale_fractions=(0.2,),
+                whole_table_threshold=10,
+                serve_from=ServeFrom.DUCKDB,
+                source_db_path=str(src),
+                allow_benchmark_symlink=False,
+            )
+        finally:
+            con.close()
+
+    v1 = reg().dataset_version
+    grow = duckdb.connect(str(src))
+    grow.execute(
+        "INSERT INTO lineitem SELECT i AS l_id, (i % 200) AS l_orderkey, "
+        "(i % 7)::DECIMAL(10,2) AS l_amt FROM range(1000, 3000) t(i)"
+    )
+    grow.close()
+    v2 = reg().dataset_version
+
+    assert v1 != v2  # the fingerprint tracks the source change
+    full = managed / "fraction1" / "subset.duckdb"
+    con = duckdb.connect(str(full), read_only=True)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM lineitem").fetchone()[0] == 3000
+    finally:
+        con.close()
+
+
+def test_native_spec_subset_files_and_ram_check(tmp_path, source_db):
+    """A native workload's subset is a single ``subset.duckdb``; RAM measurement must read that,
+    not stat ``<table>.parquet`` files that were never written (F14 regression)."""
+    from synnodb.ram_check import RamCheck
+
+    managed = tmp_path / "managed"
+    spec = _register("nat_ram", managed, source_db, serve_from=ServeFrom.DUCKDB)
+    sf_dir = managed / "fraction1"
+    assert spec.subset_files(sf_dir) == [sf_dir / "subset.duckdb"]
+    rc = RamCheck.measure(sf_dir.name, spec.subset_files(sf_dir))
+    assert rc.dataset_bytes > 0
+
+
+def test_native_batch_extra_env_has_no_shm_ingest(tmp_path, source_db):
+    """The pid-scoped SYNNODB_SHM_INGEST must never land in ``batch.extra_env`` (which is hashed
+    into the validate-cache key); staging injects it into the run env lazily instead, so the cache
+    still replays across processes. ``_duckdb_subset_db`` resolves the subset for that staging."""
+    from synnodb.tools.run import _duckdb_subset_db
+    from synnodb.tools.run_tool_mode import RunToolMode
+
+    managed = tmp_path / "managed"
+    _register("nat_env", managed, source_db, serve_from=ServeFrom.DUCKDB)
+    prov = OLAPWorkloadProvider(
+        benchmark="nat_env",
+        base_parquet_dir=managed,
+        db_storage=DBStorage.IN_MEMORY,
+        query_ids=["1"],
+    )
+    batches = prov.produce_workload(
+        RunToolMode.FAST_CHECK, query_ids=["1"], num_threads=1, core_ids=None
+    )
+    assert batches
+    for b in batches:
+        assert "SYNNODB_SHM_INGEST" not in (b.extra_env or {})
+        subset = _duckdb_subset_db(b)
+        assert subset is not None and subset.name == "subset.duckdb"
+
+
+def test_ssd_batches_have_distinct_storage_dirs(tmp_path, source_db):
+    """Each scale factor's batch must carry its own STORAGE_DIR; a single shared env dict left
+    every batch pointing at the last scale factor's storage dir (F9 regression)."""
+    from synnodb.tools.run_tool_mode import RunToolMode
+
+    managed = tmp_path / "managed"
+    _register("ssd_env", managed, source_db, serve_from=ServeFrom.PARQUET)
+    prov = OLAPWorkloadProvider(
+        benchmark="ssd_env",
+        base_parquet_dir=managed,
+        db_storage=DBStorage.SSD,
+        bespoke_ssd_storage_dir=tmp_path / "ssd",
+        query_ids=["1"],
+    )
+    batches = prov.produce_workload(
+        RunToolMode.EXHAUSTIVE, query_ids=["1"], num_threads=1, core_ids=None
+    )
+    assert len(batches) >= 2
+    for b in batches:
+        sf = b.exec_settings.scale_factor
+        assert b.extra_env["STORAGE_DIR"].rstrip("/").endswith(f"sf{sf}")
+
+
+def test_duckdb_registration_normalizes_param_keys(tmp_path):
+    """A templated query keyed ``q1`` (not the bare ``1``) registers cleanly: its params key is
+    normalized the same way the query id is, so the two still match."""
+    from synnodb.workloads.byo_workload import register_workload_from_duckdb
+
+    src = tmp_path / "src.duckdb"
+    _make_source(src)
+    managed = tmp_path / "managed"
+    queries = {
+        "q1": {
+            "sql": "SELECT * FROM lineitem WHERE l_orderkey < [MAXKEY]",
+            "params": {"MAXKEY": {"type": "int", "min": 1, "max": 50}},
+        },
+    }
+    con = duckdb.connect(str(src))
+    try:
+        spec = register_workload_from_duckdb(
+            name="param_norm",
+            con=con,
+            queries_json=queries,
+            managed_root=managed,
+            downscale_fractions=(0.2,),
+            whole_table_threshold=10,
+            serve_from=ServeFrom.PARQUET,
+        )
+    finally:
+        con.close()
+    assert "1" in spec.all_query_ids
 
 
 def test_native_subset_duckdb_joins_non_vacuous(tmp_path, source_db):
@@ -253,3 +425,36 @@ def test_shm_staging_produces_loader_segments():
         import shutil
 
         shutil.rmtree(ingest, ignore_errors=True)
+
+
+def test_shm_staging_restages_when_subset_content_changes():
+    """A subset rebuilt in place (new content at the same path) must re-stage into a fresh ingest
+    dir, not serve the first staging's stale segments - the ingest key includes the file content."""
+    import shutil
+
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    from synnodb.cpp_runner.shm_stage import stage_subset_duckdb_to_shm
+
+    tmp = Path(tempfile.mkdtemp())
+    subset_db = tmp / "subset.duckdb"
+    con = duckdb.connect(str(subset_db))
+    con.execute("CREATE TABLE t AS SELECT i AS x FROM range(10) r(i)")
+    con.close()
+    first = stage_subset_duckdb_to_shm(subset_db)
+    second = None
+    try:
+        # rebuild the subset in place with different content
+        subset_db.unlink()
+        con = duckdb.connect(str(subset_db))
+        con.execute("CREATE TABLE t AS SELECT i AS x FROM range(50) r(i)")
+        con.close()
+        second = stage_subset_duckdb_to_shm(subset_db)
+        assert second != first  # content changed -> new ingest dir, not stale reuse
+        with pa.memory_map(str(second / "t.arrow"), "r") as src:
+            assert ipc.open_file(src).read_all().num_rows == 50
+    finally:
+        shutil.rmtree(first, ignore_errors=True)
+        if second is not None:
+            shutil.rmtree(second, ignore_errors=True)

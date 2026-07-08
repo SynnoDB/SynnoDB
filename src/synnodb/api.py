@@ -461,11 +461,12 @@ class SynnoDB:
         sf_dir = find_sf_dir(root, sf)
         if sf_dir is None:
             raise FileNotFoundError(
-                f"No sf{sf:g} dataset under {root} for workload {spec.name!r} - "
+                f"No subset for {sf:g} under {root} for workload {spec.name!r} - "
                 "generate the dataset before checking RAM."
             )
-        paths = [sf_dir / f"{table}.parquet" for table in spec.tables]
-        return RamCheck.measure(f"sf{sf:g}", paths)
+        # subset_files knows each layout (parquet files vs a single subset.duckdb), so this works
+        # for DuckDB-native workloads too instead of stat-ing parquet that was never written.
+        return RamCheck.measure(sf_dir.name, spec.subset_files(sf_dir))
 
     # ---- DuckDB-sourced workload registration ----------------------------
     def sync_from_duckdb(
@@ -511,8 +512,11 @@ class SynnoDB:
                 its string value). ``ServeFrom.DUCKDB`` (default) makes each subset a ``subset.duckdb``
                 the engine ingests over the shm plane and the oracle materializes flat from, with
                 no parquet on disk (in-memory only); ``ServeFrom.PARQUET`` materializes
-                ``<table>.parquet`` files per subset (the fallback; also works on SSD). The
-                benchmark subset is a zero-copy symlink to the source when a path is given.
+                ``<table>.parquet`` files per subset (the fallback; also works on SSD). When
+                ``con`` is a path (SynnoDB opens and closes it), the native benchmark subset is a
+                zero-copy symlink to the source; for a caller-supplied live connection it is an
+                independent copy, so the framework's later read-only opens cannot collide with a
+                read-write handle the caller may still hold.
             set_as_workload: point this driver's config at the new workload (default True).
 
         Returns the registered :class:`~synnodb.workloads.workload_spec.WorkloadSpec`.
@@ -529,21 +533,25 @@ class SynnoDB:
 
         opened: "_duckdb.DuckDBPyConnection | None" = None
         source_db_path: str | None = None
+        # The zero-copy benchmark symlink is safe only when no read-write connection to the
+        # source outlives registration. That holds when SynnoDB owns the connection (a path we
+        # open read-only and close below); for a caller-supplied live connection it may not, so
+        # the benchmark subset is materialized as an independent copy instead.
+        allow_benchmark_symlink = False
         if isinstance(con, (str, Path)):
-            source_db_path = str(con)
+            source_db_path = str(Path(con).resolve())
             opened = _duckdb.connect(str(con), read_only=True)
             connection = opened
+            allow_benchmark_symlink = True
         else:
             connection = con
-            # A live connection opened from a file exposes it via database_list; use it to
-            # symlink the native benchmark subset zero-copy (None -> materialize a full copy).
+            # A file-backed connection exposes its file via database_list. The primary database is
+            # named after the file stem (never the literal "main"), so match on the file column of
+            # the first (primary) entry; an in-memory primary has no file and stays None.
             try:
                 rows = connection.execute("PRAGMA database_list").fetchall()
-                for row in rows:
-                    file_path = row[2]  # (seq, name, file)
-                    if row[1] == "main" and file_path:
-                        source_db_path = str(file_path)
-                        break
+                if rows and rows[0][2]:  # (seq, name, file)
+                    source_db_path = str(rows[0][2])
             except Exception:
                 source_db_path = None
 
@@ -561,6 +569,7 @@ class SynnoDB:
                 whole_table_threshold=whole_table_threshold,
                 serve_from=serve_from,
                 source_db_path=source_db_path,
+                allow_benchmark_symlink=allow_benchmark_symlink,
             )
         finally:
             if opened is not None:

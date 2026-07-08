@@ -24,21 +24,29 @@ undirected equi-join edges ``Ti.col <-> Tj.col``:
    kept **whole** - cheap to keep, and dropping their rows would only lose join coverage.
    Keeping a dimension whole is also what makes ``fact <-> dim`` joins resolve for every kept
    fact row.
-3. Every other table is **propagated to** from the anchor, nearest first (BFS order). Its kept
-   set is the rows joinable to an already-kept neighbour that is *closer to the anchor*:
+3. Every other table is **propagated to** in a deterministic processing order (the anchor
+   first, then the rest by ``(distance-from-anchor, name)``). A table's kept set is the rows
+   joinable to a neighbour that is *already processed* (nearer the anchor, or an equal-distance
+   sibling sorted earlier):
 
-       keep[V] = { r in V : for some closer sampled neighbour U, r joins a row of keep[U] }
+       keep[V] = { r in V : r satisfies some join relationship to an earlier-kept neighbour U }
 
-   Multiple edges to the *same* neighbour are ``AND``-ed (a composite relationship - keep only
-   rows matching on every shared column); edges to *different* neighbours are ``OR``-ed (a
-   table referenced from two sides is not dropped).
+   Join **relationships** carry provenance so alternative paths and composite keys are combined
+   correctly. The column pairs of a single join condition - a composite key such as
+   ``lineitem <-> partsupp`` on ``partkey`` *and* ``suppkey`` - are ``AND``-ed within one
+   relationship. Distinct relationships between the same table pair - two *alternative* join
+   paths, e.g. ``events.user_id`` and ``events.referrer_id`` both referencing ``users`` in
+   different queries - are ``OR``-ed. ``AND``-ing alternatives would keep only their
+   intersection and leave most kept rows with dangling keys on the path they did not match;
+   ``OR`` keeps every path's join non-vacuous.
 
-Two deliberate refinements over "OR every incident edge":
+Two deliberate refinements:
 
-* **Parent-ward only.** Propagating along back-edges (child -> parent -> child ...) lets a
-  single kept fact row pull in a parent's entire fan-out and cascades to near-full subsets. We
-  only follow edges toward the anchor, which still keeps every join non-vacuous while bounding
-  size.
+* **Processing-order, not back-edges.** A table is restricted only by neighbours *earlier* in
+  the order. This bounds size (a kept fact row cannot pull in a parent's whole fan-out back
+  through a child) while still following equal-distance **sibling** edges - two dimensions that
+  each join the anchor and also join each other. A strict distance rule drops those sibling
+  edges and samples the two tables independently, collapsing their mutual join to ``f**2``.
 * **Whole neighbours don't restrict.** A whole table's key column already contains the full
   domain, so ``V.fk IN (whole_dim.pk)`` matches *every* ``V`` row and is useless as a filter
   (it would make ``V`` whole too). We therefore never propagate *through* a whole table; the
@@ -115,6 +123,49 @@ class JoinEdge:
         return None
 
 
+@dataclass(frozen=True)
+class JoinRelationship:
+    """A single join condition between two distinct tables: one or more equi-join column pairs
+    matched *together*. The pairs of one condition (a composite key) are ``AND``-ed; the
+    downscaler ``OR``s across *distinct* relationships. Normalized so ``table_a <= table_b`` with
+    the pairs aligned to that order and sorted, making the relationship hashable and dedupable
+    across the queries/constraints that named it.
+    """
+
+    table_a: str
+    table_b: str
+    pairs: tuple[tuple[str, str], ...]  # (col_a, col_b) aligned to (table_a, table_b)
+
+    @staticmethod
+    def from_equalities(
+        equalities: Sequence[tuple[str, str, str, str]],
+    ) -> "JoinRelationship":
+        """Build a relationship from ``(ta, ca, tb, cb)`` equalities that all connect the same
+        unordered table pair (one join condition's column pairs)."""
+        table_pairs = {tuple(sorted((ta, tb))) for ta, _, tb, _ in equalities}
+        if len(table_pairs) != 1:
+            raise ValueError(
+                "JoinRelationship.from_equalities needs one table pair, got "
+                f"{sorted(table_pairs)}."
+            )
+        table_a, table_b = next(iter(table_pairs))
+        pairs: set[tuple[str, str]] = set()
+        for ta, ca, tb, cb in equalities:
+            pairs.add((ca, cb) if (ta, tb) == (table_a, table_b) else (cb, ca))
+        return JoinRelationship(table_a, table_b, tuple(sorted(pairs)))
+
+    def other(self, table: str) -> tuple[list[str], str, list[str]] | None:
+        """``(own_cols, other_table, other_cols)`` for ``table``'s side, or None if the
+        relationship does not touch ``table`` or is a self-join (out of scope, v1)."""
+        if self.table_a == self.table_b:
+            return None
+        if table == self.table_a:
+            return ([a for a, _ in self.pairs], self.table_b, [b for _, b in self.pairs])
+        if table == self.table_b:
+            return ([b for _, b in self.pairs], self.table_a, [a for a, _ in self.pairs])
+        return None
+
+
 # --------------------------------------------------------------------------- introspection
 @dataclass
 class SchemaInfo:
@@ -177,31 +228,32 @@ def _strip_placeholders(sql: str) -> str:
     return _PLACEHOLDER_RE.sub("1", sql)
 
 
-def infer_join_edges_from_sql(
+def _infer_equalities(
     sql: str, schema: SchemaInfo, dialect: str = "duckdb"
-) -> set[JoinEdge]:
-    """Extract equi-join column pairs from one query.
+) -> list[tuple[str, str, str, str]]:
+    """Cross-table equi-join column pairs ``(table_a, col_a, table_b, col_b)`` from one query.
 
     Every ``FROM a JOIN b ON a.x = b.y`` (and the implicit ``WHERE a.x = b.y`` form) names a
-    real join edge. We resolve each column to its table via the query's alias map, falling back
-    to the unique owner of an unqualified column name. Only equalities between two columns of
-    *different* tables become edges; column-vs-literal predicates are ignored.
+    real join. Each column is resolved to its table via the query's alias map, falling back to
+    the unique owner of an unqualified column name. Only equalities between two columns of
+    *different* tables are returned; column-vs-literal predicates are ignored. Table names are
+    the schema's real casing so downstream lookups never miss on case.
     """
     try:
         import sqlglot
         from sqlglot import expressions as exp
     except Exception:  # pragma: no cover - sqlglot is a core dependency
         logger.warning("sqlglot unavailable; cannot infer join edges from SQL")
-        return set()
+        return []
 
     try:
         trees = sqlglot.parse(_strip_placeholders(sql), read=dialect)
     except Exception as e:
         logger.warning("Skipping unparseable query for join inference: %s", e)
-        return set()
+        return []
 
     real_tables = {t.lower(): t for t in schema.tables}
-    edges: set[JoinEdge] = set()
+    equalities: list[tuple[str, str, str, str]] = []
     for tree in trees:
         if tree is None:
             continue
@@ -233,8 +285,30 @@ def infer_join_edges_from_sql(
             right = resolve(rhs)
             if left is None or right is None or left[0] == right[0]:
                 continue
-            edges.add(JoinEdge.make(left[0], left[1], right[0], right[1]))
-    return edges
+            equalities.append((left[0], left[1], right[0], right[1]))
+    return equalities
+
+
+def infer_join_edges_from_sql(
+    sql: str, schema: SchemaInfo, dialect: str = "duckdb"
+) -> set[JoinEdge]:
+    """The undirected single-column join edges named by one query (see :func:`_infer_equalities`)."""
+    return {
+        JoinEdge.make(ta, ca, tb, cb)
+        for ta, ca, tb, cb in _infer_equalities(sql, schema, dialect)
+    }
+
+
+def infer_join_relationships_from_sql(
+    sql: str, schema: SchemaInfo, dialect: str = "duckdb"
+) -> list["JoinRelationship"]:
+    """The join *relationships* named by one query: the equi-join column pairs grouped by the
+    unordered table pair they connect, so a query's composite key (several column pairs between
+    the same two tables) becomes one ``AND``-combined relationship rather than separate edges."""
+    by_pair: dict[tuple[str, str], list[tuple[str, str, str, str]]] = defaultdict(list)
+    for ta, ca, tb, cb in _infer_equalities(sql, schema, dialect):
+        by_pair[tuple(sorted((ta, tb)))].append((ta, ca, tb, cb))
+    return [JoinRelationship.from_equalities(eqs) for eqs in by_pair.values()]
 
 
 def _normalize_explicit(
@@ -244,9 +318,11 @@ def _normalize_explicit(
     """Turn caller-supplied ``(table_a.col, table_b.col)`` pairs into join edges.
 
     Each side is ``"table.column"``; both tables must exist. Single-column equi-joins only -
-    a clear error otherwise, matching the project's "reject complex shapes" stance."""
+    a clear error otherwise, matching the project's "reject complex shapes" stance. Table names
+    are matched case-insensitively but stored in the schema's real casing, so a caller who
+    writes ``Orders.o_custkey`` still resolves to the ``orders`` table everywhere downstream."""
     out: list[JoinEdge] = []
-    real = {t.lower() for t in schema.tables}
+    real = {t.lower(): t for t in schema.tables}
     for rel in relationships:
         rel = list(rel)
         if len(rel) != 2:
@@ -266,7 +342,7 @@ def _normalize_explicit(
                     f"join_relationships references unknown table {tbl!r}. "
                     f"Known tables: {sorted(schema.tables)}"
                 )
-            parsed.append((tbl, col))
+            parsed.append((real[tbl.lower()], col))
         (ta, ca), (tb, cb) = parsed
         out.append(JoinEdge.make(ta, ca, tb, cb))
     return out
@@ -296,6 +372,59 @@ def build_join_graph(
     if explicit_relationships:
         edges.update(_normalize_explicit(explicit_relationships, schema))
     return edges
+
+
+def declared_constraint_relationships(
+    con: duckdb.DuckDBPyConnection,
+) -> list[JoinRelationship]:
+    """Declared foreign keys as join relationships - one per constraint, so a composite FK stays
+    a single ``AND``-combined relationship (unlike :func:`declared_constraint_edges`, which
+    flattens it to independent single-column edges)."""
+    try:
+        rows = con.execute(
+            "SELECT table_name, constraint_column_names, referenced_table, "
+            "referenced_column_names FROM duckdb_constraints() "
+            "WHERE constraint_type = 'FOREIGN KEY'"
+        ).fetchall()
+    except Exception:  # older/newer builds may not expose duckdb_constraints()
+        return []
+    rels: list[JoinRelationship] = []
+    for table, from_cols, ref_table, to_cols in rows:
+        if not (table and ref_table and from_cols and to_cols):
+            continue
+        eqs = [
+            (str(table), str(fc), str(ref_table), str(tc))
+            for fc, tc in zip(list(from_cols), list(to_cols))
+        ]
+        if eqs:
+            rels.append(JoinRelationship.from_equalities(eqs))
+    return rels
+
+
+def build_join_relationships(
+    schema: SchemaInfo,
+    sql_by_id: dict[str, str] | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+    explicit_relationships: Iterable[Sequence[str]] | None = None,
+) -> list[JoinRelationship]:
+    """The workload's join graph as provenance-carrying relationships (same three sources as
+    :func:`build_join_graph`), deduplicated. Each query's composite key is one relationship;
+    alternative join paths between the same tables stay distinct relationships, so the downscaler
+    ``OR``s rather than intersects them."""
+    rels: list[JoinRelationship] = []
+    for sql in (sql_by_id or {}).values():
+        rels.extend(infer_join_relationships_from_sql(sql, schema))
+    if con is not None:
+        rels.extend(declared_constraint_relationships(con))
+    if explicit_relationships:
+        for edge in _normalize_explicit(explicit_relationships, schema):
+            rels.append(
+                JoinRelationship.from_equalities(
+                    [(edge.table_a, edge.col_a, edge.table_b, edge.col_b)]
+                )
+            )
+    # The same relationship is typically named by many queries; dedup preserves first-seen order.
+    return list(dict.fromkeys(rels))
 
 
 # --------------------------------------------------------------------------- the downscaler
@@ -338,6 +467,14 @@ class ReferentialDownscaler:
         self.con = con
         self.schema = introspect(con)
         self.edges = build_join_graph(
+            self.schema,
+            sql_by_id=sql_by_id,
+            con=con,
+            explicit_relationships=join_relationships,
+        )
+        # Provenance-carrying view of the same graph: the semi-join predicate ANDs a composite
+        # key's columns within one relationship and ORs across alternative relationships.
+        self.relationships = build_join_relationships(
             self.schema,
             sql_by_id=sql_by_id,
             con=con,
@@ -396,7 +533,9 @@ class ReferentialDownscaler:
 
     # -- planning -----------------------------------------------------------
     def _keep_name(self, table: str) -> str:
-        return f"{self.KEEP_PREFIX}{table}"
+        """The quoted identifier of ``table``'s keep-set temp table. Quoting keeps the SQL valid
+        for source tables whose names need it (spaces, reserved words, embedded quotes)."""
+        return _quote_ident(f"{self.KEEP_PREFIX}{table}")
 
     def plan_subset(self, fraction: float) -> SubsetResult:
         """Compute each table's kept-set SELECT for ``fraction`` without executing anything.
@@ -427,6 +566,12 @@ class ReferentialDownscaler:
 
         # anchor: deterministic hash sample
         keep_cut = round(fraction * _HASH_MODULUS)
+        if keep_cut <= 0:
+            raise ValueError(
+                f"fraction {fraction} is below the sampling granularity "
+                f"{1.0 / _HASH_MODULUS:g} (hash resolution {_HASH_MODULUS}); the anchor sample "
+                "would be empty. Use a larger fraction."
+            )
         result.tables.append(
             SubsetTable(
                 anchor,
@@ -436,34 +581,40 @@ class ReferentialDownscaler:
             )
         )
 
-        def parent_predicate(table: str) -> str | None:
-            """OR-across-parents / AND-within-parent semi-join predicate over *closer*,
-            *sampled* neighbours. None if the table has no such neighbour (kept whole)."""
-            by_parent: dict[str, list[tuple[str, str]]] = defaultdict(list)
-            for own_col, other, other_col in self.adjacency[table]:
-                if other in whole or depth.get(other, 1 << 30) >= depth.get(table, 0):
-                    continue  # whole neighbours don't restrict; only follow parent-ward edges
-                by_parent[other].append((own_col, other_col))
-            if not by_parent:
-                return None
-            ors = []
-            for other, pairs in sorted(by_parent.items()):
-                ands = " AND ".join(
-                    f"{_quote_ident(oc)} IN "
-                    f"(SELECT {_quote_ident(rc)} FROM {self._keep_name(other)})"
-                    for oc, rc in pairs
-                )
-                ors.append(f"({ands})")
-            return " OR ".join(ors)
-
-        # sampled / whole tables in BFS order (nearest the anchor first, so each table's
-        # parents are already planned before it)
+        # Deterministic processing order: anchor first, then by (distance-from-anchor, name). A
+        # table is restricted only by neighbours *earlier* in this order, so equal-distance
+        # siblings still restrict each other (the later-sorted one follows the edge).
         ordered = sorted(
             (t for t in self.schema.tables if t != anchor),
             key=lambda t: (depth.get(t, 1 << 30), t),
         )
+        order_index = {t: i for i, t in enumerate([anchor, *ordered])}
+
+        def semi_join_predicate(table: str) -> str | None:
+            """OR-across-relationships / AND-within-relationship semi-join predicate over
+            already-processed, sampled neighbours. None if the table has no such neighbour, so it
+            is kept whole. A composite relationship ANDs its column pairs; alternative join paths
+            between the same tables are separate relationships and are ORed."""
+            terms: list[str] = []
+            for rel in self.relationships:
+                side = rel.other(table)
+                if side is None:
+                    continue
+                own_cols, other, other_cols = side
+                if other in whole or order_index.get(other, 1 << 30) >= order_index[table]:
+                    continue  # whole neighbours don't restrict; only earlier-processed ones
+                ands = " AND ".join(
+                    f"{_quote_ident(oc)} IN "
+                    f"(SELECT {_quote_ident(rc)} FROM {self._keep_name(other)})"
+                    for oc, rc in zip(own_cols, other_cols)
+                )
+                terms.append(f"({ands})")
+            if not terms:
+                return None
+            return " OR ".join(dict.fromkeys(terms))
+
         for t in ordered:
-            pred = None if t in whole else parent_predicate(t)
+            pred = None if t in whole else semi_join_predicate(t)
             if pred is None:
                 # small dim, disconnected, or reachable only through whole tables -> keep whole
                 result.tables.append(
@@ -569,12 +720,20 @@ class ReferentialDownscaler:
         works even when the caller's source connection is read-only (a direct ``ATTACH`` from a
         read-only connection cannot create the new file). Arrow preserves DuckDB's exact column
         types. The output file must not already exist; the caller handles idempotency.
+
+        The database is built in a ``.partial`` sibling and atomically renamed into place only
+        after every table is written, so an interrupted run never leaves a
+        complete-*looking* subset.duckdb behind.
         """
         out_db = Path(out_db_path)
         if out_db.exists():
             raise FileExistsError(f"subset database already exists: {out_db}")
         out_db.parent.mkdir(parents=True, exist_ok=True)
-        subset_con = duckdb.connect(str(out_db))
+        tmp_db = out_db.with_name(out_db.name + ".partial")
+        tmp_wal = tmp_db.with_name(tmp_db.name + ".wal")
+        tmp_db.unlink(missing_ok=True)
+        tmp_wal.unlink(missing_ok=True)
+        subset_con = duckdb.connect(str(tmp_db))
 
         def sink(tt: SubsetTable, source: str) -> None:
             arrow_tbl = self.con.execute(f"SELECT * FROM {source}").to_arrow_table()
@@ -585,9 +744,17 @@ class ReferentialDownscaler:
             subset_con.unregister("_synno_src")
 
         try:
-            return self._materialize_subset(fraction, sink)
-        finally:
+            result = self._materialize_subset(fraction, sink)
+            subset_con.execute("CHECKPOINT")
+        except BaseException:
             subset_con.close()
+            tmp_db.unlink(missing_ok=True)
+            tmp_wal.unlink(missing_ok=True)
+            raise
+        subset_con.close()
+        tmp_wal.unlink(missing_ok=True)
+        tmp_db.replace(out_db)
+        return result
 
     def drop(self) -> None:
         """Drop the ephemeral ``keep_*`` temp tables (idempotent)."""

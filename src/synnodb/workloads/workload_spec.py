@@ -41,6 +41,10 @@ ParamSpaceFactory = Callable[
 ]
 
 
+# The single file that holds a DuckDB-native subset inside its ``fraction<f>/`` directory.
+SUBSET_DUCKDB_FILENAME = "subset.duckdb"
+
+
 @dataclass(frozen=True)
 class WorkloadSpec:
     """Everything the framework needs to drive an arbitrary OLAP workload."""
@@ -110,6 +114,14 @@ class WorkloadSpec:
         if self.base_parquet_dir is not None:
             return Path(self.base_parquet_dir)
         return managed_parquet_root(self.name, self.dataset_name)
+
+    def subset_files(self, subset_dir: Path) -> list[Path]:
+        """The files that physically hold one subset under ``subset_dir``, per :attr:`serve_from`:
+        a single ``subset.duckdb`` for a DuckDB-native workload, or one ``<table>.parquet`` per
+        table for the parquet layout. The single place that knows a subset's on-disk shape."""
+        if self.serve_from == ServeFrom.DUCKDB:
+            return [subset_dir / SUBSET_DUCKDB_FILENAME]
+        return [subset_dir / f"{table}.parquet" for table in self.tables]
 
     def scale_factors_for(self, run_mode: RunToolMode) -> list[float]:
         if run_mode == RunToolMode.FAST_CHECK:
