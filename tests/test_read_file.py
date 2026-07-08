@@ -8,12 +8,16 @@ class FakeRunStatsCollector:
         self.activity_summary: list[str] = []
         self.model = "test-model"
         self.last_turn = 0
+        self.read_file_paths: list[str] = []
 
     def add_to_activity_summary(self, entry: str) -> None:
         self.activity_summary.append(entry)
 
     def log_apply_patch_stats(self, op_type, **kwargs) -> None:
         raise AssertionError("read_file must not log_apply_patch_stats")
+
+    def log_read_file_stats(self, path: str) -> None:
+        self.read_file_paths.append(path)
 
 
 class FakeSnapshotter:

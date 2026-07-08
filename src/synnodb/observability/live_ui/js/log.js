@@ -8,6 +8,8 @@
 const LOG_TYPE_META = {
   llm:        { label:'LLM',        cls:'lt-llm'      },
   apply_patch:{ label:'Patch',      cls:'lt-patch'     },
+  write_file: { label:'Write',      cls:'lt-write'     },
+  read_file:  { label:'Read',       cls:'lt-read'      },
   shell:      { label:'Shell',      cls:'lt-shell'     },
   compile:    { label:'Compile',    cls:'lt-compile'   },
   validate:   { label:'Validate',   cls:'lt-validate'  },
@@ -25,7 +27,8 @@ let _logBodyText = new Map();
 
 function logTruncated(type, d) {
   if (type === 'llm') return !!d['llm/output_truncated'];
-  if (type === 'apply_patch') return !!d['apply_patch/truncated'];
+  if (type === 'apply_patch' || type === 'write_file') return !!d['apply_patch/truncated'];
+  if (type === 'read_file') return !!d['read_file/truncated'];
   if (type === 'shell') return !!d['shell/truncated'];
   return false;
 }
@@ -35,7 +38,7 @@ function logDesc(type, d) {
     const parts = [d['current_prompt_descriptor'], d['agent_name']].filter(Boolean);
     return parts.join(' · ') || 'LLM call';
   }
-  if (type === 'apply_patch') {
+  if (type === 'apply_patch' || type === 'write_file') {
     const files   = parseJsonField(d['apply_patch/files']);
     const added   = d['apply_patch/added_loc_count'];
     const deleted = d['apply_patch/deleted_loc_count'];
@@ -50,6 +53,10 @@ function logDesc(type, d) {
       return list + delta + failedStr;
     }
     return 'code change' + delta + failedStr;
+  }
+  if (type === 'read_file') {
+    const path = d['read_file/path'];
+    return path ? path.split('/').pop() : 'read file';
   }
   if (type === 'shell') {
     const cmds = parseJsonField(d['shell/commands']);
@@ -81,7 +88,7 @@ function logBody(type, d) {
     const out = d['llm/output_text'];
     return (out && out.trim()) ? out : '(no text output)';
   }
-  if (type === 'apply_patch') {
+  if (type === 'apply_patch' || type === 'write_file') {
     const parts = [];
     const failed = parseJsonField(d['apply_patch/failed']);
     if (failed && failed.length) parts.push('FAILED:\n' + failed.join('\n'));
@@ -92,6 +99,14 @@ function logBody(type, d) {
       if (files) parts.push(JSON.stringify(files, null, 2));
     }
     return parts.join('\n\n') || '(no diff)';
+  }
+  if (type === 'read_file') {
+    const path = d['read_file/path'];
+    const out  = d['read_file/output'];
+    const parts = [];
+    if (path) parts.push('$ read_file ' + path);
+    if (out && out.trim()) parts.push(out);
+    return parts.join('\n\n') || '(no output)';
   }
   if (type === 'shell') {
     const cmds = parseJsonField(d['shell/commands']);

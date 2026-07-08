@@ -8,12 +8,14 @@
 // All three pull from the same per-step `total/runtime` deltas (treating each
 // step's delta as belonging to that step's `type`).
 
-const PIE_TYPE_ORDER  = ['llm','compile','shell','validate','apply_patch','compaction','other'];
+const PIE_TYPE_ORDER  = ['llm','compile','shell','validate','apply_patch','write_file','read_file','compaction','other'];
 const PIE_TYPE_LABELS = {llm:'LLM', compile:'Compile', shell:'Shell',
                          validate:'Validate', apply_patch:'Patch',
+                         write_file:'Write', read_file:'Read',
                          compaction:'Compaction', other:'Other'};
 const PIE_TYPE_COLORS = {llm:'#6fa8ff', compile:'#a78bfa', shell:'#4ade80',
                          validate:'#e6d96a', apply_patch:'#fb923c',
+                         write_file:'#f472b6', read_file:'#22d3ee',
                          compaction:'#94a3b8', other:'#64748b'};
 
 // ── Pie chart ────────────────────────────────────────────────────────────

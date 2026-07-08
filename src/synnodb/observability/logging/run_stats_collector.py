@@ -95,6 +95,7 @@ class RunStatsCollector(RunHooks):
 
         # per tool stats
         self.apply_patch_stats = defaultdict(int)
+        self.read_file_path: str | None = None
 
         self.cloc_cache_dir = cloc_cache_dir
         self.do_not_cache = do_not_cache
@@ -213,6 +214,10 @@ class RunStatsCollector(RunHooks):
 
         self.metrics_list.append(metrics)
         self._emit_metrics(metrics, step=turn)
+
+    def log_read_file_stats(self, path: str) -> None:
+        """Record the path read by the in-flight read_file call."""
+        self.read_file_path = path
 
     def log_apply_patch_stats(
         self,
@@ -383,6 +388,8 @@ class RunStatsCollector(RunHooks):
             self.apply_patch_str = ""
             self.apply_patch_files = set()
             self.apply_patch_failed = []
+        elif tool_name == "read_file":
+            self.read_file_path = None
 
     async def on_tool_end(
         self,
@@ -407,9 +414,13 @@ class RunStatsCollector(RunHooks):
             for operation_type, count in self.apply_patch_stats.items():
                 operation_type_dict[f"apply_patch/{operation_type}_count"] = count
 
+            # write_file gets its own type so the live UI can render it
+            # distinctly from apply_patch/replace_in_file diffs, even though it
+            # shares the same underlying diff-stat fields.
+            metric_type = "write_file" if tool_name == "write_file" else "apply_patch"
             self.log_metrics_callback(
                 {
-                    "type": "apply_patch",
+                    "type": metric_type,
                     "apply_patch/added_loc_count": self.apply_patch_added_ctr,
                     "apply_patch/deleted_loc_count": self.apply_patch_deleted_ctr,
                     "apply_patch/string": self.apply_patch_str[:20000],
@@ -419,6 +430,16 @@ class RunStatsCollector(RunHooks):
                     if len(self.apply_patch_failed) > 0
                     else None,
                     **operation_type_dict,
+                },
+                log_and_increment=True,
+            )
+        elif tool_name == "read_file":
+            self.log_metrics_callback(
+                {
+                    "type": "read_file",
+                    "read_file/path": self.read_file_path,
+                    "read_file/output": result[:20000],
+                    "read_file/truncated": len(result) > 20000,
                 },
                 log_and_increment=True,
             )

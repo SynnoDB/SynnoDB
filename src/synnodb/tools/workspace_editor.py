@@ -162,6 +162,7 @@ class WorkspaceEditor:
         # would only bloat the cache dir for no benefit.
         relative = self._relative_path(path)
         target = self._resolve(path)
+        self._run_stats_collector.log_read_file_stats(path)
         if not target.exists():
             return f"Error: file {relative} does not exist."
         if target.is_dir():
