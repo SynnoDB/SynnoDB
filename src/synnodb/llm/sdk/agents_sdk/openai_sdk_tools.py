@@ -327,7 +327,8 @@ def make_custom_openai_write_file_tool(
 class ReadFileArgs(BaseModel):
     path: str = Field(..., description="Path relative to workspace root")
     offset: int | None = Field(
-        None, description="1-based line number to start reading from (optional, default 1)"
+        None,
+        description="1-based line number to start reading from (optional, default 1)",
     )
     limit: int | None = Field(
         None, description="Maximum number of lines to return (optional, default 2000)"
