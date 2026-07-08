@@ -51,7 +51,7 @@ def _make_parquet_subset(base: Path) -> None:
 
 
 def _provider(base: Path, serve_from: ServeFrom) -> SimpleNamespace:
-    spec = SimpleNamespace(serve_from=serve_from, tables=_TABLES)
+    spec = SimpleNamespace(serve_from=serve_from, tables=_TABLES, fast_check_sfs=())
     return SimpleNamespace(
         spec=spec,
         benchmark_sf=1.0,
@@ -123,6 +123,49 @@ def test_bad_sql_returns_error_not_raise(tool):
 
 def test_empty_sql(tool):
     assert tool("   ") == "Error: empty SQL query."
+
+
+def test_default_inspects_smallest_fast_check_rung(tmp_path):
+    """By default the tool reads the smallest fast-check rung, not the benchmark subset."""
+    base = tmp_path / "parquet_root"
+    (base / "fraction0.1").mkdir(parents=True)
+    small = duckdb.connect(str(base / "fraction0.1" / "subset.duckdb"))
+    small.execute("CREATE TABLE nation AS SELECT i AS n_nationkey FROM range(3) t(i)")
+    small.execute("CREATE TABLE orders AS SELECT i AS o_orderkey FROM range(3) t(i)")
+    small.close()
+    _make_duckdb_subset(base)  # fraction1 with 5 nation / 200 orders rows
+
+    provider = _provider(base, ServeFrom.DUCKDB)
+    provider.spec.fast_check_sfs = (0.1, 0.5)
+    tool = DataInspectTool(workload_provider=provider)
+
+    assert tool.sf == 0.1
+    # The count reflects the small rung (3), not the benchmark subset (5).
+    assert "3" in tool("SELECT count(*) AS n FROM nation")
+
+
+def test_no_fast_check_ladder_falls_back_to_benchmark_sf(tmp_path):
+    """A workload without a fast-check ladder inspects the benchmark subset."""
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)  # fraction1
+    tool = DataInspectTool(workload_provider=_provider(base, ServeFrom.DUCKDB))
+    assert tool.sf == 1.0
+    assert "200" in tool("SELECT count(*) AS n FROM orders")
+
+
+def test_expensive_query_hits_wallclock_budget(tool, monkeypatch):
+    """A query that overruns the budget is interrupted and reported, not left to spin."""
+    import synnodb.tools.data_inspect as di
+
+    monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
+    out = tool(
+        "SELECT max(a.range * b.range) AS m "
+        "FROM range(10000000) a, range(10000000) b"
+    )
+    assert "inspection budget" in out and "cancelled" in out
+    # The cached connection survives: the interrupt hit only the throwaway cursor.
+    assert "200" in tool("SELECT count(*) AS n FROM orders")
 
 
 def test_factory_invokes_tool(tmp_path):

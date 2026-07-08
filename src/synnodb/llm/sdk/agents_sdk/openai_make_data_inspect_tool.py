@@ -11,9 +11,8 @@ class QueryDataArgs(BaseModel):
     sql: str = Field(
         ...,
         description=(
-            "Any read-only SQL query to execute against the actual benchmark data via DuckDB. "
-            "You can also run SUMMARIZE to get data statistics and DESCRIBE to show a table's "
-            "schema. Reference tables by their real names."
+            "A simple, cheap read-only SQL query (DuckDB). Prefer SUMMARIZE/DESCRIBE, WHERE, or "
+            "LIMIT over scanning or joining large tables. Reference tables by their real names."
         ),
     )
     max_rows: int | None = Field(
@@ -26,12 +25,11 @@ class QueryDataArgs(BaseModel):
 
 
 DESCRIPTION = (
-    "Runs a strictly read-only SQL query against the real benchmark data using DuckDB, at the "
-    "workload's benchmark scale factor - the same data the correctness oracle uses. Use it to "
-    "inspect the data you are building an engine for: row counts, value distributions, distinct "
-    "counts, null density, min/max ranges, and join fan-out, so physical-design choices (element "
-    "types, encodings, partitioning, join order) are grounded in the actual data. Only "
-    "SELECT-family statements are allowed; it cannot modify data."
+    "Read-only SQL over a small, representative subset of the benchmark data (DuckDB) - quick "
+    "look-ups to ground physical-design choices (types, encodings, partitioning, join order): row "
+    "counts, distributions, distinct/null counts, min/max ranges, join fan-out. Keep queries "
+    "simple (SUMMARIZE/DESCRIBE, WHERE, LIMIT); one that scans or joins large tables and runs too "
+    "long is cancelled. SELECT-family only; it cannot modify data."
 )
 
 
