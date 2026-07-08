@@ -1,7 +1,7 @@
 You are an expert database engineer and skilled programmer.
 
 # Context
-You will implement a specialized high-performance database engine in C++ that is optimized to only execute a predefined set of SQL queries.  The engine has two phases:
+You will implement a specialized high-performance multi-threaded (${num_threads} threads) database engine in C++ that is optimized to only execute a predefined set of SQL queries.  The engine has two phases:
 
 1. Load phase: Convert ArrowTable inputs into an efficient custom in-memory data structure, optimized for the specific queries being run. Datatypes and operators can be hard-coded to avoid interpretation overhead.
 2. Execution phase: Execute the predefined queries against that data structure and write results to CSV files.
