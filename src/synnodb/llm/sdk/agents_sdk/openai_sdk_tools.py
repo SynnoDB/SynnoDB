@@ -291,7 +291,19 @@ def make_custom_openai_write_file_tool(
     impl = CustomWriteFileTool(editor=editor)
 
     async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
-        args = WriteFileArgs.model_validate_json(args_json)
+        try:
+            args = WriteFileArgs.model_validate_json(args_json)
+        except ValidationError as e:
+            # See make_custom_openai_apply_patch_tool's on_invoke for why this is
+            # reported back to the model instead of left to propagate and crash
+            # the run.
+            logger.warning(
+                "write_file received arguments that failed schema validation: %s", e
+            )
+            return (
+                "Error: write_file arguments failed validation. Retry with a valid "
+                f"path (str) and content (str). Details: {e}"
+            )
         return await impl(args.path, args.content)
 
     return FunctionTool(
@@ -315,31 +327,11 @@ def make_custom_openai_write_file_tool(
 class ReadFileArgs(BaseModel):
     path: str = Field(..., description="Path relative to workspace root")
     offset: int | None = Field(
-        None, description="1-based line number to start reading from (optional)"
+        None, description="1-based line number to start reading from (optional, default 1)"
     )
     limit: int | None = Field(
-        None, description="Maximum number of lines to return (optional)"
+        None, description="Maximum number of lines to return (optional, default 2000)"
     )
-
-
-_READ_FILE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "path": {
-            "type": "string",
-            "description": "Path relative to workspace root",
-        },
-        "offset": {
-            "type": "integer",
-            "description": "1-based line number to start reading from (optional, default 1)",
-        },
-        "limit": {
-            "type": "integer",
-            "description": "Maximum number of lines to return (optional, default 2000)",
-        },
-    },
-    "required": ["path"],
-}
 
 
 def make_custom_openai_read_file_tool(
@@ -348,7 +340,20 @@ def make_custom_openai_read_file_tool(
     impl = CustomReadFileTool(editor=editor)
 
     async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
-        args = ReadFileArgs.model_validate_json(args_json)
+        try:
+            args = ReadFileArgs.model_validate_json(args_json)
+        except ValidationError as e:
+            # See make_custom_openai_apply_patch_tool's on_invoke for why this is
+            # reported back to the model instead of left to propagate and crash
+            # the run.
+            logger.warning(
+                "read_file received arguments that failed schema validation: %s", e
+            )
+            return (
+                "Error: read_file arguments failed validation. Retry with a valid "
+                "path (str) and, if provided, integer offset/limit. "
+                f"Details: {e}"
+            )
         return await impl(args.path, args.offset, args.limit)
 
     return FunctionTool(
@@ -360,7 +365,7 @@ def make_custom_openai_read_file_tool(
             "apply_patch edit. Returns up to 2000 lines by default; use "
             "offset/limit to page through a larger file."
         ),
-        params_json_schema=_READ_FILE_SCHEMA,
+        params_json_schema=ReadFileArgs.model_json_schema(),
         on_invoke_tool=on_invoke,
         defer_loading=False,  # always shown to the model
     )
