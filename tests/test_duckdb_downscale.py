@@ -9,6 +9,7 @@ sourced from a DuckDB connection via the parquet fallback.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -310,6 +311,73 @@ def test_copy_subset_to_parquet_roundtrip(synthetic_con, downscaler, tmp_path):
         assert joined > 0
     finally:
         rc.close()
+
+
+# --------------------------------------------------------------------------- source snapshot
+def _make_constrained_source(path: Path) -> None:
+    """A small referential chain region <- nation <- supplier with declared PK/FK constraints and
+    a DECIMAL column, so a snapshot's constraint- and type-fidelity can both be checked."""
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE region(r_regionkey INTEGER PRIMARY KEY, r_name VARCHAR NOT NULL)")
+    con.execute(
+        "CREATE TABLE nation(n_nationkey INTEGER PRIMARY KEY, n_name VARCHAR, "
+        "n_regionkey INTEGER REFERENCES region(r_regionkey))"
+    )
+    con.execute(
+        "CREATE TABLE supplier(s_suppkey INTEGER PRIMARY KEY, "
+        "s_nationkey INTEGER REFERENCES nation(n_nationkey), s_acctbal DECIMAL(15,2))"
+    )
+    con.execute("INSERT INTO region VALUES (0, 'AMER'), (1, 'EMEA')")
+    con.execute("INSERT INTO nation VALUES (0, 'US', 0), (1, 'DE', 1)")
+    con.execute("INSERT INTO supplier VALUES (5, 1, 100.50), (6, 0, 200.00)")
+    con.close()
+
+
+def test_readonly_snapshot_preserves_pk_fk_constraints(tmp_path):
+    """A read-only source connection snapshots via the Arrow path (COPY FROM DATABASE cannot attach
+    a writable target through it). That path must still reproduce declared PK/FK constraints - the
+    join-graph signal - by reading duckdb_constraints() and rebuilding each table with its
+    constraints inline, inserting rows in foreign-key dependency order."""
+    from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
+        snapshot_source_database,
+    )
+
+    src = tmp_path / "src.duckdb"
+    _make_constrained_source(src)
+    snap = tmp_path / "snap.duckdb"
+
+    ro = duckdb.connect(str(src), read_only=True)
+    try:
+        snapshot_source_database(ro, snap)
+    finally:
+        ro.close()
+
+    chk = duckdb.connect(str(snap), read_only=True)
+    try:
+        kinds = {
+            (t, c)
+            for t, c in chk.execute(
+                "SELECT table_name, constraint_type FROM duckdb_constraints() "
+                "WHERE constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')"
+            ).fetchall()
+        }
+        assert ("region", "PRIMARY KEY") in kinds
+        assert ("nation", "FOREIGN KEY") in kinds
+        assert ("supplier", "FOREIGN KEY") in kinds
+        # data (and its exact DECIMAL type) survives the rebuild-and-reinsert
+        assert chk.execute(
+            "SELECT s_acctbal FROM supplier WHERE s_suppkey = 5"
+        ).fetchone()[0] == Decimal("100.50")
+    finally:
+        chk.close()
+
+    # the reproduced foreign key is actually enforced, not just declared
+    rw = duckdb.connect(str(snap))
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            rw.execute("INSERT INTO nation VALUES (9, 'XX', 999)")
+    finally:
+        rw.close()
 
 
 # --------------------------------------------------------------------------- registration

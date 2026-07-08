@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -792,6 +793,24 @@ def _unlink_duckdb_files(db_path: Path) -> None:
     db_path.with_name(db_path.name + ".wal").unlink(missing_ok=True)
 
 
+def _source_is_read_only(source_con: duckdb.DuckDBPyConnection) -> bool:
+    """Whether ``source_con``'s primary database is attached read-only. A read-only connection
+    forces any ``ATTACH`` it issues read-only too, so it cannot attach a writable target and
+    ``COPY FROM DATABASE`` is impossible through it - the Arrow path is the only option. Returns
+    ``False`` if the state can't be determined, leaving the attempt-and-fall-back path in charge."""
+    try:
+        rows = source_con.execute("PRAGMA database_list").fetchall()
+        if not rows:
+            return False
+        primary = rows[0][1]  # (seq, name, file)
+        result = source_con.execute(
+            "SELECT readonly FROM duckdb_databases() WHERE database_name = ?", [primary]
+        ).fetchone()
+        return bool(result and result[0])
+    except Exception:
+        return False
+
+
 def _snapshot_via_copy_database(source_con: duckdb.DuckDBPyConnection, out_db: Path) -> None:
     """Snapshot with ``COPY FROM DATABASE`` - one statement, one transaction, full schema
     (including declared constraints). Needs a read-write source connection to attach a writable
@@ -810,11 +829,41 @@ def _snapshot_via_copy_database(source_con: duckdb.DuckDBPyConnection, out_db: P
         source_con.execute(f"DETACH {alias}")
 
 
+def _snapshot_via_export_import(
+    source_con: duckdb.DuckDBPyConnection, out_db: Path
+) -> None:
+    """Snapshot a read-only source with DuckDB's ``EXPORT DATABASE`` / ``IMPORT DATABASE``.
+
+    DuckDB authors the schema DDL itself, so the full schema is reproduced faithfully - every
+    declared constraint (PK/UNIQUE/FK/CHECK/NOT NULL), plus sequences and column defaults - with
+    tables emitted and loaded in foreign-key dependency order. This is the path for a read-only
+    source connection, which cannot attach a writable target for ``COPY FROM DATABASE``.
+
+    The export runs inside a single source transaction so the dumped tables form a consistent
+    point-in-time image, and the data streams through Parquet on disk (no whole-table in-memory
+    materialization). The intermediate export directory is removed once the import completes."""
+    export_dir = out_db.with_name(out_db.name + ".export")
+    if export_dir.exists():
+        shutil.rmtree(export_dir)
+    export_sql = str(export_dir).replace("'", "''")
+    source_con.execute("BEGIN TRANSACTION")
+    try:
+        source_con.execute(f"EXPORT DATABASE '{export_sql}' (FORMAT parquet)")
+    finally:
+        source_con.execute("ROLLBACK")  # read-only snapshot: never commit
+    dest = duckdb.connect(str(out_db))
+    try:
+        dest.execute(f"IMPORT DATABASE '{export_sql}'")
+        dest.execute("CHECKPOINT")
+    finally:
+        dest.close()
+        shutil.rmtree(export_dir, ignore_errors=True)
+
+
 def _snapshot_via_arrow(source_con: duckdb.DuckDBPyConnection, out_db: Path) -> None:
-    """Snapshot table-by-table as Arrow, wrapped in a single source transaction so the copy is
-    internally consistent. The fallback for a read-only source connection (COPY FROM DATABASE
-    cannot attach a writable target through one). Exact column types are preserved; declared
-    constraints - optional join-graph signal - are not."""
+    """Copy every table as Arrow, wrapped in a single source transaction so the copy is internally
+    consistent. Exact column types are preserved but declared constraints are not - the last-resort
+    fallback used only if :func:`_snapshot_via_export_import` fails."""
     dest = duckdb.connect(str(out_db))
     source_con.execute("BEGIN TRANSACTION")
     try:
@@ -833,6 +882,24 @@ def _snapshot_via_arrow(source_con: duckdb.DuckDBPyConnection, out_db: Path) -> 
         dest.close()
 
 
+def _snapshot_read_only_source(
+    source_con: duckdb.DuckDBPyConnection, out_db: Path
+) -> None:
+    """Snapshot a source without attaching a writable target (the read-only case, and the fallback
+    when ``COPY FROM DATABASE`` is unavailable). ``EXPORT``/``IMPORT DATABASE`` reproduces the full
+    schema including declared constraints; a plain Arrow copy is the last-resort fallback if that
+    fails, at the cost of dropping the constraints."""
+    try:
+        _snapshot_via_export_import(source_con, out_db)
+    except Exception as exc:
+        logger.info(
+            "EXPORT/IMPORT snapshot failed (%s); copying data without declared constraints",
+            exc,
+        )
+        _unlink_duckdb_files(out_db)
+        _snapshot_via_arrow(source_con, out_db)
+
+
 def snapshot_source_database(
     source_con: duckdb.DuckDBPyConnection, out_db_path: Path | str
 ) -> None:
@@ -845,25 +912,35 @@ def snapshot_source_database(
     snapshot isolation), so it is internally consistent across all tables - no table can reflect a
     newer commit than another.
 
-    ``COPY FROM DATABASE`` is preferred (it also reproduces declared constraints, extra signal for
-    the join graph); a read-only source connection - which cannot attach a writable target - falls
-    back to a transaction-wrapped Arrow copy. The database is built in a ``.partial`` sibling and
-    atomically renamed into place, so an interrupted snapshot never leaves a complete-looking file
-    behind.
+    ``COPY FROM DATABASE`` is used for a read-write source connection; a read-only one - which
+    cannot attach a writable target - uses ``EXPORT``/``IMPORT DATABASE`` instead. Both paths
+    reproduce the full source schema, including declared PK/UNIQUE/FK constraints (extra signal for
+    the join graph). The database is built in a ``.partial`` sibling and atomically renamed into
+    place, so an interrupted snapshot never leaves a complete-looking file behind.
     """
     out_db = Path(out_db_path)
     out_db.parent.mkdir(parents=True, exist_ok=True)
     tmp_db = out_db.with_name(out_db.name + ".partial")
     _unlink_duckdb_files(tmp_db)
-    try:
-        _snapshot_via_copy_database(source_con, tmp_db)
-    except Exception as exc:
+    if _source_is_read_only(source_con):
+        # A read-only source connection cannot attach a writable target, so COPY FROM DATABASE is
+        # not an option; use EXPORT/IMPORT DATABASE instead of provoking a guaranteed IO Error.
         logger.info(
-            "COPY FROM DATABASE snapshot unavailable (%s); falling back to Arrow snapshot",
-            exc,
+            "Source connection is read-only; snapshotting via EXPORT/IMPORT DATABASE "
+            "(declared constraints are reproduced from the source schema)"
         )
-        _unlink_duckdb_files(tmp_db)
-        _snapshot_via_arrow(source_con, tmp_db)
+        _snapshot_read_only_source(source_con, tmp_db)
+    else:
+        try:
+            _snapshot_via_copy_database(source_con, tmp_db)
+        except Exception as exc:
+            logger.info(
+                "COPY FROM DATABASE snapshot unavailable (%s); "
+                "falling back to EXPORT/IMPORT DATABASE",
+                exc,
+            )
+            _unlink_duckdb_files(tmp_db)
+            _snapshot_read_only_source(source_con, tmp_db)
     tmp_db.with_name(tmp_db.name + ".wal").unlink(missing_ok=True)
     _unlink_duckdb_files(out_db)
     tmp_db.replace(out_db)
