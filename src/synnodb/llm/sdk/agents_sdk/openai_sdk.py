@@ -262,6 +262,28 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
         output = result.final_output
         return output
 
+    async def run_one_off_completion(
+        self, prompt: str, max_tokens: int | None = None
+    ) -> str:
+        # Tool-less, session-less agent reusing self.model - the same
+        # CachedLitellmModel/CachedOpenAIResponsesModel instance already resolved
+        # once (backend, api_base/api_key) for this run, so a one-off check gets
+        # the correct endpoint, response caching, and cost/logging for free instead
+        # of re-deriving them (and only ever supporting litellm) by hand.
+        judge_agent = Agent(
+            name="One-off Judge",
+            model=self.model,
+            instructions="",
+            model_settings=ModelSettings(max_tokens=max_tokens),
+        )
+        result = await Runner.run(
+            judge_agent,
+            input=prompt,
+            max_turns=1,
+            hooks=self.run_stats_collector,
+        )
+        return result.final_output
+
     async def run_agent(
         self,
         prompt: str,

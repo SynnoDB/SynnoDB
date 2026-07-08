@@ -31,6 +31,7 @@ async function poll() {
       // Clear the query chart and surface its "no speedups yet" overlay rather
       // than leaving an empty panel (or stale bars after a source switch).
       updateQueryChart([], {});
+      updateSupervisorSummary([], {});
       // A run can fail before emitting any turn (e.g. during setup); still
       // surface the error rather than sitting on "No data yet".
       updateRunError(meta && meta.error);
@@ -50,6 +51,7 @@ async function poll() {
       updateBarChart(steps, data);
     }
     updateLog(steps, data);
+    updateSupervisorSummary(steps, data);
     document.getElementById('ts-txt').textContent = _tsTxt(meta);
     // Applied last so its red error status wins over the normal "Updated …"
     // header and freezes the timer when the run has aborted.
