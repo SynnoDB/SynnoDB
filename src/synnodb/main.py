@@ -531,6 +531,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
             do_not_cache=args.do_not_cache,
             only_from_cache=args.only_from_cache,
             runtime_tracker=runtime_tracker,
+            run_stats_collector=run_stats_collector,
         )
 
     # #########################

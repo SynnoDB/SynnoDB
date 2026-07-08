@@ -35,6 +35,7 @@ from typing import Any
 
 import duckdb
 
+from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 from synnodb.router.normalize import is_read_only_query
 from synnodb.synth_framework.runtime_tracker import RuntimeTracker
 from synnodb.utils import utils
@@ -83,6 +84,7 @@ class DataInspectTool:
         do_not_cache: bool = False,
         only_from_cache: bool = False,
         runtime_tracker: RuntimeTracker | None = None,
+        run_stats_collector: RunStatsCollector | None = None,
     ):
         self.workload_provider = workload_provider
         self.spec = workload_provider.spec
@@ -101,6 +103,9 @@ class DataInspectTool:
         self.do_not_cache = do_not_cache
         self.only_from_cache = only_from_cache
         self.runtime_tracker = runtime_tracker
+        # Report every inspection to the live dashboard / supervisor activity log, exactly like the
+        # shell / compile / run tools. Optional so the tool still works standalone (e.g. in tests).
+        self.run_stats_collector = run_stats_collector
         if self.cache_dir is not None:
             utils.create_dir_and_set_permissions(self.cache_dir)
 
@@ -119,7 +124,7 @@ class DataInspectTool:
         subset_dir = find_sf_dir(base, self.sf)
         if subset_dir is None:
             raise FileNotFoundError(
-                f"No subset directory for scale factor {self.sf:g} under {base}."
+                f"No subset directory for fraction/SF {self.sf:g} under {base}."
             )
         return subset_dir
 
@@ -174,14 +179,25 @@ class DataInspectTool:
             else max(1, min(int(max_rows), MAX_ROWS_CAP))
         )
         sql = (sql or "").strip()
+        output, status, cached = self._inspect(sql, row_limit)
+        self._report(sql, row_limit, output, status, cached)
+        return output
+
+    def _inspect(self, sql: str, row_limit: int) -> tuple[str, str, bool]:
+        """Resolve one inspection to ``(output_text, status, served_from_cache)``. ``status`` is a
+        short label (``ok`` / ``sql_error`` / ``timeout`` / ``rejected`` / ``empty`` / ``prep_error``)
+        that drives the dashboard row and activity-summary line; the rendered text is what the agent
+        sees. Every outcome returns here (no bare returns) so ``__call__`` reports exactly once."""
         if not sql:
-            return "Error: empty SQL query."
+            return "Error: empty SQL query.", "empty", False
         if not is_read_only_query(sql):
             logger.debug("query_data rejected non-read-only SQL: %s", _short_sql(sql))
             return (
                 "Error: query_data is strictly read-only. Only SELECT / WITH / EXPLAIN / SHOW / "
                 "DESCRIBE / SUMMARIZE / VALUES and read-only PRAGMA statements are allowed; this "
-                "statement would write or change state."
+                "statement would write or change state.",
+                "rejected",
+                False,
             )
 
         hash_payload, cache_path = "", None
@@ -194,7 +210,7 @@ class DataInspectTool:
                 if self.runtime_tracker is not None:
                     self.runtime_tracker.add_skipped_time(cached.runtime_seconds)
                 logger.debug("query_data served from cache: %s", cache_path.name)
-                return cached.output
+                return cached.output, _status_from_output(cached.output), True
             if self.only_from_cache:
                 raise ValueError(
                     "query_data result not found in cache and only_from_cache is enabled. "
@@ -205,7 +221,7 @@ class DataInspectTool:
             con = self._connect()
         except Exception as exc:  # noqa: BLE001 - surface setup failure to the agent as text
             logger.warning("query_data could not prepare data (sf=%g): %s", self.sf, exc)
-            return f"Error preparing data for inspection: {exc}"
+            return f"Error preparing data for inspection: {exc}", "prep_error", False
 
         output, cacheable, elapsed = self._run_and_render(con, sql, row_limit)
         # Cache only deterministic outcomes (a result set or a SQL error - both fixed by the
@@ -219,7 +235,36 @@ class DataInspectTool:
                 ),
                 do_not_cache=self.do_not_cache,
             )
-        return output
+        # A non-cacheable outcome is the wall-clock timeout; everything else is a result set or a
+        # deterministic SQL error, both classified from the rendered text.
+        status = "timeout" if not cacheable else _status_from_output(output)
+        return output, status, False
+
+    def _report(
+        self, sql: str, row_limit: int, output: str, status: str, cached: bool
+    ) -> None:
+        """Surface this inspection to the live dashboard and the supervisor activity log, mirroring
+        the shell / compile / run tools. A no-op when no collector is wired (standalone use)."""
+        if self.run_stats_collector is None:
+            return
+        is_error = status != "ok"
+        self.run_stats_collector.log_metrics_callback(
+            {
+                "type": "data_inspect",
+                "data_inspect/sql": sql[:20000],
+                "data_inspect/max_rows": row_limit,
+                "data_inspect/sf": self.sf,
+                "data_inspect/status": status,
+                "data_inspect/error": is_error,
+                "data_inspect/cached": cached,
+                "data_inspect/output": output[:20000],
+                "data_inspect/truncated": len(output) > 20000,
+            },
+            log_and_increment=True,
+        )
+        self.run_stats_collector.add_to_activity_summary(
+            f"Data Inspect Tool called: {status}{' (cached)' if cached else ''}"
+        )
 
     def _run_and_render(
         self, con: duckdb.DuckDBPyConnection, sql: str, row_limit: int
@@ -271,6 +316,13 @@ class DataInspectTool:
             len(column_names),
         )
         return _render_result(column_names, rows, row_limit), True, elapsed
+
+
+def _status_from_output(output: str) -> str:
+    """Classify a rendered inspection result for reporting. A DuckDB error is echoed verbatim as
+    ``SQL error: ...``; everything else that reaches here is a successful result set. Timeouts are
+    classified by the caller (they are not cacheable and never round-trip through this)."""
+    return "sql_error" if output.startswith("SQL error:") else "ok"
 
 
 def _fmt_value(value: Any) -> str:

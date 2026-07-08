@@ -95,7 +95,7 @@ class RunTool:
         cwd: Path,
         dataset_name: str,
         base_parquet_dir: str
-        | Path,  # must contain per scale-factors subdirs: e.g. base_parquet_dir/sf1/, base_parquet_dir/sf10/..., each containing the corresponding parquet files for the scale factor
+        | Path,  # must contain one subdir per subset, each holding that subset's parquet files: the sampling-fraction convention base_parquet_dir/fraction<f>/ (e.g. fraction1, fraction0.02) or the legacy scale-factor convention base_parquet_dir/sf<N>/ (e.g. sf1, sf10). See find_sf_dir.
         db_storage: DBStorage,
         compiler: CachedCompiler,
         run_stats_collector: RunStatsCollector | None,

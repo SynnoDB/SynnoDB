@@ -72,7 +72,20 @@ class WorkloadSpec:
     dataset_name: str  # parquet dir name (e.g. tpch->"tpch", ceb->"imdb")
     # query catalog
     all_query_ids: tuple[str, ...]
-    # scale-factor profile per run mode (BENCHMARK uses benchmark_sf)
+    # Subset-selector profile per run mode (BENCHMARK uses benchmark_sf). The historical name
+    # ``sf`` is kept, but the value is a *polymorphic subset selector*, not always a TPC-H scale
+    # factor: it is the number that picks which subset directory to use under
+    # :meth:`parquet_root` (via :func:`find_sf_dir`). Its meaning depends on how the workload was
+    # produced:
+    #   * Built-in generated workloads (e.g. ``TPCH_SPEC``): a genuine TPC-H scale factor, >= 1
+    #     (``benchmark_sf=20``, ``fast_check_sfs=(1, 2)``), materialized on disk as ``sf<N>/`` by
+    #     the dbgen path.
+    #   * DuckDB-sourced / bring-your-own workloads: a sampling *fraction* in ``(0, 1]`` of the
+    #     frozen source (``fraction1`` = the full snapshot, ``fraction0.02`` = a 2% downscale),
+    #     materialized as ``fraction<f>/`` by the referential downscaler.
+    # So a smaller value is always the cheaper/smaller subset, but the numeric scale differs by
+    # path. Downstream code treats it opaquely (feeds it to ``find_sf_dir``); only the built-in
+    # generation path and dbgen interpret it as a true scale factor.
     benchmark_sf: float
     fast_check_sfs: tuple[float, ...]
     exhaustive_sfs: tuple[float, ...]

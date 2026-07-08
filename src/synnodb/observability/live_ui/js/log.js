@@ -11,6 +11,7 @@ const LOG_TYPE_META = {
   shell:      { label:'Shell',      cls:'lt-shell'     },
   compile:    { label:'Compile',    cls:'lt-compile'   },
   validate:   { label:'Validate',   cls:'lt-validate'  },
+  data_inspect:{ label:'Inspect',   cls:'lt-datainspect'},
   compaction: { label:'Compaction', cls:'lt-compaction'},
 };
 
@@ -27,6 +28,7 @@ function logTruncated(type, d) {
   if (type === 'llm') return !!d['llm/output_truncated'];
   if (type === 'apply_patch') return !!d['apply_patch/truncated'];
   if (type === 'shell') return !!d['shell/truncated'];
+  if (type === 'data_inspect') return !!d['data_inspect/truncated'];
   return false;
 }
 
@@ -62,6 +64,13 @@ function logDesc(type, d) {
   }
   if (type === 'compile') {
     return d['compile/error'] ? 'error' : 'success';
+  }
+  if (type === 'data_inspect') {
+    const status = d['data_inspect/status'] || (d['data_inspect/error'] ? 'error' : 'ok');
+    const cached = d['data_inspect/cached'] ? ' · cached' : '';
+    const sql = String(d['data_inspect/sql'] || '').replace(/\s+/g, ' ').trim();
+    const q = sql.length > 48 ? sql.slice(0, 46) + '…' : sql;
+    return [status, q].filter(Boolean).join(' · ') + cached;
   }
   if (type === 'validate') {
     if (d['validation/compile_error']) return 'compile error';
@@ -99,6 +108,14 @@ function logBody(type, d) {
     const parts = [];
     if (cmds && cmds.length) parts.push('$ ' + cmds.join('\n$ '));
     if (out && out.trim())   parts.push(out);
+    return parts.join('\n\n') || '(no output)';
+  }
+  if (type === 'data_inspect') {
+    const sql = d['data_inspect/sql'];
+    const out = d['data_inspect/output'];
+    const parts = [];
+    if (sql && sql.trim()) parts.push('SQL:\n' + sql);
+    if (out && out.trim()) parts.push('Result:\n' + out);
     return parts.join('\n\n') || '(no output)';
   }
   const skip = new Set(['type','turn','prompt_idx','agent_name','current_prompt','current_prompt_descriptor']);

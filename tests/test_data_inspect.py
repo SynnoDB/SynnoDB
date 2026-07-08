@@ -321,3 +321,78 @@ def test_factory_invokes_tool(tmp_path):
 
     out = asyncio.run(ft.on_invoke_tool(None, '{"sql": "SELECT count(*) AS n FROM orders"}'))
     assert "200" in out
+
+
+class _FakeCollector:
+    """Captures the reporting calls the live dashboard / supervisor rely on, without the real
+    turn-accounting machinery of RunStatsCollector."""
+
+    def __init__(self):
+        self.metrics: list[dict] = []
+        self.activity: list[str] = []
+
+    def log_metrics_callback(self, metrics, log_and_increment=False):
+        assert log_and_increment is True
+        self.metrics.append(metrics)
+
+    def add_to_activity_summary(self, entry):
+        self.activity.append(entry)
+
+
+def _reporting_tool(tmp_path, **kwargs):
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    collector = _FakeCollector()
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        run_stats_collector=collector,
+        **kwargs,
+    )
+    return tool, collector
+
+
+def test_successful_inspection_is_reported_to_live_ui(tmp_path):
+    """Every inspection must surface to the live dashboard (a metrics row of type data_inspect)
+    and the supervisor activity log, exactly like the shell / compile / run tools."""
+    tool, collector = _reporting_tool(tmp_path)
+    tool("SELECT count(*) AS n FROM orders")
+
+    assert len(collector.metrics) == 1
+    row = collector.metrics[0]
+    assert row["type"] == "data_inspect"
+    assert row["data_inspect/status"] == "ok"
+    assert row["data_inspect/error"] is False
+    assert row["data_inspect/cached"] is False
+    assert "SELECT count(*)" in row["data_inspect/sql"]
+    assert collector.activity == ["Data Inspect Tool called: ok"]
+
+
+def test_error_and_rejected_inspections_are_reported(tmp_path):
+    """A SQL error and a rejected write both still report - flagged as errors so the dashboard row
+    reads as a failure rather than going silent."""
+    tool, collector = _reporting_tool(tmp_path)
+
+    tool("SELECT * FROM does_not_exist")
+    tool("DROP TABLE orders")
+    tool("")
+
+    statuses = [m["data_inspect/status"] for m in collector.metrics]
+    assert statuses == ["sql_error", "rejected", "empty"]
+    assert all(m["data_inspect/error"] is True for m in collector.metrics)
+    assert collector.activity == [
+        "Data Inspect Tool called: sql_error",
+        "Data Inspect Tool called: rejected",
+        "Data Inspect Tool called: empty",
+    ]
+
+
+def test_cache_hit_is_reported_as_cached(tmp_path):
+    """A cache hit is still an inspection the user should see - reported with cached=True so the
+    row is labelled, and the runtime credited back exactly as before."""
+    tool, collector = _reporting_tool(tmp_path, cache_dir=tmp_path / "cache")
+    tool("SELECT count(*) AS n FROM orders")
+    tool("SELECT count(*) AS n FROM orders")
+
+    assert [m["data_inspect/cached"] for m in collector.metrics] == [False, True]
+    assert collector.activity[-1] == "Data Inspect Tool called: ok (cached)"
