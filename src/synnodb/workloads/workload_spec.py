@@ -46,6 +46,23 @@ SUBSET_DUCKDB_FILENAME = "subset.duckdb"
 
 
 @dataclass(frozen=True)
+class DuckDBSubsetSource:
+    """Everything :meth:`OLAPWorkloadProvider.prepare` needs to lazily downscale a DuckDB-sourced
+    workload's fractional subsets from the frozen source, on demand at run start. Carried on the
+    spec as plain data (no downscaler import here); ``None`` for built-ins and plain BYO-parquet.
+
+    ``frozen_source_path`` is the immutable image every subset derives from - the
+    ``.source_snapshot.duckdb`` taken from a live connection, or the caller's read-only ``.duckdb``
+    file for a static source. ``sql_by_id`` is the raw workload SQL (its JOINs are the primary
+    signal for the FK-preserving join graph)."""
+
+    frozen_source_path: str
+    sql_by_id: dict[str, str]
+    join_relationships: list | None
+    whole_table_threshold: int
+
+
+@dataclass(frozen=True)
 class WorkloadSpec:
     """Everything the framework needs to drive an arbitrary OLAP workload."""
 
@@ -86,6 +103,10 @@ class WorkloadSpec:
     # so no parquet touches disk (in-memory only). ``ServeFrom.PARQUET`` -> the classic
     # ``<table>.parquet`` subset layout.
     serve_from: ServeFrom = ServeFrom.PARQUET
+    # Inputs for lazily downscaling this workload's fractional subsets in
+    # ``OLAPWorkloadProvider.prepare`` (from the frozen source, at run start). None for built-ins
+    # and plain BYO-parquet, whose subsets are already materialized on disk.
+    duckdb_source: "DuckDBSubsetSource | None" = None
     # Scale factor at which the multi-threading stage runs its large-scale correctness /
     # performance check. None means the framework picks a sensible default.
     large_check_sf: float | None = None

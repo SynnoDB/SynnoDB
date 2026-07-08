@@ -82,6 +82,19 @@ def _register(name, managed_root, source_db, *, serve_from):
         con.close()
 
 
+def _prepare(managed_root, name):
+    """Trigger the lazy downscaling the same way a synthesis run's start does: build the provider
+    and call ``prepare``, materializing the fractional subsets from the frozen source."""
+    prov = OLAPWorkloadProvider(
+        benchmark=name,
+        base_parquet_dir=managed_root,
+        db_storage=DBStorage.IN_MEMORY,
+        query_ids=["1"],
+    )
+    prov.prepare()
+    return prov
+
+
 # --------------------------------------------------------------------- allowed data sources
 def test_duckdb_source_allowed_in_memory_only():
     assert DataSource.DUCKDB in allowed_data_sources(System.DUCKDB, DBStorage.IN_MEMORY)
@@ -100,15 +113,19 @@ def test_native_registration_materializes_subset_duckdb(tmp_path, source_db):
     assert spec.serve_from == ServeFrom.DUCKDB
     assert spec.fast_check_sfs == (0.2,)
     assert spec.benchmark_sf == 1.0
-    # downscaled subset is a real subset.duckdb; the benchmark subset is a zero-copy symlink to source
+    # Sync materializes only the benchmark subset (a zero-copy symlink to the source); the
+    # downscaled fractional subset is lazy and not on disk yet.
     downscaled = managed / "fraction0.2" / "subset.duckdb"
     full = managed / "fraction1" / "subset.duckdb"
-    assert downscaled.exists() and not downscaled.is_symlink()
     assert full.is_symlink() and full.resolve() == source_db.resolve()
-    # no parquet was written
-    assert not list(managed.rglob("*.parquet"))
-    # schema derived from the subset.duckdb
+    assert not downscaled.exists()
+    # schema is derived from the benchmark subset, which exists right after sync
     assert "CREATE TABLE lineitem" in spec.schema()
+
+    # prepare() downscales the fractional subset on demand: a real subset.duckdb, no parquet.
+    _prepare(managed, "nat_reg")
+    assert downscaled.exists() and not downscaled.is_symlink()
+    assert not list(managed.rglob("*.parquet"))
 
 
 def test_benchmark_subset_is_frozen_snapshot(tmp_path, source_db):
@@ -230,15 +247,19 @@ def test_reuse_existing_subsets_reuses_unchanged_live_source(tmp_path):
             con.close()
 
     v1 = reg().dataset_version
+    # Build the fractional subset lazily, then drop a sentinel inside its dir.
+    _prepare(managed, "reuse_test")
     sentinel = managed / "fraction0.2" / "_sentinel"
     sentinel.write_text("keep")
 
-    # Re-registering an unchanged live source reuses verbatim: same fingerprint, sentinel survives.
+    # Re-registering an unchanged live source reuses verbatim: no re-snapshot, no fractional clear,
+    # same fingerprint - the sentinel survives.
     v2 = reg().dataset_version
     assert v2 == v1
     assert sentinel.exists()
 
-    # Changing the source moves the fingerprint and forces a full rebuild (sentinel is gone).
+    # Changing the source moves the fingerprint and forces a re-snapshot that clears the stale
+    # fractional subsets (sentinel is gone); prepare would rebuild them from the new snapshot.
     grow = duckdb.connect(str(src))
     grow.execute(
         "INSERT INTO lineitem SELECT i AS l_id, (i % 200) AS l_orderkey, "
@@ -251,8 +272,9 @@ def test_reuse_existing_subsets_reuses_unchanged_live_source(tmp_path):
 
 
 def test_live_source_rebuilds_without_reuse_flag(tmp_path):
-    """Without ``reuse_existing_subsets`` a live source rebuilds every run even when unchanged: the
-    default freezes a new snapshot and re-downscales, so a sentinel in a subset dir does not survive."""
+    """Without ``reuse_existing_subsets`` a live source re-snapshots every run even when unchanged:
+    the default freezes a new snapshot and clears the fractional subsets (rebuilt lazily), so a
+    sentinel in a subset dir does not survive."""
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
 
     src = tmp_path / "src.duckdb"
@@ -277,10 +299,113 @@ def test_live_source_rebuilds_without_reuse_flag(tmp_path):
             con.close()
 
     reg()
+    _prepare(managed, "no_reuse_test")
     sentinel = managed / "fraction0.2" / "_sentinel"
     sentinel.write_text("keep")
     reg()
-    assert not sentinel.exists()  # rebuilt from a fresh snapshot despite the unchanged source
+    # re-snapshot clears the fractional subsets despite the unchanged source; prepare rebuilds lazily
+    assert not sentinel.exists()
+
+
+def test_sync_snapshots_only_no_fractional_downscale(tmp_path):
+    """Sync freezes a snapshot and materializes only the full benchmark subset; the fractional
+    rungs are not downscaled until a run's ``prepare`` asks for them. The snapshot is retained (not
+    deleted) because the lazy downscaler reads from it."""
+    from synnodb.workloads.byo_workload import register_workload_from_duckdb
+
+    src = tmp_path / "src.duckdb"
+    _make_source(src)
+    managed = tmp_path / "managed"
+    con = duckdb.connect(str(src))
+    try:
+        register_workload_from_duckdb(
+            name="snap_only",
+            con=con,
+            queries_json=_QUERIES,
+            managed_root=managed,
+            downscale_fractions=(0.2,),
+            whole_table_threshold=10,
+            serve_from=ServeFrom.DUCKDB,
+            source_db_path=str(src),
+            source_is_static=False,
+        )
+    finally:
+        con.close()
+
+    assert (managed / "fraction1" / "subset.duckdb").is_symlink()
+    assert (managed / ".source_snapshot.duckdb").exists()
+    assert not (managed / "fraction0.2").exists()
+
+
+def test_reingest_after_synthesis_does_not_downscale(tmp_path):
+    """Re-ingesting (re-syncing) never runs the downscaler: sync only re-snapshots and clears the
+    stale fractional subsets, leaving them absent until the next run's ``prepare`` rebuilds them."""
+    from synnodb.workloads.byo_workload import register_workload_from_duckdb
+
+    src = tmp_path / "src.duckdb"
+    _make_source(src)
+    managed = tmp_path / "managed"
+
+    def reg():
+        con = duckdb.connect(str(src))
+        try:
+            register_workload_from_duckdb(
+                name="reingest",
+                con=con,
+                queries_json=_QUERIES,
+                managed_root=managed,
+                downscale_fractions=(0.2,),
+                whole_table_threshold=10,
+                serve_from=ServeFrom.DUCKDB,
+                source_db_path=str(src),
+                source_is_static=False,
+            )
+        finally:
+            con.close()
+
+    reg()
+    _prepare(managed, "reingest")  # a run downscales the fractional subset
+    assert (managed / "fraction0.2" / "subset.duckdb").exists()
+
+    reg()  # re-ingest: re-snapshots and clears the fractional subset, but does NOT downscale
+    assert not (managed / "fraction0.2").exists()
+
+
+def test_prepare_is_idempotent_and_rebuilds_incomplete_subset(tmp_path, source_db):
+    """``prepare`` skips fractions already present (idempotent, cheap to call every run) and
+    rebuilds one whose artifact is missing (an interrupted / partial build)."""
+    managed = tmp_path / "managed"
+    _register("prep_idem", managed, source_db, serve_from=ServeFrom.DUCKDB)
+    subset = managed / "fraction0.2" / "subset.duckdb"
+
+    _prepare(managed, "prep_idem")
+    assert subset.exists()
+    mtime = subset.stat().st_mtime_ns
+
+    _prepare(managed, "prep_idem")  # already present -> not rebuilt
+    assert subset.stat().st_mtime_ns == mtime
+
+    subset.unlink()  # simulate an incomplete subset dir (the artifact is gone)
+    _prepare(managed, "prep_idem")  # rebuilt on demand
+    assert subset.exists()
+
+
+def test_prepare_noop_when_no_duckdb_source():
+    """A workload whose subsets are already on disk (built-ins, plain BYO-parquet) carries no
+    ``DuckDBSubsetSource``, so ``prepare`` returns immediately and materializes nothing."""
+    from types import SimpleNamespace
+
+    fake = SimpleNamespace(spec=SimpleNamespace(duckdb_source=None))
+    assert OLAPWorkloadProvider.prepare(fake) is None
+
+
+def test_parquet_schema_available_after_sync(tmp_path, source_db):
+    """Parquet-mode schema is derived from the benchmark subset (``fraction1``), which exists right
+    after sync even though the fractional subsets are lazy."""
+    managed = tmp_path / "managed"
+    spec = _register("parq_schema", managed, source_db, serve_from=ServeFrom.PARQUET)
+    assert not (managed / "fraction0.2").exists()
+    assert "CREATE TABLE lineitem" in spec.schema()
 
 
 def test_native_spec_subset_files_and_ram_check(tmp_path, source_db):
@@ -377,6 +502,7 @@ def test_duckdb_registration_normalizes_param_keys(tmp_path):
 def test_native_subset_duckdb_joins_non_vacuous(tmp_path, source_db):
     managed = tmp_path / "managed"
     _register("nat_join", managed, source_db, serve_from=ServeFrom.DUCKDB)
+    _prepare(managed, "nat_join")
     subset_db = managed / "fraction0.2" / "subset.duckdb"
     con = duckdb.connect(str(subset_db), read_only=True)
     try:
@@ -402,6 +528,7 @@ def test_provider_native_emits_duckdb_data_source(tmp_path, source_db):
         db_storage=DBStorage.IN_MEMORY,
         query_ids=["1"],
     )
+    prov.prepare()
     on_disk = dict(prov._datasets_on_disk())
     assert "fraction0.2" in on_disk and "fraction1" in on_disk
 
@@ -469,6 +596,10 @@ def test_oracle_native_matches_parquet(tmp_path, source_db):
     managed_parquet = tmp_path / "parquet"
     _register("ora_native", managed_native, source_db, serve_from=ServeFrom.DUCKDB)
     _register("ora_parquet", managed_parquet, source_db, serve_from=ServeFrom.PARQUET)
+    # The oracle reads the fractional subset directly, not through produce_workload - materialize
+    # the lazy subsets first (both the native and the parquet fallback root).
+    _prepare(managed_native, "ora_native")
+    _prepare(managed_parquet, "ora_parquet")
 
     sql = (
         "SELECT count(*) AS n, sum(l.l_amt) AS amt FROM lineitem l "

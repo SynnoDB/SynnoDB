@@ -221,6 +221,53 @@ class OLAPWorkloadProvider(WorkloadProvider):
         )
         return RamCheck.measure(label, paths)
 
+    def prepare(self) -> None:
+        """Lazily downscale any fractional subsets this workload needs but does not yet have.
+
+        For a DuckDB-sourced workload the spec carries a :class:`DuckDBSubsetSource` describing how
+        to downscale from the frozen source. Sync materializes only the full ``fraction1`` benchmark
+        subset; the fractional fast-check rungs are built here, on demand at run start, from that
+        retained snapshot - so a plain re-ingest never re-downscales. Idempotent: fractions already
+        present (and current) are skipped, so calling it every run is cheap. A no-op for built-ins
+        and plain BYO-parquet, whose subsets are already on disk (``duckdb_source is None``)."""
+        source = self.spec.duckdb_source
+        if source is None:
+            return
+
+        # A subset dir left from a different source version is stale; rebuild every needed fraction
+        # in that case. On the happy path sync keeps the manifest and spec versions equal, so this
+        # falls through to the plain presence check below.
+        from synnodb.workloads.byo_workload import (
+            materialize_duckdb_subsets,
+            read_manifest_dataset_version,
+        )
+
+        stale = (
+            self.spec.dataset_version is not None
+            and read_manifest_dataset_version(self.base_parquet_dir)
+            != self.spec.dataset_version
+        )
+
+        missing: list[float] = []
+        for sf in sorted(f for f in self._candidate_sfs() if f < 1.0):
+            sf_dir = find_sf_dir(self.base_parquet_dir, sf)
+            present = sf_dir is not None and all(
+                p.exists() for p in self.spec.subset_files(sf_dir)
+            )
+            if stale or not present:
+                missing.append(sf)
+        if not missing:
+            return
+
+        logger.info(
+            "Preparing workload %s: downscaling fractional subsets %s on demand",
+            self.spec.name,
+            ", ".join(f"{f:g}" for f in missing),
+        )
+        materialize_duckdb_subsets(
+            source, missing, self.base_parquet_dir, self.spec.serve_from
+        )
+
     def _candidate_sfs(self) -> set[float]:
         """Every scale factor the workload could load across its run modes: the
         per-mode ladders, the (possibly overridden) benchmark SF, and the
@@ -261,6 +308,11 @@ class OLAPWorkloadProvider(WorkloadProvider):
         num_threads: int,
         core_ids: list[int] | None,
     ) -> list[QueryBatch]:
+        # Ensure lazily-downscaled subsets exist before any fraction is resolved below. Idempotent
+        # and cheap once present; a safety net for entry points that build a provider without going
+        # through main()'s run-start prepare() (benchmark CLI, optimize, publish-zip).
+        self.prepare()
+
         if query_ids is None or len(query_ids) == 0:
             queries_to_generate = self.query_ids
         else:

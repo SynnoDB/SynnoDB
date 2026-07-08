@@ -151,6 +151,14 @@ class WorkloadProvider:
         insufficient."""
         return None
 
+    def prepare(self) -> None:
+        """Materialize any run-time data artifacts this workload needs before a run - e.g. lazily
+        downscaled fractional subsets built on demand from a frozen source. Called once at run
+        start (and idempotently guarded on the run-time path). Default no-op; subclasses that
+        derive their data lazily override it. Building nothing here keeps the derivation off the
+        ingestion/registration path so a plain re-ingest never re-downscales."""
+        return None
+
     @abstractmethod
     def get_placeholders_fn(self):
         raise NotImplementedError("Subclasses must implement get_placeholders_fn")

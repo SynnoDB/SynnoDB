@@ -453,7 +453,12 @@ class SynnoDB:
 
     def check_ram_for_sf(self, sf: float) -> RamCheck:
         """Whether the host has enough available RAM to serve this driver's workload
-        at scale factor ``sf`` fully in memory."""
+        at scale factor ``sf`` fully in memory.
+
+        For a DuckDB-sourced workload only the full benchmark subset (``sf=1.0``) exists right
+        after ``sync_from_duckdb``; the fractional fast-check subsets are downscaled lazily at the
+        first synthesis run, so ``check_ram_for_sf(<fraction>)`` raises until a run has materialized
+        that fraction. ``check_ram_for_sf(1.0)`` always works."""
         from synnodb.workloads.workload_spec import find_sf_dir, get_workload_spec
 
         spec = get_workload_spec(self.config.workload.value)
@@ -486,17 +491,20 @@ class SynnoDB:
     ):
         """Register a workload straight from a live DuckDB connection - no pre-scaled parquet.
 
-        The caller owns a DuckDB connection (or a ``.duckdb`` file path); SynnoDB reads its
-        schema, tables, and queries, then derives the run's subsets by **FK-preserving
-        downscaling** (§6): the full dataset is the benchmark subset and each fraction in
-        ``downscale_fractions`` becomes a referentially-closed fast-check rung whose joins still
-        produce rows. The connection is only read - nothing is copied back into it.
+        The caller owns a DuckDB connection (or a ``.duckdb`` file path); SynnoDB reads its schema,
+        tables, and queries and **snapshots** the dataset - it does not downscale here. Sync only
+        freezes the source and materializes the full benchmark subset (``fraction1``); each fraction
+        in ``downscale_fractions`` becomes a referentially-closed fast-check rung (**FK-preserving
+        downscaling**, §6) that is built **lazily from the snapshot at the first synthesis run**
+        (``OLAPWorkloadProvider.prepare``). So re-ingesting after synthesis - calling this again when
+        the caller's data changed - just re-snapshots and never re-downscales. The connection is only
+        read; nothing is copied back into it.
 
         The caller may keep working on their database in parallel. A live connection is frozen into
         a consistent point-in-time snapshot SynnoDB owns before anything is read from it, and every
-        subset (benchmark included) is derived from that immutable image - so writes the caller
-        makes after this call never perturb the run. A ``.duckdb`` path is opened read-only and, as
-        a static source nothing writes, read in place.
+        subset (benchmark and the lazily-built rungs) is derived from that immutable image - so
+        writes the caller makes after this call never perturb the run. A ``.duckdb`` path is opened
+        read-only and, as a static source nothing writes, read in place.
 
             import duckdb, synnodb
             conn = duckdb.connect("tpch.duckdb")
@@ -525,21 +533,22 @@ class SynnoDB:
                 read-only file for a path, or the snapshot SynnoDB owns for a live connection -
                 never the caller's live database, so the framework's later read-only opens cannot
                 collide with a read-write handle the caller may still hold.
-            reuse_existing_subsets: skip re-snapshotting and re-downscaling a *live* connection when
-                a materialization for an unchanged source already exists on disk (no effect on a
-                ``.duckdb`` path, which is static and already reuses when current). The live source
-                is fingerprinted in place and its subsets are reused only when that fingerprint -
-                schema, per-table row counts, join graph, fractions, threshold, format and DuckDB
-                version - still matches; any change rebuilds. Enable it to make re-running the same
-                notebook cheap; leave it off (default) to always rebuild from a fresh snapshot.
+            reuse_existing_subsets: skip re-**snapshotting** a *live* connection when a benchmark
+                subset for an unchanged source already exists on disk (no effect on a ``.duckdb``
+                path, which is static and already reuses when current). The live source is
+                fingerprinted in place and reused only when that fingerprint - schema, per-table row
+                counts, join graph, fractions, threshold, format and DuckDB version - still matches;
+                any change re-snapshots. This governs snapshot reuse, not downscaling (which is
+                always lazy): enable it to make re-running the same notebook cheap; leave it off
+                (default) to always re-snapshot from fresh data.
             set_as_workload: point this driver's config at the new workload (default True).
 
         Returns the registered :class:`~synnodb.workloads.workload_spec.WorkloadSpec`.
 
-        Subsets are materialized under
-        ``<data_dir>/workloads/<name>/<dataset>_parquet/fraction<f>/`` (a ``subset.duckdb`` for
-        ``serve_from="duckdb"``, ``<table>.parquet`` files for ``"parquet"``) and the factory +
-        DuckDB oracle run against them.
+        The benchmark subset is materialized at sync under
+        ``<data_dir>/workloads/<name>/<dataset>_parquet/fraction1/`` (a ``subset.duckdb`` for
+        ``serve_from="duckdb"``, ``<table>.parquet`` files for ``"parquet"``); the fractional
+        ``fraction<f>/`` rungs appear there at the first run, downscaled from the retained snapshot.
         """
         import duckdb as _duckdb
 

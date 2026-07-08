@@ -34,6 +34,7 @@ from synnodb.workloads.query_params import (
     substitute,
 )
 from synnodb.workloads.workload_spec import (
+    DuckDBSubsetSource,
     WorkloadSpec,
     register_workload,
     subset_dirname,
@@ -485,6 +486,7 @@ def _register_static_workload(
     dataset_version: str | None = None,
     schema_factory: "Callable[[], str] | None" = None,
     serve_from: ServeFrom = ServeFrom.PARQUET,
+    duckdb_source: "DuckDBSubsetSource | None" = None,
 ) -> WorkloadSpec:
     """Shared builder: turn an ``{id: sql}`` map + a subset root into a registered workload.
     Schema is derived from the parquet subset (or supplied via ``schema_factory`` for DuckDB-native
@@ -571,6 +573,7 @@ def _register_static_workload(
         base_parquet_dir=parquet_dir,
         dataset_version=dataset_version,
         serve_from=serve_from,
+        duckdb_source=duckdb_source,
     )
     register_workload(spec)
     return spec
@@ -618,6 +621,18 @@ def _duckdb_dataset_version(
 # built from. Reused only when it still matches, so a changed source/params/algorithm rebuilds.
 _SUBSET_MANIFEST = ".synno_dataset.json"
 
+
+def read_manifest_dataset_version(managed_root: str | Path) -> str | None:
+    """The ``dataset_version`` recorded in the subset manifest under ``managed_root``, or None if
+    there is no readable manifest. Lets the lazy downscaler (:meth:`OLAPWorkloadProvider.prepare`)
+    treat fractional subsets left from a different source version as stale and rebuild them."""
+    manifest = Path(managed_root) / _SUBSET_MANIFEST
+    try:
+        return json.loads(manifest.read_text()).get("dataset_version")
+    except (OSError, ValueError):
+        return None
+
+
 # The frozen point-in-time copy of a live source connection, kept under ``managed_root``. Every
 # subset is derived from it, and a DuckDB-native benchmark subset symlinks it, so the caller may
 # keep writing to their own database in parallel without perturbing the run.
@@ -664,14 +679,6 @@ def _static_source(
         snap_con.close()
 
 
-def _remove_source_snapshot(managed_root: Path) -> None:
-    """Delete the frozen source snapshot (and its WAL) once nothing references it - i.e. after a
-    parquet materialization, which copies rows out rather than symlinking the snapshot."""
-    snap = managed_root / _SOURCE_SNAPSHOT
-    snap.unlink(missing_ok=True)
-    snap.with_name(snap.name + ".wal").unlink(missing_ok=True)
-
-
 def _subset_artifacts(
     managed_root: Path, fraction: float, serve_from: ServeFrom, tables: list[str]
 ) -> list[Path]:
@@ -682,17 +689,19 @@ def _subset_artifacts(
     return [out_dir / f"{t}.parquet" for t in tables]
 
 
-def _materialization_is_current(
+def _benchmark_is_current(
     managed_root: Path,
     dataset_version: str,
-    scale_factors: tuple[float, ...],
     serve_from: ServeFrom,
     tables: list[str],
 ) -> bool:
-    """True iff a prior materialization under ``managed_root`` was built from ``dataset_version``
-    and every subset artifact it should have is present - so it can be reused verbatim. A missing
-    manifest, a mismatched version (source/params/algorithm changed), or any missing artifact (a
-    partial or interrupted build) all return False so the caller rebuilds from scratch."""
+    """True iff the benchmark subset (``fraction1``, the full data) under ``managed_root`` was
+    built from ``dataset_version`` and all its artifacts are present - so it can be reused verbatim
+    (no re-snapshot, no rebuild). A missing manifest, a mismatched version (source/params/algorithm
+    changed), or a missing/partial benchmark artifact all return False so the caller rebuilds. Only
+    the benchmark subset is materialized eagerly at sync; the fractional rungs are built lazily by
+    :meth:`OLAPWorkloadProvider.prepare`, so this checks ``fraction1`` alone rather than every
+    fraction."""
     manifest = managed_root / _SUBSET_MANIFEST
     if not manifest.exists():
         return False
@@ -703,9 +712,7 @@ def _materialization_is_current(
     if recorded != dataset_version:
         return False
     return all(
-        art.exists()
-        for f in scale_factors
-        for art in _subset_artifacts(managed_root, f, serve_from, tables)
+        art.exists() for art in _subset_artifacts(managed_root, 1.0, serve_from, tables)
     )
 
 
@@ -722,6 +729,52 @@ def _clear_managed_subsets(managed_root: Path) -> None:
             ):
                 shutil.rmtree(child, ignore_errors=True)
     (managed_root / _SUBSET_MANIFEST).unlink(missing_ok=True)
+
+
+def materialize_duckdb_subsets(
+    source: DuckDBSubsetSource,
+    fractions: list[float],
+    managed_root: Path,
+    serve_from: ServeFrom,
+) -> None:
+    """Downscale ``fractions`` of the frozen source into ``managed_root/fraction<f>/`` on demand -
+    the lazy counterpart to the benchmark subset materialized at sync time. Invoked from
+    :meth:`OLAPWorkloadProvider.prepare`, never from the registration/ingestion path (so a plain
+    re-ingest never re-downscales).
+
+    Each requested fraction's directory is cleared first, so a leftover ``.partial`` or a
+    half-written subset from an interrupted build cannot trip ``copy_subset_to_duckdb``'s
+    exists-guard; the downscaler's own ``.partial`` + atomic rename then makes each final artifact
+    all-or-nothing. The frozen source is opened read-only - the caller may still be writing their
+    own database in parallel."""
+    import shutil
+
+    import duckdb
+
+    from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
+        ReferentialDownscaler,
+    )
+
+    if not fractions:
+        return
+    con = duckdb.connect(source.frozen_source_path, read_only=True)
+    try:
+        downscaler = ReferentialDownscaler(
+            con,
+            sql_by_id=source.sql_by_id,
+            join_relationships=source.join_relationships,
+            whole_table_threshold=source.whole_table_threshold,
+        )
+        for fraction in fractions:
+            out_dir = managed_root / subset_dirname(fraction)
+            shutil.rmtree(out_dir, ignore_errors=True)
+            logger.info("Downscaling subset fraction=%g on demand", fraction)
+            if serve_from == ServeFrom.DUCKDB:
+                downscaler.copy_subset_to_duckdb(fraction, out_dir / "subset.duckdb")
+            else:
+                downscaler.copy_subset_to_parquet(fraction, out_dir)
+    finally:
+        con.close()
 
 
 def register_workload_from_duckdb(
@@ -741,32 +794,39 @@ def register_workload_from_duckdb(
     source_is_static: bool = False,
     reuse_existing_subsets: bool = False,
 ) -> WorkloadSpec:
-    """Register a workload sourced from a DuckDB connection, deriving the subsets by FK-preserving
-    downscaling instead of taking pre-scaled parquet (the connection-sourced sibling of
-    :func:`register_workload_from_json`).
+    """Register a workload sourced from a DuckDB connection, deriving the fast-check subsets by
+    FK-preserving downscaling instead of taking pre-scaled parquet (the connection-sourced sibling
+    of :func:`register_workload_from_json`).
+
+    Registration only **snapshots** the source and materializes the full ``fraction1`` benchmark
+    subset. The fractional downscaled rungs (``downscale_fractions``) are **not** built here - they
+    are downscaled lazily from the retained snapshot at the first synthesis run
+    (:meth:`OLAPWorkloadProvider.prepare`, driven by the :class:`DuckDBSubsetSource` carried on the
+    spec). So a plain re-ingest never re-downscales; it only re-snapshots.
 
     The source is frozen before anything is read from it. A caller-supplied *live* connection may
     be written to in parallel (the notebook flow: ``conn = duckdb.connect(path)`` stays open and
     the user keeps working), so a consistent point-in-time snapshot is copied into
     ``<managed_root>/.source_snapshot.duckdb`` first (:func:`snapshot_source_database`) and the
-    benchmark subset plus every rung are derived from that immutable image - the caller's ongoing
-    writes never perturb the run. A SynnoDB-owned read-only path (``source_is_static``) is already
-    frozen and is read in place, with no snapshot copy.
+    benchmark subset plus every lazily-built rung are derived from that immutable image - the
+    caller's ongoing writes never perturb the run. The snapshot is **retained** for the workload's
+    lifetime (both storage formats) because the lazy downscaler reads from it. A SynnoDB-owned
+    read-only path (``source_is_static``) is already frozen and read in place, with no snapshot copy;
+    the lazy downscaler reads that file directly.
 
     Two subset representations, selected by ``serve_from``:
 
     * ``ServeFrom.DUCKDB`` (the default): the referential downscaler
       (:mod:`synnodb.workloads.dataset.custom_scaler.duckdb_downscale`) materializes each
-      downscaled subset as ``<managed_root>/fraction<f>/subset.duckdb``. The full ``fraction1``
-      benchmark subset is a zero-copy symlink to the frozen source (the caller's read-only file,
-      or the snapshot we own) - never the caller's live database - so the framework's later
-      read-only opens never collide with a read-write handle the caller may still hold. No parquet
-      touches disk: the candidate engine ingests the subset over the shm plane and the DuckDB
-      oracle materializes flat tables from it.
+      downscaled subset as ``<managed_root>/fraction<f>/subset.duckdb`` (lazily). The full
+      ``fraction1`` benchmark subset is a zero-copy symlink to the frozen source (the caller's
+      read-only file, or the snapshot we own) - never the caller's live database - so the
+      framework's later read-only opens never collide with a read-write handle the caller may still
+      hold. No parquet touches disk: the candidate engine ingests the subset over the shm plane and
+      the DuckDB oracle materializes flat tables from it.
     * ``ServeFrom.PARQUET``: the same downscaler writes
-      ``<managed_root>/fraction<f>/<table>.parquet`` and the workload is registered exactly like a
-      bring-your-own parquet workload, so the whole factory + oracle run against it unchanged. The
-      snapshot of a live source is only a staging step here and is deleted afterward.
+      ``<managed_root>/fraction<f>/<table>.parquet`` (lazily) and the workload is registered exactly
+      like a bring-your-own parquet workload, so the whole factory + oracle run against it unchanged.
 
     The caller's database is only read; nothing is written back.
 
@@ -787,21 +847,22 @@ def register_workload_from_duckdb(
             symlink target for the DuckDB benchmark subset); ignored for a live source, which is
             snapshotted instead.
         source_is_static: True when ``con`` is a SynnoDB-owned read-only handle to a file nothing
-            writes for the workload's lifetime - the source is read in place and a prior
-            materialization may be reused. False (the default) treats ``con`` as a live connection
-            the caller may keep writing to: it is snapshotted to a frozen image first and always
-            rebuilt from that image, unless ``reuse_existing_subsets`` opts into reuse.
-        reuse_existing_subsets: opt in to reusing an on-disk materialization for a *live* source
-            (it has no effect on a static source, which already reuses when current). The source is
-            fingerprinted in place - a cheap read-only introspection of its schema, per-table row
-            counts and inferred join graph - and the existing subsets are reused verbatim only when
-            that fingerprint matches the one they were built from, so no snapshot is taken and no
-            downscaling runs. Any change that would alter which rows a subset contains (a new/renamed
+            writes for the workload's lifetime - the source is read in place and a prior benchmark
+            subset may be reused. False (the default) treats ``con`` as a live connection the caller
+            may keep writing to: it is snapshotted to a frozen image first and re-snapshotted every
+            run, unless ``reuse_existing_subsets`` opts into snapshot reuse.
+        reuse_existing_subsets: opt in to skip re-snapshotting a *live* source when a benchmark
+            subset for an unchanged source already exists on disk (no effect on a static source,
+            which already reuses when current). The source is fingerprinted in place - a cheap
+            read-only introspection of its schema, per-table row counts and inferred join graph - and
+            the snapshot + benchmark subset are reused only when that fingerprint matches the one they
+            were built from. Any change that would alter which rows a subset contains (a new/renamed
             table or column, a different row count, a changed join graph, fractions, threshold,
-            storage format, or DuckDB version) fails the guard and rebuilds. This trades the
-            always-fresh guarantee for speed: a source mutated in a way that leaves the fingerprint
-            unchanged (row *values* edited without changing counts or schema) would be served stale,
-            so enable it only when re-registering a source you know is unchanged.
+            storage format, or DuckDB version) fails the guard and re-snapshots. This governs
+            snapshot reuse, not downscaling (which is always lazy). It trades the always-fresh
+            guarantee for speed: a source mutated so its fingerprint is unchanged (row *values*
+            edited without changing counts or schema) would be served stale, so enable it only when
+            re-registering a source you know is unchanged.
     """
     from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
         ReferentialDownscaler,
@@ -828,41 +889,56 @@ def register_workload_from_duckdb(
     managed_root = Path(managed_root)
     managed_root.mkdir(parents=True, exist_ok=True)
 
-    # Reuse guard: an on-disk materialization is reused verbatim only when its recorded
-    # ``dataset_version`` still matches the source's - the fingerprint of everything that decides
-    # which rows a subset contains (schema, row counts, join graph, fractions, threshold, format,
-    # DuckDB version). A static source is fingerprinted in place; a live source is normally
-    # re-snapshotted and rebuilt every run, but ``reuse_existing_subsets`` lets the caller probe the
-    # *live* connection in place and skip the snapshot + downscale entirely when it is unchanged.
-    resolved_tables: list[str]
-    dataset_version: str
-    reused = False
-    if source_is_static or reuse_existing_subsets:
-        probe = ReferentialDownscaler(
-            con,
-            sql_by_id=sql_by_id,
-            join_relationships=join_relationships,
-            whole_table_threshold=whole_table_threshold,
+    if source_is_static and source_db_path is None:
+        raise ValueError(
+            "a static DuckDB source requires its file path (source_db_path)."
         )
-        resolved_tables = tables or list(probe.schema.tables)
-        dataset_version = _duckdb_dataset_version(
-            probe, subsets, whole_table_threshold, serve_from
-        )
-        reused = _materialization_is_current(
-            managed_root, dataset_version, scale_factors, serve_from, resolved_tables
-        )
-        if reused:
-            logger.info(
-                "Subsets under %s already current (dataset_version=%s); skipping materialization",
-                managed_root,
-                dataset_version,
-            )
 
-    if not reused:
-        # Freeze the source, then read the schema, join graph, and every subset from that frozen
-        # image only - never from a database the caller might still be mutating. A live source that
-        # changed between the in-place probe and this freeze is re-fingerprinted here, so the
-        # manifest always describes exactly what was built.
+    # Probe the source in place (a cheap read-only introspection of schema, row counts and the
+    # inferred join graph) to resolve the tables and the ``dataset_version`` fingerprint. Needed in
+    # every branch: it drives the reuse decision and is recorded on the spec + manifest.
+    probe = ReferentialDownscaler(
+        con,
+        sql_by_id=sql_by_id,
+        join_relationships=join_relationships,
+        whole_table_threshold=whole_table_threshold,
+    )
+    resolved_tables: list[str] = tables or list(probe.schema.tables)
+    dataset_version: str = _duckdb_dataset_version(
+        probe, subsets, whole_table_threshold, serve_from
+    )
+
+    # Sync only freezes the source and materializes the full ``fraction1`` benchmark subset - the
+    # fractional rungs are downscaled lazily by ``OLAPWorkloadProvider.prepare`` at run start, so a
+    # plain re-ingest never re-downscales. The benchmark subset is reused verbatim (no re-snapshot,
+    # no rebuild) only when it is current: a static source is always eligible; a live source only
+    # when the caller opts into ``reuse_existing_subsets`` and the frozen snapshot still exists. A
+    # live source without the flag is always re-snapshotted so its data is fresh. A rebuild clears
+    # any already-materialized fractional subsets so ``prepare`` re-derives them from the new
+    # snapshot; reuse keeps them.
+    benchmark_current = _benchmark_is_current(
+        managed_root, dataset_version, serve_from, resolved_tables
+    )
+    snapshot_present = (managed_root / _SOURCE_SNAPSHOT).exists()
+    if source_is_static:
+        reused = benchmark_current
+    elif reuse_existing_subsets:
+        reused = benchmark_current and snapshot_present
+    else:
+        reused = False
+
+    if reused:
+        logger.info(
+            "Benchmark subset under %s already current (dataset_version=%s); skipping snapshot + "
+            "materialization",
+            managed_root,
+            dataset_version,
+        )
+    else:
+        # Freeze the source, then read the schema/join graph and materialize the benchmark subset
+        # from that frozen image only - never from a database the caller might still be mutating. A
+        # live source that changed between the in-place probe and this freeze is re-fingerprinted
+        # here, so the manifest always describes exactly what was built.
         with _static_source(con, source_db_path, source_is_static, managed_root) as (
             static_path,
             static_con,
@@ -878,48 +954,54 @@ def register_workload_from_duckdb(
                 downscaler, subsets, whole_table_threshold, serve_from
             )
 
+            # Clear every fraction dir (including any stale fractional subsets) and rebuild only the
+            # benchmark subset; the fractional rungs are rebuilt lazily from the fresh snapshot.
             _clear_managed_subsets(managed_root)
-            for fraction in scale_factors:
-                out_dir = managed_root / subset_dirname(fraction)
-                logger.info(
-                    "Creating %s",
-                    "benchmark subset (full data)"
-                    if fraction >= 1.0
-                    else f"downscale subset fraction={fraction:g}",
-                )
-                if serve_from == ServeFrom.DUCKDB:
-                    subset_db = out_dir / "subset.duckdb"
-                    if fraction >= 1.0:
-                        # The benchmark subset is the full frozen source itself - a zero-copy
-                        # symlink to it. ``static_path`` is the caller's read-only file (static
-                        # source) or the snapshot we own (live source); both are immutable for the
-                        # workload's lifetime, so read-only opens of the symlink never collide.
-                        out_dir.mkdir(parents=True, exist_ok=True)
-                        subset_db.symlink_to(Path(static_path).resolve())
-                    else:
-                        downscaler.copy_subset_to_duckdb(fraction, subset_db)
-                else:
-                    downscaler.copy_subset_to_parquet(fraction, out_dir)
+            out_dir = managed_root / subset_dirname(1.0)
+            logger.info("Creating benchmark subset (full data)")
+            if serve_from == ServeFrom.DUCKDB:
+                # The benchmark subset is the full frozen source itself - a zero-copy symlink to it.
+                # ``static_path`` is the caller's read-only file (static source) or the snapshot we
+                # own (live source); both are immutable for the workload's lifetime, so read-only
+                # opens of the symlink never collide with a handle the caller may still hold.
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / "subset.duckdb").symlink_to(Path(static_path).resolve())
+            else:
+                downscaler.copy_subset_to_parquet(1.0, out_dir)
             (managed_root / _SUBSET_MANIFEST).write_text(
                 json.dumps(
                     {"dataset_version": dataset_version, "serve_from": serve_from.value}
                 )
             )
 
-        # A parquet materialization copies the rows out, so a live source's frozen snapshot was only
-        # a staging step and is now unreferenced - drop it. A DuckDB-native benchmark subset symlinks
-        # the snapshot and must keep it.
-        if not source_is_static and serve_from == ServeFrom.PARQUET:
-            _remove_source_snapshot(managed_root)
+    # The frozen source the lazy downscaler reads from: the snapshot we own for a live source (kept
+    # for the workload's lifetime, unlike before - ``prepare`` derives fractional subsets from it),
+    # or the caller's read-only file for a static source.
+    frozen_source_path = (
+        str(Path(source_db_path).resolve())
+        if source_is_static
+        else str((managed_root / _SOURCE_SNAPSHOT).resolve())
+    )
+    duckdb_source = DuckDBSubsetSource(
+        frozen_source_path=frozen_source_path,
+        sql_by_id=sql_by_id,
+        join_relationships=join_relationships,
+        whole_table_threshold=whole_table_threshold,
+    )
 
-    schema_factory: "Callable[[], str] | None" = None
+    # Schema is derived from the ``fraction1`` benchmark subset, which always exists after sync
+    # (the fractional subsets are lazy and may not exist yet). The schema is identical across
+    # subsets - downscaling preserves it - so this is exact.
     if serve_from == ServeFrom.DUCKDB:
-        smallest_subset_db = (
-            managed_root / subset_dirname(scale_factors[0]) / "subset.duckdb"
-        )
+        benchmark_subset_db = managed_root / subset_dirname(1.0) / "subset.duckdb"
 
         def schema_factory() -> str:
-            return schema_ddl_from_duckdb(smallest_subset_db, resolved_tables)
+            return schema_ddl_from_duckdb(benchmark_subset_db, resolved_tables)
+
+    else:
+
+        def schema_factory() -> str:
+            return schema_ddl_from_parquet(managed_root, resolved_tables, 1.0)
 
     return _register_static_workload(
         name=name,
@@ -934,4 +1016,5 @@ def register_workload_from_duckdb(
         dataset_version=dataset_version,
         schema_factory=schema_factory,
         serve_from=serve_from,
+        duckdb_source=duckdb_source,
     )

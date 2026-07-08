@@ -223,7 +223,9 @@ def test_small_dims_and_disconnected_kept_whole(synthetic_con, downscaler):
 
 
 def test_determinism(synthetic_con, downscaler):
-    first = {t.table: t.kept_rows for t in downscaler.materialize_temp_subset(0.2).tables}
+    first = {
+        t.table: t.kept_rows for t in downscaler.materialize_temp_subset(0.2).tables
+    }
     second = {
         t.table: t.kept_rows for t in downscaler.materialize_temp_subset(0.2).tables
     }
@@ -274,10 +276,12 @@ def test_copy_subset_to_parquet_roundtrip(synthetic_con, downscaler, tmp_path):
 
 # --------------------------------------------------------------------------- registration
 def test_register_workload_from_duckdb_end_to_end(tmp_path):
-    """A workload registered straight from a DuckDB connection materializes fraction subsets and
-    exposes a small-first ladder whose downscaled rung has non-vacuous joins (the fallback
-    path the whole factory + oracle run against)."""
+    """A workload registered straight from a DuckDB connection snapshots the full data eagerly and
+    downscales the fractional rung lazily at run start (the provider's ``prepare``), yielding a
+    subset whose joins are non-vacuous (the fallback path the whole factory + oracle run against)."""
+    from synnodb.utils.utils import DBStorage
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
+    from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
     from synnodb.workloads.workload_spec import find_sf_dir
 
     con = duckdb.connect()
@@ -298,6 +302,19 @@ def test_register_workload_from_duckdb_end_to_end(tmp_path):
     assert spec.fast_check_sfs == (0.2,)
     assert set(spec.tables) == {"lineitem", "orders", "customer", "nation", "island"}
     assert spec.dataset_version is not None
+
+    # Sync materializes only the full benchmark subset; the fractional rung is downscaled lazily.
+    assert find_sf_dir(managed, 1.0) is not None
+    assert find_sf_dir(managed, 0.2) is None
+
+    # The provider downscales the fractional subset on demand at run start.
+    prov = OLAPWorkloadProvider(
+        benchmark="synthetic_byo",
+        base_parquet_dir=managed,
+        db_storage=DBStorage.IN_MEMORY,
+        query_ids=["1"],
+    )
+    prov.prepare()
 
     fraction_dir = find_sf_dir(managed, 0.2)
     full_dir = find_sf_dir(managed, 1.0)
@@ -373,6 +390,9 @@ def test_factory_provider_resolves_fraction_subsets(tmp_path):
         db_storage=DBStorage.IN_MEMORY,
         query_ids=["1"],
     )
+    # Only the benchmark subset exists after sync; the fractional rung is built lazily by prepare().
+    assert "fraction0.2" not in dict(prov._datasets_on_disk())
+    prov.prepare()
     # every candidate subset present on disk is discovered under its fraction directory
     on_disk = dict(prov._datasets_on_disk())
     assert "fraction0.2" in on_disk and "fraction1" in on_disk

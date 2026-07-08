@@ -190,6 +190,12 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     else:
         raise Exception(f"Unsupported usecase: {usecase}")
 
+    # Materialize any run-time data artifacts the workload derives lazily before the run proceeds -
+    # e.g. a DuckDB-sourced workload downscales its fractional fast-check subsets from the frozen
+    # snapshot here, on demand, rather than at sync/ingest time. No-op for workloads whose data is
+    # already on disk. Runs before the RAM preflight so the subsets it will load are present.
+    workload_provider.prepare()
+
     # Fail fast before the snapshotter / workspace prepare / any LLM call if the
     # host cannot fit the largest dataset the run would load into memory. The
     # provider owns what (if anything) gets loaded; None means nothing to gate.
