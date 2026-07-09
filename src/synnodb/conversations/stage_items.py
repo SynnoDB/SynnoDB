@@ -39,6 +39,11 @@ class StageItem:
     """
 
     benchmark_sf: float | Literal["large_check"] | None = None
+    # Per-item thread-count override for the item's WHOLE span (LLM turns, its
+    # post_stage_validate hook, any post-stage benchmark). None => the run default.
+    # 0 => all usable cores minus one (see resolve_target_cores). The engine applies
+    # it on entry and restores the previous value afterwards (also on exception).
+    threads: int | None = None
 
 
 # --------------------------------- markers -----------------------------------
@@ -133,6 +138,7 @@ class StageConfig(StageItem, ABC):
     descriptor: Optional[str] = None  # human-readable stage description for the LLM
     max_turns: Optional[int] = None  # max turns for this stage (None = no limit)
     benchmark_sf: float | Literal["large_check"] | None = None  # see StageItem
+    threads: int | None = None  # per-stage thread-count override; see StageItem
 
     def __post_init__(self):
         if self.descriptor is None:

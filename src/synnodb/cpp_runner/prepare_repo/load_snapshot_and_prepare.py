@@ -2,7 +2,6 @@ import logging
 from dataclasses import dataclass
 
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
-    Parallelism,
     PrepareFeatures,
     assemble_prepare_features,
     prepare_metadata_content,
@@ -24,12 +23,11 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class PrepareResult:
     """What prepare produced: the artifacts string (a cache-key input via
-    ``framework_code_content``), the concrete features that were applied
-    ("auto" resolved), and the parallelism recorded in the workspace metadata."""
+    ``framework_code_content``) and the concrete features that were applied
+    ("auto" resolved)."""
 
     artifacts_str: str
     features: PrepareFeatures
-    parallelism: Parallelism
 
 
 def prepare_repo_and_load_snapshot(
@@ -37,7 +35,6 @@ def prepare_repo_and_load_snapshot(
     snapshot: str | None,
     features: PrepareFeatures | None,
     prepare_workspace_provider: PrepareWorkspace,
-    parallelism: Parallelism,
     do_not_cache: bool = True,
     conv_name: str | None = None,
     only_from_cache: bool = False,
@@ -52,8 +49,7 @@ def prepare_repo_and_load_snapshot(
     fully.
 
     ``features=None`` replays the restored snapshot's own record: the requested
-    features and the run's parallelism are read from the workspace metadata
-    (the checkSfCorrectness case). ``parallelism`` is ignored on that path.
+    features are read from the workspace metadata (the checkSfCorrectness case).
     """
     source_features: PrepareFeatures | None = None
     if snapshot is None:
@@ -83,13 +79,10 @@ def prepare_repo_and_load_snapshot(
         # The restored workspace is the authoritative record of what its files
         # were prepared with; the delta against it drives tracked-vs-untracked
         # writes below.
-        source_features, source_parallelism = read_prepare_metadata(
-            snapshotter.working_dir
-        )
+        source_features = read_prepare_metadata(snapshotter.working_dir)
         if features is None:
             # replay: reuse the source workspace's own prepare record
             features = source_features
-            parallelism = source_parallelism
 
     delete_result_files(workspace_path=snapshotter.working_dir)
 
@@ -115,7 +108,7 @@ def prepare_repo_and_load_snapshot(
     # hashed to a .pkl file, and that file stores the prepared snapshot commit.
     # Git-excluded read-only support files are not part of the cache key because
     # they are refreshed on every prepare and cannot be restored from git.
-    metadata_content = prepare_metadata_content(features, parallelism)
+    metadata_content = prepare_metadata_content(features)
     tracked_artifacts_str = "".join(
         part.tracked_artifacts_str for part in prepared_parts
     )
@@ -157,7 +150,7 @@ def prepare_repo_and_load_snapshot(
     else:
         for part in prepared_parts:
             prepare_workspace_provider.write_prepared_files(part)
-        write_prepare_metadata(snapshotter.working_dir, features, parallelism)
+        write_prepare_metadata(snapshotter.working_dir, features)
         if not do_not_cache:
             assert not snapshotter.do_not_snapshot, (
                 "prepare_repo_and_load_snapshot was asked to cache, but "
@@ -178,6 +171,4 @@ def prepare_repo_and_load_snapshot(
                     do_not_cache=False,
                 )
 
-    return PrepareResult(
-        artifacts_str=artifacts_str, features=features, parallelism=parallelism
-    )
+    return PrepareResult(artifacts_str=artifacts_str, features=features)

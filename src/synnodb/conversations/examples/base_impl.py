@@ -154,6 +154,10 @@ def build(ctx: ConvContext) -> list[StageItem]:
         ValidateOff(),
         PromptStage(
             descriptor="base impl planner",
+            # Base-impl generation is designed and validated single-threaded (the engine's
+            # parallel_for/reduce take their serial fast path at CORE_IDS=1); the target
+            # serving parallelism is exercised later by ValidateMultiThreadedStage / Benchmark.
+            threads=1,
             get_prompt=lambda _exec_settings, _rt: base_planner_prompt(
                 queries_path=queries_path,
                 num_queries=len(ctx.query_ids),
@@ -180,6 +184,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
         ),
         PromptStage(
             descriptor="base impl storage",
+            threads=1,  # serial generation (see base impl planner)
             get_prompt=lambda _exec_settings, _rt: base_impl_storage(
                 builder_path=builder_path,
                 query_impl_path=query_impl_path,
@@ -235,6 +240,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
             [
                 PromptStage(
                     descriptor=f"base impl Q{query_id}",
+                    threads=1,  # serial generation (see base impl planner)
                     get_prompt=functools.partial(
                         _base_impl_prompt,
                         idx=i,
@@ -250,6 +256,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 ),
                 PromptStage(
                     descriptor=f"base impl exec & validate Q{query_id}",
+                    threads=1,  # serial generation (see base impl planner)
                     get_prompt=functools.partial(
                         _exec_validate_prompt,
                         qid=query_id,
@@ -278,6 +285,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
         [
             PromptStage(
                 descriptor="base check correctness all",
+                threads=1,  # serial generation (see base impl planner); MT gate follows
                 get_prompt=lambda _exec_settings, _rt: (
                     base_check_correctness_all_prompt(
                         run_tool_mode=RunToolMode.EXHAUSTIVE,
@@ -297,6 +305,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
             ),
             PromptStage(
                 descriptor="run all queries and fix any errors",
+                threads=1,  # serial generation (see base impl planner); MT gate follows
                 get_prompt=lambda _exec_settings, _rt: base_run_all_and_fix_prompt(
                     run_tool_mode=RunToolMode.EXHAUSTIVE,
                     query_impl_path=query_impl_path,
@@ -378,7 +387,7 @@ class OptimizeBuildStage(DynamicStageConfig):
         num_threads: int,
         max_turns: int | None = None,
     ):
-        super().__init__(descriptor="optimize ingest", max_turns=max_turns)
+        super().__init__(descriptor="optimize ingest", max_turns=max_turns, threads=1)
         self.builder_path_cpp = builder_path_cpp
         self.builder_path_hpp = builder_path_hpp
         self.run_tool = run_tool
@@ -457,7 +466,7 @@ class ValidateAndFixStage(DynamicStageConfig):
         persistent_storage: bool,
         max_turns: int | None = None,
     ):
-        super().__init__(descriptor="exec & validate", max_turns=max_turns)
+        super().__init__(descriptor="exec & validate", max_turns=max_turns, threads=1)
         self.executed = False
         self.run_tool = run_tool
         self.query_impl_path = query_impl_path
@@ -494,21 +503,19 @@ class ValidateAndFixStage(DynamicStageConfig):
 class ValidateMultiThreadedStage(DynamicStageConfig):
     """Per-query multi-threaded correctness gate for the finished base impl.
 
-    The storage/base/optim stages all validate serially (CORE_IDS=1), so the
-    engine's ``parallel_for`` / ``parallel_reduce`` paths take the serial fast
-    path throughout generation - a data race only surfaces once the engine is
-    served at ``config={'threads': N}``. This stage walks the queries and runs each
-    one at ``len(core_ids)`` (>1) pinned cores: a query still correct there costs no
-    LLM turn, while one whose result diverges gets a fix loop scoped to that query,
-    re-validated at that thread count after every edit and giving up loudly after
-    ``MAX_FIX_ATTEMPTS``. The thread count is always ``len(core_ids)`` - the count
-    the engine actually runs at - not a separately tracked number.
+    The base-impl generation stages opt down to ``threads=1``, so the engine's
+    ``parallel_for`` / ``parallel_reduce`` paths take the serial fast path throughout
+    generation - a data race only surfaces once the engine is served at
+    ``config={'threads': N}``. This gate runs at the run's DEFAULT thread count (the
+    serving target, ``len(core_ids)``): it walks the queries and runs each one there -
+    a query still correct costs no LLM turn, while one whose result diverges gets a fix
+    loop scoped to that query, re-validated at that thread count after every edit and
+    giving up loudly after ``MAX_FIX_ATTEMPTS``.
 
-    Entering this stage switches the run tool into multi-threaded mode (like the
-    VALIDATE_ON/OFF run-tool toggles) for this stage and everything after it, so both
-    this gate's checks AND the LLM's own ``run`` calls during a fix execute at the
-    serving parallelism - a single-threaded run cannot reproduce, or confirm the fix
-    of, a data race.
+    Because the generation stages only override ``threads`` for their own span, the run
+    tool is already back at its default here (no override needed), so both this gate's
+    checks AND the LLM's own ``run`` calls during a fix execute at the serving
+    parallelism - a single-threaded run cannot reproduce, or confirm the fix of, a race.
 
     The walk is forward-only: once a query passes it is not re-checked. A fix is
     normally scoped to that query's own file; a fix that instead edits the shared
@@ -544,12 +551,11 @@ class ValidateMultiThreadedStage(DynamicStageConfig):
         if num_threads <= 1:
             return None
 
-        # Switch the run tool to multi-threaded so this gate's runs and the LLM's own
-        # `run` calls both execute at the serving parallelism (single source of truth
-        # for the thread count from here on: run_tool.parallelism/core_ids).
-        self.run_tool.parallelism = True
-        self.run_tool.core_ids = self.core_ids
-
+        # This gate runs at the run's DEFAULT thread count (the serving target). The
+        # preceding base-impl generation stages opt down to threads=1, so by the time we
+        # reach here the run tool is back at its default, and both this gate's runs and
+        # the LLM's own `run` calls execute multi-threaded - a single-threaded run cannot
+        # reproduce, or confirm the fix of, a data race.
         while self.idx < len(self.query_ids):
             qid = self.query_ids[self.idx]
             # force_live: never replay QueryValidator's cache here. A data race is

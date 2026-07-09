@@ -121,11 +121,14 @@ def _engine_extra_env(
     threads = threads_override if threads_override is not None else manifest.threads
     if threads is None:
         return {}
-    from synnodb.utils.core_utils import core_ids_to_env, get_cores_for_current_machine
+    from synnodb.utils.core_utils import core_ids_to_env, resolve_target_cores
 
-    _, core_ids = get_cores_for_current_machine(
-        leave_core_0_out=True, allow_hyperthreading=True, ncores_to_use=threads
-    )
+    # Resolve through the SAME helper the factory (RunTool.run_worker) uses, so serving and
+    # generation agree on the mapping - crucially including threads=0 => all usable cores
+    # minus one, and None => 1. (The old get_cores_for_current_machine(ncores_to_use=0) call
+    # returned an empty core set here, so config={'threads': 0} silently served the engine
+    # single-threaded instead of on every core.)
+    _, core_ids = resolve_target_cores(threads)
     return {"CORE_IDS": core_ids_to_env(core_ids)}
 
 

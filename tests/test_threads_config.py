@@ -48,6 +48,48 @@ def test_resolve_target_cores_semantics():
         resolve_target_cores(-1)
 
 
+# ── RunTool: one canonical num_threads (default + per-stage override) ──────
+
+
+def _make_run_tool(num_threads: int):
+    from unittest.mock import MagicMock
+
+    from synnodb.tools.run import RunTool
+    from synnodb.utils.utils import DBStorage
+
+    return RunTool(
+        workload_provider=MagicMock(),
+        cwd="/tmp",
+        dataset_name="d",
+        base_parquet_dir="/tmp",
+        db_storage=DBStorage.IN_MEMORY,
+        compiler=MagicMock(),
+        run_stats_collector=None,
+        num_threads=num_threads,
+    )
+
+
+def test_run_tool_num_threads_default_and_stage_override():
+    rt = _make_run_tool(8)
+    # The run-wide default is what SynnoDB(threads=N) resolved to.
+    assert rt.num_threads == 8
+    # A per-stage override wins for its span (set by the engine's _threads_override) ...
+    rt.set_active_num_threads(1)
+    assert rt.num_threads == 1
+    # ... and clearing it (what the engine does after the stage + its post-stage hook)
+    # restores the default.
+    rt.set_active_num_threads(None)
+    assert rt.num_threads == 8
+
+
+def test_run_tool_has_no_legacy_parallelism_state():
+    # The bool+list encoding is gone: the thread count is one int, and concrete cores
+    # are derived at the pin boundary inside run_worker.
+    rt = _make_run_tool(4)
+    assert not hasattr(rt, "parallelism")
+    assert not hasattr(rt, "core_ids")
+
+
 # ── Prompt guidance (the planner/base writer are told the target) ──────────
 
 
