@@ -289,10 +289,13 @@ class QueryRouter:
                 matched=True,
             )
 
-        # 5b. execute bespoke.
+        # 5b. execute bespoke. The engine returns its own server-side execution time when it has one
+        # (the C++ kernel's `elapsed_ms`, kernel-only - no result serialization or transport). We
+        # prefer that authoritative number for `bespoke_ms`; the external perf_counter is only a
+        # fallback for engines with no internal timer (e.g. the in-process LocalCallableEngine).
         start = time.perf_counter()
         try:
-            table = binding.engine.run(binding.query_id, placeholders)
+            table, server_ms = binding.engine.run(binding.query_id, placeholders)
         except Exception as exc:  # engine fault must never crash the user's query
             # Surface the FIRST fault per template at WARNING: a registered engine that crashes
             # silently degrades to DuckDB, so without this the operator has no signal that the
@@ -313,7 +316,11 @@ class QueryRouter:
             )
             self._record_failure(binding)
             return self._fallback(trace, f"engine error: {exc!r}", matched=True)
-        trace.bespoke_ms = (time.perf_counter() - start) * 1000.0
+        trace.bespoke_ms = (
+            server_ms
+            if server_ms is not None
+            else (time.perf_counter() - start) * 1000.0
+        )
         trace.routed(binding.template_id)
         self._exec_counts[binding.template_id] = (
             self._exec_counts.get(binding.template_id, 0) + 1
@@ -328,9 +335,11 @@ class QueryRouter:
         if self._should_cross_check(binding.template_id) and conn is not None:
             try:
                 backend = DuckDBBackend(conn.duckdb)
-                start = time.perf_counter()
-                reference = backend.execute_arrow(sql, parameters)
-                trace.duckdb_ms = (time.perf_counter() - start) * 1000.0
+                # Time DuckDB the same way the engine times itself: server-side, kernel-only. The
+                # profiler `latency` (== EXPLAIN ANALYZE's number) excludes the client-side fetch,
+                # matching the engine's `elapsed_ms` boundary - so the recorded speedup is honest.
+                # The same execution yields the Arrow reference we cross-check against.
+                reference, trace.duckdb_ms = backend.execute_arrow_timed(sql, parameters)
             except Exception as exc:
                 # No trusted reference: DuckDB itself failed on the user's query. Do not serve the
                 # engine result unverified - fall back so the caller runs DuckDB and surfaces the

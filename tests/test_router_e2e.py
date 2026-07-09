@@ -129,6 +129,62 @@ def test_trace_reports_cross_check_and_speedup():
     assert dec.trace.bespoke_ms is not None and dec.trace.duckdb_ms is not None
 
 
+def test_duckdb_backend_execute_arrow_timed():
+    # The shared server-side DuckDB timer returns the Arrow result *and* DuckDB's own profiler
+    # latency (the EXPLAIN ANALYZE number) from a single execution, and leaves profiling disabled
+    # so the router's plain fallback path pays no profiling overhead.
+    import duckdb
+
+    from synnodb.router.backend import DuckDBBackend
+
+    raw = duckdb.connect()
+    raw.execute("CREATE TABLE t(a INTEGER)")
+    raw.execute("INSERT INTO t SELECT * FROM range(1000)")
+    backend = DuckDBBackend(raw)
+
+    table, server_ms = backend.execute_arrow_timed("SELECT count(*) AS c FROM t")
+    assert table.column("c").to_pylist() == [1000]  # correct result materialized
+    assert isinstance(server_ms, float) and server_ms >= 0.0  # real server-side latency
+
+    # Profiling was disabled again: the 'json' mode we enabled is undone (DuckDB reports the
+    # disabled setting as NULL/false), so the router's plain fallback path stays unprofiled.
+    assert raw.execute("SELECT current_setting('enable_profiling')").fetchone()[0] not in (
+        "json",
+        "true",
+        True,
+    )
+    # A second call still works (enable/disable is idempotent) and the parameterized path is honored.
+    table2, _ = backend.execute_arrow_timed("SELECT count(*) AS c FROM t WHERE a >= ?", [500])
+    assert table2.column("c").to_pylist() == [500]
+
+
+def test_engine_server_side_time_is_used_for_bespoke_ms():
+    # An engine that reports its own server-side execution time (as the C++ ProcessEngine does via
+    # the kernel's elapsed_ms) has that number recorded as bespoke_ms, in preference to the router's
+    # external wall clock - so the reported speedup reflects pure engine execution, not IPC/Python
+    # overhead. A distinctive sentinel proves the reported time is the engine's, not the wall clock.
+    SENTINEL_MS = 0.000123
+
+    class TimedEngine(LocalCallableEngine):
+        def run(self, query_id, placeholders):
+            table, _ = super().run(query_id, placeholders)
+            return table, SENTINEL_MS
+
+    policy = RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0)
+    con = synnodb.connect(policy=policy, registry=TemplateRegistry())
+    con.duckdb.execute("CREATE TABLE t(a INTEGER, b VARCHAR)")
+    con.duckdb.execute("INSERT INTO t VALUES (1,'x'),(2,'y'),(3,'y'),(4,'z'),(5,'z')")
+    register_engine(
+        con,
+        template_sql=TEMPLATE,
+        engine=TimedEngine("timed", {"1": _correct}),
+        placeholders=[PlaceholderSpec("p0", "INTEGER")],
+    )
+    dec = con.router.route("SELECT count(*) AS c FROM t WHERE a >= 2", None, con)
+    assert dec.routed is True
+    assert dec.trace.bespoke_ms == SENTINEL_MS  # the engine's own time, not the wall clock
+
+
 def test_cross_check_rate_zero_skips_duckdb():
     con, _, _ = _setup(_correct, cross_check_rate=0.0)
     dec = con.router.route("SELECT count(*) AS c FROM t WHERE a >= 2", None, con)

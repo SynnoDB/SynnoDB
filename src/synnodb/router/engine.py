@@ -22,12 +22,28 @@ the binding's canonical (DuckDB) output schema; ``adapt`` turns it into a
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Mapping, Protocol, runtime_checkable
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Mapping,
+    Optional,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 import pyarrow as pa
 
 # A pure function from bound placeholder values to a typed Arrow result.
 QueryFn = Callable[[Mapping[str, Any]], pa.Table]
+
+# What an engine returns from ``run``: the Arrow result, plus its own server-side execution
+# time in milliseconds when it measures one internally (the C++ kernel's ``elapsed_ms``), or
+# ``None`` when it has no internal timer (e.g. the in-process ``LocalCallableEngine``) and the
+# router should time it externally. Mirrors ``DuckDBBackend.execute_arrow_timed`` so the router
+# treats bespoke and DuckDB latencies through one shape.
+TimedTable = Tuple[pa.Table, Optional[float]]
 
 
 @runtime_checkable
@@ -39,8 +55,12 @@ class BespokeEngine(Protocol):
     def health(self) -> bool:
         """Cheap liveness probe; ``False`` makes the router fall back."""
 
-    def run(self, query_id: str, placeholders: Mapping[str, Any]) -> pa.Table:
-        """Execute one registered query with bound placeholder values."""
+    def run(self, query_id: str, placeholders: Mapping[str, Any]) -> TimedTable:
+        """Execute one registered query with bound placeholder values.
+
+        Returns ``(table, server_ms)`` - the Arrow result and the engine's own server-side
+        execution time, or ``None`` when the engine has no internal timer (see ``TimedTable``).
+        """
 
     def load_data(self) -> None:
         """Load this engine's data now so the first query is served warm. A no-op for engines
@@ -70,7 +90,9 @@ class LocalCallableEngine:
     def set_healthy(self, value: bool) -> None:
         self._healthy = value
 
-    def run(self, query_id: str, placeholders: Mapping[str, Any]) -> pa.Table:
+    def run(self, query_id: str, placeholders: Mapping[str, Any]) -> TimedTable:
+        # In-process: no server-side timer distinct from the router's wall clock, so report
+        # None as the server time and let the router record the external perf_counter time.
         fn = self._queries.get(query_id)
         if fn is None:
             raise KeyError(f"engine {self.engine_id!r} has no query {query_id!r}")
@@ -80,7 +102,7 @@ class LocalCallableEngine:
                 f"engine {self.engine_id!r} query {query_id!r} returned "
                 f"{type(table).__name__}, expected pyarrow.Table"
             )
-        return table
+        return table, None
 
     def load_data(self) -> None:  # in-process: data is already resident, no cold start
         pass
