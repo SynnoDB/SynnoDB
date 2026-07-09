@@ -12,7 +12,7 @@ const LOG_TYPE_META = {
   read_file:  { label:'Read',       cls:'lt-read'      },
   shell:      { label:'Shell',      cls:'lt-shell'     },
   compile:    { label:'Compile',    cls:'lt-compile'   },
-  validate:   { label:'Validate',   cls:'lt-validate'  },
+  validate:   { label:'RUN',        cls:'lt-validate'  },
   data_inspect:{ label:'Inspect',   cls:'lt-datainspect'},
   compaction: { label:'Compaction', cls:'lt-compaction'},
 };
@@ -32,7 +32,9 @@ const LOG_FILTERS = {
         || d['data_inspect/cached'] === true                        // data_inspect
         || d['shell/cached'] === true                               // shell
         || d['validation/replayed_from_cache'] === true             // validate
-        || d['compile/cached'] === true;                            // compile
+        || d['compile/cached'] === true                             // compile
+        || d['apply_patch/cached'] === true                         // apply_patch
+        || d['compaction/cached'] === true;                         // compaction
       return state === 'yes' ? fromCache : !fromCache;
     },
   },
@@ -83,14 +85,15 @@ function logDesc(type, d) {
     const failed  = parseJsonField(d['apply_patch/failed']);
     const hasFailed = failed && failed.length;
     const failedStr = hasFailed ? ' ⚠ ' + failed.length + ' failed' : '';
+    const cachedStr = d['apply_patch/cached'] ? ' · cached' : '';
     const delta = (!hasFailed && (added != null || deleted != null))
       ? ' (+' + (added||0) + '/-' + (deleted||0) + ')' : '';
     if (files && files.length) {
       const names = files.map(f => f.split('/').pop());
       const list = names.slice(0,3).join(', ') + (names.length > 3 ? ' +' + (names.length-3) : '');
-      return list + delta + failedStr;
+      return list + delta + failedStr + cachedStr;
     }
-    return 'code change' + delta + failedStr;
+    return 'code change' + delta + failedStr + cachedStr;
   }
   if (type === 'read_file') {
     const path = d['read_file/path'];
@@ -116,14 +119,22 @@ function logDesc(type, d) {
     return [status, q].filter(Boolean).join(' · ') + cached;
   }
   if (type === 'validate') {
-    if (d['validation/compile_error']) return 'compile error';
+    const mode = d['validation/run_mode'];
+    const modeStr = mode ? String(mode) : null;
+    if (d['validation/compile_error']) return [modeStr, 'compile error'].filter(Boolean).join(' · ');
     const queries = parseJsonField(d['validation/query_ids_executed']);
     const trace = d['validation/trace_mode'];
     const qStr = queries && queries.length ? queries.join(', ') : null;
-    const tStr = trace ? 'trace' : (trace === false ? 'no trace' : null);
+    const tStr = trace ? 'trace' : null;
     const c = d['validation/correct'];
-    const result = c === true ? 'correct' : c === false ? 'incorrect' : 'ran';
-    return [result, qStr, tStr].filter(Boolean).join(' · ');
+    const result = c === true ? 'correct ✓' : c === false ? 'incorrect' : 'ran';
+    return [modeStr, qStr, result, tStr].filter(Boolean).join(' · ');
+  }
+  if (type === 'compaction') {
+    const items = d['compaction/output_items'];
+    const itemsStr = items != null ? items + ' items' : null;
+    const cachedStr = d['compaction/cached'] ? 'cached' : null;
+    return [itemsStr, cachedStr].filter(Boolean).join(' · ') || 'compaction';
   }
   return d['agent_name'] || type;
 }

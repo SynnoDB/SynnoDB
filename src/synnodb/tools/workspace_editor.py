@@ -244,6 +244,7 @@ class WorkspaceEditor:
                 cached, "activity_summary_entry", None
             ) or legacy_activity(cached.result_status, cached.result_output)
             self._record_activity_summary(activity_summary_entry)
+            self._run_stats_collector.record_apply_patch_cache_hit()
             logger.debug(f"Apply_patch ({op_type} {path}) replayed from cache")
             return ApplyPatchResult(
                 status=cached.result_status,  # type: ignore[arg-type]
