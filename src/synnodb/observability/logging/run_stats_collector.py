@@ -121,6 +121,11 @@ class RunStatsCollector(RunHooks):
         self.current_agent_config: Optional[dict] = (
             None  # set externally by conversation loop
         )
+        # The run's resolved serving thread count (DuckDB-style config={'threads': N}).
+        # A run-level constant set externally once the driver has resolved it against
+        # this machine; stamped onto every metric row as run/num_threads so it persists
+        # to the metrics table and surfaces as run metadata in the live dashboard.
+        self.num_threads: Optional[int] = None
         self.debug_logger: Optional[DebugLogger] = (
             None  # set externally by the conversation loop (per stage group)
         )
@@ -220,6 +225,10 @@ class RunStatsCollector(RunHooks):
         # Tag every metric row with the active stage so downstream analytics can
         # group by stage generically (instead of matching OLAP prompt substrings).
         metrics["stage"] = self.current_stage_name
+        # Stamp the run's resolved serving thread count so it persists to the
+        # metrics table and can be lifted into the dashboard's run metadata.
+        if self.num_threads is not None:
+            metrics["run/num_threads"] = self.num_threads
 
         # Track total counts per type
         self.total_type_counts[metrics["type"]] += 1
