@@ -148,13 +148,17 @@ def test_duckdb_backend_execute_arrow_timed():
 
     # Profiling was disabled again: the 'json' mode we enabled is undone (DuckDB reports the
     # disabled setting as NULL/false), so the router's plain fallback path stays unprofiled.
-    assert raw.execute("SELECT current_setting('enable_profiling')").fetchone()[0] not in (
+    assert raw.execute("SELECT current_setting('enable_profiling')").fetchone()[
+        0
+    ] not in (
         "json",
         "true",
         True,
     )
     # A second call still works (enable/disable is idempotent) and the parameterized path is honored.
-    table2, _ = backend.execute_arrow_timed("SELECT count(*) AS c FROM t WHERE a >= ?", [500])
+    table2, _ = backend.execute_arrow_timed(
+        "SELECT count(*) AS c FROM t WHERE a >= ?", [500]
+    )
     assert table2.column("c").to_pylist() == [500]
 
 
@@ -182,7 +186,9 @@ def test_engine_server_side_time_is_used_for_bespoke_ms():
     )
     dec = con.router.route("SELECT count(*) AS c FROM t WHERE a >= 2", None, con)
     assert dec.routed is True
-    assert dec.trace.bespoke_ms == SENTINEL_MS  # the engine's own time, not the wall clock
+    assert (
+        dec.trace.bespoke_ms == SENTINEL_MS
+    )  # the engine's own time, not the wall clock
 
 
 def test_cross_check_rate_zero_skips_duckdb():

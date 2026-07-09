@@ -339,7 +339,9 @@ class QueryRouter:
                 # profiler `latency` (== EXPLAIN ANALYZE's number) excludes the client-side fetch,
                 # matching the engine's `elapsed_ms` boundary - so the recorded speedup is honest.
                 # The same execution yields the Arrow reference we cross-check against.
-                reference, trace.duckdb_ms = backend.execute_arrow_timed(sql, parameters)
+                reference, trace.duckdb_ms = backend.execute_arrow_timed(
+                    sql, parameters
+                )
             except Exception as exc:
                 # No trusted reference: DuckDB itself failed on the user's query. Do not serve the
                 # engine result unverified - fall back so the caller runs DuckDB and surfaces the
