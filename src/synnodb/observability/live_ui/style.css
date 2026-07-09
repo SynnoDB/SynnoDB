@@ -86,14 +86,33 @@ body::-webkit-scrollbar-corner,
             padding:2px 7px;border-radius:999px;flex:0 0 auto;white-space:nowrap;}
 .mode-live{background:rgba(34,197,94,.18);color:#22c55e;border:1px solid rgba(34,197,94,.35);}
 .mode-standalone{background:rgba(245,158,11,.15);color:#f59e0b;border:1px solid rgba(245,158,11,.3);}
-#hdr-meta{display:flex;align-items:center;justify-content:center;gap:10px;
-          min-width:0;flex:1 1 auto;color:var(--muted);font-size:11px;
-          overflow:hidden;white-space:nowrap;}
-.hdr-meta-item{display:flex;align-items:center;gap:6px;min-width:0;
-               max-width:32%;padding:4px 8px;border-radius:999px;
-               background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);}
-.hdr-meta-label{text-transform:uppercase;letter-spacing:.5px;color:#93a9c8;flex:0 0 auto;}
-.hdr-meta-item span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#hdr-spacer{flex:1 1 auto;min-width:0;}
+#hdr-model{display:flex;align-items:center;gap:6px;flex:0 1 auto;min-width:0;
+           padding:3px 9px;border-radius:999px;font-size:11px;
+           background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);}
+.hdr-model-label{text-transform:uppercase;letter-spacing:.5px;color:#93a9c8;flex:0 0 auto;}
+#hdr-model-val{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+               color:var(--text);font-weight:600;
+               font-family:'Cascadia Code','Consolas',monospace;}
+
+#hdr-info-wrap{position:relative;flex:0 0 auto;}
+#hdr-info-btn{width:24px;height:24px;padding:0;border:1px solid var(--border);border-radius:50%;
+              background:rgba(255,255,255,.05);color:var(--muted);cursor:pointer;
+              font-size:15px;line-height:1;display:flex;align-items:center;justify-content:center;
+              transition:background .12s,color .12s;}
+#hdr-info-btn:hover,#hdr-info-btn[aria-expanded="true"]{background:rgba(59,110,245,.18);color:var(--accent);}
+#hdr-info-panel{position:absolute;top:calc(100% + 8px);left:0;z-index:200;
+                background:var(--card);border:1px solid var(--border);border-radius:8px;
+                min-width:240px;padding:10px 12px;
+                box-shadow:0 6px 24px rgba(0,0,0,.6);
+                animation:disc-appear .1s ease-out;}
+.hdr-info-title{font-size:10px;text-transform:uppercase;letter-spacing:.6px;
+                color:var(--muted);margin-bottom:8px;}
+.hdr-info-row{display:flex;align-items:center;justify-content:space-between;gap:14px;
+              font-size:12px;padding:3px 0;}
+.hdr-info-label{text-transform:uppercase;letter-spacing:.5px;color:#93a9c8;flex:0 0 auto;}
+.hdr-info-row span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+                              color:var(--text);}
 #hdr:not(.standalone) #hdr-source,
 #hdr:not(.standalone) #reload-btn,
 #hdr:not(.standalone) #hdr-reload-item{display:none;}
@@ -174,9 +193,8 @@ body::-webkit-scrollbar-corner,
 
 @media (max-width: 900px){
   #hdr-title{max-width:180px;overflow:hidden;text-overflow:ellipsis;}
-  .hdr-meta-label{display:none;}
-  #hdr-meta{gap:8px;font-size:10px;}
-  .hdr-meta-item{max-width:30%;}
+  .hdr-model-label{display:none;}
+  #hdr-model{max-width:40%;}
 }
 
 /* ── Layout ──────────────────────────────────────────────────────── */
@@ -191,11 +209,13 @@ body::-webkit-scrollbar-corner,
 .panel-header{
   display:flex;align-items:center;justify-content:space-between;
   min-height:38px;border-bottom:1px solid var(--border);
-  padding:0 8px 0 0;
+  padding:0 8px;
 }
 
 .sb-title{padding:10px 14px;font-size:11px;text-transform:uppercase;
           letter-spacing:.8px;color:var(--muted);white-space:nowrap;}
+/* Keep the title beside the collapse button on the left, actions on the right. */
+#log-panel .panel-header .sb-title{margin-right:auto;padding-left:6px;}
 
 .panel-close{
   border:none;background:none;color:var(--muted);cursor:pointer;
@@ -352,8 +372,18 @@ details.log-entry[open] .log-chevron{transform:rotate(90deg);}
 .log-body pre{margin:0;white-space:pre-wrap;word-break:break-word;font:inherit;color:inherit;}
 
 /* ── Supervisor summary panel (bottom of the Activity Log bar) ─────── */
-#sup-summary-panel{flex-shrink:0;border-top:1px solid var(--border);
-                   padding:10px 14px 12px;background:var(--surface);}
+/* Drag handle sitting on the border between the log list and this panel.
+   Dragging it (see supervisor-summary.js) resizes the supervisor panel. */
+#sup-resizer{flex-shrink:0;height:7px;cursor:row-resize;position:relative;
+             border-top:1px solid var(--border);background:var(--surface);}
+#sup-resizer::before{content:"";position:absolute;left:50%;top:50%;
+             transform:translate(-50%,-50%);width:30px;height:3px;border-radius:3px;
+             background:var(--border);transition:background .12s;}
+#sup-resizer:hover::before,body.sup-resizing #sup-resizer::before{background:var(--accent);}
+body.sup-resizing{cursor:row-resize;user-select:none;}
+#sup-summary-panel{flex-shrink:0;display:flex;flex-direction:column;
+                   max-height:200px;background:var(--surface);
+                   padding:10px 14px 12px;}
 .sup-summary-hdr{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
 .sup-summary-title{font-size:11px;text-transform:uppercase;letter-spacing:.8px;
                    color:var(--muted);white-space:nowrap;flex:1;min-width:0;}
@@ -366,7 +396,7 @@ details.log-entry[open] .log-chevron{transform:rotate(90deg);}
 .sup-nav-btn:disabled{opacity:.3;cursor:not-allowed;}
 .sup-summary-pos{color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums;
                  white-space:nowrap;}
-.sup-summary-body{max-height:180px;overflow-y:auto;}
+.sup-summary-body{flex:1;min-height:0;overflow-y:auto;}
 .sup-summary-text{font-size:12px;line-height:1.5;color:var(--text);
                   white-space:pre-wrap;word-break:break-word;}
 .sup-dev-hints{margin-top:8px;padding:6px 8px;border-radius:6px;
@@ -377,6 +407,17 @@ details.log-entry[open] .log-chevron{transform:rotate(90deg);}
                     margin-top:3px;white-space:pre-wrap;word-break:break-word;}
 
 /* ── Query runtime chart ──────────────────────────────────────────── */
+/* Drag handle between the timeline and the query-runtime chart. Dragging it
+   (see chart-query.js) resizes the query panel: up grows it and shrinks the
+   timeline, down does the reverse. Negative margins tuck it into the flex gap
+   so it doesn't add extra vertical space. */
+#qc-resizer{flex-shrink:0;height:9px;margin:-6px 0;cursor:row-resize;
+            position:relative;z-index:5;}
+#qc-resizer::before{content:"";position:absolute;left:50%;top:50%;
+            transform:translate(-50%,-50%);width:34px;height:3px;border-radius:3px;
+            background:var(--border);transition:background .12s;}
+#qc-resizer:hover::before,body.qc-resizing #qc-resizer::before{background:var(--accent);}
+body.qc-resizing{cursor:row-resize;user-select:none;}
 #query-chart-box{height:210px;background:var(--card);border:1px solid var(--border);
                  border-radius:8px;padding:6px 8px 4px;display:flex;flex-direction:column;
                  flex-shrink:0;}
