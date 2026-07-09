@@ -48,10 +48,9 @@ def test_all_queries_correct_advances_without_prompt():
 
     assert stage.next_prompt() is None
     assert run_tool.run_worker.call_count == 2  # one run per query
-    # The stage flips the run tool to multi-threaded, so both its own checks and the
-    # LLM's `run` calls execute at the serving parallelism (the whole point).
-    assert run_tool.parallelism is True
-    assert run_tool.core_ids == CORE_IDS
+    # The gate runs at the run's DEFAULT thread count (the serving target); the base-impl
+    # generation stages restored the default before this gate, so it sets no override.
+    run_tool.set_active_num_threads.assert_not_called()
     kwargs = run_tool.run_worker.call_args.kwargs
     assert kwargs["mode"] == RunToolMode.EXHAUSTIVE
     assert kwargs["query_ids"] == ["6"]  # last query, checked in isolation
@@ -71,8 +70,6 @@ def test_diverging_query_returns_scoped_fix_prompt_then_advances():
     assert prompt is not None
     assert "query6.cpp" in prompt  # per-query prompt names the offending query file
     assert stage.idx == 1 and stage.fix_attempts == 1
-    assert run_tool.parallelism is True  # run tool switched to multi-threaded
-    assert run_tool.core_ids == CORE_IDS
     assert run_tool.run_worker.call_args.kwargs["query_ids"] == ["6"]
 
     # After the edit, the re-check passes and the stage finishes.

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, fields, replace
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -42,20 +41,11 @@ if TYPE_CHECKING:
     from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 
 PREPARE_METADATA_FILENAME = ".synnodb_prepare.json"
-_METADATA_FORMAT_VERSION = 4
-
-
-class Parallelism(str, Enum):
-    """Whether the generated engine executes queries multi-threaded.
-
-    Recorded in the workspace prepare metadata (and thus in every snapshot), so
-    chained and replayed runs know what execution mode the engine was built
-    for. The ``str`` mixin makes members JSON/W&B-serializable as their value;
-    never rely on truthiness - both members are truthy.
-    """
-
-    SINGLE_THREADED = "single_threaded"
-    MULTI_THREADED = "multi_threaded"
+# Bumped 4 -> 5 when the standalone execution-mode record ("parallelism") was dropped:
+# the thread count is no longer a build-time single/multi enum but the run's canonical
+# num_threads (resolved from SynnoDB(threads=N)), so it is not recorded here. Older (v4)
+# records raise on read and must be re-produced.
+_METADATA_FORMAT_VERSION = 5
 
 
 def _storage_variant(db_storage: DBStorage) -> Literal["in_memory", "ssd"]:
@@ -171,9 +161,7 @@ def assert_resolved(features: PrepareFeatures, doing: str) -> None:
 
 
 # ---------------------------- workspace metadata ------------------------------
-def prepare_metadata_content(
-    features: PrepareFeatures, parallelism: Parallelism
-) -> str:
+def prepare_metadata_content(features: PrepareFeatures) -> str:
     """The workspace's prepare record as a deterministic JSON string.
 
     The features must be resolved (no "auto") so the record states what
@@ -188,16 +176,13 @@ def prepare_metadata_content(
     payload = {
         "features": {k: getattr(features, k) for k in _RECORDED_FEATURES},
         "format_version": _METADATA_FORMAT_VERSION,
-        "parallelism": parallelism.value,
     }
     return json.dumps(payload, sort_keys=True, indent=2) + "\n"
 
 
-def write_prepare_metadata(
-    workspace_dir: Path, features: PrepareFeatures, parallelism: Parallelism
-) -> None:
+def write_prepare_metadata(workspace_dir: Path, features: PrepareFeatures) -> None:
     """Write the workspace's prepare record (see :func:`prepare_metadata_content`)."""
-    content = prepare_metadata_content(features, parallelism)
+    content = prepare_metadata_content(features)
     path = workspace_dir / PREPARE_METADATA_FILENAME
     # Unlink before writing: a hard-killed prior run can leave the file at mode
     # 0444 (see prepare_workspace._write_files), which would fail write_text.
@@ -205,10 +190,8 @@ def write_prepare_metadata(
     path.write_text(content)
 
 
-def read_prepare_metadata(
-    workspace_dir: Path,
-) -> tuple[PrepareFeatures, Parallelism]:
-    """Read the workspace's prepare record: ``(features, parallelism)``.
+def read_prepare_metadata(workspace_dir: Path) -> PrepareFeatures:
+    """Read the workspace's prepare record (the resolved :class:`PrepareFeatures`).
 
     Raises with a clear message when the file is absent or written in an older
     format - such snapshots cannot be chained from; re-run the producing stage
@@ -228,8 +211,7 @@ def read_prepare_metadata(
             f"Unsupported prepare-metadata format_version {version!r} in {path} "
             f"(expected {_METADATA_FORMAT_VERSION})."
         )
-    features = PrepareFeatures(**payload["features"])
-    return features, Parallelism(payload["parallelism"])
+    return PrepareFeatures(**payload["features"])
 
 
 # -------------------------------- interpreter ---------------------------------

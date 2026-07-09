@@ -17,7 +17,6 @@ from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
-    Parallelism,
     features_metadata_dict,
 )
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
@@ -323,7 +322,6 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
             snapshot=args.start_snapshot,
             features=features,
             prepare_workspace_provider=prepare_ws,
-            parallelism=args.needs_parallelism,
             do_not_cache=args.do_not_cache,
             conv_name=args.conv_name,
             only_from_cache=args.only_from_cache,
@@ -331,12 +329,12 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         framework_code_content += prepare_result.artifacts_str
 
     if plan.prepare is None:
-        # Replay stage (checkSfCorrectness): the run's parallelism is the source
-        # run's recorded parallelism, read from the restored workspace metadata.
+        # Replay stage (checkSfCorrectness): the prepare features come from the
+        # restored workspace metadata; the thread count is the run's canonical
+        # target (resolved below), not a build-time record.
         assert prepare_result is not None, (
             "a replay-prepare stage cannot run with --continue_run"
         )
-        args.needs_parallelism = prepare_result.parallelism
 
     if args.log_to_wandb and prepare_result is not None:
         # Mirror the workspace's prepare record into the W&B config - a
@@ -346,7 +344,6 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         wandb.config.update(
             {
                 "prepare_features": features_metadata_dict(prepare_result.features),
-                "parallelism": prepare_result.parallelism.value,
             },
             allow_val_change=True,
         )
@@ -408,16 +405,13 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     # it (run/num_threads), from which the live dashboard lifts it into meta.
     run_stats_collector.num_threads = target_threads
 
-    # Parallelism need (args.needs_parallelism): plan.parallelism, except for
-    # replay stages, where it was overridden above from the source run's recorded
-    # parallelism. The run tool takes it as a bool paired with the pinned cores;
-    # this is the single enum -> bool boundary.
-    if args.needs_parallelism is Parallelism.MULTI_THREADED:
-        parallelism = True
-        core_ids = target_core_ids
-    else:
-        parallelism = False
-        core_ids = None
+    # The RunTool's run-wide DEFAULT thread count is always the resolved serving
+    # target (from SynnoDB(threads=N)). Stages that must run serially - e.g. base-impl
+    # generation, which is designed and validated single-threaded before the final
+    # multi-threaded correctness gate - opt down per stage via the `threads` field
+    # (see the conversation engine's _threads_override), rather than the whole run
+    # defaulting to serial.
+    run_tool_num_threads = target_threads
 
     # cap result CSVs at this size before snapshotting (used by validator and
     # exposed in the LLM cache key via config_kwargs below for cache stability)
@@ -515,8 +509,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         include_mem_budget_for_in_mem_in_hashes=args.include_mem_budget_for_in_mem_in_hashes,
         validate_output_truncation=validate_output_truncate,
         compile_output_truncation=compile_output_truncate,
-        parallelism=parallelism,
-        core_ids=core_ids,
+        num_threads=run_tool_num_threads,
         db_storage=db_storage,
         compiler=compile_tool.compiler,
         # framework code not necessary here: is chained via compile hash
@@ -960,15 +953,6 @@ def run_conv_wrapper(
     args.log_to_wandb = getattr(args, "log_to_wandb", False)
     # The plan identity drives run naming and is logged to W&B.
     args.stage_name = plan.name
-
-    # Whether this run executes queries multi-threaded (a Parallelism enum).
-    # Logged to W&B (as the enum's string value) as a stable, stage-name-independent
-    # property so downstream consumers (e.g. benchmark replay) can tell
-    # multi-threaded runs apart without matching on the user-defined stage
-    # name. For a replay stage (checkSfCorrectness) main() overrides this after
-    # restoring the source snapshot, from the parallelism recorded in the
-    # workspace prepare metadata.
-    args.needs_parallelism = plan.parallelism
 
     # Pre-initialized so the except/finally handlers below stay valid even when a
     # setup step (dependency checks, SDK selection, W&B init) crashes before these

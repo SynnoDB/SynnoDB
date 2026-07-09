@@ -52,6 +52,7 @@ from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.runtime_tracker import RuntimeTracker
 from synnodb.tools.run import RunTool, delete_result_files
 from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils.core_utils import resolve_target_cores
 from synnodb.utils.utils import atomic_write, create_parent_and_set_permissions
 
 logger = logging.getLogger(__name__)
@@ -392,6 +393,30 @@ class Conversation:
         finally:
             provider.set_benchmark_sf(previous)
 
+    @contextmanager
+    def _threads_override(self, item: StageItem):
+        """Run an item's whole span at its ``threads`` count, restoring the previous
+        value afterwards (also on exception). ``threads is None`` => no override.
+
+        The override lives on the shared run tool, so the LLM's own ``run`` calls, the
+        stage's ``post_stage_validate`` hook, and any post-stage benchmark all execute at
+        the same thread count - which is the point of a per-stage setting. Overrides nest
+        (a per-query-loop sub-stage inside a loop item), so the previous override value is
+        saved and restored rather than merely cleared."""
+        threads = getattr(item, "threads", None)
+        if threads is None:
+            yield
+            return
+        # Resolve now (a raw 0 means all-cores-minus-one) so the run tool receives a
+        # concrete count, matching how the run default was resolved in main().
+        resolved, _ = resolve_target_cores(threads)
+        previous = self.run_tool._active_num_threads
+        self.run_tool.set_active_num_threads(resolved)
+        try:
+            yield
+        finally:
+            self.run_tool.set_active_num_threads(previous)
+
     async def _run_stages(
         self,
         stage_list: list[StageItem],
@@ -407,7 +432,7 @@ class Conversation:
         number, so numbering matches the supervisor's registered list.
         """
         for stage in stage_list:
-            with self._benchmark_sf_override(stage):
+            with self._benchmark_sf_override(stage), self._threads_override(stage):
                 await self._run_item(stage, prompt_pretext)
 
     async def _run_item(self, stage: StageItem, prompt_pretext: str | None) -> None:
@@ -596,7 +621,7 @@ class Conversation:
                 # run the stage - includes automatic reverts if regressions are
                 # detected; the runtime measured just before the stage and fresh
                 # tracing data reach the prompt callbacks
-                with self._benchmark_sf_override(stage):
+                with self._benchmark_sf_override(stage), self._threads_override(stage):
                     await self._run_stage_with_revert_monitoring(
                         query_id=query_id,
                         stage_config=stage,

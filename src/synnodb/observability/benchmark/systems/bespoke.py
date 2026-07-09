@@ -4,7 +4,6 @@ from pathlib import Path
 from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
-from synnodb.cpp_runner.prepare_repo.prepare_features import Parallelism
 from synnodb.observability.benchmark.systems.track import BespokePrep
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.tools.run import RunTool, RunWorkerResult
@@ -50,11 +49,7 @@ class BespokeRunner:
         self._active_snapshot: str | None = None
         self._db_engine: RunTool | None = None
 
-    def restore_snapshot(
-        self,
-        snapshot: str,
-        parallelism: Parallelism,
-    ) -> None:
+    def restore_snapshot(self, snapshot: str) -> None:
         if self._active_snapshot == snapshot and self._db_engine is not None:
             return
 
@@ -77,13 +72,12 @@ class BespokeRunner:
 
         # Replay the snapshot's own prepare record (features=None): the
         # workspace metadata file committed with the snapshot says what its
-        # files were prepared with, so no parallelism-dependent prepare fn is needed.
+        # files were prepared with.
         prepare_repo_and_load_snapshot(
             snapshotter=self._snapshotter,
             snapshot=snapshot,
             features=None,
             prepare_workspace_provider=prepare_workspace,
-            parallelism=parallelism,  # ignored on the replay path
         )
 
         compiler = self._prep.make_compiler(self._workspace_dir)
@@ -127,8 +121,7 @@ class BespokeRunner:
             query_ids=unique_query_ids,
             echo_output=True,
             external_call=True,
-            parallelism=parallelism,
-            core_ids=core_ids,
+            num_threads=(len(core_ids) if parallelism and core_ids else 1),
         )
 
         assert result.query_results is not None and len(result.query_results) > 0, (

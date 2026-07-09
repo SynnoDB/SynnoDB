@@ -16,7 +16,6 @@ from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
     prepare_repo_and_load_snapshot,
 )
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
-    Parallelism,
     PrepareFeatures,
 )
 from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
@@ -102,9 +101,6 @@ def main(args):
             ),
             conv_name=f"test_conv_{rnd_str}",
             prepare_workspace_provider=prepare_workspace_provider,
-            parallelism=Parallelism.MULTI_THREADED
-            if parallelism
-            else Parallelism.SINGLE_THREADED,
             do_not_cache=query_do_not_cache,
         )
 
@@ -145,8 +141,7 @@ def main(args):
         db_storage=db_storage,
         compiler=compiler,
         workload_provider=workload_provider,
-        parallelism=parallelism,
-        core_ids=core_ids,
+        num_threads=(len(core_ids) if parallelism and core_ids else 1),
     )
 
     result: RunWorkerResult = bespoke_engine.run_worker(
@@ -155,8 +150,7 @@ def main(args):
         query_ids=None,  # ["1"],
         trace_mode=True,
         echo_output=True,
-        parallelism=parallelism,
-        core_ids=core_ids,
+        num_threads=(len(core_ids) if parallelism and core_ids else 1),
     )
 
     if not run_with_validate:

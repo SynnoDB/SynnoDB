@@ -671,10 +671,8 @@ class SynnoDB:
             read_prepare_metadata,
         )
 
-        features, parallelism = read_prepare_metadata(workspace)
-        return dataclasses.replace(
-            artifact, prepare_features=features, parallelism=parallelism
-        )
+        features = read_prepare_metadata(workspace)
+        return dataclasses.replace(artifact, prepare_features=features)
 
     # ---- ergonomic named methods (thin wrappers over run_synthesis) -------
     def createStoragePlan(self, *, verbose: bool | None = None) -> StoragePlan:

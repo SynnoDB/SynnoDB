@@ -23,7 +23,6 @@ from synnodb.cpp_runner.prepare_repo.load_snapshot_and_prepare import (
 )
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
     PREPARE_METADATA_FILENAME,
-    Parallelism,
     PrepareFeatures,
     apply_prepare_features,
     read_prepare_metadata,
@@ -266,25 +265,21 @@ def test_cleanup_builder_deletes_only_existing_base_impl_inputs(tmp_path):
 # ------------------------------ metadata file ---------------------------------
 def test_metadata_serialization_is_deterministic(tmp_path):
     features = PrepareFeatures.optim().resolve(DBStorage.IN_MEMORY)
-    write_prepare_metadata(tmp_path, features, parallelism=Parallelism.SINGLE_THREADED)
+    write_prepare_metadata(tmp_path, features)
     first = (tmp_path / PREPARE_METADATA_FILENAME).read_bytes()
-    write_prepare_metadata(tmp_path, features, parallelism=Parallelism.SINGLE_THREADED)
+    write_prepare_metadata(tmp_path, features)
     assert (tmp_path / PREPARE_METADATA_FILENAME).read_bytes() == first
     assert first.endswith(b"\n")
     # the enums are recorded as their plain string values
-    assert b'"parallelism": "single_threaded"' in first
     assert b'"storage": "in_memory"' in first
 
-    features2, parallelism = read_prepare_metadata(tmp_path)
+    features2 = read_prepare_metadata(tmp_path)
     assert features2 == dataclasses.replace(features, storage_plan_text=None)
-    assert parallelism is Parallelism.SINGLE_THREADED
 
 
 def test_metadata_requires_resolved_features():
     with pytest.raises(AssertionError, match="resolve the prepare features"):
-        write_prepare_metadata(
-            None, PrepareFeatures.base(), parallelism=Parallelism.SINGLE_THREADED
-        )
+        write_prepare_metadata(None, PrepareFeatures.base())
 
 
 def test_missing_metadata_raises_clear_error(tmp_path):
@@ -332,7 +327,7 @@ def test_metadata_survives_snapshot_restore_round_trip(tmp_path):
     snapshotter.create_empty_snapshot("metadata-round-trip")
 
     features = PrepareFeatures.mt().resolve(DBStorage.IN_MEMORY)
-    write_prepare_metadata(workspace, features, parallelism=Parallelism.MULTI_THREADED)
+    write_prepare_metadata(workspace, features)
     (workspace / "somefile.txt").write_text("content")
     _, commit = snapshotter.snapshot("with-metadata")
     assert commit is not None
@@ -343,9 +338,8 @@ def test_metadata_survives_snapshot_restore_round_trip(tmp_path):
     snapshotter.reset_changes()
     snapshotter.restore(commit)
 
-    restored, parallelism = read_prepare_metadata(workspace)
+    restored = read_prepare_metadata(workspace)
     assert restored == dataclasses.replace(features, storage_plan_text=None)
-    assert parallelism is Parallelism.MULTI_THREADED
 
 
 # ------------------- prepared snapshot is a single commit ----------------------
@@ -391,7 +385,6 @@ def test_prepared_snapshot_is_single_commit_with_record(tmp_path):
         features=PrepareFeatures.base(storage_plan_text="PLAN"),
         conv_name="prepared-single",
         prepare_workspace_provider=_make_scaffold_workspace(workspace, snapshotter),
-        parallelism=Parallelism.SINGLE_THREADED,
         do_not_cache=False,
     )
 
@@ -426,7 +419,6 @@ def test_prepared_snapshot_cache_hit_restores_before_tracked_writes(
         features=PrepareFeatures.base(storage_plan_text="PLAN"),
         conv_name="prepared-cache-hit",
         prepare_workspace_provider=_make_scaffold_workspace(workspace, snapshotter),
-        parallelism=Parallelism.SINGLE_THREADED,
         do_not_cache=False,
     )
     prepared = snapshotter.current_hash
@@ -451,7 +443,6 @@ def test_prepared_snapshot_cache_hit_restores_before_tracked_writes(
         features=PrepareFeatures.base(storage_plan_text="PLAN"),
         conv_name="prepared-cache-hit",
         prepare_workspace_provider=_make_scaffold_workspace(workspace, snapshotter),
-        parallelism=Parallelism.SINGLE_THREADED,
         do_not_cache=False,
     )
 
@@ -470,7 +461,6 @@ def test_prepare_do_not_cache_skips_pkl_and_snapshot_write(tmp_path):
         features=PrepareFeatures.base(storage_plan_text="PLAN"),
         conv_name="prepare-do-not-cache",
         prepare_workspace_provider=_make_scaffold_workspace(workspace, snapshotter),
-        parallelism=Parallelism.SINGLE_THREADED,
         do_not_cache=True,
     )
 
@@ -479,48 +469,8 @@ def test_prepare_do_not_cache_skips_pkl_and_snapshot_write(tmp_path):
     assert not cache_dir.exists() or list(cache_dir.iterdir()) == []
 
 
-def test_metadata_differences_produce_distinct_prepared_snapshots(tmp_path):
-    """The prepare record is part of the cache key: two runs with identical
-    scaffold files but different metadata (parallelism) get their own commit,
-    never sharing one that carries the wrong record."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    snapshotter = GitSnapshotter(working_dir=workspace)
-
-    def _prepare(parallelism):
-        snapshotter.create_empty_snapshot(f"base-{parallelism.value}")
-        prepare_repo_and_load_snapshot(
-            snapshotter=snapshotter,
-            snapshot=None,
-            features=PrepareFeatures.base(storage_plan_text="PLAN"),
-            conv_name=f"conv-{parallelism.value}",
-            prepare_workspace_provider=_make_scaffold_workspace(workspace, snapshotter),
-            parallelism=parallelism,
-            do_not_cache=False,
-        )
-        recorded, _ = read_prepare_metadata(workspace)
-        return snapshotter.current_hash, recorded
-
-    st_commit, st_features = _prepare(Parallelism.SINGLE_THREADED)
-    mt_commit, mt_features = _prepare(Parallelism.MULTI_THREADED)
-
-    # identical resolved features and scaffold files ...
-    assert st_features == mt_features
-    # ... but distinct commits, each recording its own parallelism
-    assert st_commit != mt_commit
-    assert len(_prepare_snapshot_refs(snapshotter)) == 2
-    for commit, expected in (
-        (st_commit, Parallelism.SINGLE_THREADED),
-        (mt_commit, Parallelism.MULTI_THREADED),
-    ):
-        snapshotter.clear_untracked()
-        snapshotter.restore(commit)
-        _, parallelism = read_prepare_metadata(workspace)
-        assert parallelism is expected
-
-
 # ------------------------- checkSf replay resolution ---------------------------
-def test_replay_resolves_features_and_parallelism_from_snapshot(tmp_path):
+def test_replay_resolves_features_from_snapshot(tmp_path):
     """features=None replays the restored snapshot's own prepare record - no
     source_stage / stage-name resolution anywhere."""
     workspace = tmp_path / "ws"
@@ -529,9 +479,7 @@ def test_replay_resolves_features_and_parallelism_from_snapshot(tmp_path):
     snapshotter.create_empty_snapshot("replay-source")
 
     source_features = PrepareFeatures.mt().resolve(DBStorage.IN_MEMORY)
-    write_prepare_metadata(
-        workspace, source_features, parallelism=Parallelism.MULTI_THREADED
-    )
+    write_prepare_metadata(workspace, source_features)
     _, commit = snapshotter.snapshot("source-run")
     assert commit is not None
 
@@ -541,17 +489,15 @@ def test_replay_resolves_features_and_parallelism_from_snapshot(tmp_path):
         snapshot=commit,
         features=None,  # replay
         prepare_workspace_provider=ws_spy,
-        parallelism=Parallelism.SINGLE_THREADED,  # ignored on the replay path
     )
 
     assert result.features == dataclasses.replace(
         source_features, storage_plan_text=None
     )
-    assert result.parallelism is Parallelism.MULTI_THREADED
     # every feature is already present: the scaffold call refreshes untracked
     # support files only, and the cleanup step is not repeated
     assert _call_names(ws_spy) == ["prepare"]
     assert dict(ws_spy.calls)["prepare"]["write_non_tracked_only"] is True
-    # the replay re-records the source's parallelism in the fresh metadata
-    _, recorded_parallelism = read_prepare_metadata(workspace)
-    assert recorded_parallelism is Parallelism.MULTI_THREADED
+    # the replay re-records the source's features in the fresh metadata
+    recorded = read_prepare_metadata(workspace)
+    assert recorded == dataclasses.replace(source_features, storage_plan_text=None)
