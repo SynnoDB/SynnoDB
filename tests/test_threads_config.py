@@ -93,6 +93,9 @@ def test_base_impl_prompt_carries_the_thread_count_in_memory_only():
         sql="SELECT 1",
         persistent_storage=False,
         num_threads=8,
+        storage_plan_filename="storage_plan.txt",
+        base_impl_todo_filename="base_impl_todo.txt",
+        read_storage_plan=True,
     )
     assert "8 worker threads" in in_mem
 
@@ -107,6 +110,9 @@ def test_base_impl_prompt_carries_the_thread_count_in_memory_only():
         sql="SELECT 1",
         persistent_storage=True,
         num_threads=8,
+        storage_plan_filename="storage_plan.txt",
+        base_impl_todo_filename="base_impl_todo.txt",
+        read_storage_plan=True,
     )
     assert "worker threads" not in ssd
 
