@@ -3,18 +3,19 @@
 #include <string>
 #include <vector>
 
-// FILE_VERSION: 3
+// FILE_VERSION: 4
 
 // Per-query result returned by query().
 // Contains the trace data collected only during this query's execution,
-// the wall-clock runtime in milliseconds (rounded up, so real but
-// sub-millisecond work reports as 1ms rather than truncating to 0), and a
-// non-empty error message when the query threw (otherwise empty).
+// the wall-clock runtime in fractional milliseconds (measured at microsecond
+// resolution, so sub-millisecond work is reported precisely instead of being
+// quantized to whole milliseconds), and a non-empty error message when the
+// query threw (otherwise empty).
 struct QueryResult {
     std::string query_id;
     std::string req_id;
     std::string trace;
-    long long   elapsed_ms;
+    double      elapsed_ms;
     std::string error;
 };
 

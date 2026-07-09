@@ -165,7 +165,7 @@ def gen_query_impl_query_select_block(
         f"{sample_trace_str}"
         "${body}std::shared_ptr<arrow::Table> result = run_q${qid}(db, args);\n"
         "${body}auto end = std::chrono::steady_clock::now();\n"
-        "${body}elapsed_ms = std::chrono::ceil<std::chrono::milliseconds>(end - start).count();\n"
+        "${body}elapsed_ms = std::chrono::duration<double, std::milli>(end - start).count();\n"
         "${body}synnodb::write_result(result, req.req_id);\n"
         "${indent}}"
     )
