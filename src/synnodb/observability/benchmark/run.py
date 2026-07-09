@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
+import psutil
+
 from synnodb.cpp_runner.prepare_repo.prepare_features import Parallelism
 from synnodb.observability.benchmark.systems import track
 from synnodb.observability.benchmark.writer import BenchmarkWriter
@@ -18,6 +20,7 @@ from synnodb.observability.logging.wandb_api_helper import (
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils.cli_config import Usecase
+from synnodb.utils.core_utils import clamp_threads_to_available
 from synnodb.utils.utils import DBStorage, create_dir_and_set_permissions
 from synnodb.workloads.workload_provider import Workload, WorkloadProvider
 
@@ -388,7 +391,14 @@ def run_benchmark(args) -> None:
             logger.info(f"Writing benchmark CSV to {csv_path}")
             _write_header(writer)
 
-            for num_threads in num_threads_list:
+            for requested_threads in num_threads_list:
+                # Catch a user-selected count that oversubscribes this host (more
+                # threads than logical cores): warn and cap it at the max available, so
+                # every downstream use (pinning, container sizing, the CSV row) reflects
+                # the count actually run.
+                num_threads = clamp_threads_to_available(
+                    requested_threads, psutil.cpu_count(logical=True) or 1
+                )
                 runner = _build_runner(
                     system_name,
                     track_cfg,

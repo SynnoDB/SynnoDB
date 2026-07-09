@@ -48,6 +48,70 @@ def test_resolve_target_cores_semantics():
         resolve_target_cores(-1)
 
 
+# ── multi-threaded validation thread counts ────────────────────────────────
+
+
+def test_largest_prime_le():
+    from synnodb.utils.core_utils import largest_prime_le
+
+    assert largest_prime_le(1) is None  # nothing > 2
+    assert largest_prime_le(2) is None  # must be strictly > 2
+    assert largest_prime_le(3) == 3
+    assert largest_prime_le(4) == 3
+    assert largest_prime_le(8) == 7
+    assert largest_prime_le(16) == 13
+
+
+def test_validation_thread_counts_covers_1_8_prime_and_target():
+    from synnodb.utils.core_utils import validation_thread_counts
+
+    # N=12 on a 16-core host: 1, 8, largest prime <= 12 (11), and 12.
+    assert validation_thread_counts(target_threads=12, max_available=16) == [
+        1,
+        8,
+        11,
+        12,
+    ]
+
+
+def test_validation_thread_counts_dedupes():
+    from synnodb.utils.core_utils import validation_thread_counts
+
+    # N=8: 8 and the target coincide, and there is no separate prime > 8.
+    assert validation_thread_counts(target_threads=8, max_available=16) == [1, 7, 8]
+
+
+def test_validation_thread_counts_caps_internal_widths_silently(caplog):
+    import logging
+
+    from synnodb.utils.core_utils import validation_thread_counts
+
+    # 4-core host: the internal probe width 8 is silently capped to 4 (no worker can be
+    # pinned past the usable cores). The oversubscription *warning* is reserved for the
+    # user's own thread selection, so it must NOT fire here.
+    with caplog.at_level(logging.WARNING):
+        counts = validation_thread_counts(target_threads=4, max_available=4)
+    assert counts == [1, 3, 4]
+    assert max(counts) <= 4
+    assert not any("oversubscribes" in r.message for r in caplog.records)
+
+
+def test_clamp_threads_to_available_warns_and_caps(caplog):
+    import logging
+
+    from synnodb.utils.core_utils import clamp_threads_to_available
+
+    # Under-subscribed: returned as-is, no warning.
+    with caplog.at_level(logging.WARNING):
+        assert clamp_threads_to_available(4, max_available=8) == 4
+    assert not any("oversubscribes" in r.message for r in caplog.records)
+
+    # A user-selected count above the usable cores is warned about and capped.
+    with caplog.at_level(logging.WARNING):
+        assert clamp_threads_to_available(32, max_available=8) == 8
+    assert any("oversubscribes" in r.message for r in caplog.records)
+
+
 # ── Prompt guidance (the planner/base writer are told the target) ──────────
 
 
