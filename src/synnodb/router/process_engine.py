@@ -25,6 +25,7 @@ from typing import Any, Mapping, Optional
 import pyarrow as pa
 
 from ..errors import EngineExecutionError, EngineResourceError
+from .engine import TimedTable
 
 log = logging.getLogger("synnodb.router.process_engine")
 
@@ -142,7 +143,7 @@ class ProcessEngine:
             )
         return self._proc
 
-    def run(self, query_id: str, placeholders: Mapping[str, Any]) -> pa.Table:
+    def run(self, query_id: str, placeholders: Mapping[str, Any]) -> TimedTable:
         from synnodb.workloads.workload_provider import format_args_element
 
         qa = format_args_element(str(query_id), dict(placeholders))
@@ -158,17 +159,26 @@ class ProcessEngine:
         log.debug("engine=%s run query_id=%s line=%r", self.engine_id, query_id, qa)
         result = runner.run(timeout=self.timeout_s, query_lines=[qa], run_env=run_env)
 
+        # Walk the per-query results once: surface any engine error, and pick up the engine's own
+        # server-side execution time. The C++ kernel measures each query with steady_clock (see
+        # assemble_query_impl) and reports it as `elapsed_ms`, excluding result serialization and
+        # transport; the router uses this in preference to its external wall clock so the reported
+        # speedup reflects pure engine execution. A negative `elapsed_ms` is the sentinel for "no
+        # query matched", so only a value >= 0 for our req_id counts as a real measurement.
+        server_ms: Optional[float] = None
         for qr in result.query_results or []:
-            err = getattr(qr, "error", None)
-            if err:
+            if qr.error:
                 raise EngineExecutionError(
-                    f"engine reported an error for query {query_id}: {err}",
+                    f"engine reported an error for query {query_id}: {qr.error}",
                     engine_id=self.engine_id,
                     query_id=str(query_id),
                     req_id=req_id,
                     response=result.response,
                     stderr=result.stderr,
                 )
+            if qr.req_id == req_id and qr.elapsed_ms >= 0:
+                server_ms = float(qr.elapsed_ms)
+
         if not arrow_path.exists():
             raise EngineExecutionError(
                 "engine produced no result file (result_<req_id>.arrow)",
@@ -202,7 +212,7 @@ class ProcessEngine:
             table.num_rows,
             table.num_columns,
         )
-        return table
+        return table, server_ms
 
     def load_data(self) -> None:
         """Load this engine's data now, so the first query it serves is already fast.
@@ -375,7 +385,7 @@ class ShmHotLoadEngine(ProcessEngine):
             ingest_dir,
         )
 
-    def run(self, query_id: str, placeholders: Mapping[str, Any]) -> pa.Table:
+    def run(self, query_id: str, placeholders: Mapping[str, Any]) -> TimedTable:
         if not self._loaded:
             raise RuntimeError(f"engine {self.engine_id}: run() called before ingest()")
         return super().run(query_id, placeholders)

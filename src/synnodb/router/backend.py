@@ -8,7 +8,9 @@ same guards, a different base — and is intentionally not built yet.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+import json
+import tempfile
+from typing import Any, Protocol, Tuple
 
 import pyarrow as pa
 
@@ -44,6 +46,41 @@ class DuckDBBackend:
             else self._con.execute(sql)
         )
         return _result_to_arrow(cursor)
+
+    def execute_arrow_timed(
+        self, sql: str, parameters: Any = None
+    ) -> Tuple[pa.Table, float]:
+        """Execute ``sql`` and return ``(arrow_table, server_ms)``.
+
+        ``server_ms`` is DuckDB's *own* measurement of the query's execution time - the
+        ``latency`` field of its JSON query profile, the same number ``EXPLAIN ANALYZE``
+        reports. It is measured inside the engine and excludes the client-side result fetch,
+        so it compares like-for-like against the bespoke engine's internal ``elapsed_ms``
+        (which likewise times only kernel execution, not result serialization/transport).
+
+        Both the Arrow result (for the correctness cross-check) and the timing come from a
+        single execution, so the number reflects the exact run whose rows we verify. Profiling
+        is enabled only around this call and disabled again, leaving no state on the shared
+        connection and no profiling overhead on the router's plain fallback path.
+        """
+        con = self._con
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=True) as tmp:
+            con.execute("PRAGMA enable_profiling = 'json'")
+            con.execute(f"PRAGMA profiling_output = '{tmp.name}'")
+            try:
+                cursor = (
+                    con.execute(sql, parameters)
+                    if parameters is not None
+                    else con.execute(sql)
+                )
+                table = _result_to_arrow(cursor)
+                with open(tmp.name, "r") as f:
+                    profile = json.load(f)
+            finally:
+                # Restore the connection to its unprofiled state so neither later queries nor
+                # the router's fallback path pay the profiling cost.
+                con.execute("PRAGMA disable_profiling")
+        return table, float(profile["latency"]) * 1_000.0
 
     @property
     def connection(self) -> Any:
