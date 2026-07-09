@@ -168,6 +168,46 @@ function getQueryRuntimes(steps, data) {
     .map(([id, r]) => ({id, duck: r.duck, impl: r.impl}));
 }
 
+// A resolved serving thread count is always >= 1; anything else (missing key,
+// non-numeric) reads as "unknown" -> null.
+function readThreadCount(row, key) {
+  const v = Number(row[key]);
+  return Number.isFinite(v) && v >= 1 ? v : null;
+}
+
+// Runs logged before the per-engine thread metrics existed only carry the shared
+// core set: parallelism=false -> 1 thread, otherwise the number of pinned cores.
+function sharedThreadCountFromCoreIds(row) {
+  if (isMetricFalse(row['validation/parallelism'])) return 1;
+  const coreIds = parseJsonField(row['validation/core_ids']);
+  if (Array.isArray(coreIds) && coreIds.length) return coreIds.length;
+  return null;
+}
+
+// Thread counts the DuckDB baseline and the bespoke (SynnoDB) engine were
+// benchmarked at, from the latest benchmark row at the effective scale factor.
+// Both engines run at the same resolved serving thread count, so these normally
+// agree; a mismatch means the two runtimes are not directly comparable and is
+// surfaced in the panel. Falls back to the shared core_ids/parallelism config
+// for runs predating the explicit per-engine metrics.
+function getThreadCounts(steps, data) {
+  const targetSf = getEffectiveScaleFactor(steps, data);
+  let result = null;
+  for (const s of steps) {
+    const row = data[s] || {};
+    if (!isBenchmarkRuntimeRow(row, targetSf)) continue;
+    const duckdb = readThreadCount(row, 'validation/duckdb_num_threads');
+    const bespoke = readThreadCount(row, 'validation/bespoke_num_threads');
+    if (duckdb != null || bespoke != null) {
+      result = {duckdb, bespoke};
+      continue;
+    }
+    const shared = sharedThreadCountFromCoreIds(row);
+    if (shared != null) result = {duckdb: shared, bespoke: shared};
+  }
+  return result;
+}
+
 function getQueryAxisMax(queries, isSpeedup) {
   const values = [];
   for (const q of queries) {

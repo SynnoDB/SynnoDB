@@ -294,6 +294,7 @@ class RunTool:
             metrics["validation/replayed_from_cache"] = False
             metrics["validation/compile_with_optimize"] = optimize
             metrics["validation/trace_mode"] = trace_mode
+            metrics["validation/run_mode"] = mode.value
             metrics["validation/compile_error"] = True
             metrics["validation/external_call"] = external_call
             if self.run_stats_collector is not None:
@@ -351,6 +352,7 @@ class RunTool:
                     external_call=external_call,
                     current_parallelism=current_parallelism,
                     current_core_ids=current_core_ids,
+                    current_num_threads=current_num_threads,
                     run_tool_mode=mode,
                     force_live=force_live,
                 )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
@@ -471,6 +473,7 @@ class RunTool:
         current_parallelism: bool,
         run_tool_mode: RunToolMode,
         current_core_ids: list[int] | None,
+        current_num_threads: int,
         force_live: bool = False,
     ) -> RunWorkerResult:
         # assemble call cmd
@@ -676,9 +679,16 @@ class RunTool:
         metrics["validation/replayed_from_cache"] = replayed_from_cache
         metrics["validation/compile_with_optimize"] = optimize
         metrics["validation/trace_mode"] = trace_mode
+        metrics["validation/run_mode"] = run_tool_mode.value
         metrics["validation/external_call"] = external_call
         metrics["validation/parallelism"] = current_parallelism
         metrics["validation/core_ids"] = current_core_ids
+        # The DuckDB baseline and the bespoke (SynnoDB) engine execute the batch at
+        # the same resolved serving thread count. Log them as distinct per-engine
+        # metrics so the live dashboard can surface the count for the fairness of the
+        # comparison and flag any future drift between the two engines loudly.
+        metrics["validation/duckdb_num_threads"] = current_num_threads
+        metrics["validation/bespoke_num_threads"] = current_num_threads
         if self.run_stats_collector is not None:
             self.run_stats_collector.log_metrics_callback(
                 metrics, log_and_increment=True

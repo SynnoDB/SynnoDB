@@ -281,6 +281,7 @@ class CachedOpenAIResponsesCompactionSession(OpenAIResponsesCompactionSession):
                 self.run_stats_collector.log_metrics_callback(
                     {
                         "type": "compaction",
+                        "compaction/cached": served_from_cache,
                         "compaction/output_items": len(output_items),
                         "compaction/candidate_items": len(
                             self._compaction_candidate_items

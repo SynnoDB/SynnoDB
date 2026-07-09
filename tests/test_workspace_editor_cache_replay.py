@@ -16,6 +16,9 @@ class FakeRunStatsCollector:
     def log_apply_patch_stats(self, *args, **kwargs) -> None:
         pass
 
+    def record_apply_patch_cache_hit(self) -> None:
+        pass
+
 
 class FakeSnapshotter:
     def __init__(self, current_hash: str = "start") -> None:

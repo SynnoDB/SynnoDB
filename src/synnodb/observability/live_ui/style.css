@@ -383,6 +383,18 @@ details.log-entry[open] .log-chevron{transform:rotate(90deg);}
 #query-chart-hdr{display:flex;align-items:center;justify-content:space-between;
                  font-size:11px;text-transform:uppercase;letter-spacing:.5px;
                  color:var(--muted);margin-bottom:2px;}
+.qc-hdr-left{display:flex;align-items:center;gap:8px;min-width:0;}
+/* Thread-count chip: the serving thread count both engines were benchmarked at.
+   Matches when DuckDB and SynnoDB agree (info style); the .mismatch variant flags
+   a divergence that would make the runtimes not directly comparable. */
+.qc-threads{display:inline-flex;align-items:center;gap:5px;flex:none;
+            font-size:10px;font-weight:600;letter-spacing:.3px;text-transform:none;
+            padding:2px 8px;border-radius:10px;border:1px solid var(--border);
+            background:rgba(59,110,245,.1);color:var(--accent);white-space:nowrap;}
+.qc-threads[hidden]{display:none;}
+.qc-threads b{font-weight:700;}
+.qc-threads.mismatch{border-color:rgba(249,115,22,.6);
+                     background:rgba(249,115,22,.14);color:#f9a34e;}
 #qcanvas-wrap{flex:1;min-height:0;position:relative;}
 #qcanvas-wrap>canvas{display:block;}
 .chart-empty{position:absolute;inset:0;display:flex;flex-direction:column;
