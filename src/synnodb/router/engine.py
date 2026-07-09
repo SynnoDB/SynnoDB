@@ -15,9 +15,10 @@ executes. Implementations:
   (``SYNNODB_SHM_INGEST``); both ingest and result ride shared memory. This is the production
   serving path the router auto-discovers (see ``duckdb_compat.discovery``).
 
-Every implementation returns a ``pyarrow.Table`` whose schema is expected to match
-the binding's canonical (DuckDB) output schema; ``adapt`` turns it into a
-``SynnoResult``.
+Every implementation's ``run`` returns a ``TimedTable`` — ``(table, server_ms)`` — whose
+``pyarrow.Table`` schema is expected to match the binding's canonical (DuckDB) output
+schema, and whose ``server_ms`` is the engine's own execution time or ``None`` (see
+``TimedTable`` below); ``adapt`` turns the table into a ``SynnoResult``.
 """
 
 from __future__ import annotations
