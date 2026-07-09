@@ -163,6 +163,39 @@ def test_context_manager_and_cursor():
         assert cur.execute("SELECT count(*) FROM t").fetchall() == [(4,)]
 
 
+# --------------------------------------------------------------------------- #
+# Wrapping an already-open DuckDB connection (both connect() input forms).
+# --------------------------------------------------------------------------- #
+def test_wraps_existing_connection():
+    """connect() accepts a live DuckDBPyConnection and shares it verbatim - the catalog it
+    already holds (here: table `t`) is visible through the routed surface without reopening."""
+    raw = duckdb.connect()
+    _seed(raw)
+    s = synnodb.connect(raw)
+    assert s.duckdb is raw  # wrapped in place, not reopened
+    assert s.execute("SELECT count(*) FROM t").fetchall() == [(4,)]
+
+
+def test_wrapped_connection_not_closed_by_wrapper():
+    """The caller keeps ownership of a connection they opened: closing the SynnoConnection must
+    leave the wrapped DuckDBPyConnection usable."""
+    raw = duckdb.connect()
+    _seed(raw)
+    synnodb.connect(raw).close()
+    assert raw.execute("SELECT count(*) FROM t").fetchall() == [(4,)]  # still open
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"read_only": True}, {"read_only": True, "config": {"threads": 2}}]
+)
+def test_wrapping_rejects_open_time_args(kwargs):
+    """read_only (and other duckdb.connect open-time kwargs) are meaningless for an already-open
+    connection; passing them is a clear error rather than a silent no-op."""
+    raw = duckdb.connect()
+    with pytest.raises(TypeError, match="already-open connection"):
+        synnodb.connect(raw, **kwargs)
+
+
 def test_module_level_sql_and_execute():
     # Operates on the default in-memory connection, like duckdb.sql/execute.
     assert synnodb.execute("SELECT 40 + 2 AS v").fetchall() == [(42,)]

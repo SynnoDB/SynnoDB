@@ -87,6 +87,67 @@ def ensure_tpch_parquet(
     shutil.rmtree(spill, ignore_errors=True)
 
 
+def generate_tpch_duckdb(
+    duckdb_path: str | Path,
+    scale_factor: float,
+    *,
+    spill_dir: str | Path | None = None,
+) -> Path:
+    """Materialize a single ``tpch.duckdb`` file holding the TPC-H tables at ``scale_factor``
+    via DuckDB's built-in ``dbgen`` - the source of truth the new DuckDB-rooted flow downscales
+    from (no pre-scaled parquet subsets).
+
+    Idempotent: an existing file with all tables present is reused. Generation runs with a
+    memory cap and a spill directory so even large scale factors do not OOM.
+
+    Generation goes into a ``.partial`` sibling that is atomically renamed into place only after
+    ``dbgen`` and a checkpoint succeed. An interrupted or partial run therefore never leaves a
+    half-populated file at ``duckdb_path`` - which a later call would try to ``CALL dbgen`` into
+    again (dbgen errors when its tables already exist), permanently wedging the "idempotent" path.
+    """
+    from synnodb.duckdb_compat.db_io import list_tables
+
+    duckdb_path = Path(duckdb_path)
+    if duckdb_path.exists():
+        con = duckdb.connect(str(duckdb_path), read_only=True)
+        try:
+            present = set(list_tables(con))
+        finally:
+            con.close()
+        if set(TPCH_TABLES) <= present:
+            print(f"{duckdb_path}: present ({len(TPCH_TABLES)} tables), reusing")
+            return duckdb_path
+
+    duckdb_path.parent.mkdir(parents=True, exist_ok=True)
+    spill = (Path(spill_dir) if spill_dir else duckdb_path.parent) / "_duckdb_spill"
+    spill.mkdir(parents=True, exist_ok=True)
+    tmp_path = duckdb_path.with_name(duckdb_path.name + ".partial")
+    tmp_wal = tmp_path.with_name(tmp_path.name + ".wal")
+    tmp_path.unlink(missing_ok=True)
+    tmp_wal.unlink(missing_ok=True)
+    print(f"{duckdb_path}: generating TPC-H sf{scale_factor} ...")
+    con = duckdb.connect(str(tmp_path))
+    try:
+        con.execute("INSTALL tpch; LOAD tpch;")
+        con.execute(f"SET memory_limit='{_memory_limit_gb()}GB';")
+        con.execute(f"SET threads={_thread_count()};")
+        con.execute(f"SET temp_directory='{spill.as_posix()}';")
+        con.execute("PRAGMA disable_progress_bar")
+        con.execute(f"CALL dbgen(sf={scale_factor});")
+        con.execute("CHECKPOINT")
+    except BaseException:
+        con.close()
+        tmp_path.unlink(missing_ok=True)
+        tmp_wal.unlink(missing_ok=True)
+        shutil.rmtree(spill, ignore_errors=True)
+        raise
+    con.close()
+    shutil.rmtree(spill, ignore_errors=True)
+    tmp_wal.unlink(missing_ok=True)
+    tmp_path.replace(duckdb_path)
+    return duckdb_path
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate TPC-H Parquet data via DuckDB."

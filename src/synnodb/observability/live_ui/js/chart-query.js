@@ -194,15 +194,16 @@ function formatScaleFactor(sf) {
 // keep the active button in sync with the effective SF (user pick or fallback).
 function updateScaleFactorButtons(steps, data) {
   const container = document.getElementById('qc-sf-toggle');
+  const wrap = document.getElementById('qc-sf-wrap');
   if (!container) return;
   const sfs = getAvailableScaleFactors(steps, data);
   if (sfs.length <= 1) {
-    container.hidden = true;
+    if (wrap) wrap.hidden = true;
     container.innerHTML = '';
     container.dataset.sfs = '';
     return;
   }
-  container.hidden = false;
+  if (wrap) wrap.hidden = false;
   const wanted = sfs.map(String).join(',');
   if (container.dataset.sfs !== wanted) {
     container.innerHTML = '';
@@ -210,7 +211,7 @@ function updateScaleFactorButtons(steps, data) {
       const btn = document.createElement('button');
       btn.className = 'sf-btn';
       btn.dataset.sf = String(sf);
-      btn.textContent = 'SF ' + formatScaleFactor(sf);
+      btn.textContent = formatScaleFactor(sf);
       container.appendChild(btn);
     }
     container.dataset.sfs = wanted;

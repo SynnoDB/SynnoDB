@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from synnodb.tools.run_tool_mode import RunToolMode
+from synnodb.utils.utils import ServeFrom
 
 if TYPE_CHECKING:  # avoid an import cycle; only used for type hints
     from synnodb.workloads.query_params import ParamSpace
@@ -40,6 +41,27 @@ ParamSpaceFactory = Callable[
 ]
 
 
+# The single file that holds a DuckDB-native subset inside its ``fraction<f>/`` directory.
+SUBSET_DUCKDB_FILENAME = "subset.duckdb"
+
+
+@dataclass(frozen=True)
+class DuckDBSubsetSource:
+    """Everything :meth:`OLAPWorkloadProvider.prepare` needs to lazily downscale a DuckDB-sourced
+    workload's fractional subsets from the frozen source, on demand at run start. Carried on the
+    spec as plain data (no downscaler import here); ``None`` for built-ins and plain BYO-parquet.
+
+    ``frozen_source_path`` is the immutable image every subset derives from - the
+    ``.source_snapshot.duckdb`` taken from a live connection, or the caller's read-only ``.duckdb``
+    file for a static source. ``sql_by_id`` is the raw workload SQL (its JOINs are the primary
+    signal for the FK-preserving join graph)."""
+
+    frozen_source_path: str
+    sql_by_id: dict[str, str]
+    join_relationships: list | None
+    whole_table_threshold: int
+
+
 @dataclass(frozen=True)
 class WorkloadSpec:
     """Everything the framework needs to drive an arbitrary OLAP workload."""
@@ -50,7 +72,20 @@ class WorkloadSpec:
     dataset_name: str  # parquet dir name (e.g. tpch->"tpch", ceb->"imdb")
     # query catalog
     all_query_ids: tuple[str, ...]
-    # scale-factor profile per run mode (BENCHMARK uses benchmark_sf)
+    # Subset-selector profile per run mode (BENCHMARK uses benchmark_sf). The historical name
+    # ``sf`` is kept, but the value is a *polymorphic subset selector*, not always a TPC-H scale
+    # factor: it is the number that picks which subset directory to use under
+    # :meth:`parquet_root` (via :func:`find_sf_dir`). Its meaning depends on how the workload was
+    # produced:
+    #   * Built-in generated workloads (e.g. ``TPCH_SPEC``): a genuine TPC-H scale factor, >= 1
+    #     (``benchmark_sf=20``, ``fast_check_sfs=(1, 2)``), materialized on disk as ``sf<N>/`` by
+    #     the dbgen path.
+    #   * DuckDB-sourced / bring-your-own workloads: a sampling *fraction* in ``(0, 1]`` of the
+    #     frozen source (``fraction1`` = the full snapshot, ``fraction0.02`` = a 2% downscale),
+    #     materialized as ``fraction<f>/`` by the referential downscaler.
+    # So a smaller value is always the cheaper/smaller subset, but the numeric scale differs by
+    # path. Downstream code treats it opaquely (feeds it to ``find_sf_dir``); only the built-in
+    # generation path and dbgen interpret it as a true scale factor.
     benchmark_sf: float
     fast_check_sfs: tuple[float, ...]
     exhaustive_sfs: tuple[float, ...]
@@ -75,6 +110,16 @@ class WorkloadSpec:
     # cache key so regenerating a dataset (or changing its scale-up code / arg syntax)
     # invalidates stale cache entries. None means "unversioned".
     dataset_version: str | None = None
+    # Where this workload's queries read their subsets from. ``ServeFrom.DUCKDB`` -> each subset
+    # directory holds a ``subset.duckdb`` (produced by the referential downscaler); in-memory runs
+    # then serve the candidate engine over the shm plane and the DuckDB oracle from that database,
+    # so no parquet touches disk (in-memory only). ``ServeFrom.PARQUET`` -> the classic
+    # ``<table>.parquet`` subset layout.
+    serve_from: ServeFrom = ServeFrom.PARQUET
+    # Inputs for lazily downscaling this workload's fractional subsets in
+    # ``OLAPWorkloadProvider.prepare`` (from the frozen source, at run start). None for built-ins
+    # and plain BYO-parquet, whose subsets are already materialized on disk.
+    duckdb_source: "DuckDBSubsetSource | None" = None
     # Scale factor at which the multi-threading stage runs its large-scale correctness /
     # performance check. None means the framework picks a sensible default.
     large_check_sf: float | None = None
@@ -96,19 +141,21 @@ class WorkloadSpec:
         return self.schema_factory()
 
     def parquet_root(self) -> Path:
-        """Absolute parquet root holding ``sf<sf>/<table>.parquet``. Bring-your-own
+        """Absolute parquet root holding one directory per subset (``fraction<f>/<table>.parquet``
+        for sampling-fraction subsets, or the legacy ``sf<N>/<table>.parquet``). Bring-your-own
         workloads carry it on the spec; built-ins derive it from the data-dir +
         workload-name convention (so this requires SYNNO_DATA_DIR to be configured)."""
         if self.base_parquet_dir is not None:
             return Path(self.base_parquet_dir)
-        from synnodb import settings
+        return managed_parquet_root(self.name, self.dataset_name)
 
-        return (
-            settings.get_data_dir()
-            / "workloads"
-            / self.name
-            / f"{self.dataset_name}_parquet"
-        )
+    def subset_files(self, subset_dir: Path) -> list[Path]:
+        """The files that physically hold one subset under ``subset_dir``, per :attr:`serve_from`:
+        a single ``subset.duckdb`` for a DuckDB-native workload, or one ``<table>.parquet`` per
+        table for the parquet layout. The single place that knows a subset's on-disk shape."""
+        if self.serve_from == ServeFrom.DUCKDB:
+            return [subset_dir / SUBSET_DUCKDB_FILENAME]
+        return [subset_dir / f"{table}.parquet" for table in self.tables]
 
     def scale_factors_for(self, run_mode: RunToolMode) -> list[float]:
         if run_mode == RunToolMode.FAST_CHECK:
@@ -122,21 +169,51 @@ class WorkloadSpec:
         raise ValueError(f"Unknown run mode: {run_mode}")
 
 
-def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | None:
-    """The ``sf<N>`` directory for a scale factor under a parquet root, tolerant of
-    int/float name formatting (``sf1`` vs ``sf1.0``). None if neither spelling exists."""
-    base = Path(base_parquet_dir)
-    candidates = []
+def _subset_value_spellings(value: float) -> list[str]:
+    """The numeric part of a subset directory name, tolerant of int/float formatting
+    (``1`` vs ``1.0``); the integer spelling is tried first so ``5`` -> ``5`` not ``5.0``."""
+    spellings: list[str] = []
     try:
-        if float(scale_factor).is_integer():
-            candidates.append(f"sf{int(scale_factor)}")
+        if float(value).is_integer():
+            spellings.append(str(int(value)))
     except (TypeError, ValueError):
         pass
-    candidates.append(f"sf{scale_factor}")
-    for name in candidates:
-        if (base / name).exists():
-            return base / name
+    spellings.append(str(value))
+    return spellings
+
+
+def subset_dirname(value: float) -> str:
+    """The canonical subset directory name for a sampling fraction: ``fraction<f>`` (e.g.
+    ``fraction0.02`` for a downscaled subset, ``fraction1`` for the full benchmark subset). This is
+    the name new subsets are *created* under; the integer spelling is preferred so it matches
+    :func:`find_sf_dir`'s first-tried candidate when *reading* (which also resolves the legacy
+    ``sf<N>`` spelling)."""
+    return f"fraction{_subset_value_spellings(value)[0]}"
+
+
+def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | None:
+    """The subset directory for a subset value under a parquet root.
+
+    Resolves the sampling-fraction convention (``fraction<f>``, written by the referential
+    downscaler) as well as the legacy scale-factor convention (``sf<N>``), tolerant of
+    int/float name formatting (``fraction1`` vs ``fraction1.0``, ``sf1`` vs ``sf1.0``). A given
+    root only ever holds one convention, so this is unambiguous. None if no spelling exists."""
+    base = Path(base_parquet_dir)
+    for prefix in ("fraction", "sf"):
+        for spelling in _subset_value_spellings(scale_factor):
+            candidate = base / f"{prefix}{spelling}"
+            if candidate.exists():
+                return candidate
     return None
+
+
+def managed_parquet_root(name: str, dataset_name: str) -> Path:
+    """The managed parquet root for a workload:
+    ``<data-dir>/workloads/<name>/<dataset>_parquet``. The single source of this convention,
+    shared by registration and :meth:`WorkloadSpec.parquet_root` (requires SYNNO_DATA_DIR)."""
+    from synnodb import settings
+
+    return settings.get_data_dir() / "workloads" / name / f"{dataset_name}_parquet"
 
 
 _REGISTRY: dict[str, WorkloadSpec] = {}
