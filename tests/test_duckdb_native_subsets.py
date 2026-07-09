@@ -727,3 +727,149 @@ def test_shm_staging_restages_when_subset_content_changes():
         shutil.rmtree(first, ignore_errors=True)
         if second is not None:
             shutil.rmtree(second, ignore_errors=True)
+
+
+# --------------------------------------------------------------------- DuckDB thread resync
+def test_set_thread_config_resyncs_live_connection_without_reload(tmp_path, source_db):
+    """The oracle connection's PRAGMA threads must track whatever thread count it is asked to run
+    at next, without tearing down and re-materializing the (potentially large) in-memory tables -
+    see ``set_thread_config``."""
+    from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
+        DuckDBConnectionManager,
+    )
+
+    managed = tmp_path / "managed"
+    _register("thr_direct", managed, source_db, serve_from=ServeFrom.PARQUET)
+    _prepare(managed, "thr_direct")
+
+    mgr = DuckDBConnectionManager(
+        pre_load_duckdb_tables=False,
+        dataset_tables=_TABLES,
+        parquet_path=managed,
+        benchmark=None,
+        db_storage=DBStorage.IN_MEMORY,
+        sf=1.0,
+        pin_worker=True,
+        pin_core=3,
+        num_threads=1,
+        run_duckdb_on_parquet=False,
+        serve_from=ServeFrom.PARQUET,
+        drop_os_caches_before_sql=False,
+    )
+    try:
+        _, table, _ = mgr.duckdb_sql_arrow("SELECT count(*) AS n FROM lineitem")
+        row_count = table.to_pydict()["n"][0]
+        assert row_count == 1000
+        con_before = mgr.con
+        assert (
+            con_before.execute("SELECT current_setting('threads')").fetchone()[0] == 1
+        )
+
+        # Switch to multi-threaded: same connection object, no table reload, PRAGMA updated.
+        mgr.set_thread_config(num_threads=4, pin_worker=False, pin_core=None)
+        assert mgr.con is con_before
+        assert mgr.num_threads == 4
+        assert mgr.pin_worker is False
+        _, table2, _ = mgr.duckdb_sql_arrow("SELECT count(*) AS n FROM lineitem")
+        assert table2.to_pydict()["n"][0] == row_count  # data untouched, not reloaded
+        assert mgr.con.execute("SELECT current_setting('threads')").fetchone()[0] == 4
+
+        # Switch back to single-threaded/pinned.
+        mgr.set_thread_config(num_threads=1, pin_worker=True, pin_core=3)
+        assert mgr.con is con_before
+        assert mgr.con.execute("SELECT current_setting('threads')").fetchone()[0] == 1
+
+        # A no-op resync (same thread count) must not blow away the connection either.
+        mgr.set_thread_config(num_threads=1, pin_worker=True, pin_core=3)
+        assert mgr.con is con_before
+    finally:
+        mgr.clear_mem_footprint()
+
+
+def test_set_thread_config_rejects_inconsistent_pin_combos(tmp_path, source_db):
+    from synnodb.observability.benchmark.systems.duckdb_connection_manager import (
+        DuckDBConnectionManager,
+    )
+
+    managed = tmp_path / "managed"
+    _register("thr_bad", managed, source_db, serve_from=ServeFrom.PARQUET)
+    _prepare(managed, "thr_bad")
+
+    mgr = DuckDBConnectionManager(
+        pre_load_duckdb_tables=False,
+        dataset_tables=_TABLES,
+        parquet_path=managed,
+        benchmark=None,
+        db_storage=DBStorage.IN_MEMORY,
+        sf=1.0,
+        pin_worker=True,
+        pin_core=3,
+        num_threads=1,
+        run_duckdb_on_parquet=False,
+        serve_from=ServeFrom.PARQUET,
+        drop_os_caches_before_sql=False,
+    )
+    try:
+        with pytest.raises(AssertionError):
+            mgr.set_thread_config(num_threads=4, pin_worker=True, pin_core=3)
+        with pytest.raises(AssertionError):
+            mgr.set_thread_config(num_threads=1, pin_worker=True, pin_core=None)
+    finally:
+        mgr.clear_mem_footprint()
+
+
+def test_olap_system_factory_resyncs_duckdb_thread_count_on_reuse(tmp_path, source_db):
+    """Reproduces the run-tool invariant this fix restores: within a single run,
+    ``OLAPSystemFactory`` must hand back a DuckDB connection running at whatever thread count the
+    run tool currently asks for - not whatever it happened to be built with first (e.g. serial
+    generation, then a later multi-threaded validation gate)."""
+    from synnodb.tools.run_tool_mode import RunToolMode
+    from synnodb.workloads.system_factory_olap import OLAPSystemFactory
+    from synnodb.workloads.workload_provider import GeneralSystemConfig
+
+    managed = tmp_path / "managed"
+    _register("thr_factory", managed, source_db, serve_from=ServeFrom.PARQUET)
+    prov = OLAPWorkloadProvider(
+        benchmark="thr_factory",
+        base_parquet_dir=managed,
+        db_storage=DBStorage.IN_MEMORY,
+        query_ids=["1"],
+    )
+    batches = prov.produce_workload(
+        RunToolMode.EXHAUSTIVE, query_ids=["1"], num_threads=1, core_ids=None
+    )
+    # The benchmark SF batch is always last (see produce_workload) - its fraction1 subset was
+    # materialized directly by _register's sync, no downscaling needed.
+    exec_settings = batches[-1].exec_settings
+
+    factory = OLAPSystemFactory()
+    gsc_serial = GeneralSystemConfig(memory_limit_mb=None, num_threads=1, core_ids=None)
+    gsc_parallel = GeneralSystemConfig(
+        memory_limit_mb=None, num_threads=4, core_ids=[0, 1, 2, 3]
+    )
+
+    mgr_serial = factory.get_system(
+        System.DUCKDB,
+        benchmark=prov.benchmark,
+        exec_settings=exec_settings,
+        general_system_config=gsc_serial,
+    )
+    mgr_serial.duckdb_sql_arrow("SELECT count(*) AS n FROM lineitem")
+    assert mgr_serial.num_threads == 1
+    assert mgr_serial.pin_worker is True
+
+    mgr_parallel = factory.get_system(
+        System.DUCKDB,
+        benchmark=prov.benchmark,
+        exec_settings=exec_settings,
+        general_system_config=gsc_parallel,
+    )
+    # Same cached connection (con_key is dataset-only), resynced in place - not rebuilt.
+    assert mgr_parallel is mgr_serial
+    assert mgr_parallel.num_threads == 4
+    assert mgr_parallel.pin_worker is False
+    _, table, _ = mgr_parallel.duckdb_sql_arrow("SELECT count(*) AS n FROM lineitem")
+    assert table.to_pydict()["n"][0] == 1000
+    assert (
+        mgr_parallel.con.execute("SELECT current_setting('threads')").fetchone()[0] == 4
+    )
