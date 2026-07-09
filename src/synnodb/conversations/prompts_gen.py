@@ -239,9 +239,7 @@ def base_impl_storage(
         )
         storage_plan_file_list_item = f", `{storage_plan_filename}`"
     else:
-        storage_plan_note = (
-            " for a struct-of-arrays layout (no storage plan file was generated for this run)."
-        )
+        storage_plan_note = " for a struct-of-arrays layout (no storage plan file was generated for this run)."
         storage_plan_file_list_item = ""
 
     return template.substitute(
