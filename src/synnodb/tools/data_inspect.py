@@ -59,7 +59,11 @@ LOG_SQL_LIMIT = 300
 def _short_sql(sql: str) -> str:
     """Single-line, length-bounded rendering of a query for log lines."""
     collapsed = " ".join(sql.split())
-    return collapsed if len(collapsed) <= LOG_SQL_LIMIT else collapsed[:LOG_SQL_LIMIT] + "..."
+    return (
+        collapsed
+        if len(collapsed) <= LOG_SQL_LIMIT
+        else collapsed[:LOG_SQL_LIMIT] + "..."
+    )
 
 
 class DataInspectCacheType:
@@ -93,7 +97,9 @@ class DataInspectTool:
         # measurement: value domains and distributions carry over from the small subset, while a
         # full scan touches a fraction of the rows - so an unindexed aggregate stays sub-second
         # instead of chewing every core on tens of millions of rows.
-        self.sf: float = sf if sf is not None else self._default_inspect_sf(workload_provider)
+        self.sf: float = (
+            sf if sf is not None else self._default_inspect_sf(workload_provider)
+        )
         self._con: duckdb.DuckDBPyConnection | None = None
 
         # Disk cache, keyed by query + row cap + subset identity. Disabled (None) when no cache
@@ -148,9 +154,11 @@ class DataInspectTool:
             # the agent's own SQL is still gated to read-only below, so it cannot add scratch state.
             con = duckdb.connect(":memory:")
             for table in self.spec.tables:
-                parquet = (subset_dir / f"{table}.parquet").as_posix().replace("'", "''")
+                parquet = (
+                    (subset_dir / f"{table}.parquet").as_posix().replace("'", "''")
+                )
                 con.execute(
-                    f'CREATE VIEW "{table}" AS SELECT * FROM read_parquet(\'{parquet}\')'
+                    f"CREATE VIEW \"{table}\" AS SELECT * FROM read_parquet('{parquet}')"
                 )
         self._con = con
         return con
@@ -167,7 +175,9 @@ class DataInspectTool:
             "workload": getattr(self.spec, "name", None),
             "dataset_name": getattr(self.spec, "dataset_name", None),
             "dataset_version": getattr(self.spec, "dataset_version", None),
-            "serve_from": getattr(self.spec.serve_from, "value", str(self.spec.serve_from)),
+            "serve_from": getattr(
+                self.spec.serve_from, "value", str(self.spec.serve_from)
+            ),
         }
         hash_payload = utils.stable_json(payload)
         return hash_payload, utils.sha256(hash_payload)
@@ -220,7 +230,9 @@ class DataInspectTool:
         try:
             con = self._connect()
         except Exception as exc:  # noqa: BLE001 - surface setup failure to the agent as text
-            logger.warning("query_data could not prepare data (sf=%g): %s", self.sf, exc)
+            logger.warning(
+                "query_data could not prepare data (sf=%g): %s", self.sf, exc
+            )
             return f"Error preparing data for inspection: {exc}", "prep_error", False
 
         output, cacheable, elapsed = self._run_and_render(con, sql, row_limit)

@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 
 # Serializes teardown against run-scope entry, and protects ``_active_runs``.
 _lock = threading.Lock()
-_active_runs = 0  # in-flight runs holding the warm runtime (a depth count, so run scopes may nest)
+_active_runs = (
+    0  # in-flight runs holding the warm runtime (a depth count, so run scopes may nest)
+)
 
 
 class ResyncInFlightError(RuntimeError):
@@ -69,6 +71,8 @@ def reset_warm_runtime() -> None:
                 f"resync attempted while {_active_runs} run(s) are in flight - resync between runs, "
                 "not during one"
             )
-        logger.info("Resync: tearing down warm hotpatch processes and staged shm segments")
+        logger.info(
+            "Resync: tearing down warm hotpatch processes and staged shm segments"
+        )
         HotpatchPool.terminate_all()
         clear_staged_segments()

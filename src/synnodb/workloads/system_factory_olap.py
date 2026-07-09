@@ -55,8 +55,7 @@ class OLAPSystemFactory(SystemFactory):
             # the ground-truth answer for whatever the engine ingested.
             duckdb_source = (
                 exec_settings.data_source
-                if exec_settings.data_source
-                in (DataSource.PARQUET, DataSource.DUCKDB)
+                if exec_settings.data_source in (DataSource.PARQUET, DataSource.DUCKDB)
                 else DataSource.FLAT
             )
             validate_storage_combo(

@@ -200,15 +200,23 @@ def test_composite_key_matched_as_tuple():
     con = duckdb.connect()
     try:
         # psupp (100 rows) is the anchor; li (50) is sampled against it over the composite key.
-        con.execute("CREATE TABLE psupp AS SELECT i AS pk, i * 10 AS sk FROM range(100) t(i)")
-        con.execute("CREATE TABLE li AS SELECT i AS pk, i * 10 AS sk, i AS extra FROM range(50) t(i)")
-        queries = {"1": "SELECT * FROM li JOIN psupp ON li.pk = psupp.pk AND li.sk = psupp.sk"}
+        con.execute(
+            "CREATE TABLE psupp AS SELECT i AS pk, i * 10 AS sk FROM range(100) t(i)"
+        )
+        con.execute(
+            "CREATE TABLE li AS SELECT i AS pk, i * 10 AS sk, i AS extra FROM range(50) t(i)"
+        )
+        queries = {
+            "1": "SELECT * FROM li JOIN psupp ON li.pk = psupp.pk AND li.sk = psupp.sk"
+        }
         ds = ReferentialDownscaler(con, sql_by_id=queries, whole_table_threshold=1)
         assert ds.anchor() == "psupp"
 
         plan = ds.plan_subset(0.5)
         li_sql = next(t.sql for t in plan.tables if t.table == "li")
-        assert "EXISTS" in li_sql, li_sql  # tuple semantics, not two independent IN checks
+        assert "EXISTS" in li_sql, (
+            li_sql
+        )  # tuple semantics, not two independent IN checks
 
         # Force a cross-pattern parent keep-set so component values span rows that share no tuple.
         ds._drop_keep_tables()
@@ -318,7 +326,9 @@ def _make_constrained_source(path: Path) -> None:
     """A small referential chain region <- nation <- supplier with declared PK/FK constraints and
     a DECIMAL column, so a snapshot's constraint- and type-fidelity can both be checked."""
     con = duckdb.connect(str(path))
-    con.execute("CREATE TABLE region(r_regionkey INTEGER PRIMARY KEY, r_name VARCHAR NOT NULL)")
+    con.execute(
+        "CREATE TABLE region(r_regionkey INTEGER PRIMARY KEY, r_name VARCHAR NOT NULL)"
+    )
     con.execute(
         "CREATE TABLE nation(n_nationkey INTEGER PRIMARY KEY, n_name VARCHAR, "
         "n_regionkey INTEGER REFERENCES region(r_regionkey))"

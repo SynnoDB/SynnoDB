@@ -686,7 +686,9 @@ def test_run_env_injects_shm_ingest_for_duckdb_subset():
     try:
         run_env = _run_env_with_optional_shm_ingest(base_env, subset_db)
         ingest = Path(run_env["SYNNODB_SHM_INGEST"])
-        assert run_env["CORE_IDS"] == "0,1"  # merged base env preserved (core pinning survives)
+        assert (
+            run_env["CORE_IDS"] == "0,1"
+        )  # merged base env preserved (core pinning survives)
         assert "SYNNODB_SHM_INGEST" not in base_env  # caller's dict is not mutated
         assert (ingest / "lineitem.arrow").exists()  # loader has a real segment to map
     finally:

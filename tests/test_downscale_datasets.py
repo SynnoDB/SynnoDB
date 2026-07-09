@@ -29,7 +29,9 @@ duckdb = pytest.importorskip("duckdb")
 pytest.importorskip("sqlglot")
 
 from synnodb.utils.path_utils import repo_root
-from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import ReferentialDownscaler
+from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
+    ReferentialDownscaler,
+)
 
 
 # --------------------------------------------------------------------------- shared assertions
@@ -61,7 +63,9 @@ def _assert_no_dangling(
         con,
         f"SELECT COUNT(*) FROM {k}{child} WHERE {fk} NOT IN (SELECT {pk} FROM {k}{parent})",
     )
-    assert dangling == 0, f"{child}.{fk} has {dangling} rows dangling out of {parent}.{pk}"
+    assert dangling == 0, (
+        f"{child}.{fk} has {dangling} rows dangling out of {parent}.{pk}"
+    )
 
 
 def _assert_anchor_and_modes(
@@ -134,8 +138,13 @@ def test_tpch_anchor_and_kept_whole(tpch):
         sampled={"orders", "customer", "part", "partsupp"},
     )
     # the anchor is sampled to (near) the requested fraction, not merely "smaller"
-    assert abs(_modes(plan)["lineitem"].kept_rows / ds.schema.row_counts["lineitem"]
-               - _TPCH_FRACTION) < 0.02
+    assert (
+        abs(
+            _modes(plan)["lineitem"].kept_rows / ds.schema.row_counts["lineitem"]
+            - _TPCH_FRACTION
+        )
+        < 0.02
+    )
 
 
 def test_tpch_referential_closure(tpch):
@@ -170,8 +179,12 @@ def test_tpch_workload_joins_non_vacuous(tpch):
 
 def test_tpch_determinism(tpch):
     con, ds = tpch
-    first = {t.table: t.kept_rows for t in ds.materialize_temp_subset(_TPCH_FRACTION).tables}
-    second = {t.table: t.kept_rows for t in ds.materialize_temp_subset(_TPCH_FRACTION).tables}
+    first = {
+        t.table: t.kept_rows for t in ds.materialize_temp_subset(_TPCH_FRACTION).tables
+    }
+    second = {
+        t.table: t.kept_rows for t in ds.materialize_temp_subset(_TPCH_FRACTION).tables
+    }
     assert first == second
 
 
@@ -242,18 +255,28 @@ def _populate_imdb(con: "duckdb.DuckDBPyConnection") -> None:
     con.execute(imdb_schema)
     n = _IMDB_SIZES
     # lookup / dimension tables (small -> kept whole)
-    con.execute(f"INSERT INTO kind_type SELECT i, 'k' || i FROM range({n['kind_type']}) t(i)")
-    con.execute(f"INSERT INTO role_type SELECT i, 'r' || i FROM range({n['role_type']}) t(i)")
-    con.execute(f"INSERT INTO info_type SELECT i, 'info' || i FROM range({n['info_type']}) t(i)")
-    con.execute(f"INSERT INTO company_type SELECT i, 'ct' || i FROM range({n['company_type']}) t(i)")
-    con.execute(f"INSERT INTO keyword SELECT i, 'kw' || i, NULL FROM range({n['keyword']}) t(i)")
+    con.execute(
+        f"INSERT INTO kind_type SELECT i, 'k' || i FROM range({n['kind_type']}) t(i)"
+    )
+    con.execute(
+        f"INSERT INTO role_type SELECT i, 'r' || i FROM range({n['role_type']}) t(i)"
+    )
+    con.execute(
+        f"INSERT INTO info_type SELECT i, 'info' || i FROM range({n['info_type']}) t(i)"
+    )
+    con.execute(
+        f"INSERT INTO company_type SELECT i, 'ct' || i FROM range({n['company_type']}) t(i)"
+    )
+    con.execute(
+        f"INSERT INTO keyword SELECT i, 'kw' || i, NULL FROM range({n['keyword']}) t(i)"
+    )
     con.execute(
         "INSERT INTO company_name SELECT i, 'co' || i, 'US', NULL, NULL, NULL, NULL "
         f"FROM range({n['company_name']}) t(i)"
     )
     # person dimension - large enough to be sampled
     con.execute(
-        'INSERT INTO "name" SELECT i, \'p\' || i, NULL, NULL, '
+        "INSERT INTO \"name\" SELECT i, 'p' || i, NULL, NULL, "
         "CASE WHEN i % 2 = 0 THEN 'm' ELSE 'f' END, NULL, NULL, NULL, NULL "
         f"FROM range({n['name']}) t(i)"
     )
@@ -353,8 +376,12 @@ def test_imdb_workload_joins_non_vacuous(imdb):
 
 def test_imdb_determinism(imdb):
     con, ds = imdb
-    first = {t.table: t.kept_rows for t in ds.materialize_temp_subset(_IMDB_FRACTION).tables}
-    second = {t.table: t.kept_rows for t in ds.materialize_temp_subset(_IMDB_FRACTION).tables}
+    first = {
+        t.table: t.kept_rows for t in ds.materialize_temp_subset(_IMDB_FRACTION).tables
+    }
+    second = {
+        t.table: t.kept_rows for t in ds.materialize_temp_subset(_IMDB_FRACTION).tables
+    }
     assert first == second
 
 

@@ -161,9 +161,17 @@ class JoinRelationship:
         if self.table_a == self.table_b:
             return None
         if table == self.table_a:
-            return ([a for a, _ in self.pairs], self.table_b, [b for _, b in self.pairs])
+            return (
+                [a for a, _ in self.pairs],
+                self.table_b,
+                [b for _, b in self.pairs],
+            )
         if table == self.table_b:
-            return ([b for _, b in self.pairs], self.table_a, [a for a, _ in self.pairs])
+            return (
+                [b for _, b in self.pairs],
+                self.table_a,
+                [a for a, _ in self.pairs],
+            )
         return None
 
 
@@ -605,7 +613,10 @@ class ReferentialDownscaler:
                 if side is None:
                     continue
                 own_cols, other, other_cols = side
-                if other in whole or order_index.get(other, 1 << 30) >= order_index[table]:
+                if (
+                    other in whole
+                    or order_index.get(other, 1 << 30) >= order_index[table]
+                ):
                     continue  # whole neighbours don't restrict; only earlier-processed ones
                 keep = self._keep_name(other)
                 match = " AND ".join(
@@ -694,7 +705,9 @@ class ReferentialDownscaler:
                 self._drop_keep_tables()
         return plan
 
-    def copy_subset_to_parquet(self, fraction: float, out_dir: Path | str) -> SubsetResult:
+    def copy_subset_to_parquet(
+        self, fraction: float, out_dir: Path | str
+    ) -> SubsetResult:
         """Materialize ``fraction`` and write ``<out_dir>/<table>.parquet`` for every table.
 
         Whole tables are copied straight from the source (no temp table needed); sampled tables
@@ -811,7 +824,9 @@ def _source_is_read_only(source_con: duckdb.DuckDBPyConnection) -> bool:
         return False
 
 
-def _snapshot_via_copy_database(source_con: duckdb.DuckDBPyConnection, out_db: Path) -> None:
+def _snapshot_via_copy_database(
+    source_con: duckdb.DuckDBPyConnection, out_db: Path
+) -> None:
     """Snapshot with ``COPY FROM DATABASE`` - one statement, one transaction, full schema
     (including declared constraints). Needs a read-write source connection to attach a writable
     target; raises for a read-only one, which cannot."""
@@ -824,7 +839,9 @@ def _snapshot_via_copy_database(source_con: duckdb.DuckDBPyConnection, out_db: P
     source_con.execute(f"ATTACH '{attach_path}' AS {alias}")
     try:
         source_con.execute(f"COPY FROM DATABASE {_quote_ident(src_name)} TO {alias}")
-        source_con.execute(f"CHECKPOINT {alias}")  # fold the WAL so the file is self-contained
+        source_con.execute(
+            f"CHECKPOINT {alias}"
+        )  # fold the WAL so the file is self-contained
     finally:
         source_con.execute(f"DETACH {alias}")
 

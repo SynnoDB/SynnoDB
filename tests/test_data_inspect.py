@@ -167,8 +167,7 @@ def test_expensive_query_hits_wallclock_budget(tool, monkeypatch):
 
     monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
     out = tool(
-        "SELECT max(a.range * b.range) AS m "
-        "FROM range(10000000) a, range(10000000) b"
+        "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b"
     )
     assert "inspection budget" in out and "cancelled" in out
     # The cached connection survives: the interrupt hit only the throwaway cursor.
@@ -230,7 +229,8 @@ def test_row_cap_is_part_of_cache_key(tmp_path):
     base.mkdir()
     _make_duckdb_subset(base)
     tool = DataInspectTool(
-        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=tmp_path / "cache"
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=tmp_path / "cache",
     )
     # nation has 5 rows: a cap of 2 truncates, a cap of 100 shows them all. If the row cap were
     # not in the key, the second call would wrongly replay the first call's truncated rendering.
@@ -319,7 +319,9 @@ def test_factory_invokes_tool(tmp_path):
     assert "sql" in schema["properties"]
     assert "max_rows" in schema["properties"]
 
-    out = asyncio.run(ft.on_invoke_tool(None, '{"sql": "SELECT count(*) AS n FROM orders"}'))
+    out = asyncio.run(
+        ft.on_invoke_tool(None, '{"sql": "SELECT count(*) AS n FROM orders"}')
+    )
     assert "200" in out
 
 

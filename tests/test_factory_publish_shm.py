@@ -138,7 +138,10 @@ def test_derive_expected_tables_native_reads_subset_duckdb(tmp_path):
         ("l_amt", "DECIMAL(15,2)"),
     ]
     # missing subset.duckdb -> None (withhold the shm plane rather than half-declare a schema)
-    assert _derive_expected_tables(tmp_path / "nope", ["lineitem"], ServeFrom.DUCKDB) is None
+    assert (
+        _derive_expected_tables(tmp_path / "nope", ["lineitem"], ServeFrom.DUCKDB)
+        is None
+    )
 
 
 # ── the auto-publish wires both into the manifest ──────────────────────────
@@ -314,7 +317,7 @@ def test_factory_publish_native_ships_shm_only(tmp_path, monkeypatch):
     managed = tmp_path / "managed"
     con = duckdb.connect(str(src), read_only=True)
     try:
-        spec = register_workload_from_duckdb(
+        register_workload_from_duckdb(
             name="native_pub",
             con=con,
             queries_json={"1": "SELECT count(*) FROM lineitem"},

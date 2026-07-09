@@ -524,7 +524,9 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     # built for OLAP-style providers that expose the benchmark subset. Cached on disk like the
     # other tools so repeated look-ups (and full-run replays) never re-touch the data.
     data_inspect_tool = None
-    if hasattr(workload_provider, "spec") and hasattr(workload_provider, "benchmark_sf"):
+    if hasattr(workload_provider, "spec") and hasattr(
+        workload_provider, "benchmark_sf"
+    ):
         data_inspect_tool = DataInspectTool(
             workload_provider=workload_provider,
             cache_dir=data_inspect_cache_dir,
