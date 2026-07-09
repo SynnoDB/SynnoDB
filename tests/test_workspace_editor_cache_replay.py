@@ -17,7 +17,7 @@ class FakeRunStatsCollector:
         pass
 
     def record_apply_patch_cache_hit(self) -> None:
-        pass
+        self.cache_hits = getattr(self, "cache_hits", 0) + 1
 
 
 class FakeSnapshotter:

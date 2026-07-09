@@ -50,13 +50,13 @@ class _FakeEngine:
     def ingest(self, tables):  # only exercised on the shm plane
         pass
 
-    def run(self, query_id, placeholders) -> pa.Table:
+    def run(self, query_id, placeholders):
         self.ran.append((query_id, dict(placeholders)))
         bracket = _lookup_template(SQL, str(query_id))
         concrete = substitute(bracket, placeholders)
         if self._mode == "broken":
-            return pa.table({"wrong": [-1]})
-        return self._inner.execute(concrete).to_arrow_table()
+            return pa.table({"wrong": [-1]}), None
+        return self._inner.execute(concrete).to_arrow_table(), None
 
     def close(self):
         pass

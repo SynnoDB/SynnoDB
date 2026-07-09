@@ -4,7 +4,7 @@
 // <<thread_pool_include>>
 // <<trace_include>>
 // Increment file version to invalidate cache when this file is changed. This is needed because this file is included in the generated code and changes to it should trigger regeneration of all code that includes it.
-// FILE_VERSION: 7
+// FILE_VERSION: 8
 
 
 #include <chrono>
@@ -88,7 +88,7 @@ std::vector<QueryResult> query(Database* db, const std::vector<std::string>& que
         const auto& req = requests[i];
         // <<drop_buffer_and_os_caches_call>>
         // TRACE_RESET();
-        long long elapsed_ms = -1;
+        double elapsed_ms = -1;
         std::string error;
         const std::string prefix =
             "run #" + std::to_string(i + 1) + " Q" + req.query_id+"(" + req.req_id + "): ";
