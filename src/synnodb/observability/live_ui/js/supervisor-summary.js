@@ -33,8 +33,10 @@ function _supCurrentIndex(entries) {
 function updateSupervisorSummary(steps, data) {
   const entries = _supEntries(steps, data);
   const panel = document.getElementById('sup-summary-panel');
-  if (!entries.length) { panel.hidden = true; return; }
+  const resizer = document.getElementById('sup-resizer');
+  if (!entries.length) { panel.hidden = true; resizer.hidden = true; return; }
   panel.hidden = false;
+  resizer.hidden = false;
 
   const idx = _supCurrentIndex(entries);
   const entry = entries[idx];
@@ -73,3 +75,41 @@ document.getElementById('sup-next').addEventListener('click', () => {
   }
   updateSupervisorSummary(_lastSteps, _lastData);
 });
+
+// Draggable divider between the activity log list and the supervisor panel.
+// Dragging up grows the supervisor panel (and shrinks the log list, which
+// flexes to fill the remaining space); dragging down shrinks it. The chosen
+// height overrides the default CSS cap until the panel is next hidden.
+(function initSupResizer() {
+  const resizer = document.getElementById('sup-resizer');
+  const panel = document.getElementById('sup-summary-panel');
+  const MIN_H = 64;   // keep the header and a line of text visible
+  const LIST_MIN = 120;  // never let the drag collapse the log list away
+
+  function clamp(h) {
+    const maxH = panel.parentElement.clientHeight - LIST_MIN;
+    return Math.max(MIN_H, Math.min(h, Math.max(MIN_H, maxH)));
+  }
+
+  function onMove(e) {
+    // Panel bottom is pinned to the bar's bottom edge, so the target height is
+    // just the distance from the pointer up to that edge.
+    const bottom = panel.getBoundingClientRect().bottom;
+    panel.style.maxHeight = 'none';
+    panel.style.height = clamp(bottom - e.clientY) + 'px';
+    e.preventDefault();
+  }
+
+  function onUp() {
+    document.body.classList.remove('sup-resizing');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  }
+
+  resizer.addEventListener('pointerdown', (e) => {
+    document.body.classList.add('sup-resizing');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    e.preventDefault();
+  });
+})();
