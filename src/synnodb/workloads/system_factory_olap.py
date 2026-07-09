@@ -70,16 +70,20 @@ class OLAPSystemFactory(SystemFactory):
 
             # Cache by (sf, source representation): the same SF can be queried against parquet
             # views, flat-from-parquet, or flat-from-subset.duckdb - distinct physical
-            # representations that must not share a cached connection.
+            # representations that must not share a cached connection. Thread count is
+            # deliberately NOT part of this key: it's a mutable property of the connection
+            # (resynced below), not a distinct physical representation - keying on it would
+            # rebuild (and for IN_MEMORY, re-materialize) the whole dataset on every thread-count
+            # change instead of just re-issuing PRAGMA threads.
+            if general_system_config.num_threads == 1:
+                val_pin_worker = True
+                val_pin_core = DUCKDB_PIN_CORE
+            else:
+                val_pin_worker = False
+                val_pin_core = None
+
             con_key = (exec_settings.scale_factor, duckdb_source.value)
             if con_key not in self.duckdb_cons:
-                if general_system_config.num_threads == 1:
-                    val_pin_worker = True
-                    val_pin_core = DUCKDB_PIN_CORE
-                else:
-                    val_pin_worker = False
-                    val_pin_core = None
-
                 self.duckdb_cons[con_key] = DuckDBConnectionManager(
                     benchmark=benchmark,
                     dataset_tables=OLAPWorkloadProvider._dataset_tables(benchmark),
@@ -93,6 +97,15 @@ class OLAPSystemFactory(SystemFactory):
                     disk_db_dir=exec_settings.disk_db_dir,
                     run_duckdb_on_parquet=run_on_parquet,
                     serve_from=serve_from,
+                )
+            else:
+                # The run tool's thread count may have changed since this connection was built
+                # (e.g. a stage switching from serial generation to multi-threaded validation) -
+                # DuckDB must always run at the same thread count as the engine under test.
+                self.duckdb_cons[con_key].set_thread_config(
+                    num_threads=general_system_config.num_threads,
+                    pin_worker=val_pin_worker,
+                    pin_core=val_pin_core,
                 )
             return self.duckdb_cons[con_key]
         elif system_name == System.UMBRA:
