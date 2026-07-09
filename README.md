@@ -9,7 +9,7 @@ bespoke C++ engines** - falling back to DuckDB for everything else, cross-checke
 
 [![PyPI](https://img.shields.io/pypi/v/synnodb.svg?color=blue)](https://pypi.org/project/synnodb/)
 [![Python](https://img.shields.io/pypi/pyversions/synnodb.svg)](https://pypi.org/project/synnodb/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Polyform_Non_Commercial-green.svg)](LICENSE)
 [![Paper](https://img.shields.io/badge/paper-VLDB-b31b1b.svg)](https://arxiv.org/pdf/2603.02001)
 [![Website](https://img.shields.io/badge/website-synnodb.com-1f6feb.svg)](https://synnodb.com)
 
@@ -18,7 +18,9 @@ bespoke C++ engines** - falling back to DuckDB for everything else, cross-checke
 [📦 PyPI](https://pypi.org/project/synnodb/) &nbsp;·&nbsp;
 [📓 Demo Notebook](tutorials/gen_tpch_demo.ipynb)
 
+*Required Notice: Copyright 2026 SynnoDB*
 </div>
+
 
 ---
 
