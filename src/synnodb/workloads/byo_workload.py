@@ -792,7 +792,7 @@ def register_workload_from_duckdb(
     serve_from: "ServeFrom | str" = ServeFrom.DUCKDB,
     source_db_path: str | Path | None = None,
     source_is_static: bool = False,
-    reuse_existing_subsets: bool = False,
+    always_resample: bool = False,
 ) -> WorkloadSpec:
     """Register a workload sourced from a DuckDB connection, deriving the fast-check subsets by
     FK-preserving downscaling instead of taking pre-scaled parquet (the connection-sourced sibling
@@ -849,20 +849,19 @@ def register_workload_from_duckdb(
         source_is_static: True when ``con`` is a SynnoDB-owned read-only handle to a file nothing
             writes for the workload's lifetime - the source is read in place and a prior benchmark
             subset may be reused. False (the default) treats ``con`` as a live connection the caller
-            may keep writing to: it is snapshotted to a frozen image first and re-snapshotted every
-            run, unless ``reuse_existing_subsets`` opts into snapshot reuse.
-        reuse_existing_subsets: opt in to skip re-snapshotting a *live* source when a benchmark
-            subset for an unchanged source already exists on disk (no effect on a static source,
-            which already reuses when current). The source is fingerprinted in place - a cheap
-            read-only introspection of its schema, per-table row counts and inferred join graph - and
-            the snapshot + benchmark subset are reused only when that fingerprint matches the one they
-            were built from. Any change that would alter which rows a subset contains (a new/renamed
-            table or column, a different row count, a changed join graph, fractions, threshold,
-            storage format, or DuckDB version) fails the guard and re-snapshots. This governs
-            snapshot reuse, not downscaling (which is always lazy). It trades the always-fresh
-            guarantee for speed: a source mutated so its fingerprint is unchanged (row *values*
-            edited without changing counts or schema) would be served stale, so enable it only when
-            re-registering a source you know is unchanged.
+            may keep writing to: it is snapshotted to a frozen image first, and re-snapshotted only
+            when its fingerprint moved (or ``always_resample`` forces it).
+        always_resample: force a fresh snapshot + benchmark subset (and, lazily, fractional rungs)
+            on every call, bypassing the fingerprint-reuse default. By default the source is
+            fingerprinted in place - a cheap read-only introspection of its schema, per-table row
+            counts and inferred join graph - and the snapshot + benchmark subset are reused whenever
+            that fingerprint matches the one they were built from; any change that alters which rows a
+            subset contains (a new/renamed table or column, a different row count, a changed join
+            graph, fractions, threshold, storage format, or DuckDB version) moves the fingerprint and
+            re-snapshots on its own. The fingerprint does not read row *values*, so a source mutated
+            in place without changing counts or schema keeps the same fingerprint and would be reused
+            stale; set ``always_resample=True`` for such a source to guarantee fresh data every run.
+            Governs snapshot reuse only, not downscaling (always lazy).
     """
     from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
         ReferentialDownscaler,
@@ -908,24 +907,23 @@ def register_workload_from_duckdb(
         probe, subsets, whole_table_threshold, serve_from
     )
 
-    # Sync only freezes the source and materializes the full ``fraction1`` benchmark subset - the
-    # fractional rungs are downscaled lazily by ``OLAPWorkloadProvider.prepare`` at run start, so a
-    # plain re-ingest never re-downscales. The benchmark subset is reused verbatim (no re-snapshot,
-    # no rebuild) only when it is current: a static source is always eligible; a live source only
-    # when the caller opts into ``reuse_existing_subsets`` and the frozen snapshot still exists. A
-    # live source without the flag is always re-snapshotted so its data is fresh. A rebuild clears
-    # any already-materialized fractional subsets so ``prepare`` re-derives them from the new
-    # snapshot; reuse keeps them.
+    # Reuse the materialized subsets verbatim (no re-snapshot, no rebuild) whenever they are current
+    # for the source, so re-running the same notebook against unchanged data is cheap. A rebuild
+    # clears any already-materialized fractional subsets so ``prepare`` re-derives them from the new
+    # snapshot (downscaling always stays lazy); reuse keeps them.
     benchmark_current = _benchmark_is_current(
         managed_root, dataset_version, serve_from, resolved_tables
     )
-    snapshot_present = (managed_root / _SOURCE_SNAPSHOT).exists()
-    if source_is_static:
-        reused = benchmark_current
-    elif reuse_existing_subsets:
-        reused = benchmark_current and snapshot_present
-    else:
+    if always_resample:
         reused = False
+    elif source_is_static:
+        # A static source is read in place with no snapshot copy; its benchmark subset is a symlink,
+        # so a current fingerprint alone is enough to reuse.
+        reused = benchmark_current
+    else:
+        # A live source's lazy downscaler reads from the retained snapshot, so reuse also requires
+        # that snapshot to still exist.
+        reused = benchmark_current and (managed_root / _SOURCE_SNAPSHOT).exists()
 
     if reused:
         logger.info(

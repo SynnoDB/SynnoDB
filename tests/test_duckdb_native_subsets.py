@@ -53,6 +53,15 @@ def _make_source(path: Path) -> None:
     con.close()
 
 
+def _grow_lineitem(con, start: int = 1000, stop: int = 3000) -> None:
+    """Append rows to ``lineitem`` (matching ``_make_source``'s columns) so a source's fingerprint
+    moves - used to exercise the rebuild path across the reuse tests."""
+    con.execute(
+        "INSERT INTO lineitem SELECT i AS l_id, (i % 200) AS l_orderkey, "
+        f"(i % 7)::DECIMAL(10,2) AS l_amt FROM range({start}, {stop}) t(i)"
+    )
+
+
 @pytest.fixture
 def source_db(tmp_path):
     path = tmp_path / "src.duckdb"
@@ -158,10 +167,7 @@ def test_benchmark_subset_is_frozen_snapshot(tmp_path, source_db):
         assert full.resolve() == (managed / ".source_snapshot.duckdb").resolve()
 
         # The caller keeps writing to their live database in parallel...
-        live_rw.execute(
-            "INSERT INTO lineitem SELECT i AS l_id, (i % 200) AS l_orderkey, "
-            "(i % 7)::DECIMAL(10,2) AS l_amt FROM range(1000, 2000) t(i)"
-        )
+        _grow_lineitem(live_rw, 1000, 2000)
         # ...but the frozen benchmark subset still reflects the snapshot instant (1000 rows), and
         # opening it read-only does not collide with the live read-write connection.
         con = duckdb.connect(str(full), read_only=True)
@@ -201,10 +207,7 @@ def test_stale_subsets_rebuilt_when_source_changes(tmp_path):
 
     v1 = reg().dataset_version
     grow = duckdb.connect(str(src))
-    grow.execute(
-        "INSERT INTO lineitem SELECT i AS l_id, (i % 200) AS l_orderkey, "
-        "(i % 7)::DECIMAL(10,2) AS l_amt FROM range(1000, 3000) t(i)"
-    )
+    _grow_lineitem(grow)
     grow.close()
     v2 = reg().dataset_version
 
@@ -217,11 +220,11 @@ def test_stale_subsets_rebuilt_when_source_changes(tmp_path):
         con.close()
 
 
-def test_reuse_existing_subsets_reuses_unchanged_live_source(tmp_path):
-    """``reuse_existing_subsets`` reuses an on-disk materialization for a *live* source when its
-    fingerprint is unchanged - no re-snapshot, no re-downscale - yet still rebuilds once the source
-    changes. A sentinel dropped inside a subset dir survives a reuse (the dir is left untouched) but
-    not a rebuild (``_clear_managed_subsets`` rmtrees every ``fraction*`` dir first)."""
+def test_unchanged_live_source_reused_by_default(tmp_path):
+    """By default a *live* source reuses its on-disk materialization when the fingerprint is
+    unchanged - no re-snapshot, no re-downscale - yet still rebuilds once the source changes. A
+    sentinel dropped inside a subset dir survives a reuse (the dir is left untouched) but not a
+    rebuild (``_clear_managed_subsets`` rmtrees every ``fraction*`` dir first)."""
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
 
     src = tmp_path / "src.duckdb"
@@ -241,7 +244,6 @@ def test_reuse_existing_subsets_reuses_unchanged_live_source(tmp_path):
                 serve_from=ServeFrom.DUCKDB,
                 source_db_path=str(src),
                 source_is_static=False,
-                reuse_existing_subsets=True,
             )
         finally:
             con.close()
@@ -261,20 +263,18 @@ def test_reuse_existing_subsets_reuses_unchanged_live_source(tmp_path):
     # Changing the source moves the fingerprint and forces a re-snapshot that clears the stale
     # fractional subsets (sentinel is gone); prepare would rebuild them from the new snapshot.
     grow = duckdb.connect(str(src))
-    grow.execute(
-        "INSERT INTO lineitem SELECT i AS l_id, (i % 200) AS l_orderkey, "
-        "(i % 7)::DECIMAL(10,2) AS l_amt FROM range(1000, 3000) t(i)"
-    )
+    _grow_lineitem(grow)
     grow.close()
     v3 = reg().dataset_version
     assert v3 != v1
     assert not sentinel.exists()
 
 
-def test_live_source_rebuilds_without_reuse_flag(tmp_path):
-    """Without ``reuse_existing_subsets`` a live source re-snapshots every run even when unchanged:
-    the default freezes a new snapshot and clears the fractional subsets (rebuilt lazily), so a
-    sentinel in a subset dir does not survive."""
+def test_always_resample_rebuilds_live_source(tmp_path):
+    """``always_resample`` re-snapshots every run even when the source is unchanged: it freezes a
+    new snapshot and clears the fractional subsets (rebuilt lazily), so a sentinel in a subset dir
+    does not survive - the escape hatch for a source edited in place without moving its
+    fingerprint."""
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
 
     src = tmp_path / "src.duckdb"
@@ -294,6 +294,7 @@ def test_live_source_rebuilds_without_reuse_flag(tmp_path):
                 serve_from=ServeFrom.DUCKDB,
                 source_db_path=str(src),
                 source_is_static=False,
+                always_resample=True,
             )
         finally:
             con.close()
@@ -338,8 +339,9 @@ def test_sync_snapshots_only_no_fractional_downscale(tmp_path):
 
 
 def test_reingest_after_synthesis_does_not_downscale(tmp_path):
-    """Re-ingesting (re-syncing) never runs the downscaler: sync only re-snapshots and clears the
-    stale fractional subsets, leaving them absent until the next run's ``prepare`` rebuilds them."""
+    """A re-ingest that rebuilds (the source changed) never runs the downscaler: sync re-snapshots
+    and clears the stale fractional subsets, leaving them absent until the next run's ``prepare``
+    rebuilds them."""
     from synnodb.workloads.byo_workload import register_workload_from_duckdb
 
     src = tmp_path / "src.duckdb"
@@ -366,6 +368,12 @@ def test_reingest_after_synthesis_does_not_downscale(tmp_path):
     reg()
     _prepare(managed, "reingest")  # a run downscales the fractional subset
     assert (managed / "fraction0.2" / "subset.duckdb").exists()
+
+    # Change the source so the fingerprint moves and the re-ingest rebuilds: it clears the stale
+    # fractional subset but does NOT re-downscale (that stays lazy until the next run's prepare).
+    grow = duckdb.connect(str(src))
+    _grow_lineitem(grow)
+    grow.close()
 
     reg()  # re-ingest: re-snapshots and clears the fractional subset, but does NOT downscale
     assert not (managed / "fraction0.2").exists()

@@ -486,7 +486,7 @@ class SynnoDB:
         schema_example_table: str | None = None,
         whole_table_threshold: int = 10_000,
         serve_from: "ServeFrom | str" = ServeFrom.DUCKDB,
-        reuse_existing_subsets: bool = False,
+        always_resample: bool = False,
         set_as_workload: bool = True,
     ):
         """Register a workload straight from a live DuckDB connection - no pre-scaled parquet.
@@ -497,8 +497,10 @@ class SynnoDB:
         in ``downscale_fractions`` becomes a referentially-closed fast-check rung (**FK-preserving
         downscaling**, §6) that is built **lazily from the snapshot at the first synthesis run**
         (``OLAPWorkloadProvider.prepare``). So re-ingesting after synthesis - calling this again when
-        the caller's data changed - just re-snapshots and never re-downscales. The connection is only
-        read; nothing is copied back into it.
+        the caller's data changed - just re-snapshots and never re-downscales. Re-ingesting *unchanged*
+        data reuses the existing snapshot and subsets verbatim (fingerprint match), so re-running the
+        same notebook is cheap; pass ``always_resample=True`` to force a fresh snapshot regardless. The
+        connection is only read; nothing is copied back into it.
 
         The caller may keep working on their database in parallel. A live connection is frozen into
         a consistent point-in-time snapshot SynnoDB owns before anything is read from it, and every
@@ -533,14 +535,13 @@ class SynnoDB:
                 read-only file for a path, or the snapshot SynnoDB owns for a live connection -
                 never the caller's live database, so the framework's later read-only opens cannot
                 collide with a read-write handle the caller may still hold.
-            reuse_existing_subsets: skip re-**snapshotting** a *live* connection when a benchmark
-                subset for an unchanged source already exists on disk (no effect on a ``.duckdb``
-                path, which is static and already reuses when current). The live source is
-                fingerprinted in place and reused only when that fingerprint - schema, per-table row
-                counts, join graph, fractions, threshold, format and DuckDB version - still matches;
-                any change re-snapshots. This governs snapshot reuse, not downscaling (which is
-                always lazy): enable it to make re-running the same notebook cheap; leave it off
-                (default) to always re-snapshot from fresh data.
+            always_resample: force a fresh **snapshot** + benchmark subset on every call, bypassing
+                the fingerprint-reuse default. By default the source is fingerprinted in place and its
+                snapshot + subsets are reused whenever that fingerprint - schema, per-table row counts,
+                join graph, fractions, threshold, format and DuckDB version - still matches; any change
+                re-snapshots on its own. The fingerprint does not read row *values*, so set this True
+                for a source you may edit in place without changing counts or schema, to guarantee
+                fresh data every run. Governs snapshot reuse only, not downscaling (always lazy).
             set_as_workload: point this driver's config at the new workload (default True).
 
         Returns the registered :class:`~synnodb.workloads.workload_spec.WorkloadSpec`.
@@ -594,7 +595,7 @@ class SynnoDB:
                 serve_from=serve_from,
                 source_db_path=source_db_path,
                 source_is_static=source_is_static,
-                reuse_existing_subsets=reuse_existing_subsets,
+                always_resample=always_resample,
             )
         finally:
             if opened is not None:

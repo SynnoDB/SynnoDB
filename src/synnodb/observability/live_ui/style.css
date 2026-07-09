@@ -394,9 +394,11 @@ details.log-entry[open] .log-chevron{transform:rotate(90deg);}
 .chart-empty-title{font-size:13px;font-weight:600;color:var(--text);
                    letter-spacing:.3px;}
 .chart-empty-sub{font-size:11px;line-height:1.45;color:var(--muted);max-width:320px;}
+#qc-sf-wrap{display:flex;align-items:center;gap:6px;}
+#qc-sf-wrap[hidden]{display:none;}
+#qc-sf-label{font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);}
 #qc-sf-toggle{display:flex;background:rgba(0,0,0,.35);border:1px solid var(--border);
               border-radius:6px;padding:2px;gap:2px;}
-#qc-sf-toggle[hidden]{display:none;}
 .sf-btn{background:none;border:none;border-radius:4px;padding:2px 8px;
         font-size:10px;font-family:inherit;letter-spacing:.4px;text-transform:uppercase;
         color:var(--muted);cursor:pointer;transition:background .12s,color .12s;
