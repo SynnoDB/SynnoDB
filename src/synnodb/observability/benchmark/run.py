@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
-from synnodb.cpp_runner.prepare_repo.prepare_features import Parallelism
 from synnodb.observability.benchmark.systems import track
 from synnodb.observability.benchmark.writer import BenchmarkWriter
 from synnodb.observability.logging.logger import setup_logging
@@ -132,7 +131,15 @@ def _synno_data_dir() -> Path:
 
 
 def _core_ids_for(num_threads: int) -> list[int] | None:
-    return list(range(num_threads)) if num_threads > 1 else None
+    # Resolve through the same helper generation and serving use, so the benchmark pins
+    # to the same cores the engine is validated/served on (in particular, core 0 is left
+    # to the OS). Serial (<=1) pins nothing.
+    if num_threads <= 1:
+        return None
+    from synnodb.utils.core_utils import resolve_target_cores
+
+    _, core_ids = resolve_target_cores(num_threads)
+    return core_ids
 
 
 def _resolve_snapshots(
@@ -140,17 +147,17 @@ def _resolve_snapshots(
     snapshots: list[str],
     wandb_run_ids: list[str],
     workload: Workload,
-) -> tuple[list[str], list[Parallelism]]:
-    """Return (snapshot_hashes, parallelism modes) for the bespoke system."""
+) -> list[str]:
+    """Return the bespoke system's snapshot hashes: the given hashes directly, or the
+    ``code/snapshot_hash`` resolved from each W&B run id. The engine's serving thread
+    count is a run-time knob (``--num_threads``), not a property of the snapshot, so it
+    is not derived here."""
     if snapshots:
-        # Direct hashes: prepare mode (mt vs optim) is unknown -> default to
-        # single-thread prep.
-        return snapshots, [Parallelism.SINGLE_THREADED] * len(snapshots)
+        return snapshots
 
     run_snapshots: list[str] = []
-    parallelisms: list[Parallelism] = []
     for wandb_id in wandb_run_ids:
-        statistics, config, _ = wandb_retrieve_metrics_for_run(
+        statistics, _config, _ = wandb_retrieve_metrics_for_run(
             workload, wandb_id, fetch_latest_runtimes=False
         )
         snapshot_hash = statistics["code/snapshot_hash"]
@@ -158,14 +165,7 @@ def _resolve_snapshots(
             f"Could not resolve a snapshot hash from wandb run {wandb_id}: {snapshot_hash}"
         )
         run_snapshots.append(snapshot_hash)
-        # Runs predating the Parallelism enum logged a bool; newer runs log the
-        # enum's string value.
-        recorded = config.get("needs_parallelism", False)
-        is_mt = recorded is True or recorded == Parallelism.MULTI_THREADED.value
-        parallelisms.append(
-            Parallelism.MULTI_THREADED if is_mt else Parallelism.SINGLE_THREADED
-        )
-    return run_snapshots, parallelisms
+    return run_snapshots
 
 
 def _build_runner(
@@ -365,12 +365,11 @@ def run_benchmark(args) -> None:
                 extra_gitignore=[],
             )
             snapshotter.fetch_snapshots()
-            run_snapshots, parallelism_list = _resolve_snapshots(
+            run_snapshots = _resolve_snapshots(
                 args, snapshots, wandb_run_ids, workload
             )
         else:
             run_snapshots = [""]
-            parallelism_list = [Parallelism.SINGLE_THREADED]
 
         disk_db_dir = (
             bespoke_ssd_storage_dir
@@ -404,9 +403,9 @@ def run_benchmark(args) -> None:
                 )
                 core_ids = _core_ids_for(num_threads)
 
-                for snapshot, parallelism in zip(run_snapshots, parallelism_list):
+                for snapshot in run_snapshots:
                     if use_snapshots:
-                        runner.restore_snapshot(snapshot, parallelism=parallelism)
+                        runner.restore_snapshot(snapshot)
 
                     for scale_factor in scale_factors:
                         logger.info(

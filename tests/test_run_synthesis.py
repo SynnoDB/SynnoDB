@@ -22,7 +22,6 @@ from synnodb.builtin_plans import (
 )
 from synnodb.conversations.stage_items import PromptStage
 from synnodb.cpp_runner.prepare_repo.prepare_features import (
-    Parallelism,
     PrepareFeatures,
     write_prepare_metadata,
 )
@@ -100,7 +99,6 @@ def _fake_backend(tmp_path):
         write_prepare_metadata(
             tmp_path / "ws",
             PrepareFeatures.optim().resolve(DBStorage.IN_MEMORY),
-            parallelism=plan.parallelism,
         )
         return RunResult(run_id=None, snapshot_hash="newsnap")
 
@@ -125,7 +123,6 @@ def test_run_synthesis_plumbs_plan_and_start(tmp_path, monkeypatch):
     assert artifact.prepare_features == PrepareFeatures.optim().resolve(
         DBStorage.IN_MEMORY
     )
-    assert artifact.parallelism is Parallelism.SINGLE_THREADED
 
 
 def test_run_synthesis_uses_artifact_snapshot_as_start(tmp_path, monkeypatch):
@@ -209,7 +206,6 @@ def test_builtin_plans_have_the_expected_shapes():
     assert optim.prepare == PrepareFeatures.optim()
 
     mt = mt_plan()
-    assert mt.parallelism is Parallelism.MULTI_THREADED
     assert mt.prepare == PrepareFeatures.mt()
 
     check = check_sf_plan(100)

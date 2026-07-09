@@ -21,7 +21,7 @@ from synnodb.tools.validate.query_validator_class import (
     QueryValidator,
 )
 from synnodb.tools.validate.run_and_check_queries import assemble_error
-from synnodb.utils.core_utils import core_ids_to_env
+from synnodb.utils.core_utils import core_ids_to_env, resolve_target_cores
 from synnodb.utils.json_utils import json_dumps
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import QueryBatch, WorkloadProvider
@@ -107,8 +107,7 @@ class RunTool:
         compile_output_truncation: Optional[
             int
         ] = 10000,  # restrict output to 10000 chars ~ 2.5 Thousand tokens
-        parallelism: bool = False,
-        core_ids: Optional[List[int]] = None,
+        num_threads: int = 1,  # run-wide DEFAULT degree of parallelism (a resolved core count, e.g. from resolve_target_cores(ctx.threads)); a per-stage override raises/lowers it via set_active_num_threads
         delete_result_csv_before_execution: bool = True,  # this is important to make sure that we do not read old results from previous runs
         memory_budget_mb: (
             int | None
@@ -126,8 +125,12 @@ class RunTool:
         self.parse_out_and_validate_output = parse_out_and_validate_output
         self.validate_output_truncation = validate_output_truncation
         self.compile_output_truncation = compile_output_truncation
-        self.parallelism = parallelism
-        self.core_ids = core_ids
+        # One canonical thread count. ``default_num_threads`` is the run-wide value
+        # (resolved once from SynnoDB(threads=N)); ``_active_num_threads`` is the
+        # per-stage override the conversation engine sets for a stage's whole span
+        # (LLM ``run`` calls, post-stage validation, benchmark) and clears afterwards.
+        self.default_num_threads = num_threads
+        self._active_num_threads: int | None = None
         self.delete_result_csv_before_execution = delete_result_csv_before_execution
         self.memory_budget_mb = memory_budget_mb
         self.db_storage = db_storage
@@ -139,6 +142,23 @@ class RunTool:
         # is stable across machines), while the buffer-pool / RLIMIT_AS sites
         # below already guard on None and fall back to HotpatchProc's own
         # 90%-of-phys-RAM default at runtime.
+
+    @property
+    def num_threads(self) -> int:
+        """The degree of parallelism in effect: the active per-stage override if one is
+        set, else the run-wide default. Both generation runs and the LLM's own ``run``
+        tool calls read through this, so a stage-scoped override governs the whole span."""
+        return (
+            self._active_num_threads
+            if self._active_num_threads is not None
+            else self.default_num_threads
+        )
+
+    def set_active_num_threads(self, num_threads: int | None) -> None:
+        """Set (``int``) or clear (``None``) the per-stage thread override. The conversation
+        engine applies this on stage entry and restores the previous value after the stage's
+        post-stage validation, so every run within the stage shares one thread count."""
+        self._active_num_threads = num_threads
 
     def run(
         self,
@@ -188,8 +208,7 @@ class RunTool:
             str
         ] = None,  # for external instrumentation: e.g. from benchmarking script (will not use git snapshotter)
         echo_output: bool = False,  # print stdout and co directly
-        parallelism: bool | None = None,
-        core_ids: list[int] | None = None,
+        num_threads: int | None = None,  # override the effective thread count for THIS call only (else the active per-stage value, else the run default)
     ) -> RunWorkerResult:
         if isinstance(query_ids, list) and len(query_ids) == 0:
             # rewrite to None for easier handling
@@ -223,39 +242,30 @@ class RunTool:
 
             query_ids = rewritten_query_ids
 
-        current_parallelism = (
-            parallelism if parallelism is not None else self.parallelism
-        )
-        current_core_ids = core_ids if core_ids is not None else self.core_ids
+        # The single thread count in effect for this run: the explicit per-call override,
+        # else the active per-stage value, else the run default (RunTool.num_threads).
         current_num_threads = (
-            len(current_core_ids)
-            if current_parallelism and current_core_ids is not None
-            else 1
+            num_threads if num_threads is not None else self.num_threads
         )
-        if current_parallelism:
-            assert current_core_ids is not None, (
-                "core_ids must be provided if parallelism is enabled"
+        # Concrete cores are derived only here (a pin boundary), through the same
+        # resolve_target_cores / core_ids_to_env helpers the router uses at serving time, so
+        # generation and serving agree on the exact cores. Serial (1 thread) pins nothing -
+        # CORE_IDS="1", the engine's serial fast path - while a multi-threaded run resolves
+        # exactly current_num_threads pinned cores (clamped to the machine; count and cores
+        # kept in lockstep).
+        if current_num_threads > 1:
+            current_num_threads, current_core_ids = resolve_target_cores(
+                current_num_threads
             )
+        else:
+            current_core_ids = None
+        current_parallelism = current_num_threads > 1
 
-        # local definition overwrites global. Build the CORE_IDS env the engine reads via
-        # the shared helper, so generation (here) and serving (the router) derive the engine's
-        # thread count identically. Serial -> "1" (single thread, not "use all cores").
         extra_env = dict()
-        extra_env["CORE_IDS"] = core_ids_to_env(
-            current_core_ids if current_parallelism else None
-        )
-        if current_parallelism:
-            # The engine must run on exactly the resolved core set: if CORE_IDS ever stops
-            # matching the threads we counted, validation would silently measure a different
-            # parallelism than the storage plan / base impl were told to design for.
-            assert current_core_ids is not None
-            assert len(extra_env["CORE_IDS"].split(",")) == current_num_threads, (
-                f"CORE_IDS {extra_env['CORE_IDS']!r} does not encode the "
-                f"{current_num_threads} resolved threads"
-            )
+        extra_env["CORE_IDS"] = core_ids_to_env(current_core_ids)
 
         logger.info(
-            f"Run with: {query_ids=} {mode=} {self.dataset_name=} {trace_mode=} {optimize=} {self.base_parquet_dir=} num_threads={len(current_core_ids) if current_parallelism else '1'} mem_limit={self.memory_budget_mb}"  # type: ignore
+            f"Run with: {query_ids=} {mode=} {self.dataset_name=} {trace_mode=} {optimize=} {self.base_parquet_dir=} num_threads={current_num_threads} mem_limit={self.memory_budget_mb}"  # type: ignore
         )
 
         # Delete any result files written by a previous run so we never
