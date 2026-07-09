@@ -25,6 +25,9 @@ from synnodb.llm.sdk.agents_sdk.compaction_trigger import (
     context_usage_at_or_above,
 )
 from synnodb.llm.sdk.agents_sdk.openai_make_compile_tool import make_openai_compile_tool
+from synnodb.llm.sdk.agents_sdk.openai_make_data_inspect_tool import (
+    make_openai_data_inspect_tool,
+)
 from synnodb.llm.sdk.agents_sdk.openai_make_run_tool import make_openai_run_tool
 from synnodb.llm.sdk.agents_sdk.openai_sdk_tools import (
     make_custom_openai_apply_patch_tool,
@@ -69,6 +72,17 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
             defer_loading=self.args.tool_search_tool,  # if tool search tool is included, we want to load the run tool in deferred loading mode, so that it is not loaded at the beginning of the conversation and does not take up context space and resources before it is actually needed. The tool search tool will load it when needed.
         )
 
+        # A read-only SQL window into the actual benchmark data (DuckDB), so the agent can
+        # ground physical-design choices in real distributions/cardinalities rather than schema
+        # alone. Built (and disk-cached) in main.py for OLAP-style providers that expose the
+        # benchmark subset; None when the workload has no inspectable subset.
+        openai_data_inspect_tool = None
+        if self.data_inspect_tool is not None:
+            openai_data_inspect_tool = make_openai_data_inspect_tool(
+                data_inspect_tool=self.data_inspect_tool,
+                defer_loading=self.args.tool_search_tool,  # deferred alongside run/compile when the tool search tool is enabled
+            )
+
         # assemble tools
         if not use_litellm:
             apply_patch = ApplyPatchTool(editor=self.editor)
@@ -85,6 +99,19 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
             openai_compile_tool,
             openai_run_tool,
         ]
+
+        if openai_data_inspect_tool is not None:
+            self.tools.append(openai_data_inspect_tool)
+
+        # Mention the data-inspection tool in the agent instructions only when it is actually
+        # available, so the system prompt never advertises a tool the model cannot call.
+        data_inspect_hint = (
+            "You can run read-only SQL against the actual benchmark data with the query_data "
+            "tool to inspect data distributions, cardinalities, null density, and value ranges "
+            "that inform your physical-design choices. "
+            if openai_data_inspect_tool is not None
+            else ""
+        )
 
         # Always expose the search/replace edit tool alongside apply_patch. It
         # needs only a locally-unique old_string (no verbatim context hunks), so
@@ -168,6 +195,7 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
                 "You can run shell commands using the shell tool. Do not emit argv form. ",
                 "You can compile the code using the compile tool. ",
                 "You can run a list of queries using the run tool. The run tool automatically compiles the code. You can specify the queries to run and the run mode. If no queries are specified, all queries will be run.",
+                data_inspect_hint,
             ]
         else:
             self.model = CachedOpenAIResponsesModel(
@@ -194,6 +222,7 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
                 "You can run shell commands using the shell tool. Do not emit argv form. ",
                 "You can compile the code using the compile tool. ",
                 "You can run a list of queries using the run tool. The run tool automatically compiles the code. You can specify the queries to run and the run mode. If no queries are specified, all queries will be run.",
+                data_inspect_hint,
             ]
 
         model_settings = ModelSettings(tool_choice="auto", parallel_tool_calls=False)

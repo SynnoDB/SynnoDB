@@ -14,6 +14,7 @@ from synnodb.utils.sql_utils import extract_order_by_columns
 from synnodb.utils.utils import (
     DataSource,
     DBStorage,
+    ServeFrom,
     is_persistent_storage,
 )
 from synnodb.workloads.system_factory import System
@@ -64,18 +65,22 @@ def allowed_data_sources(system: System, db_storage: DBStorage) -> set[DataSourc
     DuckDB reads either flat (its native materialized tables) or, on disk, parquet views. The
     bespoke engine additionally has its own on-disk storage plan. In-memory rules out anything
     that needs disk (parquet views, the bespoke storage plan) - but the engine can still load
-    flat in memory. Returns an empty set for systems whose data source is not modelled here.
+    flat in memory. ``DUCKDB`` (DuckDB-native subsets, ingested over the shm plane / materialized
+    flat from a ``subset.duckdb``) is an in-memory-only representation for both systems - the SSD
+    plane has no shm ingest branch yet. Returns an empty set for systems not modelled here.
     """
     persistent = is_persistent_storage(db_storage)
     if system == System.DUCKDB:
         return (
-            {DataSource.FLAT, DataSource.PARQUET} if persistent else {DataSource.FLAT}
+            {DataSource.FLAT, DataSource.PARQUET}
+            if persistent
+            else {DataSource.FLAT, DataSource.DUCKDB}
         )
     if system == System.BESPOKE:
         return (
             {DataSource.FLAT, DataSource.BESPOKE, DataSource.PARQUET}
             if persistent
-            else {DataSource.FLAT, DataSource.BESPOKE}
+            else {DataSource.FLAT, DataSource.BESPOKE, DataSource.DUCKDB}
         )
     return set()
 
@@ -216,6 +221,53 @@ class OLAPWorkloadProvider(WorkloadProvider):
         )
         return RamCheck.measure(label, paths)
 
+    def prepare(self) -> None:
+        """Lazily downscale any fractional subsets this workload needs but does not yet have.
+
+        For a DuckDB-sourced workload the spec carries a :class:`DuckDBSubsetSource` describing how
+        to downscale from the frozen source. Sync materializes only the full ``fraction1`` benchmark
+        subset; the fractional fast-check rungs are built here, on demand at run start, from that
+        retained snapshot - so a plain re-ingest never re-downscales. Idempotent: fractions already
+        present (and current) are skipped, so calling it every run is cheap. A no-op for built-ins
+        and plain BYO-parquet, whose subsets are already on disk (``duckdb_source is None``)."""
+        source = self.spec.duckdb_source
+        if source is None:
+            return
+
+        # A subset dir left from a different source version is stale; rebuild every needed fraction
+        # in that case. On the happy path sync keeps the manifest and spec versions equal, so this
+        # falls through to the plain presence check below.
+        from synnodb.workloads.byo_workload import (
+            materialize_duckdb_subsets,
+            read_manifest_dataset_version,
+        )
+
+        stale = (
+            self.spec.dataset_version is not None
+            and read_manifest_dataset_version(self.base_parquet_dir)
+            != self.spec.dataset_version
+        )
+
+        missing: list[float] = []
+        for sf in sorted(f for f in self._candidate_sfs() if f < 1.0):
+            sf_dir = find_sf_dir(self.base_parquet_dir, sf)
+            present = sf_dir is not None and all(
+                p.exists() for p in self.spec.subset_files(sf_dir)
+            )
+            if stale or not present:
+                missing.append(sf)
+        if not missing:
+            return
+
+        logger.info(
+            "Preparing workload %s: downscaling fractional subsets %s on demand",
+            self.spec.name,
+            ", ".join(f"{f:g}" for f in missing),
+        )
+        materialize_duckdb_subsets(
+            source, missing, self.base_parquet_dir, self.spec.serve_from
+        )
+
     def _candidate_sfs(self) -> set[float]:
         """Every scale factor the workload could load across its run modes: the
         per-mode ladders, the (possibly overridden) benchmark SF, and the
@@ -239,6 +291,12 @@ class OLAPWorkloadProvider(WorkloadProvider):
             sf_dir = find_sf_dir(self.base_parquet_dir, sf)
             if sf_dir is None:
                 continue
+            if self.spec.serve_from == ServeFrom.DUCKDB:
+                # DuckDB-native subset: a single ``subset.duckdb`` stands in for the parquet files.
+                subset_db = sf_dir / "subset.duckdb"
+                if subset_db.exists():
+                    yield sf_dir.name, [subset_db]
+                continue
             paths = [sf_dir / f"{table}.parquet" for table in self.spec.tables]
             if all(p.exists() for p in paths):
                 yield sf_dir.name, paths
@@ -250,6 +308,11 @@ class OLAPWorkloadProvider(WorkloadProvider):
         num_threads: int,
         core_ids: list[int] | None,
     ) -> list[QueryBatch]:
+        # Ensure lazily-downscaled subsets exist before any fraction is resolved below. Idempotent
+        # and cheap once present; a safety net for entry points that build a provider without going
+        # through main()'s run-start prepare() (benchmark CLI, optimize, publish-zip).
+        self.prepare()
+
         if query_ids is None or len(query_ids) == 0:
             queries_to_generate = self.query_ids
         else:
@@ -287,12 +350,13 @@ class OLAPWorkloadProvider(WorkloadProvider):
         else:
             raise ValueError(f"Unknown run mode: {run_mode}")
 
-        extra_env = dict()
-        # assemble storage dir path
-
         query_batch_list = []
         rnd = random.Random(42)
         for scale_factor in scale_factors:
+            # Fresh per scale factor: each batch owns its env. A single shared dict would leave
+            # every batch pointing at the last scale factor's STORAGE_DIR (they hold the same
+            # object, mutated in place each iteration).
+            extra_env: dict[str, str] = {}
             if self.db_storage in [DBStorage.SSD, DBStorage.LABSTORE]:
                 assert self.bespoke_ssd_storage_dir is not None
                 storage_dir = self.bespoke_ssd_storage_dir / f"sf{scale_factor}"
@@ -309,12 +373,32 @@ class OLAPWorkloadProvider(WorkloadProvider):
             else:
                 storage_dir = None
 
-            data_source = (
-                DataSource.BESPOKE if storage_dir is not None else DataSource.FLAT
-            )
+            if storage_dir is not None:
+                # SSD/persistent: the bespoke engine's on-disk storage plan. DuckDB-native subsets
+                # have no shm/parquet on the SSD plane yet, so reject that combination clearly.
+                if self.spec.serve_from == ServeFrom.DUCKDB:
+                    raise ValueError(
+                        f"Workload {self.spec.name!r} uses DuckDB-native subsets, which are "
+                        "in-memory only (the SSD plane has no shm ingest branch). Run it with "
+                        "in_memory storage, or register it via the parquet fallback for SSD."
+                    )
+                data_source = DataSource.BESPOKE
+            elif self.spec.serve_from == ServeFrom.DUCKDB:
+                # In-memory DuckDB-native: the subset is a ``subset.duckdb`` in the subset dir; the
+                # engine ingests it over shm and the oracle materializes flat tables from it.
+                data_source = DataSource.DUCKDB
+            else:
+                data_source = DataSource.FLAT
 
-            # assemble parquet path where data is loaded from
-            parquet_dir = (self.base_parquet_dir / f"sf{scale_factor}").as_posix() + "/"
+            # assemble parquet path where data is loaded from - resolve the subset directory
+            # under the parquet root (sampling-fraction ``fraction<f>`` or legacy ``sf<N>``)
+            subset_dir = find_sf_dir(self.base_parquet_dir, scale_factor)
+            if subset_dir is None:
+                raise FileNotFoundError(
+                    f"No subset directory for fraction/SF {scale_factor:g} under "
+                    f"{self.base_parquet_dir} for workload {self.spec.name!r}."
+                )
+            parquet_dir = subset_dir.as_posix() + "/"
             assert parquet_dir.endswith("/"), (
                 f"Parquet directory must end with '/': {parquet_dir}"
             )
@@ -388,7 +472,13 @@ class OLAPWorkloadProvider(WorkloadProvider):
                         core_ids=core_ids,
                     ),
                     timeout_s=approx_timeout_for_validation(
-                        scale_factor, len(query_list)
+                        scale_factor,
+                        len(query_list),
+                        subset_bytes=sum(
+                            f.stat().st_size
+                            for f in self.spec.subset_files(subset_dir)
+                            if f.exists()
+                        ),
                     ),
                     exec_settings=OLAPExecSettings(
                         scale_factor=scale_factor,
@@ -669,11 +759,16 @@ register_workload(CEB_SPEC)
 def approx_timeout_for_validation(
     scale_factor: float,
     num_executions: int,
+    subset_bytes: int = 0,
 ) -> int:
-    # approximate a timeout for validation based on scale factor and number of queries
+    # approximate a timeout for validation based on data volume and number of queries. The scale
+    # factor is a decent ~GB proxy for the classic ``sf<N>`` convention, but a DuckDB-native
+    # fraction ladder (0.02..1.0) does not reflect the source's real size, so also derive a volume
+    # estimate from the subset's on-disk bytes and use whichever is larger (never shrink a timeout).
+    volume = max(scale_factor, subset_bytes / 1e9)
     timeout = (
-        scale_factor * num_executions * 2
-    )  # 2 seconds per query with sf=1 as a rough estimate, can be adjusted as needed
+        volume * num_executions * 2
+    )  # 2 seconds per query at ~1GB as a rough estimate, can be adjusted as needed
     timeout = max(timeout, 120)  # at least 1 minute total timeout
     timeout = min(
         timeout, 1200

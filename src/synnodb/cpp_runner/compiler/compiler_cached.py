@@ -46,6 +46,11 @@ class CachedCompiler(Compiler):
         self.only_from_cache = only_from_cache
         self.untracked_cpp_runner_content = untracked_cpp_runner_content
 
+        # Whether the most recent build() served its result from the compile
+        # cache (vs. actually invoking the compiler). Read by CompileTool to
+        # report cache status, since build() can only return the output string.
+        self.last_build_served_from_cache = False
+
         # create cache dir if needed
         for dir in [self.cache_dir]:
             if dir is None:
@@ -56,6 +61,7 @@ class CachedCompiler(Compiler):
     def build(self) -> Optional[str]:
         # forward to cache function. This is only to override the build function of the parent class, which is called by HotpatchProc. The actual caching logic is implemented in build_cached, which is called by this function.
         cached_result, used_cache, compile_key_hash = self.build_cached()
+        self.last_build_served_from_cache = used_cache
         return cached_result
 
     def build_cached(
