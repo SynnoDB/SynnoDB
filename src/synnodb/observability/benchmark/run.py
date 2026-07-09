@@ -365,9 +365,7 @@ def run_benchmark(args) -> None:
                 extra_gitignore=[],
             )
             snapshotter.fetch_snapshots()
-            run_snapshots = _resolve_snapshots(
-                args, snapshots, wandb_run_ids, workload
-            )
+            run_snapshots = _resolve_snapshots(args, snapshots, wandb_run_ids, workload)
         else:
             run_snapshots = [""]
 

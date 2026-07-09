@@ -208,7 +208,8 @@ class RunTool:
             str
         ] = None,  # for external instrumentation: e.g. from benchmarking script (will not use git snapshotter)
         echo_output: bool = False,  # print stdout and co directly
-        num_threads: int | None = None,  # override the effective thread count for THIS call only (else the active per-stage value, else the run default)
+        num_threads: int
+        | None = None,  # override the effective thread count for THIS call only (else the active per-stage value, else the run default)
     ) -> RunWorkerResult:
         if isinstance(query_ids, list) and len(query_ids) == 0:
             # rewrite to None for easier handling
