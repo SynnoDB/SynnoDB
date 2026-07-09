@@ -84,6 +84,7 @@ class RunStatsCollector(RunHooks):
     apply_patch_str = ""
     apply_patch_files = set()
     apply_patch_failed = []
+    apply_patch_cached = False
 
     def __init__(
         self,
@@ -120,6 +121,11 @@ class RunStatsCollector(RunHooks):
         self.current_agent_config: Optional[dict] = (
             None  # set externally by conversation loop
         )
+        # The run's resolved serving thread count (DuckDB-style config={'threads': N}).
+        # A run-level constant set externally once the driver has resolved it against
+        # this machine; stamped onto every metric row as run/num_threads so it persists
+        # to the metrics table and surfaces as run metadata in the live dashboard.
+        self.num_threads: Optional[int] = None
         self.debug_logger: Optional[DebugLogger] = (
             None  # set externally by the conversation loop (per stage group)
         )
@@ -218,6 +224,10 @@ class RunStatsCollector(RunHooks):
         # Tag every metric row with the active stage so downstream analytics can
         # group by stage generically (instead of matching OLAP prompt substrings).
         metrics["stage"] = self.current_stage_name
+        # Stamp the run's resolved serving thread count so it persists to the
+        # metrics table and can be lifted into the dashboard's run metadata.
+        if self.num_threads is not None:
+            metrics["run/num_threads"] = self.num_threads
 
         # Track total counts per type
         self.total_type_counts[metrics["type"]] += 1
@@ -276,6 +286,13 @@ class RunStatsCollector(RunHooks):
         self.apply_patch_files.add(file_touched)
         if failed is not None:
             self.apply_patch_failed.append(failed)
+
+    def record_apply_patch_cache_hit(self) -> None:
+        """Mark that the current apply_patch/replace_in_file tool call was
+        replayed from the workspace-editor cache. Consumed by on_tool_end so the
+        live-ui can classify the step as served-from-cache. Reset per tool call
+        in on_tool_start."""
+        self.apply_patch_cached = True
 
     async def on_agent_start(self, ctx, agent):
         """Called when an agent starts processing"""
@@ -440,6 +457,7 @@ class RunStatsCollector(RunHooks):
             self.apply_patch_str = ""
             self.apply_patch_files = set()
             self.apply_patch_failed = []
+            self.apply_patch_cached = False
 
     async def on_tool_end(
         self,
@@ -467,6 +485,7 @@ class RunStatsCollector(RunHooks):
             self.log_metrics_callback(
                 {
                     "type": "apply_patch",
+                    "apply_patch/cached": self.apply_patch_cached,
                     "apply_patch/added_loc_count": self.apply_patch_added_ctr,
                     "apply_patch/deleted_loc_count": self.apply_patch_deleted_ctr,
                     "apply_patch/string": self.apply_patch_str[:20000],

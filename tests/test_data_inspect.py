@@ -257,8 +257,9 @@ def test_do_not_cache_never_writes(tmp_path):
     assert not list(cache_dir.glob("*.pkl"))
 
 
-def test_timeout_is_not_cached(tmp_path, monkeypatch):
-    """A timeout is a host-dependent guard, not a property of the data, so it is never cached."""
+def test_timeout_is_cached_and_replays(tmp_path, monkeypatch):
+    """Both successful and unsuccessful executions are cached: a timeout is written to disk and
+    replays from cache alone, exactly like a result set or a SQL error."""
     import synnodb.tools.data_inspect as di
     from synnodb.tools.data_inspect import DataInspectTool
 
@@ -267,14 +268,58 @@ def test_timeout_is_not_cached(tmp_path, monkeypatch):
     _make_duckdb_subset(base)
     cache_dir = tmp_path / "cache"
     monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
+    slow_sql = (
+        "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b"
+    )
     tool = DataInspectTool(
         workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
     )
-    out = tool(
+    out = tool(slow_sql)
+    assert "inspection budget" in out
+    assert list(cache_dir.glob("*.pkl")), "expected the timeout to be cached"
+
+    # A fresh tool forced to answer from cache alone must reproduce the timeout without ever
+    # re-running the (now removed) query - the whole point of caching unsuccessful executions.
+    import shutil
+
+    shutil.rmtree(base)
+    replay = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        only_from_cache=True,
+    )
+    assert replay(slow_sql) == out
+
+
+def test_timeout_replay_reports_timeout_status(tmp_path, monkeypatch):
+    """A cached timeout replays with the ``timeout`` status (not ``ok``), so the dashboard row
+    still reads as a failure - the status is recovered purely from the rendered text."""
+    import synnodb.tools.data_inspect as di
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
+    slow_sql = (
         "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b"
     )
-    assert "inspection budget" in out
-    assert not list(cache_dir.glob("*.pkl"))
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )(slow_sql)
+
+    collector = _FakeCollector()
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        run_stats_collector=collector,
+    )(slow_sql)
+    row = collector.metrics[0]
+    assert row["data_inspect/status"] == "timeout"
+    assert row["data_inspect/error"] is True
+    assert row["data_inspect/cached"] is True
+    assert collector.activity[-1] == "Data Inspect Tool called: timeout (cached)"
 
 
 def test_runtime_tracker_credited_on_cache_hit(tmp_path):

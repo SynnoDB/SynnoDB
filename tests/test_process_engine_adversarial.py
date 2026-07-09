@@ -166,8 +166,10 @@ def test_zero_row_arrow_returns_empty_table_not_error(tmp_path):
     results = tmp_path / "results"
     results.mkdir()
 
-    class FakeQR:
+    class FakeQR:  # mirrors the real QueryResult struct's fields
         error = None
+        req_id = "REQ1"
+        elapsed_ms = -1.0
 
     class FakeResult:
         query_results = [FakeQR()]
@@ -191,7 +193,7 @@ def test_zero_row_arrow_returns_empty_table_not_error(tmp_path):
     orig = wp.format_args_element
     wp.format_args_element = lambda qid, ph: f"q{qid} REQ{qid}"  # type: ignore
     try:
-        out = eng.run("1", {})
+        out, _server_ms = eng.run("1", {})
     finally:
         wp.format_args_element = orig
     assert out.num_rows == 0  # 0-row result is a valid empty table, not an error
@@ -205,8 +207,10 @@ def test_zero_row_arrow_returns_empty_table_not_error(tmp_path):
 def test_partial_arrow_surfaces_engine_execution_error(tmp_path):
     from synnodb.errors import EngineExecutionError
 
-    class FakeQR:
+    class FakeQR:  # mirrors the real QueryResult struct's fields
         error = None
+        req_id = "REQ1"
+        elapsed_ms = -1.0
 
     class FakeResult:
         query_results = [FakeQR()]
@@ -237,3 +241,58 @@ def test_partial_arrow_surfaces_engine_execution_error(tmp_path):
     assert (
         "synno-x" in msg and "boom: segfault" in msg
     )  # engine id + stderr carried through
+
+
+# ---------------------------------------------------------------------------
+# Server-side timing: ProcessEngine.run returns the C++ kernel's own `elapsed_ms`
+# (fractional milliseconds), matched by req_id, so the router can report engine
+# execution time measured inside the engine rather than an external wall clock.
+# ---------------------------------------------------------------------------
+def _run_returning_server_ms(tmp_path, elapsed_ms, *, mismatch_req=False):
+    class FakeQR:
+        error = None
+
+        def __init__(self, req_id):
+            self.req_id = req_id
+            self.elapsed_ms = elapsed_ms
+
+    class FakeRunner:
+        def run(self, *, timeout, query_lines, run_env):
+            req = query_lines[0].split()[1]
+            _write_arrow(
+                Path(run_env["SYNNODB_RESULT_DIR"]) / f"result_{req}.arrow",
+                pa.table({"x": pa.array([1], pa.int64())}),
+            )
+
+            class R:
+                query_results = [FakeQR("WRONG" if mismatch_req else req)]
+                response = "ok"
+                stderr = ""
+
+            return R()
+
+    eng = ProcessEngine("e", tmp_path, "/data")
+    eng._runner = lambda: FakeRunner()  # type: ignore[method-assign]
+    import synnodb.workloads.workload_provider as wp
+
+    orig = wp.format_args_element
+    wp.format_args_element = lambda qid, ph: f"q{qid} REQ{qid}"  # type: ignore
+    try:
+        _table, server_ms = eng.run("1", {})
+    finally:
+        wp.format_args_element = orig
+    return server_ms
+
+
+def test_run_returns_server_side_elapsed(tmp_path):
+    assert _run_returning_server_ms(tmp_path, 12.345) == pytest.approx(12.345)
+
+
+def test_run_ignores_sentinel_elapsed(tmp_path):
+    # -1 is the C++ sentinel for "no query matched"; it must not be reported as a time.
+    assert _run_returning_server_ms(tmp_path, -1.0) is None
+
+
+def test_run_ignores_req_id_mismatch(tmp_path):
+    # A result for a different req_id is not our query's time, so no server time is reported.
+    assert _run_returning_server_ms(tmp_path, 7.5, mismatch_req=True) is None

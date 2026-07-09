@@ -9,14 +9,21 @@
 </head>
 <body>
 <header id="hdr" class="standalone">
-  <span id="hdr-title">&#9889; SynnoDB &#8212; Live Dashboard</span>
-  <div id="hdr-meta">
-    <span class="hdr-meta-item"><span class="hdr-meta-label">Started</span><span id="hdr-start-time">&#8212;</span></span>
-    <span class="hdr-meta-item"><span class="hdr-meta-label">W&amp;B</span><span id="hdr-wandb-id">&#8212;</span></span>
-    <span class="hdr-meta-item"><span class="hdr-meta-label">Run</span><span id="hdr-run-name">&#8212;</span></span>
-    <span class="hdr-meta-item"><span class="hdr-meta-label">System</span><span id="hdr-system-name">&#8212;</span></span>
-    <span class="hdr-meta-item" id="hdr-reload-item"><span class="hdr-meta-label">Reloaded</span><span id="hdr-reload-time">&#8212;</span></span>
+  <span id="hdr-title">SynnoDB</span>
+  <span id="hdr-model" hidden><span class="hdr-model-label">Model</span><span id="hdr-model-val">&#8212;</span></span>
+  <div id="hdr-info-wrap">
+    <button id="hdr-info-btn" title="Run info" aria-label="Run info" aria-haspopup="true" aria-expanded="false">&#9432;</button>
+    <div id="hdr-info-panel" hidden>
+      <div class="hdr-info-title">Run info</div>
+      <div class="hdr-info-row"><span class="hdr-info-label">Started</span><span id="hdr-start-time">&#8212;</span></div>
+      <div class="hdr-info-row"><span class="hdr-info-label">W&amp;B</span><span id="hdr-wandb-id">&#8212;</span></div>
+      <div class="hdr-info-row"><span class="hdr-info-label">Run</span><span id="hdr-run-name">&#8212;</span></div>
+      <div class="hdr-info-row"><span class="hdr-info-label">System</span><span id="hdr-system-name">&#8212;</span></div>
+      <div class="hdr-info-row" id="hdr-threads-item" hidden><span class="hdr-info-label">Threads</span><span id="hdr-num-threads">&#8212;</span></div>
+      <div class="hdr-info-row" id="hdr-reload-item"><span class="hdr-info-label">Reloaded</span><span id="hdr-reload-time">&#8212;</span></div>
+    </div>
   </div>
+  <div id="hdr-spacer"></div>
   <div id="hdr-source">
     <div id="source-wrap">
       <input id="source-input" type="text" autocomplete="off" spellcheck="false" placeholder="run-id, /path/to.duckdb, or http://host:8765" title="W&amp;B run ID, local .duckdb path, or remote live dashboard URL" />
@@ -79,9 +86,13 @@
         </div>
       </div>
     </div>
+    <div id="qc-resizer" title="Drag to resize" role="separator" aria-orientation="horizontal"></div>
     <div id="query-chart-box">
       <div id="query-chart-hdr">
-        <span>Query Runtimes</span>
+        <div class="qc-hdr-left">
+          <span>Query Runtimes</span>
+          <span id="qc-threads" class="qc-threads" hidden></span>
+        </div>
         <span id="timetravel-indicator" hidden></span>
         <button id="timetravel-live-btn" hidden>&#x21A9; Live</button>
         <div id="qc-sf-wrap" hidden><span id="qc-sf-label">Sampling</span><div id="qc-sf-toggle"></div></div>
@@ -101,6 +112,7 @@
   </button>
   <div id="log-panel">
     <div class="panel-header">
+      <button class="panel-close" id="log-close" title="Close activity log" aria-label="Close activity log">&#x203A;</button>
       <div class="sb-title">Activity Log</div>
       <div class="log-hdr-actions">
         <div id="log-filter-wrap">
@@ -121,10 +133,10 @@
           </div>
         </div>
         <button class="dist-chip" id="dist-toggle" title="Time distribution" aria-label="Time distribution">&#9685; Time Dist.</button>
-        <button class="panel-close" id="log-close" title="Close activity log" aria-label="Close activity log">&#x203A;</button>
       </div>
     </div>
     <div id="log-list"><div class="log-empty">No activity yet&#8230;</div></div>
+    <div id="sup-resizer" title="Drag to resize" role="separator" aria-orientation="horizontal" hidden></div>
     <div id="sup-summary-panel" hidden>
       <div class="sup-summary-hdr">
         <span class="sup-summary-title">Supervisor</span>

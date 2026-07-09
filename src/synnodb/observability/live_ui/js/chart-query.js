@@ -223,6 +223,35 @@ function updateScaleFactorButtons(steps, data) {
   }
 }
 
+// The serving thread count both engines ran at, shown next to the panel title.
+// DuckDB and SynnoDB always execute at the same resolved thread count, so the
+// chip unifies them into one number; a divergence is highlighted because it
+// means the two runtimes are no longer measured on equal footing.
+function updateThreadIndicator(steps, data) {
+  const el = document.getElementById('qc-threads');
+  if (!el) return;
+  const counts = getThreadCounts(steps, data);
+  if (!counts || (counts.duckdb == null && counts.bespoke == null)) {
+    el.hidden = true;
+    el.classList.remove('mismatch');
+    return;
+  }
+  const {duckdb, bespoke} = counts;
+  const mismatch = duckdb != null && bespoke != null && duckdb !== bespoke;
+  el.classList.toggle('mismatch', mismatch);
+  if (mismatch) {
+    el.innerHTML = '⚠ num threads: DuckDB <b>' + duckdb + '</b> ≠ SynnoDB <b>' + bespoke + '</b>';
+    el.title = 'DuckDB and SynnoDB were benchmarked at different thread counts, '
+      + 'so their runtimes are not directly comparable.';
+  } else {
+    const n = duckdb != null ? duckdb : bespoke;
+    el.innerHTML = 'num threads: <b>' + n + '</b>';
+    el.title = 'DuckDB and SynnoDB were both benchmarked at ' + n
+      + (n === 1 ? ' thread.' : ' threads.');
+  }
+  el.hidden = false;
+}
+
 // When time-travel is active, freeze the displayed values at that turn but
 // keep the query set (= bar layout) the same as live so columns don't dance.
 function updateQueryChart(steps, data) {
@@ -231,6 +260,7 @@ function updateQueryChart(steps, data) {
   const isSpeedup = queryChartMode === 'speedup';
 
   if (!latestQueries.length) {
+    updateThreadIndicator(steps, data);
     // No benchmark rows in the current data — clear the chart so we don't
     // keep showing bars from a previously loaded run after a source switch.
     queryChart.data.labels             = [];
@@ -252,6 +282,7 @@ function updateQueryChart(steps, data) {
   const filteredSteps = timeTravelStep != null
     ? steps.filter(s => +s <= +timeTravelStep)
     : steps;
+  updateThreadIndicator(filteredSteps, data);
   const selectedQueriesById = new Map(getQueryRuntimes(filteredSteps, data).map(q => [q.id, q]));
   const queries = latestQueries.map(q => {
     const selected = selectedQueriesById.get(q.id);
@@ -276,3 +307,43 @@ function updateQueryChart(steps, data) {
   setQueryChartEmpty(!activeData.some(v => v != null), queryChartMode);
   queryChart.update();
 }
+
+// Draggable divider between the timeline and the query-runtime chart. Dragging
+// up grows the query panel (and shrinks the timeline, which flexes to fill the
+// remaining space); dragging down does the reverse. The query chart is
+// responsive, so its canvas follows the container height automatically.
+(function initQueryResizer() {
+  const resizer = document.getElementById('qc-resizer');
+  const panel = document.getElementById('query-chart-box');
+  if (!resizer || !panel) return;
+  const MIN_H = 150;      // keep the query chart legible
+  const TIMELINE_MIN = 160;  // never squeeze the timeline below this
+
+  function clamp(h) {
+    const chartBox = document.getElementById('chart-box');
+    const maxH = panel.getBoundingClientRect().bottom
+               - chartBox.getBoundingClientRect().top - TIMELINE_MIN;
+    return Math.max(MIN_H, Math.min(h, Math.max(MIN_H, maxH)));
+  }
+
+  function onMove(e) {
+    // The panel bottom is pinned to the content area's bottom edge, so the
+    // target height is the distance from the pointer up to that edge.
+    const bottom = panel.getBoundingClientRect().bottom;
+    panel.style.height = clamp(bottom - e.clientY) + 'px';
+    e.preventDefault();
+  }
+
+  function onUp() {
+    document.body.classList.remove('qc-resizing');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  }
+
+  resizer.addEventListener('pointerdown', (e) => {
+    document.body.classList.add('qc-resizing');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    e.preventDefault();
+  });
+})();
