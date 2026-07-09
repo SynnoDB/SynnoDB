@@ -414,6 +414,51 @@ details.log-entry[open] .log-chevron{transform:rotate(90deg);}
            transition:background .12s,color .12s;}
 .dist-chip:hover{background:rgba(59,110,245,.22);color:#7da6ff;}
 
+/* ── Activity-log header actions & filter menu ────────────────────── */
+.log-hdr-actions{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+
+#log-filter-wrap{position:relative;display:flex;}
+.log-filter-btn{
+  position:relative;display:flex;align-items:center;justify-content:center;
+  width:24px;height:24px;padding:0;border:1px solid var(--border);border-radius:6px;
+  background:rgba(59,110,245,.1);color:var(--accent);cursor:pointer;
+  transition:background .12s,color .12s,border-color .12s;flex-shrink:0;
+}
+.log-filter-btn svg{width:13px;height:13px;}
+.log-filter-btn:hover{background:rgba(59,110,245,.22);color:#7da6ff;}
+.log-filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+.log-filter-count{
+  position:absolute;top:-5px;right:-5px;min-width:14px;height:14px;padding:0 3px;
+  border-radius:999px;background:var(--accent);color:#fff;
+  font-size:9px;font-weight:700;line-height:14px;text-align:center;
+  box-shadow:0 0 0 1.5px var(--surface);
+}
+.log-filter-btn.active .log-filter-count{background:#fff;color:var(--accent);}
+
+/* Positioned via JS (js/log.js) and rendered fixed so it escapes the
+   activity panel's overflow:hidden clip and paints above the charts. */
+#log-filter-menu{
+  position:fixed;z-index:250;
+  background:var(--card);border:1px solid var(--border);border-radius:8px;
+  min-width:210px;padding:8px;overflow:hidden;
+  box-shadow:0 6px 24px rgba(0,0,0,.6);
+  animation:disc-appear .1s ease-out;
+}
+.log-filter-menu-label{
+  padding:2px 2px 8px;font-size:10px;text-transform:uppercase;letter-spacing:.6px;
+  color:var(--muted);
+}
+.log-filter-opt{display:flex;flex-direction:column;gap:6px;}
+.log-filter-opt-label{font-size:12px;color:var(--text);}
+.log-filter-seg{display:flex;background:rgba(0,0,0,.35);border:1px solid var(--border);
+                border-radius:6px;padding:2px;gap:2px;}
+.lfs-btn{flex:1;background:none;border:none;border-radius:4px;padding:3px 6px;
+         font-size:10px;font-family:inherit;letter-spacing:.4px;text-transform:uppercase;
+         color:var(--muted);cursor:pointer;white-space:nowrap;
+         transition:background .12s,color .12s;}
+.lfs-btn:hover{color:var(--text);}
+.lfs-btn.active{background:var(--accent);color:#fff;font-weight:600;}
+
 /* ── Modal ────────────────────────────────────────────────────────── */
 .modal-overlay{position:fixed;inset:0;z-index:100;
                background:rgba(0,0,0,.65);backdrop-filter:blur(3px);

@@ -102,8 +102,27 @@
   <div id="log-panel">
     <div class="panel-header">
       <div class="sb-title">Activity Log</div>
-      <button class="dist-chip" id="dist-toggle" title="Time distribution" aria-label="Time distribution">&#9685; Time Dist.</button>
-      <button class="panel-close" id="log-close" title="Close activity log" aria-label="Close activity log">&#x203A;</button>
+      <div class="log-hdr-actions">
+        <div id="log-filter-wrap">
+          <button class="log-filter-btn" id="log-filter-btn" title="Filter activity" aria-label="Filter activity" aria-haspopup="true" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+            <span class="log-filter-count" id="log-filter-count" hidden></span>
+          </button>
+          <div id="log-filter-menu" hidden>
+            <div class="log-filter-menu-label">Filter activity</div>
+            <div class="log-filter-opt">
+              <span class="log-filter-opt-label">Served from cache</span>
+              <div class="log-filter-seg" data-filter="cached">
+                <button type="button" class="lfs-btn active" data-val="off">Off</button>
+                <button type="button" class="lfs-btn" data-val="yes">Cached</button>
+                <button type="button" class="lfs-btn" data-val="no">Not cached</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button class="dist-chip" id="dist-toggle" title="Time distribution" aria-label="Time distribution">&#9685; Time Dist.</button>
+        <button class="panel-close" id="log-close" title="Close activity log" aria-label="Close activity log">&#x203A;</button>
+      </div>
     </div>
     <div id="log-list"><div class="log-empty">No activity yet&#8230;</div></div>
     <div id="sup-summary-panel" hidden>

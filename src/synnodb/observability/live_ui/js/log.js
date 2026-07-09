@@ -15,6 +15,42 @@ const LOG_TYPE_META = {
   compaction: { label:'Compaction', cls:'lt-compaction'},
 };
 
+// Activity-log filters. Each is tri-state, keyed by the data-filter attribute on
+// its segmented control: 'off' (inactive - the entry always passes), or one of
+// the filter's own values. `match(d, state)` decides whether a step's raw data
+// record is shown for the given non-off state. An entry is displayed only when
+// every filter passes.
+const LOG_FILTERS = {
+  cached: {
+    // 'yes' → only entries served from cache; 'no' → only entries that were not.
+    // Each cache-capable step type reports its own cache signal; a step is
+    // "from cache" if any of them says so.
+    match(d, state) {
+      const fromCache = d['answered_from_cache'] === true            // llm
+        || d['data_inspect/cached'] === true                        // data_inspect
+        || d['shell/cached'] === true                               // shell
+        || d['validation/replayed_from_cache'] === true             // validate
+        || d['compile/cached'] === true;                            // compile
+      return state === 'yes' ? fromCache : !fromCache;
+    },
+  },
+};
+const _logFilterState = { cached: 'off' };
+
+function logEntryPasses(d) {
+  for (const id in LOG_FILTERS) {
+    const state = _logFilterState[id];
+    if (state && state !== 'off' && !LOG_FILTERS[id].match(d, state)) return false;
+  }
+  return true;
+}
+
+function activeLogFilterCount() {
+  let n = 0;
+  for (const id in _logFilterState) if (_logFilterState[id] !== 'off') n++;
+  return n;
+}
+
 // Body text is long enough to be worth a dedicated viewer window rather than
 // the cramped, fixed-height .log-body scroll box.
 const LOG_DETAIL_THRESHOLD = 500;
@@ -197,6 +233,7 @@ function updateLog(steps, data) {
     const details = document.createElement('details');
     details.className = 'log-entry';
     details.dataset.step = s;
+    details.hidden = !logEntryPasses(d);
     details.innerHTML = `<summary>
         <span class="log-type ${meta.cls}">${esc(meta.label)}</span>
         <span class="log-desc">${esc(desc)}</span>
@@ -207,9 +244,97 @@ function updateLog(steps, data) {
     frag.appendChild(details);
   }
   el.appendChild(frag);
+  updateLogFilterEmpty();
 
   if (atBottom) el.scrollTop = el.scrollHeight;
 }
+
+// ── Filter menu ──────────────────────────────────────────────────────────
+// Re-evaluate every rendered entry against the active filters and toggle its
+// visibility. Called when the filter selection changes (new entries apply the
+// predicate at render time in updateLog).
+function applyLogFilters() {
+  const el = document.getElementById('log-list');
+  for (const entry of el.querySelectorAll('details.log-entry')) {
+    const d = (_lastData && _lastData[entry.dataset.step]) || {};
+    entry.hidden = !logEntryPasses(d);
+  }
+  updateLogFilterEmpty();
+}
+
+// Show a placeholder when active filters hide every entry, so the panel never
+// looks mysteriously blank.
+function updateLogFilterEmpty() {
+  const el = document.getElementById('log-list');
+  const entries = el.querySelectorAll('details.log-entry');
+  const anyVisible = [...entries].some(e => !e.hidden);
+  let placeholder = el.querySelector('.log-filter-empty');
+  if (entries.length && !anyVisible && activeLogFilterCount()) {
+    if (!placeholder) {
+      placeholder = document.createElement('div');
+      placeholder.className = 'log-empty log-filter-empty';
+      placeholder.textContent = 'No activity matches the active filter.';
+      el.appendChild(placeholder);
+    }
+  } else if (placeholder) {
+    placeholder.remove();
+  }
+}
+
+(function initLogFilter() {
+  const wrap  = document.getElementById('log-filter-wrap');
+  const btn   = document.getElementById('log-filter-btn');
+  const menu  = document.getElementById('log-filter-menu');
+  const count = document.getElementById('log-filter-count');
+
+  function closeMenu() {
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  }
+
+  // The menu is position:fixed (so it escapes the activity panel's overflow
+  // clip); anchor its top-right corner to the button on each open.
+  function openMenu() {
+    const r = btn.getBoundingClientRect();
+    menu.style.top = (r.bottom + 6) + 'px';
+    menu.style.right = (window.innerWidth - r.right) + 'px';
+    menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+  }
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (menu.hidden) openMenu();
+    else closeMenu();
+  });
+
+  // Keep the menu open while interacting with it; close on any outside click.
+  menu.addEventListener('click', e => e.stopPropagation());
+  document.addEventListener('click', e => {
+    if (!menu.hidden && !wrap.contains(e.target)) closeMenu();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !menu.hidden) closeMenu();
+  });
+
+  menu.querySelectorAll('.log-filter-seg').forEach(seg => {
+    const id = seg.dataset.filter;
+    seg.addEventListener('click', e => {
+      const segBtn = e.target.closest('.lfs-btn');
+      if (!segBtn) return;
+      _logFilterState[id] = segBtn.dataset.val;
+      seg.querySelectorAll('.lfs-btn').forEach(b =>
+        b.classList.toggle('active', b === segBtn));
+
+      const n = activeLogFilterCount();
+      btn.classList.toggle('active', n > 0);
+      count.hidden = n === 0;
+      count.textContent = String(n);
+
+      applyLogFilters();
+    });
+  });
+})();
 
 // ── "View full output" modal ────────────────────────────────────────────
 const logDetailModal      = document.getElementById('log-detail-modal');

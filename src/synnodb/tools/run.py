@@ -291,6 +291,7 @@ class RunTool:
                 query_ids_executed=query_ids if query_ids is not None else [],
             )
             metrics["type"] = "validate"
+            metrics["validation/replayed_from_cache"] = False
             metrics["validation/compile_with_optimize"] = optimize
             metrics["validation/trace_mode"] = trace_mode
             metrics["validation/compile_error"] = True
@@ -588,6 +589,7 @@ class RunTool:
             msg = val_result.message
             success = val_result.success
             metrics = val_result.metrics
+            replayed_from_cache = val_result.replayed_from_cache
             trace_output = val_result.trace_output
             resp = val_result.resp
             stdout = val_result.stdout
@@ -611,6 +613,7 @@ class RunTool:
             query_results = None
         else:
             # this branch is not cached
+            replayed_from_cache = False
             logger.warning(
                 "No query validator provided, just executing the query without validation!"
             )
@@ -670,6 +673,7 @@ class RunTool:
             f"Metrics should be a dict at this point, got {type(metrics)}. This should not happen."
         )
         metrics["type"] = "validate"
+        metrics["validation/replayed_from_cache"] = replayed_from_cache
         metrics["validation/compile_with_optimize"] = optimize
         metrics["validation/trace_mode"] = trace_mode
         metrics["validation/external_call"] = external_call
