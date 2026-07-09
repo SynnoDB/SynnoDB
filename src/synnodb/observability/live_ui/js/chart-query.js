@@ -307,3 +307,43 @@ function updateQueryChart(steps, data) {
   setQueryChartEmpty(!activeData.some(v => v != null), queryChartMode);
   queryChart.update();
 }
+
+// Draggable divider between the timeline and the query-runtime chart. Dragging
+// up grows the query panel (and shrinks the timeline, which flexes to fill the
+// remaining space); dragging down does the reverse. The query chart is
+// responsive, so its canvas follows the container height automatically.
+(function initQueryResizer() {
+  const resizer = document.getElementById('qc-resizer');
+  const panel = document.getElementById('query-chart-box');
+  if (!resizer || !panel) return;
+  const MIN_H = 150;      // keep the query chart legible
+  const TIMELINE_MIN = 160;  // never squeeze the timeline below this
+
+  function clamp(h) {
+    const chartBox = document.getElementById('chart-box');
+    const maxH = panel.getBoundingClientRect().bottom
+               - chartBox.getBoundingClientRect().top - TIMELINE_MIN;
+    return Math.max(MIN_H, Math.min(h, Math.max(MIN_H, maxH)));
+  }
+
+  function onMove(e) {
+    // The panel bottom is pinned to the content area's bottom edge, so the
+    // target height is the distance from the pointer up to that edge.
+    const bottom = panel.getBoundingClientRect().bottom;
+    panel.style.height = clamp(bottom - e.clientY) + 'px';
+    e.preventDefault();
+  }
+
+  function onUp() {
+    document.body.classList.remove('qc-resizing');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  }
+
+  resizer.addEventListener('pointerdown', (e) => {
+    document.body.classList.add('qc-resizing');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    e.preventDefault();
+  });
+})();
