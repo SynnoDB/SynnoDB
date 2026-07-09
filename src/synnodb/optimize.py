@@ -115,7 +115,7 @@ def _validate_engine_against_source(
             for binding in bindings_by_qid[qid]:
                 concrete = substitute(bracket, binding)
                 reference = backend.execute_arrow(concrete)
-                table = engine.run(qid, binding)
+                table, _server_ms = engine.run(qid, binding)
                 ordered = has_order_by(concrete)
                 order_keys = (
                     order_by_key_indices(concrete, reference.column_names)
