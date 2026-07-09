@@ -21,8 +21,9 @@ Results are cached on disk keyed by the query, its row cap, and the identity of 
 subset (workload, scale factor, dataset version). The subset is read-only benchmark data that
 never changes within a run, so a repeated inspection replays instantly - and, under
 ``only_from_cache``, a whole run replays deterministically without re-touching the data. This
-mirrors the shell / compile / apply-patch tool caches. Timeouts are never cached: the wall-clock
-budget is a host-dependent guard, not a property of the data.
+mirrors the shell / compile / apply-patch tool caches. Every executed outcome is cached - a
+result set, a SQL error, or a timeout alike - so both successful and unsuccessful executions
+replay from disk and ``only_from_cache`` never misses on a query the recording run actually ran.
 """
 
 from __future__ import annotations
@@ -54,6 +55,9 @@ OUTPUT_CHAR_LIMIT = 10000
 QUERY_TIMEOUT_S = 15.0
 # Length cap for SQL echoed into log lines, so a pasted mega-query cannot bloat the logs.
 LOG_SQL_LIMIT = 300
+# Stable leading text of the timeout message. Shared by the message the agent sees and the
+# status classifier, so a cached timeout replays with the ``timeout`` status rather than ``ok``.
+_TIMEOUT_ERROR_PREFIX = "Error: query exceeded the"
 
 
 def _short_sql(sql: str) -> str:
@@ -235,11 +239,12 @@ class DataInspectTool:
             )
             return f"Error preparing data for inspection: {exc}", "prep_error", False
 
-        output, cacheable, elapsed = self._run_and_render(con, sql, row_limit)
-        # Cache only deterministic outcomes (a result set or a SQL error - both fixed by the
-        # query and the read-only subset). Timeouts are host-dependent, so caching one would
-        # permanently pin a query that might succeed on a less busy host.
-        if cache_path is not None and cacheable and not self.do_not_cache:
+        output, elapsed = self._run_and_render(con, sql, row_limit)
+        # Cache every executed outcome - a result set, a SQL error, or a timeout alike. Both
+        # successful and unsuccessful executions are keyed on the query and the read-only subset,
+        # so a repeated inspection replays from disk and ``only_from_cache`` never misses on a
+        # query the recording run actually ran.
+        if cache_path is not None and not self.do_not_cache:
             utils.dump_pickle(
                 cache_path,
                 DataInspectCacheType(
@@ -247,10 +252,7 @@ class DataInspectTool:
                 ),
                 do_not_cache=self.do_not_cache,
             )
-        # A non-cacheable outcome is the wall-clock timeout; everything else is a result set or a
-        # deterministic SQL error, both classified from the rendered text.
-        status = "timeout" if not cacheable else _status_from_output(output)
-        return output, status, False
+        return output, _status_from_output(output), False
 
     def _report(
         self, sql: str, row_limit: int, output: str, status: str, cached: bool
@@ -280,14 +282,14 @@ class DataInspectTool:
 
     def _run_and_render(
         self, con: duckdb.DuckDBPyConnection, sql: str, row_limit: int
-    ) -> tuple[str, bool, float]:
+    ) -> tuple[str, float]:
         """Execute *sql* on a throwaway cursor under the wall-clock budget and render the result.
 
-        Returns ``(output_text, cacheable, elapsed_seconds)``. Interrupting the cursor (never the
-        cached connection) means a late interrupt that races query completion cannot poison a later
-        inspection; ``Timer.cancel()`` is a no-op once the timer has already fired. A timeout is
-        reported as ``cacheable=False`` (the budget is a host-dependent guard); everything else is
-        deterministic given the read-only subset and is cached."""
+        Returns ``(output_text, elapsed_seconds)``. Interrupting the cursor (never the cached
+        connection) means a late interrupt that races query completion cannot poison a later
+        inspection; ``Timer.cancel()`` is a no-op once the timer has already fired. A result set,
+        a SQL error, and a timeout are all returned as rendered text and cached by the caller; the
+        outcome is recovered from that text by :func:`_status_from_output`."""
         cur = con.cursor()
         timer = threading.Timer(QUERY_TIMEOUT_S, cur.interrupt)
         timer.daemon = True
@@ -307,17 +309,16 @@ class DataInspectTool:
                 _short_sql(sql),
             )
             return (
-                f"Error: query exceeded the {QUERY_TIMEOUT_S:g}s inspection budget and was "
+                f"{_TIMEOUT_ERROR_PREFIX} {QUERY_TIMEOUT_S:g}s inspection budget and was "
                 "cancelled. query_data is for simple, cheap look-ups - narrow it with a WHERE "
                 "filter, add LIMIT, aggregate fewer columns, or use SUMMARIZE/DESCRIBE on a single "
                 "table instead of scanning or joining large tables.",
-                False,
                 elapsed,
             )
         except Exception as exc:  # noqa: BLE001 - return DuckDB's message so the agent can fix it
             elapsed = time.perf_counter() - started
             logger.debug("query_data SQL error after %.2fs: %s", elapsed, exc)
-            return f"SQL error: {exc}", True, elapsed
+            return f"SQL error: {exc}", elapsed
         finally:
             timer.cancel()
         elapsed = time.perf_counter() - started
@@ -327,14 +328,19 @@ class DataInspectTool:
             len(rows),
             len(column_names),
         )
-        return _render_result(column_names, rows, row_limit), True, elapsed
+        return _render_result(column_names, rows, row_limit), elapsed
 
 
 def _status_from_output(output: str) -> str:
     """Classify a rendered inspection result for reporting. A DuckDB error is echoed verbatim as
-    ``SQL error: ...``; everything else that reaches here is a successful result set. Timeouts are
-    classified by the caller (they are not cacheable and never round-trip through this)."""
-    return "sql_error" if output.startswith("SQL error:") else "ok"
+    ``SQL error: ...``; a wall-clock timeout starts with :data:`_TIMEOUT_ERROR_PREFIX`; everything
+    else is a successful result set. Driven purely by the rendered text so a cached outcome - a
+    result set, a SQL error, or a timeout - classifies identically whether run live or replayed."""
+    if output.startswith("SQL error:"):
+        return "sql_error"
+    if output.startswith(_TIMEOUT_ERROR_PREFIX):
+        return "timeout"
+    return "ok"
 
 
 def _fmt_value(value: Any) -> str:
