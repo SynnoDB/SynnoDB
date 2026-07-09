@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import logging
 import os
 from dataclasses import asdict, dataclass
@@ -14,6 +13,7 @@ from synnodb.cpp_runner.hotpatch.hotpatch_proc import (
     HotpatchProcRunResult,
 )
 from synnodb.cpp_runner.hotpatch.pool import HotpatchPool
+from synnodb.cpp_runner.runtime_reset import warm_runtime_in_use
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.tools.validate.query_validator_class import (
@@ -95,7 +95,7 @@ class RunTool:
         cwd: Path,
         dataset_name: str,
         base_parquet_dir: str
-        | Path,  # must contain per scale-factors subdirs: e.g. base_parquet_dir/sf1/, base_parquet_dir/sf10/..., each containing the corresponding parquet files for the scale factor
+        | Path,  # must contain one subdir per subset, each holding that subset's parquet files: the sampling-fraction convention base_parquet_dir/fraction<f>/ (e.g. fraction1, fraction0.02) or the legacy scale-factor convention base_parquet_dir/sf<N>/ (e.g. sf1, sf10). See find_sf_dir.
         db_storage: DBStorage,
         compiler: CachedCompiler,
         run_stats_collector: RunStatsCollector | None,
@@ -291,6 +291,7 @@ class RunTool:
                 query_ids_executed=query_ids if query_ids is not None else [],
             )
             metrics["type"] = "validate"
+            metrics["validation/replayed_from_cache"] = False
             metrics["validation/compile_with_optimize"] = optimize
             metrics["validation/trace_mode"] = trace_mode
             metrics["validation/compile_error"] = True
@@ -334,28 +335,30 @@ class RunTool:
         # RUN & VALIDATE QUERIES
         #################
 
+        # Guard the warm runtime against a concurrent resync for this whole run (see runtime_reset).
         result_list = []
-        for batch in query_batches:
-            result = self.run_query_batch(
-                batch,
-                echo_output=echo_output,
-                compile_used_cache=compile_used_cache,
-                current_git_snapshot=current_git_snapshot,
-                optimize=optimize,
-                trace_mode=trace_mode,
-                compile_key_hash=compile_key_hash,
-                general_extra_env=extra_env,
-                external_call=external_call,
-                current_parallelism=current_parallelism,
-                current_core_ids=current_core_ids,
-                run_tool_mode=mode,
-                force_live=force_live,
-            )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
-            result_list.append(result)
+        with warm_runtime_in_use():
+            for batch in query_batches:
+                result = self.run_query_batch(
+                    batch,
+                    echo_output=echo_output,
+                    compile_used_cache=compile_used_cache,
+                    current_git_snapshot=current_git_snapshot,
+                    optimize=optimize,
+                    trace_mode=trace_mode,
+                    compile_key_hash=compile_key_hash,
+                    general_extra_env=extra_env,
+                    external_call=external_call,
+                    current_parallelism=current_parallelism,
+                    current_core_ids=current_core_ids,
+                    run_tool_mode=mode,
+                    force_live=force_live,
+                )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
+                result_list.append(result)
 
-            if not result.success:
-                # early return
-                break
+                if not result.success:
+                    # early return
+                    break
 
         return result_list[-1]
 
@@ -378,6 +381,7 @@ class RunTool:
             FAIL,
             PASS,
             PLANE_PARQUET,
+            PLANE_SHM,
             ValidatedQuery,
             ValidationReceipt,
             engine_build_ids,
@@ -411,10 +415,12 @@ class RunTool:
         )
         bindings_by_qid: dict[str, list[dict]] = {}
         scale_factors: list[float] = []
+        data_sources: set = set()
         for batch in batches:
             sf = getattr(batch.exec_settings, "scale_factor", None)
             if sf is not None and not any(abs(sf - s) < 1e-9 for s in scale_factors):
                 scale_factors.append(float(sf))
+            data_sources.add(getattr(batch.exec_settings, "data_source", None))
             for entry in batch.query_list:
                 seen = bindings_by_qid.setdefault(entry.query_id, [])
                 if entry.placeholders not in seen:
@@ -422,6 +428,13 @@ class RunTool:
         validated_queries = tuple(
             ValidatedQuery(qid, tuple(binds)) for qid, binds in bindings_by_qid.items()
         )
+
+        # Record the plane the engine actually ingested over during this validation: a
+        # DuckDB-native subset is staged into /dev/shm (the shm hot-load plane), everything else
+        # streams from parquet. Publishing keys the served plane off this, so it must be truthful.
+        from synnodb.utils.utils import DataSource
+
+        plane = PLANE_SHM if DataSource.DUCKDB in data_sources else PLANE_PARQUET
 
         snapshotter = getattr(self.query_validator, "git_snapshotter", None)
         snapshot_id = (
@@ -436,7 +449,7 @@ class RunTool:
                 f"deterministic workload generator (fixed seed), {mode.value} mode; proves the "
                 "listed bindings per query, not every possible template value"
             ),
-            data_planes=(PLANE_PARQUET,),
+            data_planes=(plane,),
             dataset=self.dataset_name,
             validated_scale_factors=tuple(scale_factors),
             mode=mode.value,
@@ -524,6 +537,15 @@ class RunTool:
             fingerprint=loader_build_id,
         )
 
+        # A DuckDB batch ships only ``subset.duckdb`` (no parquet), so EVERY execution path must
+        # stage it into /dev/shm and point ``SYNNODB_SHM_INGEST`` at it - both the validated path
+        # and the benchmark/no-validator path below. Otherwise the generated loader falls back to
+        # reading ``<table>.parquet``, finds nothing, and the run fails instead of executing.
+        # Staging is done lazily at execute time via ``_run_env_with_optional_shm_ingest`` (see
+        # its docstring), so a cached replay stages nothing and the pid-scoped ingest path stays
+        # out of the hashed ``batch.extra_env``.
+        subset_db = _duckdb_subset_db(batch)
+
         # validate output correctness
         # in case query-validator is not provided or manual-stdin args are provided, just execute without validation
         if self.query_validator is not None:
@@ -540,12 +562,14 @@ class RunTool:
                         current_git_snapshot=current_git_snapshot,
                     )
 
-            execute_fn = functools.partial(
-                call_hotpatch_proc,
-                runner=runner,
-                extra_env=extra_env,
-                echo_output=echo_output,
-            )
+            def execute_fn(*, args_list, timeout_s):
+                return call_hotpatch_proc(
+                    runner=runner,
+                    args_list=args_list,
+                    timeout_s=timeout_s,
+                    extra_env=_run_env_with_optional_shm_ingest(extra_env, subset_db),
+                    echo_output=echo_output,
+                )
 
             # this branch is cached via validation tool cache
             val_result = self.query_validator.exec_and_validate(
@@ -565,6 +589,7 @@ class RunTool:
             msg = val_result.message
             success = val_result.success
             metrics = val_result.metrics
+            replayed_from_cache = val_result.replayed_from_cache
             trace_output = val_result.trace_output
             resp = val_result.resp
             stdout = val_result.stdout
@@ -588,6 +613,7 @@ class RunTool:
             query_results = None
         else:
             # this branch is not cached
+            replayed_from_cache = False
             logger.warning(
                 "No query validator provided, just executing the query without validation!"
             )
@@ -596,7 +622,7 @@ class RunTool:
 
             run_result: ExecCallbackResult = call_hotpatch_proc(
                 runner=runner,
-                extra_env=batch.extra_env if batch.extra_env is not None else {},
+                extra_env=_run_env_with_optional_shm_ingest(extra_env, subset_db),
                 echo_output=echo_output,
                 args_list=args_list,
                 timeout_s=batch.timeout_s,
@@ -647,6 +673,7 @@ class RunTool:
             f"Metrics should be a dict at this point, got {type(metrics)}. This should not happen."
         )
         metrics["type"] = "validate"
+        metrics["validation/replayed_from_cache"] = replayed_from_cache
         metrics["validation/compile_with_optimize"] = optimize
         metrics["validation/trace_mode"] = trace_mode
         metrics["validation/external_call"] = external_call
@@ -721,6 +748,37 @@ def delete_result_files(workspace_path: Path):
         logger.info(f"Deleting existing result files ({len(result_files)} files).")
         for f in result_files:
             f.unlink()
+
+
+def _duckdb_subset_db(batch: QueryBatch) -> Path | None:
+    """The ``subset.duckdb`` a DuckDB-native batch should stage into ``/dev/shm``, or None for
+    every other data source (whose loader reads parquet and needs no staging). Reads only - the
+    staging itself happens lazily in the execute callback so a cached replay stages nothing, and
+    the pid-scoped ingest path stays out of the hashed batch."""
+    from synnodb.utils.utils import DataSource
+    from synnodb.workloads.workload_spec import SUBSET_DUCKDB_FILENAME
+
+    exec_settings = batch.exec_settings
+    if getattr(exec_settings, "data_source", None) != DataSource.DUCKDB:
+        return None
+    return Path(exec_settings.parquet_dir) / SUBSET_DUCKDB_FILENAME  # type: ignore[attr-defined]
+
+
+def _run_env_with_optional_shm_ingest(
+    base_env: dict[str, str], subset_db: Path | None
+) -> dict[str, str]:
+    """The env for a single execution. For a non-DuckDB batch (``subset_db is None``) this is
+    ``base_env`` unchanged. For a DuckDB-native batch it is ``base_env`` plus a freshly staged
+    ``SYNNODB_SHM_INGEST`` pointing at the /dev/shm Arrow segment the generated loader maps
+    zero-copy. Call once per execution: staging happens here (lazily, so a cached replay never
+    stages) and the pid-scoped ingest path is added to the run env only, never to the hashed
+    ``batch.extra_env``, keeping the validate cache replayable across processes."""
+    if subset_db is None:
+        return base_env
+    from synnodb.cpp_runner.shm_stage import stage_subset_duckdb_to_shm
+
+    ingest_dir = stage_subset_duckdb_to_shm(subset_db)
+    return {**base_env, "SYNNODB_SHM_INGEST": str(ingest_dir)}
 
 
 # callback executing the query

@@ -37,7 +37,7 @@ from synnodb.results import (
     StoragePlan,
 )
 from synnodb.utils.cli_config import DEFAULT_MODEL, RunConfig, Usecase
-from synnodb.utils.utils import DBStorage
+from synnodb.utils.utils import DBStorage, ServeFrom
 from synnodb.workloads.workload_provider import Workload, WorkloadId
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
@@ -453,7 +453,12 @@ class SynnoDB:
 
     def check_ram_for_sf(self, sf: float) -> RamCheck:
         """Whether the host has enough available RAM to serve this driver's workload
-        at scale factor ``sf`` fully in memory."""
+        at scale factor ``sf`` fully in memory.
+
+        For a DuckDB-sourced workload only the full benchmark subset (``sf=1.0``) exists right
+        after ``sync_from_duckdb``; the fractional fast-check subsets are downscaled lazily at the
+        first synthesis run, so ``check_ram_for_sf(<fraction>)`` raises until a run has materialized
+        that fraction. ``check_ram_for_sf(1.0)`` always works."""
         from synnodb.workloads.workload_spec import find_sf_dir, get_workload_spec
 
         spec = get_workload_spec(self.config.workload.value)
@@ -461,11 +466,144 @@ class SynnoDB:
         sf_dir = find_sf_dir(root, sf)
         if sf_dir is None:
             raise FileNotFoundError(
-                f"No sf{sf:g} dataset under {root} for workload {spec.name!r} - "
+                f"No subset for {sf:g} under {root} for workload {spec.name!r} - "
                 "generate the dataset before checking RAM."
             )
-        paths = [sf_dir / f"{table}.parquet" for table in spec.tables]
-        return RamCheck.measure(f"sf{sf:g}", paths)
+        # subset_files knows each layout (parquet files vs a single subset.duckdb), so this works
+        # for DuckDB-native workloads too instead of stat-ing parquet that was never written.
+        return RamCheck.measure(sf_dir.name, spec.subset_files(sf_dir))
+
+    # ---- DuckDB-sourced workload registration ----------------------------
+    def sync_from_duckdb(
+        self,
+        con: "Any",
+        *,
+        name: str,
+        queries_json: "str | Path | dict",
+        downscale_fractions: tuple[float, ...] = (0.02, 0.1),
+        join_relationships: list | None = None,
+        dataset_name: str | None = None,
+        schema_example_table: str | None = None,
+        whole_table_threshold: int = 10_000,
+        serve_from: "ServeFrom | str" = ServeFrom.DUCKDB,
+        always_resample: bool = False,
+        set_as_workload: bool = True,
+    ):
+        """Register a workload straight from a live DuckDB connection - no pre-scaled parquet.
+
+        The caller owns a DuckDB connection (or a ``.duckdb`` file path); SynnoDB reads its schema,
+        tables, and queries and **snapshots** the dataset - it does not downscale here. Sync only
+        freezes the source and materializes the full benchmark subset (``fraction1``); each fraction
+        in ``downscale_fractions`` becomes a referentially-closed fast-check rung (**FK-preserving
+        downscaling**, §6) that is built **lazily from the snapshot at the first synthesis run**
+        (``OLAPWorkloadProvider.prepare``). So re-ingesting after synthesis - calling this again when
+        the caller's data changed - just re-snapshots and never re-downscales. Re-ingesting *unchanged*
+        data reuses the existing snapshot and subsets verbatim (fingerprint match), so re-running the
+        same notebook is cheap; pass ``always_resample=True`` to force a fresh snapshot regardless. The
+        connection is only read; nothing is copied back into it.
+
+        The caller may keep working on their database in parallel. A live connection is frozen into
+        a consistent point-in-time snapshot SynnoDB owns before anything is read from it, and every
+        subset (benchmark and the lazily-built rungs) is derived from that immutable image - so
+        writes the caller makes after this call never perturb the run. A ``.duckdb`` path is opened
+        read-only and, as a static source nothing writes, read in place.
+
+            import duckdb, synnodb
+            conn = duckdb.connect("tpch.duckdb")
+            db = synnodb.SynnoDB.in_memory(queries="1-5")
+            db.sync_from_duckdb(conn, name="tpch_byo", queries_json="queries.json",
+                                downscale_fractions=(0.02, 0.1))
+            # conn stays yours - keep querying/writing it while the run proceeds
+            plan = db.createStoragePlan()
+
+        Args:
+            con: a live ``duckdb.DuckDBPyConnection`` or a path to a ``.duckdb`` file (opened
+                read-only).
+            name: workload id to register under (becomes this driver's workload).
+            queries_json: a ``queries.json`` path or an already-parsed ``{qid: entry}`` dict;
+                its JOINs are the primary signal for the FK-preserving join graph.
+            downscale_fractions: sampling fractions of the largest table for the fast-check rungs.
+            join_relationships: optional explicit ``(table_a.col, table_b.col)`` equi-join pairs
+                unioned into the inferred join graph for anything inference misses.
+            whole_table_threshold: tables at or below this row count are kept whole per subset.
+            serve_from: where the run's queries read their subsets from, a :class:`ServeFrom` (or
+                its string value). ``ServeFrom.DUCKDB`` (default) makes each subset a ``subset.duckdb``
+                the engine ingests over the shm plane and the oracle materializes flat from, with
+                no parquet on disk (in-memory only); ``ServeFrom.PARQUET`` materializes
+                ``<table>.parquet`` files per subset (the fallback; also works on SSD). The native
+                benchmark subset is a zero-copy symlink to the frozen source - the caller's
+                read-only file for a path, or the snapshot SynnoDB owns for a live connection -
+                never the caller's live database, so the framework's later read-only opens cannot
+                collide with a read-write handle the caller may still hold.
+            always_resample: force a fresh **snapshot** + benchmark subset on every call, bypassing
+                the fingerprint-reuse default. By default the source is fingerprinted in place and its
+                snapshot + subsets are reused whenever that fingerprint - schema, per-table row counts,
+                join graph, fractions, threshold, format and DuckDB version - still matches; any change
+                re-snapshots on its own. The fingerprint does not read row *values*, so set this True
+                for a source you may edit in place without changing counts or schema, to guarantee
+                fresh data every run. Governs snapshot reuse only, not downscaling (always lazy).
+            set_as_workload: point this driver's config at the new workload (default True).
+
+        Returns the registered :class:`~synnodb.workloads.workload_spec.WorkloadSpec`.
+
+        The benchmark subset is materialized at sync under
+        ``<data_dir>/workloads/<name>/<dataset>_parquet/fraction1/`` (a ``subset.duckdb`` for
+        ``serve_from="duckdb"``, ``<table>.parquet`` files for ``"parquet"``); the fractional
+        ``fraction<f>/`` rungs appear there at the first run, downscaled from the retained snapshot.
+        """
+        import duckdb as _duckdb
+
+        from synnodb.workloads.byo_workload import register_workload_from_duckdb
+        from synnodb.workloads.workload_spec import managed_parquet_root
+
+        opened: "_duckdb.DuckDBPyConnection | None" = None
+        source_db_path: str | None = None
+        # A path SynnoDB opens read-only and closes below is a static source nothing writes: it is
+        # read in place and its DuckDB benchmark subset is a zero-copy symlink. A caller-supplied
+        # live connection may still be written to in parallel, so it is treated as non-static and
+        # frozen into a point-in-time snapshot before anything is read from it.
+        source_is_static = False
+        if isinstance(con, (str, Path)):
+            source_db_path = str(Path(con).resolve())
+            opened = _duckdb.connect(str(con), read_only=True)
+            connection = opened
+            source_is_static = True
+        else:
+            connection = con
+            # A file-backed connection exposes its file via database_list. The primary database is
+            # named after the file stem (never the literal "main"), so match on the file column of
+            # the first (primary) entry; an in-memory primary has no file and stays None.
+            try:
+                rows = connection.execute("PRAGMA database_list").fetchall()
+                if rows and rows[0][2]:  # (seq, name, file)
+                    source_db_path = str(rows[0][2])
+            except Exception:
+                source_db_path = None
+
+        managed_root = managed_parquet_root(name, dataset_name or name)
+        try:
+            spec = register_workload_from_duckdb(
+                name=name,
+                con=connection,
+                queries_json=queries_json,
+                managed_root=managed_root,
+                downscale_fractions=downscale_fractions,
+                join_relationships=join_relationships,
+                dataset_name=dataset_name,
+                schema_example_table=schema_example_table,
+                whole_table_threshold=whole_table_threshold,
+                serve_from=serve_from,
+                source_db_path=source_db_path,
+                source_is_static=source_is_static,
+                always_resample=always_resample,
+            )
+        finally:
+            if opened is not None:
+                opened.close()
+
+        if set_as_workload:
+            self.config = dataclasses.replace(self.config, workload=WorkloadId(name))
+        return spec
 
     # ---- the single entry point ------------------------------------------
     def run_synthesis(

@@ -10,7 +10,7 @@ import pyarrow as pa
 from tqdm import tqdm
 
 from synnodb.utils.drop_caches import drop_os_caches, is_memory_backed
-from synnodb.utils.utils import DBStorage
+from synnodb.utils.utils import DBStorage, ServeFrom
 from synnodb.workloads.workload_provider import Workload
 
 
@@ -28,6 +28,7 @@ class DuckDBConnectionManager:
         pin_core: Optional[int] = 3,
         num_threads: int = 1,
         run_duckdb_on_parquet: bool = True,
+        serve_from: ServeFrom = ServeFrom.PARQUET,
         drop_os_caches_before_sql: bool = True,
     ):
         self.con: duckdb.DuckDBPyConnection | None = None
@@ -36,7 +37,11 @@ class DuckDBConnectionManager:
         # parquet file, so queries stream the data from parquet at query time
         # and nothing is held in DuckDB. If False, each table is materialized
         # into DuckDB via CREATE TABLE (data lives in memory / the .duckdb file).
+        # Only consulted when the subset is served from PARQUET.
         self.run_duckdb_on_parquet = run_duckdb_on_parquet
+        # Where the oracle reads each subset from: ``ServeFrom.DUCKDB`` materializes the flat tables
+        # from the subset's ``subset.duckdb`` (ATTACH) instead of from parquet.
+        self.serve_from = serve_from
         self.parquet_path = parquet_path
         self.sf = sf
         self.pin_worker = pin_worker
@@ -152,31 +157,70 @@ class DuckDBConnectionManager:
     def _ensure_tables_loaded(self) -> None:
         """Connect and make each dataset table available under its real name.
 
-        Depending on ``self.run_duckdb_on_parquet`` the table name resolves
-        either to a view over the parquet file (``CREATE VIEW`` — data streamed
-        from parquet at query time) or to a materialized table (``CREATE TABLE``
-        — data loaded into DuckDB). Either way the (unchanged) SQL queries that
-        reference bare table names resolve correctly.
+        The tables resolve from one of three sources: a ``ServeFrom.DUCKDB`` subset's
+        ``subset.duckdb`` (materialized flat via ATTACH), a view over the subset's parquet
+        (``run_duckdb_on_parquet`` - data streamed from parquet at query time), or a materialized
+        table read from that parquet. Either way the (unchanged) SQL queries that reference bare
+        table names resolve correctly.
         """
         self._connect(self.duckdb_path)
         assert self.con is not None
 
-        if self.run_duckdb_on_parquet:
-            object_kind = "VIEW"
-            desc = f"Registering DuckDB parquet views for SF{self.sf}"
-        else:
-            object_kind = "TABLE"
-            desc = f"Loading DuckDB tables for SF{self.sf}"
+        # Resolve the subset directory under the parquet root (sampling-fraction ``fraction<f>``
+        # or legacy ``sf<N>``).
+        from synnodb.workloads.workload_spec import find_sf_dir
 
-        for table in tqdm(self.dataset_tables, desc=desc):
-            self.con.execute(
-                f"CREATE {object_kind} {table} AS "
-                f"SELECT * FROM read_parquet('{self.parquet_path}/sf{self.sf}/{table}.parquet')"
+        subset_dir = find_sf_dir(self.parquet_path, self.sf)
+        if subset_dir is None:
+            raise FileNotFoundError(
+                f"No subset directory for fraction/SF {self.sf:g} under {self.parquet_path}."
             )
+
+        if self.serve_from == ServeFrom.DUCKDB:
+            self._load_tables_from_subset_duckdb(subset_dir)
+        else:
+            if self.run_duckdb_on_parquet:
+                object_kind = "VIEW"
+                desc = f"Registering DuckDB parquet views for {subset_dir.name}"
+            else:
+                object_kind = "TABLE"
+                desc = f"Loading DuckDB tables for {subset_dir.name}"
+
+            for table in tqdm(self.dataset_tables, desc=desc):
+                self.con.execute(
+                    f"CREATE {object_kind} {table} AS "
+                    f"SELECT * FROM read_parquet('{(subset_dir / f'{table}.parquet').as_posix()}')"
+                )
         if self.duckdb_path is not None:
             self.con.execute("CHECKPOINT")
             self.con.close()
             self.con = None
+
+    def _load_tables_from_subset_duckdb(self, subset_dir: Path) -> None:
+        """Materialize each dataset table flat from the subset's ``subset.duckdb`` (DuckDB-native).
+
+        The subset database is ATTACHed read-only and each table copied into a native table, so
+        the oracle answers the exact same rows the engine ingests over shm - no parquet on disk.
+        """
+        assert self.con is not None
+        subset_db = subset_dir / "subset.duckdb"
+        if not subset_db.exists():
+            raise FileNotFoundError(
+                f"No DuckDB-native subset database at {subset_db} (expected subset.duckdb)."
+            )
+        alias = "_synno_subset_src"
+        safe_db = subset_db.as_posix().replace("'", "''")
+        self.con.execute(f"ATTACH '{safe_db}' AS {alias} (READ_ONLY)")
+        try:
+            for table in tqdm(
+                self.dataset_tables,
+                desc=f"Loading DuckDB tables for {subset_dir.name} (native)",
+            ):
+                self.con.execute(
+                    f'CREATE TABLE {table} AS SELECT * FROM {alias}."{table}"'
+                )
+        finally:
+            self.con.execute(f"DETACH {alias}")
 
     def clear_mem_footprint(self, including_disk: bool = False) -> None:
         if self.con is not None:

@@ -6,6 +6,7 @@ from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.runtime_tracker import RuntimeTracker
 from synnodb.tools.compile import CompileTool
+from synnodb.tools.data_inspect import DataInspectTool
 from synnodb.tools.run import RunTool
 from synnodb.tools.shell_executor import ShellExecutor
 from synnodb.tools.workspace_editor import WorkspaceEditor
@@ -19,6 +20,7 @@ class SDKWrapper:
         shell: ShellExecutor,
         compile_tool: CompileTool,
         run_tool: RunTool,
+        data_inspect_tool: DataInspectTool | None,
         args,
         cache_path: Path,
         config_kwargs: dict[str, Any],
@@ -36,6 +38,7 @@ class SDKWrapper:
         self.shell = shell
         self.compile_tool = compile_tool
         self.run_tool = run_tool
+        self.data_inspect_tool = data_inspect_tool
         self.args = args
         self.cache_path = cache_path
         self.config_kwargs = config_kwargs

@@ -42,7 +42,7 @@ __version__ = __duckdb_version__
 # Owned entry points
 # ---------------------------------------------------------------------------
 def connect(
-    database: str = ":memory:",
+    database: Any = ":memory:",
     read_only: bool = False,
     config: Optional[dict] = None,
     *,
@@ -52,17 +52,27 @@ def connect(
     mount: bool = False,
     **kwargs: Any,
 ) -> SynnoConnection:
-    """Open a DuckDB connection wrapped by the SynnoDB router.
+    """Open (or wrap) a DuckDB connection behind the SynnoDB router.
 
-    ``database`` is passed straight to ``duckdb.connect`` with DuckDB's exact semantics
-    (``":memory:"`` is a fresh empty in-memory database; a file path opens that file). A
-    shm-capable engine hot-loads its tables as Arrow over shared memory regardless of whether
-    the connection is in-memory or on a file, so no special flag is needed: ``connect("my.db",
-    engines=...)`` routes matching queries to a ``synno-my`` engine that serves the file's data.
+    ``database`` accepts either of two forms:
 
-    ``policy`` / ``registry`` / ``engines`` / ``mount`` are SynnoDB extensions; everything else
-    is passed straight to ``duckdb.connect``. With no registered engines (the default) this
-    behaves exactly like ``duckdb.connect``.
+    * a **path** (``str``/``pathlib.Path``) or ``":memory:"`` - passed straight to
+      ``duckdb.connect`` with DuckDB's exact semantics (``":memory:"`` is a fresh empty
+      in-memory database; a file path opens that file). This is the drop-in form:
+      ``synnodb.connect("my.db", engines=...)`` opens the file and routes matching queries.
+    * an **already-open** ``duckdb.DuckDBPyConnection`` - wrapped in place rather than reopened,
+      so the router shares the exact connection (catalog, temp tables, in-memory data) you
+      already hold. The caller keeps ownership: closing the returned ``SynnoConnection`` leaves
+      the wrapped connection open. Because it is already open, ``read_only`` and any other
+      ``duckdb.connect`` open-time keyword arguments do not apply and passing them is an error;
+      set those when you open the connection instead.
+
+    A shm-capable engine hot-loads its tables as Arrow over shared memory regardless of whether
+    the connection is in-memory or on a file, so no special flag is needed either way.
+
+    ``policy`` / ``registry`` / ``engines`` / ``mount`` are SynnoDB extensions; for the path form
+    everything else is passed straight to ``duckdb.connect``. With no registered engines (the
+    default) this behaves exactly like ``duckdb.connect``.
 
     ``engines`` is the directory of published bespoke engines to auto-discover and route to
     (default: ``SYNNO_ENGINES_DIR`` or ``$SYNNO_DATA_DIR/engines``; ``None`` everywhere
@@ -71,17 +81,36 @@ def connect(
     DuckDB of your own.
     """
     config = config or {}
-    inner = _duckdb.connect(
-        database=database, read_only=read_only, config=config, **kwargs
-    )
+    if isinstance(database, _duckdb.DuckDBPyConnection):
+        # A live connection was handed in: wrap it directly. ``read_only`` and any **kwargs only
+        # make sense when *opening* a database - the connection is already open - so reject them
+        # rather than silently ignore, which would hide a real misconfiguration.
+        if read_only or kwargs:
+            bad = ["read_only"] if read_only else []
+            bad += sorted(kwargs)
+            raise TypeError(
+                "synnodb.connect(<DuckDBPyConnection>) wraps an already-open connection; "
+                f"open-time argument(s) {bad} do not apply. Pass them when you open the "
+                "connection, or pass a database path instead."
+            )
+        inner: Any = database
+        owns_inner = False
+    else:
+        inner = _duckdb.connect(
+            database=database, read_only=read_only, config=config, **kwargs
+        )
+        owns_inner = True
     router = QueryRouter(policy or RouterPolicy.from_env(), registry)
-    # ``config={'threads': N}`` configures inner DuckDB (above, unchanged) AND fixes the thread
-    # count of every routed bespoke engine, so a query served by the engine runs at the same
-    # parallelism DuckDB would - exactly the DuckDB knob, applied end-to-end.
+    # ``config={'threads': N}`` fixes the thread count of every routed bespoke engine, so a query
+    # served by the engine runs at the same parallelism DuckDB would - exactly the DuckDB knob,
+    # applied end-to-end. For the path form it also configures the inner DuckDB opened above; when
+    # wrapping a live connection the inner DuckDB keeps whatever it was opened with, so ``config``
+    # only sets the engine's thread budget.
     engine_threads = config.get("threads")
     return SynnoConnection(
         inner,
         router,
+        owns_inner=owns_inner,
         engines_dir=resolve_engines_dir(engines),
         mount=mount,
         engine_threads=int(engine_threads) if engine_threads is not None else None,

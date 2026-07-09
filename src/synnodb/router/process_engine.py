@@ -275,48 +275,17 @@ class ProcessEngine:
 _INGEST_PREFIX = "synno-ingest-"
 
 
-def _proc_start_time(pid: int) -> Optional[str]:
-    """The owner process's start time (``/proc/<pid>/stat`` field 22, in clock ticks since boot),
-    used to tell a recycled PID from the original owner. None when it cannot be read."""
-    try:
-        with open(f"/proc/{pid}/stat", "r") as f:
-            data = f.read()
-        # field 2 (comm) is parenthesized and may contain spaces/parens; split after the last ')'.
-        post = data[data.rfind(")") + 2 :].split()
-        return post[19]  # field 22 overall -> index 19 among the post-comm fields
-    except (OSError, IndexError):
-        return None
+# Start-time reader and orphan sweep live in shm_transport now (shared with the synthesis-time
+# shm_stage); these keep the historical private names for callers/tests that import them.
+from .shm_transport import proc_start_time as _proc_start_time  # noqa: E402
 
 
 def _sweep_ingest_orphans(base: Path) -> int:
-    """Remove ``synno-ingest-<pid>-<starttime>-*`` ingest dirs whose owner is gone, so a SIGKILL'd
-    connection does not leak shm. Reaps when the PID is dead OR its current start time differs from
-    the tag (the PID was recycled into an unrelated live process) - PID-alive alone would keep a
-    genuine orphan forever after PID reuse. Only touches our own prefix."""
-    from .shm_transport import _pid_alive
+    """Remove ``synno-ingest-<pid>-<starttime>-*`` ingest dirs whose owner is gone (dead PID, or a
+    recycled PID whose start time no longer matches), so a SIGKILL'd connection does not leak shm."""
+    from .shm_transport import sweep_ingest_orphans
 
-    removed = 0
-    try:
-        children = list(base.glob(f"{_INGEST_PREFIX}*"))
-    except OSError:
-        return 0
-    for path in children:
-        parts = path.name[len(_INGEST_PREFIX) :].split("-")
-        pid_str = parts[0] if parts else ""
-        tagged_start = parts[1] if len(parts) > 1 else None
-        if not pid_str.isdigit():
-            continue
-        pid = int(pid_str)
-        alive = _pid_alive(pid)
-        # Reap if dead, or if alive but the start time no longer matches (PID recycled). When the
-        # tag or /proc has no start time, fall back to the dead-PID check alone.
-        if alive and (
-            tagged_start is None or _proc_start_time(pid) in (None, tagged_start)
-        ):
-            continue
-        shutil.rmtree(path, ignore_errors=True)
-        removed += 1
-    return removed
+    return sweep_ingest_orphans(base, _INGEST_PREFIX)
 
 
 class ShmHotLoadEngine(ProcessEngine):
@@ -350,9 +319,11 @@ class ShmHotLoadEngine(ProcessEngine):
         """Stage the engine's data snapshot as ``/dev/shm`` Arrow segments. Call once before
         the first query; the loader maps them on its first run and holds them resident. Safe to
         call again (the previous snapshot is reclaimed first); a write failure leaves nothing."""
-        import pyarrow.ipc as ipc
-
-        from .shm_transport import SHM_DIR
+        from .shm_transport import (
+            SHM_DIR,
+            check_shm_budget,
+            write_arrow_segments,
+        )
 
         if (
             self._ingest_dir is not None
@@ -371,14 +342,13 @@ class ShmHotLoadEngine(ProcessEngine):
         # mid-write ENOSPC would leave a partial segment - keeping a reserve free for everything
         # else on the box.
         needed = sum(int(t.nbytes) for t in tables.values())
-        usage = shutil.disk_usage(base)
-        reserve = max(64 * 1024 * 1024, usage.total // 20)
-        if needed + reserve > usage.free:
+        fits, free, reserve = check_shm_budget(base, needed)
+        if not fits:
             raise EngineResourceError(
                 f"not enough shared memory to hot-load this database into {base}",
                 context={
                     "needed_MiB": round(needed / 1048576, 1),
-                    "free_MiB": round(usage.free / 1048576, 1),
+                    "free_MiB": round(free / 1048576, 1),
                     "reserve_MiB": round(reserve / 1048576, 1),
                     "hint": "use the parquet (standalone) plane, or free space in /dev/shm",
                 },
@@ -388,25 +358,7 @@ class ShmHotLoadEngine(ProcessEngine):
         ingest_dir = Path(
             tempfile.mkdtemp(prefix=f"{_INGEST_PREFIX}{pid}-{start}-", dir=base)
         )
-        try:
-            total = 0
-            for name, table in tables.items():
-                seg = ingest_dir / f"{name}.arrow"
-                with pa.OSFile(str(seg), "wb") as sink:
-                    with ipc.new_file(sink, table.schema) as writer:
-                        writer.write_table(table)
-                nbytes = seg.stat().st_size
-                total += nbytes
-                log.debug(
-                    "engine=%s shm ingest table=%s rows=%d bytes=%d",
-                    self.engine_id,
-                    name,
-                    table.num_rows,
-                    nbytes,
-                )
-        except Exception:
-            shutil.rmtree(ingest_dir, ignore_errors=True)
-            raise
+        total = write_arrow_segments(ingest_dir, tables)
         self._ingest_dir = ingest_dir
         # argv[1] becomes the ingest dir (unused for loading); the env switches on the plane.
         self.parquet_dir = str(ingest_dir).rstrip("/") + "/"

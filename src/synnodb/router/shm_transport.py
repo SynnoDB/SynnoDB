@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 import pyarrow as pa
 import pyarrow.ipc as ipc
@@ -48,6 +49,75 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True  # exists, owned by someone else
     return True
+
+
+# --- shared shm-ingest staging primitives (used by the serving ShmHotLoadEngine and the
+#     synthesis-time shm_stage; kept here so both write the exact same segment format, budget
+#     policy, and crash-cleanup rules the C++ ``ReadArrowTableFromShm`` depends on) ------------
+def proc_start_time(pid: int) -> Optional[str]:
+    """The owner process's start time (``/proc/<pid>/stat`` field 22, in clock ticks since boot),
+    used to tell a recycled PID from the original owner. None when it cannot be read."""
+    try:
+        with open(f"/proc/{pid}/stat", "r") as f:
+            data = f.read()
+        # field 2 (comm) is parenthesized and may contain spaces/parens; split after the last ')'.
+        post = data[data.rfind(")") + 2 :].split()
+        return post[19]  # field 22 overall -> index 19 among the post-comm fields
+    except (OSError, IndexError):
+        return None
+
+
+def sweep_ingest_orphans(base: Path, prefix: str) -> int:
+    """Remove ``<prefix><pid>-<starttime>-*`` ingest dirs under ``base`` whose owner is gone, so a
+    SIGKILL'd process does not leak shm. Reaps when the PID is dead OR its current start time
+    differs from the tag (the PID was recycled into an unrelated live process) - PID-alive alone
+    would keep a genuine orphan forever after PID reuse. Only touches dirs with ``prefix``."""
+    removed = 0
+    try:
+        children = list(base.glob(f"{prefix}*"))
+    except OSError:
+        return 0
+    for path in children:
+        parts = path.name[len(prefix) :].split("-")
+        pid_str = parts[0] if parts else ""
+        tagged_start = parts[1] if len(parts) > 1 else None
+        if not pid_str.isdigit():
+            continue
+        pid = int(pid_str)
+        if _pid_alive(pid) and (
+            tagged_start is None or proc_start_time(pid) in (None, tagged_start)
+        ):
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+def check_shm_budget(base: Path, needed_bytes: int) -> tuple[bool, int, int]:
+    """Whether ``needed_bytes`` of Arrow segments fit in the tmpfs at ``base`` while keeping a
+    reserve free (a mid-write ENOSPC would leave a partial segment). Returns
+    ``(fits, free_bytes, reserve_bytes)``; each caller raises its own typed error on a miss."""
+    usage = shutil.disk_usage(base)
+    reserve = max(64 * 1024 * 1024, usage.total // 20)
+    return (needed_bytes + reserve <= usage.free, usage.free, reserve)
+
+
+def write_arrow_segments(ingest_dir: Path, tables: Mapping[str, pa.Table]) -> int:
+    """Write each ``{name: table}`` as an Arrow-IPC ``<name>.arrow`` file under ``ingest_dir`` -
+    exactly the format the C++ ``ReadArrowTableFromShm`` maps. Returns the total bytes written; on
+    any failure the partial ``ingest_dir`` is removed and the error propagates."""
+    total = 0
+    try:
+        for name, table in tables.items():
+            seg = ingest_dir / f"{name}.arrow"
+            with pa.OSFile(str(seg), "wb") as sink:
+                with ipc.new_file(sink, table.schema) as writer:
+                    writer.write_table(table)
+            total += seg.stat().st_size
+    except BaseException:
+        shutil.rmtree(ingest_dir, ignore_errors=True)
+        raise
+    return total
 
 
 @dataclass(frozen=True)

@@ -202,6 +202,7 @@ class ShellExecutor:
 
         with custom_span(f'shell command ("{abbr}")', {"commands": shorted_cmds}):
             if cache_path.exists():
+                served_from_cache = True
                 cached = utils.load_pickle(cache_path, ShellCacheType)
                 assert cached is not None
                 outputs = cached.outputs
@@ -215,6 +216,7 @@ class ShellExecutor:
                 self.snapshotter.restore(cached.snapshot_hash)
 
             else:
+                served_from_cache = False
                 if self.only_from_cache:
                     raise ValueError(
                         f"Shell command output not found in cache and only_from_cache is enabled. Cache path: {cache_path}\nPayload: {hash_payload}"
@@ -277,6 +279,7 @@ class ShellExecutor:
                 "shell/commands": log_cmd_list,
                 "shell/outputs": output_str,
                 "shell/truncated": output_truncated,
+                "shell/cached": served_from_cache,
             },
             log_and_increment=True,
         )
