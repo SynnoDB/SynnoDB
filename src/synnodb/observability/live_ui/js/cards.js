@@ -31,6 +31,17 @@ function updateHeaderMeta(meta = {}) {
   document.getElementById('hdr-run-name').textContent   = meta.run_name     || '—';
   document.getElementById('hdr-system-name').textContent = meta.system_name || '—';
 
+  // The serving thread count is a run-level constant published as run metadata;
+  // hide the row until the run has reported it.
+  const threadsRow = document.getElementById('hdr-threads-item');
+  const nt = meta.num_threads;
+  if (nt != null) {
+    document.getElementById('hdr-num-threads').textContent = Number.isFinite(+nt) ? +nt : nt;
+    threadsRow.hidden = false;
+  } else {
+    threadsRow.hidden = true;
+  }
+
   const isStandalone = meta._source_type === 'db' || meta._source_type === 'wandb' ||
                        meta._source_type === 'remote' || meta._source_type === 'standalone';
   const modeLabel = isStandalone ? 'Standalone' : 'Live';
@@ -63,6 +74,50 @@ function updateHeaderMeta(meta = {}) {
   }
 }
 
+// Surface the model driving the run in the header. The model lives in each
+// step's agent_config (published per stage), so walk back to the most recent
+// step that carries one and show it; hide the chip until one is known.
+function updateHeaderModel(steps, data) {
+  const el  = document.getElementById('hdr-model');
+  const val = document.getElementById('hdr-model-val');
+  if (!el || !val) return;
+  let model = null;
+  for (let i = steps.length - 1; i >= 0 && model == null; i--) {
+    const cfg = parseJsonField((data[steps[i]] || {}).agent_config);
+    if (cfg && cfg.model) model = cfg.model;
+  }
+  if (model) {
+    val.textContent = model;
+    val.title = model;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+// ── Run info panel (started / W&B / run / system / reloaded) ──────────────
+(function initHeaderInfo() {
+  const wrap  = document.getElementById('hdr-info-wrap');
+  const btn   = document.getElementById('hdr-info-btn');
+  const panel = document.getElementById('hdr-info-panel');
+  if (!wrap || !btn || !panel) return;
+
+  function close() { panel.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
+  function open()  { panel.hidden = false; btn.setAttribute('aria-expanded', 'true'); }
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (panel.hidden) open(); else close();
+  });
+  panel.addEventListener('click', e => e.stopPropagation());
+  document.addEventListener('click', e => {
+    if (!panel.hidden && !wrap.contains(e.target)) close();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !panel.hidden) close();
+  });
+})();
+
 // ── Cost mode toggle (calculatorial vs after-cache) ──────────────────────
 function setCostMode(mode) {
   costMode = mode;
@@ -78,6 +133,7 @@ document.getElementById('cost-mode-toggle').addEventListener('click', e => {
 
 // ── Cards ────────────────────────────────────────────────────────────────
 function updateCards(steps, data) {
+  updateHeaderModel(steps, data);
   const last = steps.length ? steps[steps.length-1] : null;
   const d = last != null ? (data[last] || {}) : {};
   document.getElementById('v-turn').textContent = last ?? '—';

@@ -227,6 +227,7 @@ def _duckdb_snapshot(db_path: Path) -> str:
         "wandb_run_id": None,
         "system_name": None,
         "start_time": None,
+        "num_threads": None,
     }
 
     for raw in rows:
@@ -250,6 +251,10 @@ def _duckdb_snapshot(db_path: Path) -> str:
         for mk in ("run_name", "wandb_run_id", "system_name"):
             if meta[mk] is None and mk in parsed:
                 meta[mk] = parsed[mk]
+        # The serving thread count is stored per row under run/num_threads; lift the
+        # first one seen into run metadata (it is constant for the whole run).
+        if meta["num_threads"] is None and "run/num_threads" in parsed:
+            meta["num_threads"] = parsed["run/num_threads"]
         data[str(step)] = parsed
 
     # Infer run_name from file stem when not embedded in metrics
@@ -273,6 +278,7 @@ def _wandb_snapshot(run_id: str, entity: str | None, project: str | None) -> str
         "wandb_run_id": run_id,
         "system_name": run.config.get("system_name"),
         "start_time": run.created_at,
+        "num_threads": None,
     }
 
     history = run.history(samples=10000)  # pandas DataFrame
@@ -294,6 +300,10 @@ def _wandb_snapshot(run_id: str, entity: str | None, project: str | None) -> str
                 row_dict[k] = v
             else:
                 row_dict[k] = v
+        # The serving thread count rides along every metric row; lift the first
+        # one seen into run metadata (constant for the whole run).
+        if meta["num_threads"] is None and "run/num_threads" in row_dict:
+            meta["num_threads"] = row_dict["run/num_threads"]
         data[str(step)] = row_dict
 
     return json.dumps({"meta": meta, "steps": steps, "data": data})
@@ -587,6 +597,9 @@ class LiveDashboardDrain(DataDrain):
             "wandb_run_id": wandb_run_id,
             "system_name": system_name,
             "start_time": datetime.now().isoformat(timespec="seconds"),
+            # The run's resolved serving thread count, lifted from the first metric
+            # row that carries run/num_threads (see emit). None until then.
+            "num_threads": None,
             "stages": self._stages,
             # Previews of the currently-running conversation's scheduled stages,
             # populated by register_planned_stages; None until a conversation
@@ -709,6 +722,7 @@ class LiveDashboardDrain(DataDrain):
             self._meta["error"] = None
             self._meta["run_name"] = None
             self._meta["wandb_run_id"] = None
+            self._meta["num_threads"] = None
             self._meta["start_time"] = datetime.now().isoformat(timespec="seconds")
 
     # ------------------------------------------------------------------ emit --
@@ -729,6 +743,10 @@ class LiveDashboardDrain(DataDrain):
                     # int default keeps integer counters (tool/*_count) integral.
                     coerced = coerced + self._carry.get(k, 0)
                     self._last_global[k] = coerced
+                # The run's serving thread count is a run-level constant; surface it
+                # as run metadata rather than leaving it buried in the metric rows.
+                if k == "run/num_threads":
+                    self._meta["num_threads"] = coerced
                 row[k] = coerced
 
     # -------------------------------------------------------------- internals --

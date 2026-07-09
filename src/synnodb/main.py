@@ -404,6 +404,9 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         f"could not resolve any usable core for threads={getattr(args, 'threads', None)}"
     )
     args.target_threads = target_threads
+    # Publish the resolved thread count as run metadata: every metric row carries
+    # it (run/num_threads), from which the live dashboard lifts it into meta.
+    run_stats_collector.num_threads = target_threads
 
     # Parallelism need (args.needs_parallelism): plan.parallelism, except for
     # replay stages, where it was overridden above from the source run's recorded
