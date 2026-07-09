@@ -75,7 +75,7 @@ def test_float_sf_resolves_int_dir(ramshop, monkeypatch):
 def test_missing_sf_raises(ramshop, monkeypatch):
     db, _, _ = ramshop
     _set_available_ram(monkeypatch, 2**62)
-    with pytest.raises(FileNotFoundError, match="No sf99 dataset"):
+    with pytest.raises(FileNotFoundError, match="No subset for 99"):
         db.check_ram_for_sf(99)
 
 
