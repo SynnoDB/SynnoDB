@@ -45,10 +45,7 @@ if TYPE_CHECKING:  # for type-checkers/IDEs only; runtime resolves these lazily.
         ValidateStdoutOff,
         ValidateStdoutOn,
     )
-    from synnodb.cpp_runner.prepare_repo.prepare_features import (
-        Parallelism,
-        PrepareFeatures,
-    )
+    from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
     from synnodb.plan import ConversationPlan, SupervisionPolicy
     from synnodb.results import (
         BaseImplementation,
@@ -71,7 +68,6 @@ _LAZY_FACTORY = {
     "ConversationPlan": "synnodb.plan",
     "SupervisionPolicy": "synnodb.plan",
     "PrepareFeatures": "synnodb.cpp_runner.prepare_repo.prepare_features",
-    "Parallelism": "synnodb.cpp_runner.prepare_repo.prepare_features",
     "ConvContext": "synnodb.conversations.conv_context",
     "StageItem": "synnodb.conversations.stage_items",
     "PromptStage": "synnodb.conversations.stage_items",

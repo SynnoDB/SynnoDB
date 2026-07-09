@@ -16,10 +16,7 @@ from synnodb.conversations.examples import base_impl as _base_impl_builder
 from synnodb.conversations.examples import check_sf as _check_sf_builder
 from synnodb.conversations.examples import optim as _optim_builder
 from synnodb.conversations.examples import storage_plan as _storage_plan_builder
-from synnodb.cpp_runner.prepare_repo.prepare_features import (
-    Parallelism,
-    PrepareFeatures,
-)
+from synnodb.cpp_runner.prepare_repo.prepare_features import PrepareFeatures
 from synnodb.plan import ConversationPlan, SupervisionPolicy
 from synnodb.results import (
     build_base_impl,
@@ -57,7 +54,6 @@ def optim_plan(plan_source: str = "duckdb") -> ConversationPlan:
         name="runOptimLoop",
         prepare=PrepareFeatures.optim(),
         stages=functools.partial(_optim_builder.build, plan_source=plan_source),
-        parallelism=Parallelism.MULTI_THREADED,
         supervision=SupervisionPolicy.RELAXED,
         finish_interactive=True,
         offer_trace_option=True,  # collect fine-grained perf traces
@@ -70,7 +66,6 @@ def mt_plan() -> ConversationPlan:
         name="addMultiThreading",
         prepare=PrepareFeatures.mt(),
         stages=_mt_builder.build,
-        parallelism=Parallelism.MULTI_THREADED,
         supervision=SupervisionPolicy.RELAXED,
         finish_interactive=True,
         offer_trace_option=True,
@@ -81,8 +76,8 @@ def mt_plan() -> ConversationPlan:
 def check_sf_plan(target_sf: float) -> ConversationPlan:
     return ConversationPlan(
         name="checkSfCorrectness",
-        # replay the prepare record of the source snapshot; the run's
-        # parallelism is the source run's recorded parallelism
+        # replay the prepare record of the source snapshot; correctness is
+        # validated at the run's configured serving thread count
         prepare=None,
         stages=functools.partial(_check_sf_builder.build, target_sf=target_sf),
         supervision=SupervisionPolicy.STRICT,
