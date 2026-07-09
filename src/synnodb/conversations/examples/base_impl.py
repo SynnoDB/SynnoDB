@@ -100,6 +100,8 @@ def build(ctx: ConvContext) -> list[StageItem]:
             sql=sql,
             persistent_storage=ctx.persistent_storage,
             num_threads=ctx.threads,
+            storage_plan_filename=storage_plan_filename,
+            base_impl_todo_filename=base_impl_todo_filename,
         )
 
     def _exec_validate_prompt(_exec_settings, _rt, *, qid: str):
@@ -181,6 +183,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 base_impl_todo_file=base_impl_todo_filename,
                 args_path=args_path,
                 persistent_storage=ctx.persistent_storage,
+                storage_plan_filename=storage_plan_filename,
             ),
             measure_performance_after_stage=False,
             auto_revert_on_regression=False,

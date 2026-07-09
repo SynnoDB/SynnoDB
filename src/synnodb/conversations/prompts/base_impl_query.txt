@@ -7,9 +7,13 @@ Align with the existing storage layout and value-encoding implementation in `${b
 To generate speedups over DuckDB you need to leverage the storage plan implementation fully. Since we are a bespoke system we expect large speedups.
 You may use utmost optimizations like SIMD, later materialization etc.
 
-Limit file inspection to: `${builder_path}`, `${query_impl_path}`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+Before writing this query's execution logic, check `${storage_plan_filename}` and `${base_impl_todo_filename}` for every storage-layer structure this query depends on (dictionaries, zone maps, bitmaps, sort/skip indexes, range indexes, or any other precomputed structure the storage plan calls out for it). If `${base_impl_todo_filename}` shows such an item as unchecked or marked DEFERRED, and this query needs it, implement it now in `${builder_path}` - add the field(s) to the storage struct and the build-time logic that populates them - then check off the corresponding todo item(s). Do not defer it again.
 
-Focus on correctness first! The implementation can be optimized later.
+The test for where a piece of logic belongs is whether it depends on this call's arguments, not how fast or how cleanly it is written: anything derived purely from the base columns - independent of this request's arguments - is build-time state and must be computed once in `${builder_path}` and read from `Database`, never recomputed inside `run_q${query_id}`. This holds even if the recomputation itself is well-optimized (e.g. a clean `parallel_reduce` over the full table): an efficient full-table pass repeated on every call is still wasted work compared to doing it once at build time, and does not satisfy the storage plan. Only logic that genuinely varies per call (filtering/joining against this request's argument values) belongs in the query file. The storage layer must actually provide what the plan promised before this query counts as implemented.
+
+Limit file inspection to: `${builder_path}`, `${query_impl_path}`, `${storage_plan_filename}`, `${base_impl_todo_filename}`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+
+Correctness is the gate: an incorrect result is worthless no matter how fast it is. But that is not license to defer the storage-plan structures, SIMD, or the parallel_reduce work described below to a later pass - implement them now, as part of getting this query both correct and fast. Do not ship a correct-but-naive version with the optimization left as a followup.
 
 ${parallelism_note}
 

@@ -8,7 +8,7 @@ If a needed column is missing from `Database`, update the storage implementation
 
 Limit file inspection to: `${builder_path}`, `${query_impl_path}`, `buffer_pool.hpp`, `column_handle.hpp`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
 
-Focus on correctness first! The implementation can be optimized later.
+Correctness is the gate: an incorrect result is worthless no matter how fast it is. But that is not license to defer the storage implementation update described above (or any other storage-layer work this query needs) to a later pass - implement it now, as part of getting this query both correct and fast. Do not ship a correct-but-naive version with the optimization left as a followup.
 
 # Required Access Audit
 

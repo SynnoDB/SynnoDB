@@ -180,6 +180,7 @@ def base_planner_prompt(
         base_impl_todo_file=base_impl_todo_file,
         schema_example_table=schema_example_table,
         num_threads=num_threads,
+        storage_plan_path=storage_plan_path,
     )
 
 
@@ -189,6 +190,7 @@ def base_impl_storage(
     base_impl_todo_file: str,
     args_path: str,
     persistent_storage: bool,
+    storage_plan_filename: str,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_impl_storage_ssd.txt"
@@ -202,6 +204,7 @@ def base_impl_storage(
         query_impl_path=query_impl_path,
         base_impl_todo_file=base_impl_todo_file,
         args_path=args_path,
+        storage_plan_filename=storage_plan_filename,
     )
 
 
@@ -396,6 +399,8 @@ def base_impl_query_prompt(
     sql: str,
     persistent_storage: bool,
     num_threads: int,
+    storage_plan_filename: str,
+    base_impl_todo_filename: str,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_impl_query_ssd.txt"
@@ -425,6 +430,8 @@ def base_impl_query_prompt(
         query_impl_path=query_impl_path,
         sql=sql,
         parallelism_note=parallelism_note(num_threads),
+        storage_plan_filename=storage_plan_filename,
+        base_impl_todo_filename=base_impl_todo_filename,
     )
 
 
