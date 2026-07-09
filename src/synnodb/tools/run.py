@@ -352,6 +352,7 @@ class RunTool:
                     external_call=external_call,
                     current_parallelism=current_parallelism,
                     current_core_ids=current_core_ids,
+                    current_num_threads=current_num_threads,
                     run_tool_mode=mode,
                     force_live=force_live,
                 )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
@@ -472,6 +473,7 @@ class RunTool:
         current_parallelism: bool,
         run_tool_mode: RunToolMode,
         current_core_ids: list[int] | None,
+        current_num_threads: int,
         force_live: bool = False,
     ) -> RunWorkerResult:
         # assemble call cmd
