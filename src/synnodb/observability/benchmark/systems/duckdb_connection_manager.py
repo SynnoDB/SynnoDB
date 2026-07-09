@@ -154,6 +154,39 @@ class DuckDBConnectionManager:
         self.con.execute(f"PRAGMA threads={self.num_threads};")
         return self.con
 
+    def set_thread_config(
+        self, num_threads: int, pin_worker: bool, pin_core: Optional[int]
+    ) -> None:
+        """Resync this (possibly already-connected, already-loaded) manager to a new thread
+        count, without rebuilding the connection or re-materializing tables.
+
+        Callers memoize ``DuckDBConnectionManager`` by dataset identity alone (see
+        ``OLAPSystemFactory.get_system``), so the same instance is reused across a run even as
+        the run tool's thread count changes (e.g. serial generation -> multi-threaded
+        validation). DuckDB must always run at the same thread count as the engine under test,
+        so re-apply ``PRAGMA threads`` on the live connection here; CPU pinning itself is already
+        re-applied per query in ``duckdb_sql_arrow``, so updating the attributes is enough for
+        that part.
+        """
+        if pin_worker:
+            assert pin_core is not None
+            assert num_threads == 1, (
+                "Pinning worker to a single core only makes sense if num_threads=1"
+            )
+        if num_threads != 1:
+            assert not pin_worker, (
+                "Pinning worker to a single core is not compatible with multi-threading (num_threads > 1)"
+            )
+
+        if num_threads == self.num_threads and pin_worker == self.pin_worker:
+            return
+
+        self.num_threads = num_threads
+        self.pin_worker = pin_worker
+        self.pin_core = pin_core
+        if self.con is not None:
+            self.con.execute(f"PRAGMA threads={self.num_threads};")
+
     def _ensure_tables_loaded(self) -> None:
         """Connect and make each dataset table available under its real name.
 
