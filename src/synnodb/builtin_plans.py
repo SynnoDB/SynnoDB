@@ -57,6 +57,7 @@ def optim_plan(plan_source: str = "duckdb") -> ConversationPlan:
         name="runOptimLoop",
         prepare=PrepareFeatures.optim(),
         stages=functools.partial(_optim_builder.build, plan_source=plan_source),
+        parallelism=Parallelism.MULTI_THREADED,
         supervision=SupervisionPolicy.RELAXED,
         finish_interactive=True,
         offer_trace_option=True,  # collect fine-grained perf traces
