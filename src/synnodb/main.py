@@ -387,19 +387,11 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
 
     # run tool parallelism setup (must be determined before QueryValidator so the
     # num_threads value is included in the query-cache key)
-    #
-    # `threads` is the canonical target degree of parallelism (the DuckDB-style
-    # config={'threads': N}); None -> 1, 0 -> all usable cores, N -> N. Resolve it against
-    # this machine ONCE so the storage planner, the base-impl prompt, the MT round, and the
-    # served engine all agree on the same number. The storage/base/optim stages still
-    # VALIDATE serially (CORE_IDS=1, byte-identical) but are TOLD this target so they
-    # design a layout/implementation that partitions cleanly across it.
-    target_threads, target_core_ids = resolve_target_cores(
-        getattr(args, "threads", None)
-    )
-    assert target_threads >= 1 and len(target_core_ids) == target_threads, (
-        f"could not resolve any usable core for threads={getattr(args, 'threads', None)}"
-    )
+    
+    
+    assert args.threads is not None and args.threads > 0 and args.threads <= os.cpu_count(), f'Invalid threads value: {args.threads}. Must be a positive integer less than or equal to the number of CPU cores ({os.cpu_count()}).'
+    target_threads = args.threads
+
     args.target_threads = target_threads
     # Publish the resolved thread count as run metadata: every metric row carries
     # it (run/num_threads), from which the live dashboard lifts it into meta.
