@@ -772,16 +772,12 @@ def test_set_thread_config_resyncs_live_connection_without_reload(tmp_path, sour
         assert mgr.pin_worker is False
         _, table2, _ = mgr.duckdb_sql_arrow("SELECT count(*) AS n FROM lineitem")
         assert table2.to_pydict()["n"][0] == row_count  # data untouched, not reloaded
-        assert (
-            mgr.con.execute("SELECT current_setting('threads')").fetchone()[0] == 4
-        )
+        assert mgr.con.execute("SELECT current_setting('threads')").fetchone()[0] == 4
 
         # Switch back to single-threaded/pinned.
         mgr.set_thread_config(num_threads=1, pin_worker=True, pin_core=3)
         assert mgr.con is con_before
-        assert (
-            mgr.con.execute("SELECT current_setting('threads')").fetchone()[0] == 1
-        )
+        assert mgr.con.execute("SELECT current_setting('threads')").fetchone()[0] == 1
 
         # A no-op resync (same thread count) must not blow away the connection either.
         mgr.set_thread_config(num_threads=1, pin_worker=True, pin_core=3)
@@ -875,6 +871,5 @@ def test_olap_system_factory_resyncs_duckdb_thread_count_on_reuse(tmp_path, sour
     _, table, _ = mgr_parallel.duckdb_sql_arrow("SELECT count(*) AS n FROM lineitem")
     assert table.to_pydict()["n"][0] == 1000
     assert (
-        mgr_parallel.con.execute("SELECT current_setting('threads')").fetchone()[0]
-        == 4
+        mgr_parallel.con.execute("SELECT current_setting('threads')").fetchone()[0] == 4
     )
