@@ -30,7 +30,9 @@ const LOG_FILTERS = {
         || d['data_inspect/cached'] === true                        // data_inspect
         || d['shell/cached'] === true                               // shell
         || d['validation/replayed_from_cache'] === true             // validate
-        || d['compile/cached'] === true;                            // compile
+        || d['compile/cached'] === true                             // compile
+        || d['apply_patch/cached'] === true                         // apply_patch
+        || d['compaction/cached'] === true;                         // compaction
       return state === 'yes' ? fromCache : !fromCache;
     },
   },
@@ -80,14 +82,15 @@ function logDesc(type, d) {
     const failed  = parseJsonField(d['apply_patch/failed']);
     const hasFailed = failed && failed.length;
     const failedStr = hasFailed ? ' ⚠ ' + failed.length + ' failed' : '';
+    const cachedStr = d['apply_patch/cached'] ? ' · cached' : '';
     const delta = (!hasFailed && (added != null || deleted != null))
       ? ' (+' + (added||0) + '/-' + (deleted||0) + ')' : '';
     if (files && files.length) {
       const names = files.map(f => f.split('/').pop());
       const list = names.slice(0,3).join(', ') + (names.length > 3 ? ' +' + (names.length-3) : '');
-      return list + delta + failedStr;
+      return list + delta + failedStr + cachedStr;
     }
-    return 'code change' + delta + failedStr;
+    return 'code change' + delta + failedStr + cachedStr;
   }
   if (type === 'shell') {
     const cmds = parseJsonField(d['shell/commands']);
@@ -117,6 +120,12 @@ function logDesc(type, d) {
     const c = d['validation/correct'];
     const result = c === true ? 'correct' : c === false ? 'incorrect' : 'ran';
     return [result, qStr, tStr].filter(Boolean).join(' · ');
+  }
+  if (type === 'compaction') {
+    const items = d['compaction/output_items'];
+    const itemsStr = items != null ? items + ' items' : null;
+    const cachedStr = d['compaction/cached'] ? 'cached' : null;
+    return [itemsStr, cachedStr].filter(Boolean).join(' · ') || 'compaction';
   }
   return d['agent_name'] || type;
 }
