@@ -10,7 +10,7 @@ const LOG_TYPE_META = {
   apply_patch:{ label:'Patch',      cls:'lt-patch'     },
   shell:      { label:'Shell',      cls:'lt-shell'     },
   compile:    { label:'Compile',    cls:'lt-compile'   },
-  validate:   { label:'Validate',   cls:'lt-validate'  },
+  validate:   { label:'RUN',        cls:'lt-validate'  },
   data_inspect:{ label:'Inspect',   cls:'lt-datainspect'},
   compaction: { label:'Compaction', cls:'lt-compaction'},
 };
@@ -112,14 +112,16 @@ function logDesc(type, d) {
     return [status, q].filter(Boolean).join(' · ') + cached;
   }
   if (type === 'validate') {
-    if (d['validation/compile_error']) return 'compile error';
+    const mode = d['validation/run_mode'];
+    const modeStr = mode ? String(mode) : null;
+    if (d['validation/compile_error']) return [modeStr, 'compile error'].filter(Boolean).join(' · ');
     const queries = parseJsonField(d['validation/query_ids_executed']);
     const trace = d['validation/trace_mode'];
     const qStr = queries && queries.length ? queries.join(', ') : null;
-    const tStr = trace ? 'trace' : (trace === false ? 'no trace' : null);
+    const tStr = trace ? 'trace' : null;
     const c = d['validation/correct'];
-    const result = c === true ? 'correct' : c === false ? 'incorrect' : 'ran';
-    return [result, qStr, tStr].filter(Boolean).join(' · ');
+    const result = c === true ? 'correct ✓' : c === false ? 'incorrect' : 'ran';
+    return [modeStr, qStr, result, tStr].filter(Boolean).join(' · ');
   }
   if (type === 'compaction') {
     const items = d['compaction/output_items'];

@@ -223,6 +223,35 @@ function updateScaleFactorButtons(steps, data) {
   }
 }
 
+// The serving thread count both engines ran at, shown next to the panel title.
+// DuckDB and SynnoDB always execute at the same resolved thread count, so the
+// chip unifies them into one number; a divergence is highlighted because it
+// means the two runtimes are no longer measured on equal footing.
+function updateThreadIndicator(steps, data) {
+  const el = document.getElementById('qc-threads');
+  if (!el) return;
+  const counts = getThreadCounts(steps, data);
+  if (!counts || (counts.duckdb == null && counts.bespoke == null)) {
+    el.hidden = true;
+    el.classList.remove('mismatch');
+    return;
+  }
+  const {duckdb, bespoke} = counts;
+  const mismatch = duckdb != null && bespoke != null && duckdb !== bespoke;
+  el.classList.toggle('mismatch', mismatch);
+  if (mismatch) {
+    el.innerHTML = '⚠ num threads: DuckDB <b>' + duckdb + '</b> ≠ SynnoDB <b>' + bespoke + '</b>';
+    el.title = 'DuckDB and SynnoDB were benchmarked at different thread counts, '
+      + 'so their runtimes are not directly comparable.';
+  } else {
+    const n = duckdb != null ? duckdb : bespoke;
+    el.innerHTML = 'num threads: <b>' + n + '</b>';
+    el.title = 'DuckDB and SynnoDB were both benchmarked at ' + n
+      + (n === 1 ? ' thread.' : ' threads.');
+  }
+  el.hidden = false;
+}
+
 // When time-travel is active, freeze the displayed values at that turn but
 // keep the query set (= bar layout) the same as live so columns don't dance.
 function updateQueryChart(steps, data) {
@@ -231,6 +260,7 @@ function updateQueryChart(steps, data) {
   const isSpeedup = queryChartMode === 'speedup';
 
   if (!latestQueries.length) {
+    updateThreadIndicator(steps, data);
     // No benchmark rows in the current data — clear the chart so we don't
     // keep showing bars from a previously loaded run after a source switch.
     queryChart.data.labels             = [];
@@ -252,6 +282,7 @@ function updateQueryChart(steps, data) {
   const filteredSteps = timeTravelStep != null
     ? steps.filter(s => +s <= +timeTravelStep)
     : steps;
+  updateThreadIndicator(filteredSteps, data);
   const selectedQueriesById = new Map(getQueryRuntimes(filteredSteps, data).map(q => [q.id, q]));
   const queries = latestQueries.map(q => {
     const selected = selectedQueriesById.get(q.id);
