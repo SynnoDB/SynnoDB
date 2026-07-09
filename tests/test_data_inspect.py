@@ -268,7 +268,9 @@ def test_timeout_is_cached_and_replays(tmp_path, monkeypatch):
     _make_duckdb_subset(base)
     cache_dir = tmp_path / "cache"
     monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
-    slow_sql = "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b"
+    slow_sql = (
+        "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b"
+    )
     tool = DataInspectTool(
         workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
     )
@@ -300,7 +302,9 @@ def test_timeout_replay_reports_timeout_status(tmp_path, monkeypatch):
     _make_duckdb_subset(base)
     cache_dir = tmp_path / "cache"
     monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
-    slow_sql = "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b"
+    slow_sql = (
+        "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b"
+    )
     DataInspectTool(
         workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
     )(slow_sql)
