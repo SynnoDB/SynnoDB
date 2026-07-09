@@ -205,6 +205,7 @@ def base_planner_prompt(
         base_impl_todo_file=base_impl_todo_file,
         schema_hint=schema_hint,
         num_threads=num_threads,
+        storage_plan_path=storage_plan_path,
     )
 
 
@@ -214,6 +215,8 @@ def base_impl_storage(
     base_impl_todo_file: str,
     args_path: str,
     persistent_storage: bool,
+    storage_plan_filename: str,
+    read_storage_plan: bool,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_impl_storage_ssd.txt"
@@ -222,11 +225,31 @@ def base_impl_storage(
 
     template_str = _load_txt(prompt_path)
     template = Template(template_str)
+
+    # Only point at the storage-plan file when one was actually generated for this run
+    # (``read_storage_plan`` mirrors ``ctx.bespoke_storage``). Flat/non-bespoke runs never
+    # get a storage_plan file written to the workspace, so telling the model to read it as
+    # a source of truth would send it chasing a file that does not exist.
+    if read_storage_plan:
+        storage_plan_note = (
+            f" chosen by the storage plan (`{storage_plan_filename}` - read it now if you "
+            "have not already; it is the source of truth for column layout and any "
+            "accompanying dictionary/zone-map/index structures, do not proceed on "
+            "assumption or memory of it)."
+        )
+        storage_plan_file_list_item = f", `{storage_plan_filename}`"
+    else:
+        storage_plan_note = " for a struct-of-arrays layout (no storage plan file was generated for this run)."
+        storage_plan_file_list_item = ""
+
     return template.substitute(
         builder_path=builder_path,
         query_impl_path=query_impl_path,
         base_impl_todo_file=base_impl_todo_file,
         args_path=args_path,
+        storage_plan_filename=storage_plan_filename,
+        storage_plan_note=storage_plan_note,
+        storage_plan_file_list_item=storage_plan_file_list_item,
     )
 
 
@@ -421,6 +444,9 @@ def base_impl_query_prompt(
     sql: str,
     persistent_storage: bool,
     num_threads: int,
+    storage_plan_filename: str,
+    base_impl_todo_filename: str,
+    read_storage_plan: bool,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_impl_query_ssd.txt"
@@ -440,6 +466,35 @@ def base_impl_query_prompt(
     else:
         sample_args_str = ""
 
+    # Only tell the model to read a storage plan when one was actually generated for this
+    # run (``read_storage_plan`` mirrors ``ctx.bespoke_storage``). Flat/non-bespoke runs
+    # never get a storage_plan file written to the workspace, so this must fall back to
+    # checking the todo plan only, not chase a nonexistent file.
+    if read_storage_plan:
+        storage_plan_check = (
+            f"Before writing this query's execution logic, check `{storage_plan_filename}` "
+            f"and `{base_impl_todo_filename}` for every storage-layer structure this query "
+            "depends on (dictionaries, zone maps, bitmaps, sort/skip indexes, range indexes, "
+            "or any other precomputed structure the storage plan calls out for it). If "
+            f"`{base_impl_todo_filename}` shows such an item as unchecked or marked DEFERRED, "
+            f"and this query needs it, implement it now in `{builder_path}` - add the "
+            "field(s) to the storage struct and the build-time logic that populates them - "
+            "then check off the corresponding todo item(s). Do not defer it again."
+        )
+        storage_plan_file_list_item = f", `{storage_plan_filename}`"
+    else:
+        storage_plan_check = (
+            f"Before writing this query's execution logic, check "
+            f"`{base_impl_todo_filename}` for every storage-layer structure this query "
+            "depends on (dictionaries, zone maps, bitmaps, sort/skip indexes, range indexes, "
+            f"or any other precomputed structure noted there). If "
+            f"`{base_impl_todo_filename}` shows such an item as unchecked or marked DEFERRED, "
+            f"and this query needs it, implement it now in `{builder_path}` - add the "
+            "field(s) to the storage struct and the build-time logic that populates them - "
+            "then check off the corresponding todo item(s). Do not defer it again."
+        )
+        storage_plan_file_list_item = ""
+
     return template.substitute(
         prefix=prefix,
         query_id=query_id,
@@ -450,6 +505,10 @@ def base_impl_query_prompt(
         query_impl_path=query_impl_path,
         sql=sql,
         parallelism_note=parallelism_note(num_threads),
+        storage_plan_filename=storage_plan_filename,
+        base_impl_todo_filename=base_impl_todo_filename,
+        storage_plan_check=storage_plan_check,
+        storage_plan_file_list_item=storage_plan_file_list_item,
     )
 
 
