@@ -254,6 +254,14 @@ class GitSnapshotter:
         Does NOT remove untracked or ignored files.
         Equivalent to: git reset --hard HEAD
         """
+        if self._head_hash(allow_none=True) is None:
+            # Unborn branch (fresh worktree, no snapshot committed yet): reset
+            # --hard has no commit to target. Match its empty-tree semantics by
+            # dropping any staged files from both the index and the working tree
+            # (untracked files are left untouched). --ignore-unmatch makes this a
+            # no-op when nothing is staged.
+            self._git(["rm", "-r", "-f", "--ignore-unmatch", "."])
+            return
         self._git(["reset", "--hard", "HEAD"])
 
     def matches_snapshot(self, commit_hash: str) -> bool:

@@ -22,16 +22,23 @@ import json
 import logging
 import random
 import re
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
+from synnodb.utils.utils import ServeFrom
 from synnodb.workloads.query_params import (
     ParamSpace,
     find_placeholders,
     parse_param_space,
     substitute,
 )
-from synnodb.workloads.workload_spec import WorkloadSpec, register_workload
+from synnodb.workloads.workload_spec import (
+    DuckDBSubsetSource,
+    WorkloadSpec,
+    register_workload,
+    subset_dirname,
+)
 
 if TYPE_CHECKING:
     from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
@@ -194,8 +201,14 @@ def _natural_sort(ids: list[str]) -> list[str]:
 
 
 def _sf_dir(parquet_dir: Path, sf: float) -> Path:
-    # framework convention: <parquet_dir>/sf<sf>/<table>.parquet
-    return parquet_dir / f"sf{sf}"
+    """The existing subset directory for a subset value under a parquet root - the
+    sampling-fraction ``fraction<f>`` convention (written by the referential downscaler) or the
+    legacy ``sf<N>`` one. Falls back to the ``sf<sf>`` spelling for error messages when nothing
+    exists yet."""
+    from synnodb.workloads.workload_spec import find_sf_dir
+
+    resolved = find_sf_dir(parquet_dir, sf)
+    return resolved if resolved is not None else parquet_dir / f"sf{sf}"
 
 
 # Number of the smallest available scale factors to use as fast validation rungs when only a
@@ -205,21 +218,23 @@ _FAST_RUNG_COUNT = 2
 
 
 def _discover_available_sfs(parquet_dir: Path) -> list[float]:
-    """Scale factors that actually have data on disk, ascending.
+    """Subset values that actually have data on disk, ascending.
 
-    Convention is ``<parquet_dir>/sf<N>/<table>.parquet`` (see :func:`_sf_dir`); integral
-    SFs are returned as ints so they format back to ``sf50`` rather than ``sf50.0``."""
+    Convention is ``<parquet_dir>/<subset>/<table>.parquet`` where ``<subset>`` is ``fraction<f>``
+    (sampling fraction) or the legacy ``sf<N>``; integral values are returned as ints so they
+    format back to ``fraction1``/``sf50`` rather than ``fraction1.0``/``sf50.0``."""
     sfs: list[float] = []
     if not parquet_dir.is_dir():
         return sfs
-    for child in parquet_dir.glob("sf*"):
-        if not child.is_dir():
-            continue
-        try:
-            value = float(child.name[2:])
-        except ValueError:
-            continue
-        sfs.append(int(value) if value.is_integer() else value)
+    for prefix in ("fraction", "sf"):
+        for child in parquet_dir.glob(f"{prefix}*"):
+            if not child.is_dir():
+                continue
+            try:
+                value = float(child.name[len(prefix) :])
+            except ValueError:
+                continue
+            sfs.append(int(value) if value.is_integer() else value)
     return sorted(set(sfs))
 
 
@@ -235,12 +250,12 @@ def _derive_sf_ladder(
     honour it; when only the target is given we augment it with the smallest scale factors
     that exist on disk. Returns ``(fast_check_sfs, exhaustive_sfs, benchmark_sf, ingest_sfs)``.
 
-    TODO(byo-sampling): scanning for ``sf*`` directories is a TPC-H-ism. Real BYO data does
-    not arrive in scale-factor tiers, so there is nothing small to scan for and the warning
-    below fires. The durable fix is for the framework to *materialise* a small validation
-    sample of the user's own data at registration (a deterministic row fraction) and use that
-    as the fast rung, independent of any TPC-H-style SF layout. Until then this keeps
-    TPC-H-shaped inputs fast and fails loudly otherwise.
+    Note: for a workload sourced from a DuckDB connection this scanning is moot -
+    :func:`register_workload_from_duckdb` derives the fast rungs itself by FK-preserving
+    downscaling and hands us an explicit ``(fraction, …, 1.0)`` ladder, so the branch below that
+    honours an explicit multi-subset ladder is taken and no ``sf*`` scan happens. This function
+    still scans for the bring-your-own **parquet** entries, which supply their own subsets on disk;
+    those keep TPC-H-shaped inputs fast and fail loudly (the warning below) otherwise.
     """
     target = scale_factors[-1]
 
@@ -281,6 +296,19 @@ def infer_tables_from_parquet(parquet_dir: str | Path, sf: float) -> list[str]:
     return tables
 
 
+def _ddl_from_describe(
+    con: Any, tables: list[str], from_sql: Callable[[str], str]
+) -> str:
+    """Build ``CREATE TABLE`` DDL by DESCRIBEing ``SELECT * FROM <from_sql(table)>`` for each
+    table, so the schema is derived from the data itself with nothing to hand-maintain."""
+    parts: list[str] = []
+    for t in tables:
+        rows = con.execute(f"DESCRIBE SELECT * FROM {from_sql(t)}").fetchall()
+        cols = ",\n    ".join(f"{r[0]} {r[1]}" for r in rows)
+        parts.append(f"CREATE TABLE {t} (\n    {cols}\n);")
+    return "\n\n".join(parts)
+
+
 def schema_ddl_from_parquet(
     parquet_dir: str | Path, tables: list[str], sf: float
 ) -> str:
@@ -290,16 +318,26 @@ def schema_ddl_from_parquet(
 
     base = _sf_dir(Path(parquet_dir), sf)
     con = duckdb.connect()
-    parts: list[str] = []
-    for t in tables:
-        path = base / f"{t}.parquet"
-        rows = con.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{path.as_posix()}')"
-        ).fetchall()
-        cols = ",\n    ".join(f"{r[0]} {r[1]}" for r in rows)
-        parts.append(f"CREATE TABLE {t} (\n    {cols}\n);")
-    con.close()
-    return "\n\n".join(parts)
+    try:
+        return _ddl_from_describe(
+            con,
+            tables,
+            lambda t: f"read_parquet('{(base / f'{t}.parquet').as_posix()}')",
+        )
+    finally:
+        con.close()
+
+
+def schema_ddl_from_duckdb(subset_db_path: str | Path, tables: list[str]) -> str:
+    """Derive a CREATE TABLE DDL string for the planner from a DuckDB-native ``subset.duckdb``,
+    the DuckDB-native analogue of :func:`schema_ddl_from_parquet` (no parquet to describe)."""
+    import duckdb
+
+    con = duckdb.connect(str(subset_db_path), read_only=True)
+    try:
+        return _ddl_from_describe(con, tables, lambda t: f'"{t}"')
+    finally:
+        con.close()
 
 
 def register_workload_from_dir(
@@ -357,6 +395,43 @@ def register_workload_from_dir(
     )
 
 
+def _parse_queries_json(
+    raw: object, source: str
+) -> tuple[dict[str, str], dict[str, dict]]:
+    """Split a ``queries.json`` mapping into ``{qid: sql}`` and ``{qid: {"params"/"param_groups"}}``.
+
+    Each entry is either a plain SQL string (a static query) or an object with a ``"sql"`` key
+    plus optional ``params`` / ``param_groups``. Query ids are kept as written here; the shared
+    builder normalizes them (q1/Q1/query1/1) downstream.
+    """
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            f"{source} must be a non-empty JSON object mapping query-id -> "
+            f'{{"sql": ..., "params": ...}} (or a plain SQL string).'
+        )
+    sql_by_id: dict[str, str] = {}
+    params_by_id: dict[str, dict] = {}
+    for qid, entry in raw.items():
+        qid = str(qid)
+        if isinstance(entry, str):
+            sql_by_id[qid] = entry
+            continue
+        if not isinstance(entry, dict) or "sql" not in entry:
+            raise ValueError(
+                f"{source}: query {qid!r} must be a SQL string or an object with a "
+                f'"sql" key, got {type(entry).__name__}.'
+            )
+        sql_by_id[qid] = str(entry["sql"])
+        section: dict = {}
+        if entry.get("params"):
+            section["params"] = entry["params"]
+        if entry.get("param_groups"):
+            section["param_groups"] = entry["param_groups"]
+        if section:
+            params_by_id[qid] = section
+    return sql_by_id, params_by_id
+
+
 def register_workload_from_json(
     name: str,
     queries_json: str | Path,
@@ -382,32 +457,7 @@ def register_workload_from_json(
     """
     queries_json = Path(queries_json)
     raw = json.loads(queries_json.read_text())
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError(
-            f"{queries_json} must be a non-empty JSON object mapping query-id -> "
-            f'{{"sql": ..., "params": ...}} (or a plain SQL string).'
-        )
-
-    sql_by_id: dict[str, str] = {}
-    params_by_id: dict[str, dict] = {}
-    for qid, entry in raw.items():
-        qid = str(qid)
-        if isinstance(entry, str):
-            sql_by_id[qid] = entry
-            continue
-        if not isinstance(entry, dict) or "sql" not in entry:
-            raise ValueError(
-                f"{queries_json}: query {qid!r} must be a SQL string or an object with a "
-                f'"sql" key, got {type(entry).__name__}.'
-            )
-        sql_by_id[qid] = str(entry["sql"])
-        section: dict = {}
-        if entry.get("params"):
-            section["params"] = entry["params"]
-        if entry.get("param_groups"):
-            section["param_groups"] = entry["param_groups"]
-        if section:
-            params_by_id[qid] = section
+    sql_by_id, params_by_id = _parse_queries_json(raw, str(queries_json))
 
     return _register_static_workload(
         name=name,
@@ -433,11 +483,15 @@ def _register_static_workload(
     schema_example_table: str | None,
     params_by_id: dict[str, dict] | None = None,
     params_source: str = "params",
+    dataset_version: str | None = None,
+    schema_factory: "Callable[[], str] | None" = None,
+    serve_from: ServeFrom = ServeFrom.PARQUET,
+    duckdb_source: "DuckDBSubsetSource | None" = None,
 ) -> WorkloadSpec:
-    """Shared builder: turn an ``{id: sql}`` map + parquet into a registered workload.
-    Schema is derived from the parquet; tables inferred if not given. Templated queries are
-    filled by sampling their typed :class:`ParamSpace` at run time; static queries get an
-    identity generator."""
+    """Shared builder: turn an ``{id: sql}`` map + a subset root into a registered workload.
+    Schema is derived from the parquet subset (or supplied via ``schema_factory`` for DuckDB-native
+    subsets); tables inferred if not given. Templated queries are filled by sampling their typed
+    :class:`ParamSpace` at run time; static queries get an identity generator."""
     parquet_dir = Path(parquet_dir)
     # Normalize keys (q1/Q1/query1/1/2b) to canonical bare ids, reliably + reported.
     key_to_id = _normalize_query_keys(list(sql_by_id))
@@ -447,8 +501,12 @@ def _register_static_workload(
 
     resolved_tables = tables or infer_tables_from_parquet(parquet_dir, scale_factors[0])
 
-    def schema_factory() -> str:
-        return schema_ddl_from_parquet(parquet_dir, resolved_tables, scale_factors[0])
+    if schema_factory is None:
+
+        def schema_factory() -> str:
+            return schema_ddl_from_parquet(
+                parquet_dir, resolved_tables, scale_factors[0]
+            )
 
     # Templated queries (those with [PLACEHOLDER] holes) carry a typed ParamSpace sampled at
     # run time; static queries use an identity generator. Params keys were already normalized
@@ -513,6 +571,456 @@ def _register_static_workload(
         placeholders_factory=placeholders_factory,
         param_space_factory=param_space_factory,
         base_parquet_dir=parquet_dir,
+        dataset_version=dataset_version,
+        serve_from=serve_from,
+        duckdb_source=duckdb_source,
     )
     register_workload(spec)
     return spec
+
+
+# The referential downscaler's version. Bumped when its algorithm changes so a stale materialized
+# subset (and any LLM/snapshot cache keyed on ``dataset_version``) is invalidated.
+_DOWNSCALER_VERSION = "1"
+
+
+def _duckdb_dataset_version(
+    downscaler,
+    subsets: tuple[float, ...],
+    whole_table_threshold: int,
+    serve_from: ServeFrom,
+) -> str:
+    """A cache-busting fingerprint of the *derived* dataset - everything that changes which rows
+    a subset contains: source table names + row counts, the inferred join relationships (they
+    drive which rows are kept), the subset fractions, the whole-table threshold, the subset
+    storage format (duckdb vs parquet), the installed DuckDB version (its ``hash()`` defines the
+    deterministic anchor sample and is not guaranteed stable across versions), and the downscaler
+    version. Any change re-extracts and invalidates stale LLM/snapshot cache entries (§5.2)."""
+    import hashlib
+
+    import duckdb
+
+    relationships = sorted(
+        (r.table_a, r.table_b, r.pairs) for r in downscaler.relationships
+    )
+    payload = repr(
+        {
+            "tables": sorted(downscaler.schema.row_counts.items()),
+            "relationships": relationships,
+            "subsets": sorted(subsets),
+            "whole_table_threshold": whole_table_threshold,
+            "serve_from": serve_from.value,
+            "duckdb": duckdb.__version__,
+            "downscaler": _DOWNSCALER_VERSION,
+        }
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+# Manifest written next to the materialized subsets, recording the ``dataset_version`` they were
+# built from. Reused only when it still matches, so a changed source/params/algorithm rebuilds.
+_SUBSET_MANIFEST = ".synno_dataset.json"
+
+
+def read_manifest_dataset_version(managed_root: str | Path) -> str | None:
+    """The ``dataset_version`` recorded in the subset manifest under ``managed_root``, or None if
+    there is no readable manifest. Lets the lazy downscaler (:meth:`OLAPWorkloadProvider.prepare`)
+    treat fractional subsets left from a different source version as stale and rebuild them."""
+    manifest = Path(managed_root) / _SUBSET_MANIFEST
+    try:
+        return json.loads(manifest.read_text()).get("dataset_version")
+    except (OSError, ValueError):
+        return None
+
+
+# The frozen point-in-time copy of a live source connection, kept under ``managed_root``. Every
+# subset is derived from it, and a DuckDB-native benchmark subset symlinks it, so the caller may
+# keep writing to their own database in parallel without perturbing the run.
+_SOURCE_SNAPSHOT = ".source_snapshot.duckdb"
+
+
+@contextmanager
+def _static_source(
+    con,
+    source_db_path: "str | Path | None",
+    source_is_static: bool,
+    managed_root: Path,
+) -> "Iterator[tuple[str, Any]]":
+    """Yield ``(static_source_path, read_only_connection)`` for a source guaranteed not to change
+    under us while the subsets are materialized.
+
+    * A SynnoDB-owned read-only path (``source_is_static``) is already frozen - nothing writes it -
+      so it is read in place through the handle the caller opened.
+    * A caller-supplied live connection may still be written to in parallel, so a consistent
+      point-in-time snapshot is copied to ``<managed_root>/.source_snapshot.duckdb`` first and that
+      frozen file, opened read-only, becomes the source everything downstream derives from.
+    """
+    import duckdb
+
+    from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
+        snapshot_source_database,
+    )
+
+    if source_is_static:
+        if source_db_path is None:
+            raise ValueError(
+                "a static DuckDB source requires its file path (source_db_path)."
+            )
+        yield str(Path(source_db_path).resolve()), con
+        return
+
+    managed_root.mkdir(parents=True, exist_ok=True)
+    snapshot_path = managed_root / _SOURCE_SNAPSHOT
+    snapshot_source_database(con, snapshot_path)
+    snap_con = duckdb.connect(str(snapshot_path), read_only=True)
+    try:
+        yield str(snapshot_path.resolve()), snap_con
+    finally:
+        snap_con.close()
+
+
+def _subset_artifacts(
+    managed_root: Path, fraction: float, serve_from: ServeFrom, tables: list[str]
+) -> list[Path]:
+    """The files that must all exist for ``fraction``'s subset to count as materialized."""
+    out_dir = managed_root / subset_dirname(fraction)
+    if serve_from == ServeFrom.DUCKDB:
+        return [out_dir / "subset.duckdb"]
+    return [out_dir / f"{t}.parquet" for t in tables]
+
+
+def _benchmark_is_current(
+    managed_root: Path,
+    dataset_version: str,
+    serve_from: ServeFrom,
+    tables: list[str],
+) -> bool:
+    """True iff the benchmark subset (``fraction1``, the full data) under ``managed_root`` was
+    built from ``dataset_version`` and all its artifacts are present - so it can be reused verbatim
+    (no re-snapshot, no rebuild). A missing manifest, a mismatched version (source/params/algorithm
+    changed), or a missing/partial benchmark artifact all return False so the caller rebuilds. Only
+    the benchmark subset is materialized eagerly at sync; the fractional rungs are built lazily by
+    :meth:`OLAPWorkloadProvider.prepare`, so this checks ``fraction1`` alone rather than every
+    fraction."""
+    manifest = managed_root / _SUBSET_MANIFEST
+    if not manifest.exists():
+        return False
+    try:
+        recorded = json.loads(manifest.read_text()).get("dataset_version")
+    except (OSError, ValueError):
+        return False
+    if recorded != dataset_version:
+        return False
+    return all(
+        art.exists() for art in _subset_artifacts(managed_root, 1.0, serve_from, tables)
+    )
+
+
+def _clear_managed_subsets(managed_root: Path) -> None:
+    """Remove every ``fraction*``/``sf*`` subset directory under ``managed_root`` (and the
+    manifest), so a rebuild never mixes stale rows from an earlier source/algorithm with fresh
+    ones or leaves orphaned subset dirs for fractions no longer requested."""
+    import shutil
+
+    if managed_root.is_dir():
+        for child in managed_root.iterdir():
+            if child.is_dir() and (
+                child.name.startswith("fraction") or child.name.startswith("sf")
+            ):
+                shutil.rmtree(child, ignore_errors=True)
+    (managed_root / _SUBSET_MANIFEST).unlink(missing_ok=True)
+
+
+def materialize_duckdb_subsets(
+    source: DuckDBSubsetSource,
+    fractions: list[float],
+    managed_root: Path,
+    serve_from: ServeFrom,
+) -> None:
+    """Downscale ``fractions`` of the frozen source into ``managed_root/fraction<f>/`` on demand -
+    the lazy counterpart to the benchmark subset materialized at sync time. Invoked from
+    :meth:`OLAPWorkloadProvider.prepare`, never from the registration/ingestion path (so a plain
+    re-ingest never re-downscales).
+
+    Each requested fraction's directory is cleared first, so a leftover ``.partial`` or a
+    half-written subset from an interrupted build cannot trip ``copy_subset_to_duckdb``'s
+    exists-guard; the downscaler's own ``.partial`` + atomic rename then makes each final artifact
+    all-or-nothing. The frozen source is opened read-only - the caller may still be writing their
+    own database in parallel."""
+    import shutil
+
+    import duckdb
+
+    from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
+        ReferentialDownscaler,
+    )
+
+    if not fractions:
+        return
+    con = duckdb.connect(source.frozen_source_path, read_only=True)
+    try:
+        downscaler = ReferentialDownscaler(
+            con,
+            sql_by_id=source.sql_by_id,
+            join_relationships=source.join_relationships,
+            whole_table_threshold=source.whole_table_threshold,
+        )
+        for fraction in fractions:
+            out_dir = managed_root / subset_dirname(fraction)
+            shutil.rmtree(out_dir, ignore_errors=True)
+            logger.info("Downscaling subset fraction=%g on demand", fraction)
+            if serve_from == ServeFrom.DUCKDB:
+                downscaler.copy_subset_to_duckdb(fraction, out_dir / "subset.duckdb")
+            else:
+                downscaler.copy_subset_to_parquet(fraction, out_dir)
+    finally:
+        con.close()
+
+
+def register_workload_from_duckdb(
+    name: str,
+    con,
+    queries_json: "str | Path | dict",
+    *,
+    managed_root: str | Path,
+    downscale_fractions: tuple[float, ...] = (0.02, 0.1),
+    join_relationships: list | None = None,
+    tables: list[str] | None = None,
+    dataset_name: str | None = None,
+    schema_example_table: str | None = None,
+    whole_table_threshold: int = 10_000,
+    serve_from: "ServeFrom | str" = ServeFrom.DUCKDB,
+    source_db_path: str | Path | None = None,
+    source_is_static: bool = False,
+    always_resample: bool = False,
+) -> WorkloadSpec:
+    """Register a workload sourced from a DuckDB connection, deriving the fast-check subsets by
+    FK-preserving downscaling instead of taking pre-scaled parquet (the connection-sourced sibling
+    of :func:`register_workload_from_json`).
+
+    Registration only **snapshots** the source and materializes the full ``fraction1`` benchmark
+    subset. The fractional downscaled rungs (``downscale_fractions``) are **not** built here - they
+    are downscaled lazily from the retained snapshot at the first synthesis run
+    (:meth:`OLAPWorkloadProvider.prepare`, driven by the :class:`DuckDBSubsetSource` carried on the
+    spec). So a plain re-ingest never re-downscales; it only re-snapshots.
+
+    The source is frozen before anything is read from it. A caller-supplied *live* connection may
+    be written to in parallel (the notebook flow: ``conn = duckdb.connect(path)`` stays open and
+    the user keeps working), so a consistent point-in-time snapshot is copied into
+    ``<managed_root>/.source_snapshot.duckdb`` first (:func:`snapshot_source_database`) and the
+    benchmark subset plus every lazily-built rung are derived from that immutable image - the
+    caller's ongoing writes never perturb the run. The snapshot is **retained** for the workload's
+    lifetime (both storage formats) because the lazy downscaler reads from it. A SynnoDB-owned
+    read-only path (``source_is_static``) is already frozen and read in place, with no snapshot copy;
+    the lazy downscaler reads that file directly.
+
+    Two subset representations, selected by ``serve_from``:
+
+    * ``ServeFrom.DUCKDB`` (the default): the referential downscaler
+      (:mod:`synnodb.workloads.dataset.custom_scaler.duckdb_downscale`) materializes each
+      downscaled subset as ``<managed_root>/fraction<f>/subset.duckdb`` (lazily). The full
+      ``fraction1`` benchmark subset is a zero-copy symlink to the frozen source (the caller's
+      read-only file, or the snapshot we own) - never the caller's live database - so the
+      framework's later read-only opens never collide with a read-write handle the caller may still
+      hold. No parquet touches disk: the candidate engine ingests the subset over the shm plane and
+      the DuckDB oracle materializes flat tables from it.
+    * ``ServeFrom.PARQUET``: the same downscaler writes
+      ``<managed_root>/fraction<f>/<table>.parquet`` (lazily) and the workload is registered exactly
+      like a bring-your-own parquet workload, so the whole factory + oracle run against it unchanged.
+
+    The caller's database is only read; nothing is written back.
+
+    Args:
+        name: workload id (used as the benchmark name / WorkloadId).
+        con: a ``duckdb.DuckDBPyConnection`` to source schema + data from.
+        queries_json: a ``queries.json`` path, or an already-parsed ``{qid: entry}`` dict; its
+            JOINs are the primary signal for the FK-preserving join graph.
+        managed_root: directory the materialized ``fraction<f>/`` subsets are written under.
+        downscale_fractions: sampling fractions of the anchor for the fast-check rungs.
+        join_relationships: optional explicit ``(table_a.col, table_b.col)`` equi-join pairs,
+            unioned into the inferred join graph for anything inference misses.
+        tables / dataset_name / schema_example_table: as in the parquet entry points.
+        whole_table_threshold: tables at or below this row count are kept whole in a subset.
+        serve_from: an :class:`ServeFrom` (or its string value) selecting the subset
+            representation - ``DUCKDB`` (``subset.duckdb``) vs. ``PARQUET`` (parquet files).
+        source_db_path: the source ``.duckdb`` path. Required when ``source_is_static`` (it is the
+            symlink target for the DuckDB benchmark subset); ignored for a live source, which is
+            snapshotted instead.
+        source_is_static: True when ``con`` is a SynnoDB-owned read-only handle to a file nothing
+            writes for the workload's lifetime - the source is read in place and a prior benchmark
+            subset may be reused. False (the default) treats ``con`` as a live connection the caller
+            may keep writing to: it is snapshotted to a frozen image first, and re-snapshotted only
+            when its fingerprint moved (or ``always_resample`` forces it).
+        always_resample: force a fresh snapshot + benchmark subset (and, lazily, fractional rungs)
+            on every call, bypassing the fingerprint-reuse default. By default the source is
+            fingerprinted in place - a cheap read-only introspection of its schema, per-table row
+            counts and inferred join graph - and the snapshot + benchmark subset are reused whenever
+            that fingerprint matches the one they were built from; any change that alters which rows a
+            subset contains (a new/renamed table or column, a different row count, a changed join
+            graph, fractions, threshold, storage format, or DuckDB version) moves the fingerprint and
+            re-snapshots on its own. The fingerprint does not read row *values*, so a source mutated
+            in place without changing counts or schema keeps the same fingerprint and would be reused
+            stale; set ``always_resample=True`` for such a source to guarantee fresh data every run.
+            Governs snapshot reuse only, not downscaling (always lazy).
+    """
+    from synnodb.workloads.dataset.custom_scaler.duckdb_downscale import (
+        ReferentialDownscaler,
+    )
+
+    serve_from = ServeFrom.coerce(serve_from)
+
+    if isinstance(queries_json, dict):
+        raw: object = queries_json
+        source = f"{name} queries"
+    else:
+        raw = json.loads(Path(queries_json).read_text())
+        source = str(queries_json)
+    sql_by_id, params_by_id = _parse_queries_json(raw, source)
+
+    # Subset ladder = the downscale fractions (fast-check rungs) plus the full ``1.0`` benchmark subset
+    # last (the shared builder treats the last scale factor as the benchmark/target).
+    subsets = tuple(sorted(set(downscale_fractions)))
+    if any(not (0.0 < t < 1.0) for t in subsets):
+        raise ValueError(
+            f"downscale_fractions must be fractions in (0, 1); got {downscale_fractions}."
+        )
+    scale_factors = subsets + (1.0,)
+    managed_root = Path(managed_root)
+    managed_root.mkdir(parents=True, exist_ok=True)
+
+    if source_is_static and source_db_path is None:
+        raise ValueError(
+            "a static DuckDB source requires its file path (source_db_path)."
+        )
+
+    # Probe the source in place (a cheap read-only introspection of schema, row counts and the
+    # inferred join graph) to resolve the tables and the ``dataset_version`` fingerprint. Needed in
+    # every branch: it drives the reuse decision and is recorded on the spec + manifest.
+    probe = ReferentialDownscaler(
+        con,
+        sql_by_id=sql_by_id,
+        join_relationships=join_relationships,
+        whole_table_threshold=whole_table_threshold,
+    )
+    resolved_tables: list[str] = tables or list(probe.schema.tables)
+    dataset_version: str = _duckdb_dataset_version(
+        probe, subsets, whole_table_threshold, serve_from
+    )
+
+    # Reuse the materialized subsets verbatim (no re-snapshot, no rebuild) whenever they are current
+    # for the source, so re-running the same notebook against unchanged data is cheap. A rebuild
+    # clears any already-materialized fractional subsets so ``prepare`` re-derives them from the new
+    # snapshot (downscaling always stays lazy); reuse keeps them.
+    benchmark_current = _benchmark_is_current(
+        managed_root, dataset_version, serve_from, resolved_tables
+    )
+    if always_resample:
+        reused = False
+    elif source_is_static:
+        # A static source is read in place with no snapshot copy; its benchmark subset is a symlink,
+        # so a current fingerprint alone is enough to reuse.
+        reused = benchmark_current
+    else:
+        # A live source's lazy downscaler reads from the retained snapshot, so reuse also requires
+        # that snapshot to still exist.
+        reused = benchmark_current and (managed_root / _SOURCE_SNAPSHOT).exists()
+
+    if reused:
+        logger.info(
+            "Benchmark subset under %s already current (dataset_version=%s); skipping snapshot + "
+            "materialization",
+            managed_root,
+            dataset_version,
+        )
+    else:
+        # This is a resync: the source data is being swapped out. Any warm engine process from a
+        # previous run still holds the old snapshot resident (the loader ingests once per process and
+        # never re-reads its input), so retire the whole warm runtime now - the next run spawns fresh
+        # processes that load the rebuilt subsets instead of serving stale rows from RAM.
+        from synnodb.cpp_runner.runtime_reset import reset_warm_runtime
+
+        reset_warm_runtime()
+
+        # Freeze the source, then read the schema/join graph and materialize the benchmark subset
+        # from that frozen image only - never from a database the caller might still be mutating. A
+        # live source that changed between the in-place probe and this freeze is re-fingerprinted
+        # here, so the manifest always describes exactly what was built.
+        with _static_source(con, source_db_path, source_is_static, managed_root) as (
+            static_path,
+            static_con,
+        ):
+            downscaler = ReferentialDownscaler(
+                static_con,
+                sql_by_id=sql_by_id,
+                join_relationships=join_relationships,
+                whole_table_threshold=whole_table_threshold,
+            )
+            resolved_tables = tables or list(downscaler.schema.tables)
+            dataset_version = _duckdb_dataset_version(
+                downscaler, subsets, whole_table_threshold, serve_from
+            )
+
+            # Clear every fraction dir (including any stale fractional subsets) and rebuild only the
+            # benchmark subset; the fractional rungs are rebuilt lazily from the fresh snapshot.
+            _clear_managed_subsets(managed_root)
+            out_dir = managed_root / subset_dirname(1.0)
+            logger.info("Creating benchmark subset (full data)")
+            if serve_from == ServeFrom.DUCKDB:
+                # The benchmark subset is the full frozen source itself - a zero-copy symlink to it.
+                # ``static_path`` is the caller's read-only file (static source) or the snapshot we
+                # own (live source); both are immutable for the workload's lifetime, so read-only
+                # opens of the symlink never collide with a handle the caller may still hold.
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / "subset.duckdb").symlink_to(Path(static_path).resolve())
+            else:
+                downscaler.copy_subset_to_parquet(1.0, out_dir)
+            (managed_root / _SUBSET_MANIFEST).write_text(
+                json.dumps(
+                    {"dataset_version": dataset_version, "serve_from": serve_from.value}
+                )
+            )
+
+    # The frozen source the lazy downscaler reads from: the snapshot we own for a live source (kept
+    # for the workload's lifetime, unlike before - ``prepare`` derives fractional subsets from it),
+    # or the caller's read-only file for a static source.
+    frozen_source_path = (
+        str(Path(source_db_path).resolve())
+        if source_is_static
+        else str((managed_root / _SOURCE_SNAPSHOT).resolve())
+    )
+    duckdb_source = DuckDBSubsetSource(
+        frozen_source_path=frozen_source_path,
+        sql_by_id=sql_by_id,
+        join_relationships=join_relationships,
+        whole_table_threshold=whole_table_threshold,
+    )
+
+    # Schema is derived from the ``fraction1`` benchmark subset, which always exists after sync
+    # (the fractional subsets are lazy and may not exist yet). The schema is identical across
+    # subsets - downscaling preserves it - so this is exact.
+    if serve_from == ServeFrom.DUCKDB:
+        benchmark_subset_db = managed_root / subset_dirname(1.0) / "subset.duckdb"
+
+        def schema_factory() -> str:
+            return schema_ddl_from_duckdb(benchmark_subset_db, resolved_tables)
+
+    else:
+
+        def schema_factory() -> str:
+            return schema_ddl_from_parquet(managed_root, resolved_tables, 1.0)
+
+    return _register_static_workload(
+        name=name,
+        sql_by_id=sql_by_id,
+        parquet_dir=managed_root,
+        tables=resolved_tables,
+        dataset_name=dataset_name,
+        scale_factors=scale_factors,
+        schema_example_table=schema_example_table,
+        params_by_id=_normalize_params(params_by_id, source),
+        params_source=source,
+        dataset_version=dataset_version,
+        schema_factory=schema_factory,
+        serve_from=serve_from,
+        duckdb_source=duckdb_source,
+    )

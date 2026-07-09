@@ -53,6 +53,9 @@ class CompileTool:
         self.compiler.set_compile_options(optimize=True)
 
         err = self.compiler.build()
+        served_from_cache = getattr(
+            self.compiler, "last_build_served_from_cache", False
+        )
         if err is None:
             output = "**Compilation successfull**"
         else:
@@ -72,6 +75,7 @@ class CompileTool:
                 "type": "compile",
                 "compile/error": True if err is not None else False,
                 "compile/truncated": truncated,
+                "compile/cached": served_from_cache,
             },
             log_and_increment=True,
         )
