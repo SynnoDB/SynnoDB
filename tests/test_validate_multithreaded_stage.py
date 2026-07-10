@@ -1,11 +1,12 @@
 """ValidateMultiThreadedStage.next_prompt(): per-query multi-threaded correctness gate.
 
-The base impl is generated and validated serially (CORE_IDS=1), so a query's parallel
-`parallel_for`/`parallel_reduce` code is never exercised until the engine is served at
-`config={'threads': N}`. This stage runs each query at `len(core_ids)` (>1) pinned cores
-and, for any query whose result diverges under threads, loops the LLM to fix that query -
-re-validating at the same thread count after every edit and giving up loudly after
-`MAX_FIX_ATTEMPTS`. These tests pin that behaviour with a mocked run_tool.
+In-memory base impls are now generated and validated at the serving parallelism, but that
+per-query validation goes through the correctness cache - and a data race is
+nondeterministic, so a lucky pass can be cached and hide the race. This stage is the
+authoritative force-live catch: it runs each query at `num_threads` (>1) and, for any
+query whose result diverges under threads, loops the LLM to fix that query - re-validating
+at the same thread count after every edit and giving up loudly after `MAX_FIX_ATTEMPTS`.
+These tests pin that behaviour with a mocked run_tool.
 """
 
 from __future__ import annotations
@@ -19,13 +20,13 @@ from synnodb.conversations.examples.base_impl import ValidateMultiThreadedStage
 from synnodb.tools.run import RunWorkerResult
 from synnodb.tools.run_tool_mode import RunToolMode
 
-CORE_IDS = [0, 1, 2, 3]
+NUM_THREADS = 4
 
 
-def _make_stage(run_tool, *, core_ids=CORE_IDS, query_ids=("1", "6")):
+def _make_stage(run_tool, *, num_threads=NUM_THREADS, query_ids=("1", "6")):
     return ValidateMultiThreadedStage(
         run_tool=run_tool,
-        core_ids=list(core_ids),
+        num_threads=num_threads,
         query_ids=list(query_ids),
         builder_path="db_loader.cpp",
     )
@@ -48,8 +49,8 @@ def test_all_queries_correct_advances_without_prompt():
 
     assert stage.next_prompt() is None
     assert run_tool.run_worker.call_count == 2  # one run per query
-    # The gate runs at the run's DEFAULT thread count (the serving target); the base-impl
-    # generation stages restored the default before this gate, so it sets no override.
+    # The gate runs at the run's DEFAULT thread count (the serving target); the run tool is
+    # already at its default here, so the gate sets no per-stage override.
     run_tool.set_active_num_threads.assert_not_called()
     kwargs = run_tool.run_worker.call_args.kwargs
     assert kwargs["mode"] == RunToolMode.EXHAUSTIVE
@@ -103,7 +104,7 @@ def test_single_core_host_is_a_noop():
     """Defensive: with only one usable core the engine cannot run multi-threaded, so the
     stage does nothing rather than validating a serial run."""
     run_tool = MagicMock()
-    stage = _make_stage(run_tool, core_ids=[0], query_ids=("1", "6"))
+    stage = _make_stage(run_tool, num_threads=1, query_ids=("1", "6"))
 
     assert stage.next_prompt() is None
     run_tool.run_worker.assert_not_called()

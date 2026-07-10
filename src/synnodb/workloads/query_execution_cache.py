@@ -21,6 +21,37 @@ from synnodb.workloads.workload_provider_olap import OLAPExecSettings
 logger = logging.getLogger(__name__)
 
 
+def _general_system_config_cache_fields(
+    system: System, general_system_config: GeneralSystemConfig
+) -> dict:
+    """Project a GeneralSystemConfig onto only the fields that actually influence
+    `system`'s measured runtime, for use in the query-execution cache key.
+
+    A field that a system never applies must not enter its cache key: it would fragment
+    the cache (and break reuse across machines) for a difference that provably does not
+    change the measured runtime. In particular `core_ids` comes from resolve_target_cores
+    and is machine-specific, yet DuckDB never pins the reference connection to it.
+
+    Keep this in sync with OLAPSystemFactory.get_system, which is the single source of
+    truth for what each system consumes:
+    - DuckDB applies only `PRAGMA threads` (see duckdb_sql_arrow); its pin core is a
+      hardcoded constant, and neither `core_ids` nor `memory_limit_mb` reach the
+      reference connection.
+    - Umbra pins a container of `num_threads` cores starting at `core_ids[0]`;
+      `memory_limit_mb` is not enforced on the reference.
+    """
+    if system == System.DUCKDB:
+        return {"num_threads": general_system_config.num_threads}
+    if system == System.UMBRA:
+        return {
+            "num_threads": general_system_config.num_threads,
+            "core_ids": general_system_config.core_ids,
+        }
+    # Conservative default for any future reference system: hash the whole config so a
+    # new system can never silently collide on an under-specified key.
+    return asdict(general_system_config)
+
+
 @dataclass
 class QueryExecutionResult:
     system: System
@@ -166,7 +197,12 @@ class QueryExecutionCache:
             "system": system,
             "benchmark": benchmark,
             "query_entry": query_entry_json,
-            "general_system_config": utils.stable_json(asdict(general_system_config)),
+            # Only the config fields the target system actually applies (see
+            # _general_system_config_cache_fields) - so e.g. a DuckDB baseline is reused
+            # across machines and across core_ids/memory changes that don't affect it.
+            "general_system_config": utils.stable_json(
+                _general_system_config_cache_fields(system, general_system_config)
+            ),
             "exec_settings": utils.stable_json(asdict(exec_settings)),
             # Cached result format. Bumped when the stored result type changes (DataFrame -> exact
             # Arrow) so stale float-coerced DataFrame caches are bypassed and re-executed.
