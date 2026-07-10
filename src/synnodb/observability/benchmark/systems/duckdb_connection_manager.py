@@ -165,7 +165,9 @@ class DuckDBConnectionManager:
         """
         assert self.con is not None
         self.con.execute(f"PRAGMA threads={self.num_threads};")
-        applied = int(self.con.execute("SELECT current_setting('threads')").fetchone()[0])
+        applied = int(
+            self.con.execute("SELECT current_setting('threads')").fetchone()[0]
+        )
         assert applied == self.num_threads, (
             f"DuckDB thread count did not take effect: requested {self.num_threads}, "
             f"connection reports {applied}. Refusing to run so a mislabeled timing is not cached."

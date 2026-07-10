@@ -35,7 +35,6 @@ from synnodb.conversations.stage_items import (
 )
 from synnodb.tools.run import RunTool
 from synnodb.tools.run_tool_mode import RunToolMode
-from synnodb.utils.core_utils import resolve_target_cores
 from synnodb.workloads.workload_spec import get_workload_spec
 
 logger = logging.getLogger(__name__)
@@ -235,7 +234,6 @@ def build(ctx: ConvContext) -> list[StageItem]:
             [
                 PromptStage(
                     descriptor=f"base impl Q{query_id}",
-                    
                     get_prompt=functools.partial(
                         _base_impl_prompt,
                         idx=i,
@@ -462,7 +460,9 @@ class ValidateAndFixStage(DynamicStageConfig):
         max_turns: int | None = None,
         stage_threads: int | None = None,
     ):
-        super().__init__(descriptor="exec & validate", max_turns=max_turns, threads=stage_threads)
+        super().__init__(
+            descriptor="exec & validate", max_turns=max_turns, threads=stage_threads
+        )
         self.executed = False
         self.run_tool = run_tool
         self.query_impl_path = query_impl_path
@@ -526,7 +526,7 @@ class ValidateMultiThreadedStage(DynamicStageConfig):
     def __init__(
         self,
         run_tool: RunTool,
-        num_threads:int,
+        num_threads: int,
         query_ids: list[str],
         builder_path: str,
         max_turns: int | None = None,
@@ -542,7 +542,9 @@ class ValidateMultiThreadedStage(DynamicStageConfig):
         self.fix_attempts = 0  # fix attempts for the query at self.idx
 
     def next_prompt(self) -> Optional[str]:
-        assert self.num_threads >=1, f"Num threads must be at least 1. Given: {self.num_threads}"
+        assert self.num_threads >= 1, (
+            f"Num threads must be at least 1. Given: {self.num_threads}"
+        )
         if self.num_threads <= 1:
             return None
 

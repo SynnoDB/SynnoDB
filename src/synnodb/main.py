@@ -53,7 +53,6 @@ from synnodb.tools.workspace_editor import WorkspaceEditor
 from synnodb.utils.cli_config import RunConfig, Usecase
 from synnodb.utils.confirm_dialog import await_user_confirmation
 from synnodb.utils.conv_name_utils import generate_conv_name
-from synnodb.utils.core_utils import resolve_target_cores
 from synnodb.utils.pkgconfig import check_pkg
 from synnodb.utils.snapshot_utils import load_storage_plan_from_snapshot
 from synnodb.utils.utils import (
@@ -387,9 +386,12 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
 
     # run tool parallelism setup (must be determined before QueryValidator so the
     # num_threads value is included in the query-cache key)
-    
-    
-    assert args.threads is not None and args.threads > 0 and args.threads <= os.cpu_count(), f'Invalid threads value: {args.threads}. Must be a positive integer less than or equal to the number of CPU cores ({os.cpu_count()}).'
+
+    assert (
+        args.threads is not None and args.threads > 0 and args.threads <= os.cpu_count()
+    ), (
+        f"Invalid threads value: {args.threads}. Must be a positive integer less than or equal to the number of CPU cores ({os.cpu_count()})."
+    )
     target_threads = args.threads
 
     args.target_threads = target_threads
