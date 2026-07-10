@@ -151,8 +151,25 @@ class DuckDBConnectionManager:
     def _connect(self, database: Optional[Path] = None) -> duckdb.DuckDBPyConnection:
         db = database.as_posix() if database is not None else ":memory:"
         self.con = duckdb.connect(database=db)
-        self.con.execute(f"PRAGMA threads={self.num_threads};")
+        self._apply_thread_pragma()
         return self.con
+
+    def _apply_thread_pragma(self) -> None:
+        """Set ``PRAGMA threads`` on the live connection and verify it actually took effect.
+
+        The reference timings are cached keyed by the *requested* ``num_threads`` (see
+        ``QueryExecutionCache``), so a connection that silently runs at a different thread count
+        would poison the cache with a mislabeled timing - e.g. an effectively single-threaded
+        DuckDB run stored as an 8-thread baseline, inflating the reported speedup. Read the
+        setting back and fail loudly instead of caching a wrong number.
+        """
+        assert self.con is not None
+        self.con.execute(f"PRAGMA threads={self.num_threads};")
+        applied = int(self.con.execute("SELECT current_setting('threads')").fetchone()[0])
+        assert applied == self.num_threads, (
+            f"DuckDB thread count did not take effect: requested {self.num_threads}, "
+            f"connection reports {applied}. Refusing to run so a mislabeled timing is not cached."
+        )
 
     def set_thread_config(
         self, num_threads: int, pin_worker: bool, pin_core: Optional[int]
@@ -185,7 +202,7 @@ class DuckDBConnectionManager:
         self.pin_worker = pin_worker
         self.pin_core = pin_core
         if self.con is not None:
-            self.con.execute(f"PRAGMA threads={self.num_threads};")
+            self._apply_thread_pragma()
 
     def _ensure_tables_loaded(self) -> None:
         """Connect and make each dataset table available under its real name.
