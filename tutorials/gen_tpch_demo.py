@@ -7,8 +7,9 @@ The benchmark / drop-in steps from the notebook are not included here.
 Prerequisites: pip install "synnodb[factory]"
 """
 
+import json
 import logging
-import os, json, random, time, statistics
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv

@@ -152,6 +152,7 @@ def _finalize_snapshot(payload: dict, since: "int | None") -> str:
         }
     return json.dumps(out)
 
+
 # A single LiveDashboardDrain instance is shared by every stage that runs in ONE
 # process (e.g. the chained SynnoDB notebook pipeline: createStoragePlan ->
 # createBaseImpl -> runOptimLoop -> ...). Each stage's RunStatsCollector restarts
