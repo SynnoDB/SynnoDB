@@ -232,7 +232,11 @@ def test_rejected_apply_patch_records_then_replays_from_cache(tmp_path: Path) ->
 
     editor.record_rejected_patch(args_json, "db_loader.cpp", "missing type", message)
     assert stats.rejected == [("db_loader.cpp", "missing type")]
-    entry = utils.load_pickle(list(cache_dir.glob("*.pkl"))[0], RejectedApplyPatchCacheType)
+
+    entry = utils.load_pickle(
+        list(cache_dir.glob("*.pkl"))[0], RejectedApplyPatchCacheType
+    )
+
     assert entry is not None and entry.message == message
 
     # replay: the recorded verdict + exact message come back from cache

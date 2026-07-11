@@ -58,7 +58,10 @@ class TestRunStatsCollectorCacheStatus(unittest.TestCase):
         self.assertTrue(collector.apply_patch_rejected)
         self.assertFalse(collector.apply_patch_cached)
         self.assertEqual(len(collector.apply_patch_failed), 1)
-        self.assertIn("missing required field(s): type", collector.apply_patch_failed[0])
+        self.assertIn(
+            "missing required field(s): type", collector.apply_patch_failed[0]
+        )
+
         self.assertIn("db_loader.cpp", collector.apply_patch_files)
 
     def test_record_apply_patch_rejected_tolerates_missing_path(self):
