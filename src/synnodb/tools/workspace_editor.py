@@ -74,7 +74,6 @@ class RejectedApplyPatchCacheType:
     returned to the model, plus ``path``/``reason`` for the live-ui stats."""
 
     def __init__(self, args_json: str, path: str | None, reason: str, message: str):
-
         self.args_json = args_json
         self.path = path
         self.reason = reason
