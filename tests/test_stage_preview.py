@@ -107,6 +107,9 @@ def _bare_drain() -> LiveDashboardDrain:
     d = LiveDashboardDrain.__new__(LiveDashboardDrain)
     d._data = {}
     d._lock = threading.Lock()
+    d._rev = 0
+    d._cache_full = None
+    d._cache_rev = -1
     d._stage_base = 0
     d._carry = {}
     d._last_global = {}

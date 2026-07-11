@@ -113,6 +113,10 @@ function _sourceRefFromBody(body) {
 function resetDashboardData() {
   _lastSteps = [];
   _lastData  = {};
+  // Force the next poll to refetch a full snapshot for the new source rather than
+  // an incremental delta against the old run's step cursor.
+  _pollCursor   = null;
+  _lastRespText = null;
   timeTravelStep = null;
   hoveredDesc    = null;
 
@@ -192,6 +196,10 @@ async function reloadData() {
   reloadBtn.classList.add('spinning');
   try {
     await fetch('/api/reload', {method: 'POST'});
+    // Explicit refresh: drop the incremental cursor so poll() re-pulls the whole
+    // snapshot and re-renders even if the step count is unchanged.
+    _pollCursor   = null;
+    _lastRespText = null;
     document.getElementById('ts-txt').textContent = 'Reloading…';
     await poll();
     const reloadTimeEl = document.getElementById('hdr-reload-time');
