@@ -198,7 +198,10 @@ def _natural_sort(ids: list[str]) -> list[str]:
 
     Digit runs compare as numbers, so ``1a < 2a < 10a < 11a < 11b`` (not the lexical ``10a <
     1a``) and pure-numeric ids keep TPC-H's ``1..22`` order."""
-    return sorted(ids, key=lambda s: [int(t) if t.isdigit() else t for t in re.findall(r"\d+|\D+", s)])
+    return sorted(
+        ids,
+        key=lambda s: [int(t) if t.isdigit() else t for t in re.findall(r"\d+|\D+", s)],
+    )
 
 
 def _sf_dir(parquet_dir: Path, sf: float) -> Path:
