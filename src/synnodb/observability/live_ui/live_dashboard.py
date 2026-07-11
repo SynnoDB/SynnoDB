@@ -165,7 +165,9 @@ def _body_fields_payload(data: dict, step: "str | int") -> "bytes | None":
     return json.dumps({"step": str(step), "fields": fields}).encode()
 
 
-def _finalize_snapshot(payload: dict, since: "int | None", *, strip: bool = True) -> str:
+def _finalize_snapshot(
+    payload: dict, since: "int | None", *, strip: bool = True
+) -> str:
     """Attach the incremental-protocol fields to a full snapshot dict and serialize.
 
     ``latest``/``count`` are the max step id and total step count of the *full*

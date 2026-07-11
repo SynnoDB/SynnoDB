@@ -11,7 +11,6 @@ import json
 import threading
 
 from synnodb.observability.live_ui.live_dashboard import (
-    _BODY_FIELDS,
     LiveDashboardDrain,
     _body_fields_payload,
     _finalize_snapshot,
@@ -177,13 +176,13 @@ def test_live_snapshot_strips_bodies_and_body_endpoint_serves_them():
     d.emit({"type": "shell", "shell/commands": ["ls"], "shell/outputs": "X" * 4000}, 0)
 
     snap = json.loads(d._snapshot())
-    assert "shell/outputs" not in snap["data"]["0"]       # stripped from the feed
-    assert "shell/commands" in snap["data"]["0"]          # summary field retained
+    assert "shell/outputs" not in snap["data"]["0"]  # stripped from the feed
+    assert "shell/commands" in snap["data"]["0"]  # summary field retained
 
     body = json.loads(d._body_fields("0"))
     assert body["fields"]["shell/outputs"] == "X" * 4000  # full text on demand
-    assert d._body_fields("99") is None                   # unknown step → 404
-    assert d._body_fields("nan") is None                  # unparseable step → 404
+    assert d._body_fields("99") is None  # unknown step → 404
+    assert d._body_fields("nan") is None  # unparseable step → 404
 
 
 def test_reset_bumps_start_time_so_client_detects_generation_change():
