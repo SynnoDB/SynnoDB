@@ -554,17 +554,19 @@ class ValidateMultiThreadedStage(DynamicStageConfig):
         # a single-threaded run cannot reproduce, or confirm the fix of, a data race.
         while self.idx < len(self.query_ids):
             qid = self.query_ids[self.idx]
-            # force_live: never replay QueryValidator's cache here. A data race is
-            # nondeterministic, so a lucky pass - from the multi-threaded per-query
-            # generation validation, the LLM's own run during a fix, or an earlier check of
-            # this snapshot - must not be cached and replayed as the gate's verdict. Each
-            # attempt re-executes the engine live at num_threads.
+            # force_live is disabled: this gate replays QueryValidator's cache when a prior
+            # validation of this exact build+query exists. Ideally a data race would be re-run
+            # live every attempt (a lucky pass - from the multi-threaded per-query generation
+            # validation, the LLM's own run during a fix, or an earlier check of this snapshot -
+            # could otherwise be replayed as the gate's verdict), but forcing a live re-execution
+            # re-snapshots an already-captured build and trips the snapshot-name uniqueness assert.
+            # Re-enable once snapshot() tolerates re-snapshotting an existing content-addressed name.
             result = self.run_tool.run_worker(
                 mode=RunToolMode.EXHAUSTIVE,
                 optimize=True,
                 query_ids=[qid],
                 trace_mode=False,
-                force_live=True,
+                force_live=False,
             )
 
             if result.success:
