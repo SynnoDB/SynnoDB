@@ -124,3 +124,26 @@ def test_reset_drops_count_so_client_detects_drift():
     assert after["count"] == 0
     assert after["latest"] is None
     assert after["steps"] == []
+
+
+def test_reset_bumps_start_time_so_client_detects_generation_change():
+    # The count guard alone can be fooled: if a new pipeline restarts and races
+    # past the previous run's step count before the client polls, the delta plus
+    # the client's stale steps sum to the same count and drift goes unnoticed. The
+    # client instead keys off meta.start_time, which _reset always refreshes.
+    d = _bare_drain()
+    d._meta["start_time"] = "2020-01-01T00:00:00"
+    d.begin_stage(run_name="a")
+    for step in range(3):
+        d.emit({"type": "llm", "input_tokens": step}, step)
+    before = json.loads(d._snapshot())["meta"]["start_time"]
+
+    d._reset()
+    d.begin_stage(run_name="b")
+    # The new run re-emits enough steps that the count matches the old count,
+    # which is exactly the case the count guard cannot catch.
+    for step in range(3):
+        d.emit({"type": "llm", "input_tokens": step}, step)
+    delta = json.loads(d._snapshot(2))
+    assert delta["count"] == 3  # count parity - the count guard would not fire
+    assert delta["meta"]["start_time"] != before  # but the generation changed

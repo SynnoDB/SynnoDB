@@ -44,3 +44,10 @@ let _pollCursor = null;
 // response means nothing changed since the last render, so we skip the parse and
 // the full chart rebuild entirely — the dominant idle cost on a long run.
 let _lastRespText = null;
+// The run's start_time (meta.start_time) of the generation our cursor belongs to.
+// A new pipeline in the same process resets the drain and stamps a fresh
+// start_time while restarting step numbering from 0, so a stale ?since cursor
+// would fetch only the new run's boundary-onward steps and leave the previous
+// run's lower-numbered steps mixed in. When start_time changes we discard the
+// store and refetch a full snapshot. See poll() in main.js.
+let _runGeneration = null;

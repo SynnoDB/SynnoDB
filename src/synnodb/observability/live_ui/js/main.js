@@ -56,6 +56,22 @@ async function poll() {
     // previous run's values.
     if (_expectedSourceRef != null && meta?._source_ref !== _expectedSourceRef) return;
 
+    // A new pipeline in the same process resets the drain and restarts step
+    // numbering from 0 under a fresh meta.start_time. Our cursor still points into
+    // the previous run's numbering, so a delta would keep that run's lower-numbered
+    // steps mixed into the store while the count guard below is fooled into parity.
+    // Detect the generation change up front, wipe the store, and refetch full.
+    const generation = meta?.start_time;
+    if (generation != null && _runGeneration != null && generation !== _runGeneration) {
+      _pollCursor = null;
+      _lastRespText = null;
+      _lastSteps = [];
+      _lastData = {};
+      _runGeneration = generation;
+      return;
+    }
+    if (generation != null) _runGeneration = generation;
+
     // A full snapshot (no cursor) replaces the store; a delta updates in place.
     if (payload.incremental) mergeDelta(steps, data);
     else { _lastSteps = (steps || []).slice(); _lastData = data || {}; }
