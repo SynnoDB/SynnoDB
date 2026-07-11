@@ -63,6 +63,24 @@ class ApplyPatchCacheType:
         self.activity_summary_entry = activity_summary_entry
 
 
+class RejectedApplyPatchCacheType:
+    """Cache entry for an apply_patch call rejected at argument-schema validation.
+
+    Keyed on the raw tool arguments and looked up BEFORE the arguments are
+    re-validated, so the recorded verdict - not the current rules - decides the
+    outcome on replay. This keeps old runs replayable even if what counts as an
+    invalid apply_patch later changes. The rejection has no file side effects, so
+    the entry stores only what a faithful replay needs: the exact ``message``
+    returned to the model, plus ``path``/``reason`` for the live-ui stats."""
+
+    def __init__(self, args_json: str, path: str | None, reason: str, message: str):
+
+        self.args_json = args_json
+        self.path = path
+        self.reason = reason
+        self.message = message
+
+
 class WorkspaceEditor:
     def __init__(
         self,
@@ -306,6 +324,64 @@ class WorkspaceEditor:
     def _record_activity_summary(self, entry: str | None) -> None:
         if entry is not None:
             self._run_stats_collector.add_to_activity_summary(entry)
+
+    def _rejected_patch_key(self, args_json: str) -> str:
+        return utils.sha256(
+            utils.stable_json(
+                {"op_type": "rejected_apply_patch", "args_json": args_json}
+            )
+        )
+
+    def replay_rejected_patch(self, args_json: str) -> str | None:
+        """If these exact apply_patch arguments were recorded as a rejection, replay
+        that rejection from cache and return the original tool message; otherwise
+        return None (the caller then validates the arguments live).
+
+        This is looked up BEFORE argument validation, so the recorded verdict wins
+        over the current rules: a later change to what counts as an invalid
+        apply_patch cannot alter the outcome of an already-recorded run. The stored
+        message is returned verbatim so the model sees the identical tool result it
+        saw when the run was recorded."""
+        if self._cache_dir is None:
+            return None
+        cache_path = self._cache_path_for(self._rejected_patch_key(args_json))
+        if not cache_path.exists():
+            return None
+        entry = utils.load_pickle(cache_path, RejectedApplyPatchCacheType)
+        assert entry is not None, f"Corrupt rejected-apply_patch cache: {cache_path}"
+        self._run_stats_collector.record_apply_patch_rejected(entry.path, entry.reason)
+        self._run_stats_collector.record_apply_patch_cache_hit()
+        logger.debug("Rejected apply_patch replayed from cache")
+        return entry.message
+
+    def record_rejected_patch(
+        self, args_json: str, path: str | None, reason: str, message: str
+    ) -> None:
+        """Persist a freshly-rejected apply_patch, keyed on its raw arguments, so
+        later replays reproduce this exact rejection via replay_rejected_patch, and
+        record the rejection stats for the live-ui. Called only after a live
+        validation failure (i.e. replay_rejected_patch found no entry).
+
+        The rejection has no file side effects, so - unlike a real edit - it needs
+        no snapshot and no activity-summary line (an activity line would perturb the
+        supervisor prompt and its cache key). Writing is skipped under
+        only_from_cache to honour read-only replay."""
+        self._run_stats_collector.record_apply_patch_rejected(path, reason)
+
+        if self._cache_dir is None or self._do_not_cache or self._only_from_cache:
+            return
+
+        cache_path = self._cache_path_for(self._rejected_patch_key(args_json))
+        if cache_path.exists():
+            return  # idempotent: an identical rejection was already recorded
+
+        utils.dump_pickle(
+            cache_path,
+            RejectedApplyPatchCacheType(
+                args_json=args_json, path=path, reason=reason, message=message
+            ),
+            do_not_cache=self._do_not_cache,
+        )
 
     # ---------- raw operations ----------
 
