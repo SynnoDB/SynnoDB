@@ -123,11 +123,32 @@
           <div id="log-filter-menu" hidden>
             <div class="log-filter-menu-label">Filter activity</div>
             <div class="log-filter-opt">
+              <span class="log-filter-opt-label">Type</span>
+              <div class="log-filter-chips" data-filter="type">
+                <button type="button" class="lfc-btn active lt-llm" data-val="llm">LLM</button>
+                <button type="button" class="lfc-btn active lt-patch" data-val="apply_patch">Patch</button>
+                <button type="button" class="lfc-btn active lt-shell" data-val="shell">Shell</button>
+                <button type="button" class="lfc-btn active lt-compile" data-val="compile">Compile</button>
+                <button type="button" class="lfc-btn active lt-validate" data-val="validate">RUN</button>
+                <button type="button" class="lfc-btn active lt-datainspect" data-val="data_inspect">Inspect</button>
+                <button type="button" class="lfc-btn active lt-compaction" data-val="compaction">Compaction</button>
+                <button type="button" class="lfc-btn active lt-other" data-val="other">Other</button>
+              </div>
+            </div>
+            <div class="log-filter-opt">
+              <span class="log-filter-opt-label">Outcome</span>
+              <div class="log-filter-seg" data-filter="outcome">
+                <button type="button" class="lfs-btn active" data-val="off">Off</button>
+                <button type="button" class="lfs-btn" data-val="errors">Errors</button>
+                <button type="button" class="lfs-btn" data-val="success">Success</button>
+              </div>
+            </div>
+            <div class="log-filter-opt">
               <span class="log-filter-opt-label">Served from cache</span>
               <div class="log-filter-seg" data-filter="cached">
                 <button type="button" class="lfs-btn active" data-val="off">Off</button>
                 <button type="button" class="lfs-btn" data-val="yes">Cached</button>
-                <button type="button" class="lfs-btn" data-val="no">Not cached</button>
+                <button type="button" class="lfs-btn" data-val="no">Uncached</button>
               </div>
             </div>
           </div>

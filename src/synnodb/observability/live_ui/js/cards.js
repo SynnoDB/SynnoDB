@@ -271,17 +271,41 @@ function updatePrompts(steps, data) {
 }
 
 // ── Correctness strip ────────────────────────────────────────────────────
+// One marker per step, appended incrementally: recreating all N markers on every
+// poll (via innerHTML over the full steps array) was an O(steps) DOM rebuild
+// every few seconds on a long run. We keep the running correctness state (each
+// marker carries forward the last known verdict) and only mint markers for steps
+// beyond the last one rendered; a diverging prefix (source switch / timeline
+// reset) rebuilds from scratch.
+let _corrState = null;   // carried-forward verdict: 'ok' | 'err' | null
+let _corrCount = 0;      // markers currently in the DOM
+let _corrLastStep = null;
+
 function updateCorrectness(steps, data) {
   const row = document.getElementById('corr-row');
-  let state = null;
-  row.innerHTML = steps.map(s => {
+
+  const diverged = steps.length < _corrCount ||
+    (_corrCount > 0 && String(steps[_corrCount - 1]) !== _corrLastStep);
+  if (diverged) { row.innerHTML = ''; _corrState = null; _corrCount = 0; _corrLastStep = null; }
+
+  let frag = null;
+  for (let i = _corrCount; i < steps.length; i++) {
+    const s = steps[i];
     const c = (data[s] || {})['validation/correct'];
-    if (c === true) state = 'ok';
-    else if (c === false) state = 'err';
-    const cls = state ?? 'na';
+    if (c === true) _corrState = 'ok';
+    else if (c === false) _corrState = 'err';
+    const cls = _corrState ?? 'na';
     const lbl = cls === 'ok' ? '✓ correct' : cls === 'err' ? '✗ incorrect' : 'n/a';
-    return `<div class="corr ${cls}" data-step="${s}" title="Turn ${s}: ${lbl}"></div>`;
-  }).join('');
+    const div = document.createElement('div');
+    div.className = 'corr ' + cls;
+    div.dataset.step = s;
+    div.title = `Turn ${s}: ${lbl}`;
+    (frag || (frag = document.createDocumentFragment())).appendChild(div);
+  }
+  if (frag) row.appendChild(frag);
+
+  _corrCount = steps.length;
+  _corrLastStep = steps.length ? String(steps[steps.length - 1]) : null;
   layoutCorrectnessWithChart();
 }
 

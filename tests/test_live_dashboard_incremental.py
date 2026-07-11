@@ -12,8 +12,10 @@ import threading
 
 from synnodb.observability.live_ui.live_dashboard import (
     LiveDashboardDrain,
+    _body_fields_payload,
     _finalize_snapshot,
     _parse_since,
+    _strip_bodies,
 )
 
 
@@ -124,6 +126,63 @@ def test_reset_drops_count_so_client_detects_drift():
     assert after["count"] == 0
     assert after["latest"] is None
     assert after["steps"] == []
+
+
+def test_strip_bodies_removes_only_body_fields_without_mutating_input():
+    raw = {
+        "0": {"type": "shell", "shell/commands": ["ls"], "shell/outputs": "a" * 5000},
+        "1": {"type": "llm", "input_tokens": 3, "llm/output_text": "hello" * 100},
+    }
+    stripped = _strip_bodies(raw)
+    # Every heavy body field is gone; everything else stays.
+    assert "shell/outputs" not in stripped["0"]
+    assert stripped["0"]["shell/commands"] == ["ls"]
+    assert "llm/output_text" not in stripped["1"]
+    assert stripped["1"]["input_tokens"] == 3
+    # The input is untouched (a cached source dict must survive stripping).
+    assert raw["0"]["shell/outputs"] == "a" * 5000
+
+
+def test_finalize_snapshot_strips_bodies_but_can_be_disabled_for_remote():
+    raw = {
+        "meta": {},
+        "steps": [0],
+        "data": {"0": {"type": "shell", "shell/outputs": "big", "shell/cached": True}},
+    }
+    stripped = json.loads(_finalize_snapshot(raw, None))
+    assert "shell/outputs" not in stripped["data"]["0"]
+    assert stripped["data"]["0"]["shell/cached"] is True  # non-body field kept
+
+    passthrough = json.loads(_finalize_snapshot(raw, None, strip=False))
+    assert passthrough["data"]["0"]["shell/outputs"] == "big"  # remote proxy verbatim
+
+
+def test_body_fields_payload_returns_only_body_fields_for_the_step():
+    data = {
+        "0": {"type": "shell", "shell/commands": ["ls"], "shell/outputs": "OUT"},
+        "1": {"type": "llm", "llm/output_text": "TEXT", "input_tokens": 2},
+    }
+    body0 = json.loads(_body_fields_payload(data, 0))
+    assert body0 == {"step": "0", "fields": {"shell/outputs": "OUT"}}
+    body1 = json.loads(_body_fields_payload(data, "1"))
+    assert body1 == {"step": "1", "fields": {"llm/output_text": "TEXT"}}
+    # Unknown step → None (the endpoint replies 404).
+    assert _body_fields_payload(data, 99) is None
+
+
+def test_live_snapshot_strips_bodies_and_body_endpoint_serves_them():
+    d = _bare_drain()
+    d.begin_stage(run_name="t")
+    d.emit({"type": "shell", "shell/commands": ["ls"], "shell/outputs": "X" * 4000}, 0)
+
+    snap = json.loads(d._snapshot())
+    assert "shell/outputs" not in snap["data"]["0"]  # stripped from the feed
+    assert "shell/commands" in snap["data"]["0"]  # summary field retained
+
+    body = json.loads(d._body_fields("0"))
+    assert body["fields"]["shell/outputs"] == "X" * 4000  # full text on demand
+    assert d._body_fields("99") is None  # unknown step → 404
+    assert d._body_fields("nan") is None  # unparseable step → 404
 
 
 def test_reset_bumps_start_time_so_client_detects_generation_change():
