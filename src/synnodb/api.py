@@ -109,10 +109,11 @@ class SynnoConfig:
     usecase: Usecase = Usecase.OLAP
     queries: str = "1"
     # wandb is opt-in and has no separate on/off flag: it is enabled iff a
-    # ``wandb_entity`` or ``wandb_project`` is set. With neither set nothing
-    # wandb-related runs — no login, init, or logging.
-    wandb_entity: str | None = None  # None -> the user's own default W&B entity
-    wandb_project: str | None = None  # None -> the default "SynnoDB" project
+    # ``wandb_entity`` or ``wandb_project`` is set here OR via the
+    # ``WANDB_ENTITY``/``WANDB_PROJECT`` env vars (or ``.env``). With none of
+    # those set nothing wandb-related runs — no login, init, or logging.
+    wandb_entity: str | None = None  # None -> $WANDB_ENTITY, else the user's default W&B entity
+    wandb_project: str | None = None  # None -> $WANDB_PROJECT, else the default "SynnoDB" project
     auto_confirm: bool = True  # --auto_u
     auto_finish: bool = True
     disable_openai_tracing: bool = True
@@ -143,8 +144,8 @@ class SynnoConfig:
 
     @property
     def wandb_enabled(self) -> bool:
-        """wandb is on iff an entity or project is set."""
-        return self.wandb_entity is not None or self.wandb_project is not None
+        """wandb is on iff an entity or project is set here or via env/.env."""
+        return settings.wandb_logging_enabled(self.wandb_entity, self.wandb_project)
 
 
 # --------------------------- chain-input resolution --------------------------
