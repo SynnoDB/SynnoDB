@@ -319,7 +319,9 @@ def test_timeout_replay_reports_timeout_status(tmp_path, monkeypatch):
     assert row["data_inspect/status"] == "timeout"
     assert row["data_inspect/error"] is True
     assert row["data_inspect/cached"] is True
-    assert collector.activity[-1] == "Data Inspect Tool called: timeout (cached)"
+    # The activity summary must stay cache-status-independent (it feeds the supervisor
+    # prompt / LLM cache key); cache status lives in the metric above, not the string.
+    assert collector.activity[-1] == "Data Inspect Tool called: timeout"
 
 
 def test_runtime_tracker_credited_on_cache_hit(tmp_path):
@@ -442,4 +444,9 @@ def test_cache_hit_is_reported_as_cached(tmp_path):
     tool("SELECT count(*) AS n FROM orders")
 
     assert [m["data_inspect/cached"] for m in collector.metrics] == [False, True]
-    assert collector.activity[-1] == "Data Inspect Tool called: ok (cached)"
+    # cached=True is captured in the metric, but the supervisor-facing activity line
+    # must be identical to the uncached run so the supervisor LLM cache still hits on replay.
+    assert collector.activity == [
+        "Data Inspect Tool called: ok",
+        "Data Inspect Tool called: ok",
+    ]
