@@ -33,3 +33,14 @@ let selectedScaleFactor = null;  // null = follow max SF; else fixed SF
 // /api/stats responses that were already in flight when the switch happened —
 // without this guard the dashboard briefly flickers back to the previous run.
 let _expectedSourceRef = null;
+
+// Incremental polling cursor: the highest step id already merged into
+// _lastSteps/_lastData. Sent as ?since=<cursor> so the server replies with only
+// that step onward (the boundary step is re-sent because the current turn can
+// still accumulate). null → request the full snapshot (first load / after a
+// reset). See poll() in main.js.
+let _pollCursor = null;
+// Raw text of the last /api/stats response we rendered. A byte-identical
+// response means nothing changed since the last render, so we skip the parse and
+// the full chart rebuild entirely — the dominant idle cost on a long run.
+let _lastRespText = null;
