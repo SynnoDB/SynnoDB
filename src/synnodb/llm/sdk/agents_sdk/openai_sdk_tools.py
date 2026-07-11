@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any, Dict
 
@@ -134,12 +135,49 @@ _APPLY_PATCH_SCHEMA_SIMPLE = {
 }
 
 
+def _summarize_validation_error(e: ValidationError) -> str:
+    """Turn a pydantic ValidationError into a short, human-readable reason for the
+    live-ui (the full error is still returned to the model). Missing required
+    fields - by far the common case (an omitted ``type``) - are reported explicitly."""
+    missing = [
+        ".".join(str(p) for p in err["loc"])
+        for err in e.errors()
+        if err.get("type") == "missing"
+    ]
+    if missing:
+        return f"missing required field(s): {', '.join(missing)}"
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc'])}: {err.get('type', 'invalid')}"
+        for err in e.errors()
+    )
+
+
+def _extract_apply_patch_path(args_json: str) -> str | None:
+    """Best-effort read of the ``path`` from a rejected apply_patch call so the
+    live-ui can name the file it was aimed at. Returns None if the args are not a
+    JSON object or carry no string path."""
+    try:
+        data = json.loads(args_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    path = data.get("path") if isinstance(data, dict) else None
+    return path if isinstance(path, str) and path else None
+
+
 def make_custom_openai_apply_patch_tool(
     editor: WorkspaceEditor, use_simple_schema: bool = False
 ) -> FunctionTool:
     impl = CustomApplyPatchTool(editor=editor)
 
     async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
+        # Replay a previously-recorded rejection BEFORE re-validating: if these exact
+        # arguments were rejected when the run was recorded, reproduce that verdict
+        # from cache. This keeps old runs replayable even if the rules for what
+        # counts as an invalid apply_patch later change - the recorded outcome wins.
+        replayed = editor.replay_rejected_patch(args_json)
+        if replayed is not None:
+            return replayed
+
         try:
             args = CustomApplyPatchArgs.model_validate_json(args_json)
         except ValidationError as e:
@@ -148,13 +186,21 @@ def make_custom_openai_apply_patch_tool(
             # a tool result - matching this tool's convention of reporting failures
             # via the return value - so it can retry with a corrected call instead
             # of the ValidationError propagating and crashing the whole run.
+            reason = _summarize_validation_error(e)
             logger.warning(
                 "apply_patch received arguments that failed schema validation: %s", e
             )
-            return (
+            message = (
                 "Error: apply_patch arguments failed validation. Retry with a valid "
                 f"call.\n{e}"
             )
+            # Persist this rejection (keyed on the raw arguments) so future replays
+            # reproduce it via the pre-validation lookup above, and surface it as a
+            # rejected step in the live-ui instead of a bare, uncached +0/-0 step.
+            editor.record_rejected_patch(
+                args_json, _extract_apply_patch_path(args_json), reason, message
+            )
+            return message
         return await impl(args.type, args.path, args.diff)
 
     schema = (

@@ -3,13 +3,18 @@ from pathlib import Path
 import pytest
 from agents.editor import ApplyPatchOperation
 
-from synnodb.tools.workspace_editor import ApplyPatchCacheType, WorkspaceEditor
+from synnodb.tools.workspace_editor import (
+    ApplyPatchCacheType,
+    RejectedApplyPatchCacheType,
+    WorkspaceEditor,
+)
 from synnodb.utils import utils
 
 
 class FakeRunStatsCollector:
     def __init__(self) -> None:
         self.activity_summary: list[str] = []
+        self.rejected: list[tuple[str | None, str]] = []
 
     def add_to_activity_summary(self, entry: str) -> None:
         self.activity_summary.append(entry)
@@ -19,6 +24,9 @@ class FakeRunStatsCollector:
 
     def record_apply_patch_cache_hit(self) -> None:
         self.cache_hits = getattr(self, "cache_hits", 0) + 1
+
+    def record_apply_patch_rejected(self, path: str | None, reason: str) -> None:
+        self.rejected.append((path, reason))
 
 
 class FakeSnapshotter:
@@ -188,3 +196,79 @@ def test_uncached_apply_patch_stores_activity_summary_in_cache(
         cached.activity_summary_entry
         == "Apply_patch called: Create file query_impl.cpp"
     )
+
+
+def _rejected_editor(tmp_path: Path, **kwargs) -> tuple[WorkspaceEditor, object, Path]:
+    stats = FakeRunStatsCollector()
+    snapshotter = FakeSnapshotter()
+    cache_dir = tmp_path / "cache"
+    workspace = tmp_path / "workspace"
+    cache_dir.mkdir()
+    workspace.mkdir()
+    editor = WorkspaceEditor(
+        root=workspace,
+        run_stats_collector=stats,  # type: ignore[arg-type]
+        readonly_files=set(),
+        untracked_cpp_runner_content="",
+        snapshotter=snapshotter,  # type: ignore[arg-type]
+        cache_dir=cache_dir,
+        **kwargs,
+    )
+    return editor, stats, cache_dir
+
+
+def test_rejected_apply_patch_records_then_replays_from_cache(tmp_path: Path) -> None:
+    # A schema-rejected apply_patch (never reaches the file ops) is cached on its raw
+    # arguments. The first encounter is a live miss: replay_rejected_patch returns
+    # None, and record_rejected_patch writes the entry. An identical later call is
+    # replayed verbatim from cache.
+    args_json = '{"path": "db_loader.cpp", "diff": "+x\\n"}'  # missing `type`
+    message = "Error: apply_patch arguments failed validation. Retry ...\ntype missing"
+    editor, stats, cache_dir = _rejected_editor(tmp_path)
+
+    # miss: nothing cached yet
+    assert editor.replay_rejected_patch(args_json) is None
+    assert getattr(stats, "cache_hits", 0) == 0
+
+    editor.record_rejected_patch(args_json, "db_loader.cpp", "missing type", message)
+    assert stats.rejected == [("db_loader.cpp", "missing type")]
+
+    entry = utils.load_pickle(
+        list(cache_dir.glob("*.pkl"))[0], RejectedApplyPatchCacheType
+    )
+
+    assert entry is not None and entry.message == message
+
+    # replay: the recorded verdict + exact message come back from cache
+    assert editor.replay_rejected_patch(args_json) == message
+    assert stats.cache_hits == 1
+    assert stats.rejected[-1] == ("db_loader.cpp", "missing type")
+
+
+def test_rejected_apply_patch_replays_even_if_current_rules_would_accept_it(
+    tmp_path: Path,
+) -> None:
+    # The whole point of looking up BEFORE validation: once a rejection is recorded,
+    # replaying its arguments reproduces the rejection regardless of what the current
+    # validation rules would now decide. The lookup is purely argument-keyed and
+    # never re-runs validation, so a rules change cannot alter an old run's outcome.
+    args_json = '{"path": "db_loader.cpp"}'
+    message = "Error: apply_patch arguments failed validation. Retry ...\nold verdict"
+    editor, stats, _cache_dir = _rejected_editor(tmp_path)
+    editor.record_rejected_patch(args_json, "db_loader.cpp", "old rule", message)
+
+    assert editor.replay_rejected_patch(args_json) == message
+    assert stats.cache_hits == 1
+
+
+def test_rejected_apply_patch_record_is_readonly_under_only_from_cache(
+    tmp_path: Path,
+) -> None:
+    # Strict replay never writes: an uncached rejection under only_from_cache is
+    # still surfaced as a rejected step, but no cache entry is created.
+    editor, stats, cache_dir = _rejected_editor(tmp_path, only_from_cache=True)
+
+    editor.record_rejected_patch('{"path": "x"}', "x", "missing type", "msg")
+
+    assert stats.rejected == [("x", "missing type")]
+    assert list(cache_dir.glob("*.pkl")) == []
