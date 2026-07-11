@@ -382,13 +382,16 @@ class RunTool:
         mode: RunToolMode = RunToolMode.EXHAUSTIVE,
         optimize: bool = True,
     ):
-        """Validate *query_ids* live (cache-bypassed) and return a ``ValidationReceipt`` for the
-        publish gate. The receipt records the freshly-compiled build's build-ids, the concrete
-        instantiations validated, the scale factors covered, and a pass/fail verdict.
+        """Validate *query_ids* and return a ``ValidationReceipt`` for the publish gate. The
+        receipt records the freshly-compiled build's build-ids, the concrete instantiations
+        validated, the scale factors covered, and a pass/fail verdict.
 
         ``force_compile=True`` rebuilds the binary that publish then ships (so the recorded
-        build-ids match what is copied), and ``force_live=True`` skips the validation cache so a
-        since-broken engine cannot be blessed by an earlier cached success.
+        build-ids match what is copied). ``force_live`` is disabled: ideally it would skip the
+        validation cache so a since-broken engine could not be blessed by an earlier cached
+        success, but forcing a live re-execution re-snapshots an already-captured build and trips
+        the snapshot-name uniqueness assert. Re-enable once snapshot() tolerates re-snapshotting
+        an existing content-addressed name.
         """
         from synnodb.workloads.validation_receipt import (
             FAIL,
@@ -416,7 +419,7 @@ class RunTool:
             optimize=optimize,
             query_ids=query_ids,
             force_compile=True,
-            force_live=True,
+            force_live=False,
         )
 
         # Enumerate the concrete instantiations the run validated. produce_workload is

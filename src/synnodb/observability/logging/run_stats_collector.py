@@ -85,6 +85,7 @@ class RunStatsCollector(RunHooks):
     apply_patch_files = set()
     apply_patch_failed = []
     apply_patch_cached = False
+    apply_patch_rejected = False
 
     def __init__(
         self,
@@ -294,6 +295,18 @@ class RunStatsCollector(RunHooks):
         in on_tool_start."""
         self.apply_patch_cached = True
 
+    def record_apply_patch_rejected(self, path: str | None, reason: str) -> None:
+        """Mark that the current apply_patch tool call was rejected during
+        argument schema validation (e.g. the required ``type`` field was omitted)
+        and so never reached the workspace editor - it neither ran nor consulted
+        the cache. Consumed by on_tool_end so the live-ui can render the step as a
+        rejected call rather than a silent, uncached +0/-0 no-op that looks like a
+        cache miss. Reset per tool call in on_tool_start."""
+        self.apply_patch_rejected = True
+        self.apply_patch_failed.append(f"invalid arguments - {reason}")
+        if path:
+            self.apply_patch_files.add(path)
+
     async def on_agent_start(self, ctx, agent):
         """Called when an agent starts processing"""
         logger.debug(f"Agent {agent.name} started (turn {self.last_turn})")
@@ -458,6 +471,7 @@ class RunStatsCollector(RunHooks):
             self.apply_patch_files = set()
             self.apply_patch_failed = []
             self.apply_patch_cached = False
+            self.apply_patch_rejected = False
 
     async def on_tool_end(
         self,
@@ -486,6 +500,7 @@ class RunStatsCollector(RunHooks):
                 {
                     "type": "apply_patch",
                     "apply_patch/cached": self.apply_patch_cached,
+                    "apply_patch/rejected": self.apply_patch_rejected,
                     "apply_patch/added_loc_count": self.apply_patch_added_ctr,
                     "apply_patch/deleted_loc_count": self.apply_patch_deleted_ctr,
                     "apply_patch/string": self.apply_patch_str[:20000],

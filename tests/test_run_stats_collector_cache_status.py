@@ -40,6 +40,40 @@ class TestRunStatsCollectorCacheStatus(unittest.TestCase):
         # call, so cost accounting never under-counts an unidentifiable turn.
         self.assertFalse(collector._consume_llm_cache_status(_model_response(None)))
 
+    def test_record_apply_patch_rejected_marks_step_and_keeps_reason(self):
+        collector = object.__new__(RunStatsCollector)
+        # per-tool-call state, as reset in on_tool_start
+        collector.apply_patch_rejected = False
+        collector.apply_patch_failed = []
+        collector.apply_patch_files = set()
+        collector.apply_patch_cached = False
+
+        collector.record_apply_patch_rejected(
+            "db_loader.cpp", "missing required field(s): type"
+        )
+
+        # A schema-rejected call is neither a cache hit nor a real edit: it must be
+        # flagged rejected (so the live-ui can distinguish it from a cache miss),
+        # carry the reason, and name the targeted file - without recording a hit.
+        self.assertTrue(collector.apply_patch_rejected)
+        self.assertFalse(collector.apply_patch_cached)
+        self.assertEqual(len(collector.apply_patch_failed), 1)
+        self.assertIn(
+            "missing required field(s): type", collector.apply_patch_failed[0]
+        )
+        self.assertIn("db_loader.cpp", collector.apply_patch_files)
+
+    def test_record_apply_patch_rejected_tolerates_missing_path(self):
+        collector = object.__new__(RunStatsCollector)
+        collector.apply_patch_rejected = False
+        collector.apply_patch_failed = []
+        collector.apply_patch_files = set()
+
+        collector.record_apply_patch_rejected(None, "invalid json")
+
+        self.assertTrue(collector.apply_patch_rejected)
+        self.assertEqual(collector.apply_patch_files, set())
+
 
 if __name__ == "__main__":
     unittest.main()

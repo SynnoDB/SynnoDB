@@ -80,17 +80,21 @@ function logDesc(type, d) {
     const added   = d['apply_patch/added_loc_count'];
     const deleted = d['apply_patch/deleted_loc_count'];
     const failed  = parseJsonField(d['apply_patch/failed']);
+    const rejected = d['apply_patch/rejected'] === true;
     const hasFailed = failed && failed.length;
-    const failedStr = hasFailed ? ' ⚠ ' + failed.length + ' failed' : '';
+    const names = (files && files.length) ? files.map(f => f.split('/').pop()) : [];
+    const who = names.length
+      ? names.slice(0,3).join(', ') + (names.length > 3 ? ' +' + (names.length-3) : '')
+      : 'code change';
     const cachedStr = d['apply_patch/cached'] ? ' · cached' : '';
+    // A rejected call never reached the editor (invalid args), so it is not a real
+    // edit - label it as such instead of a bare +0/-0 step. It still carries a cache
+    // signal (it replays from cache when the LLM turn that produced it does).
+    if (rejected) return who + ' ⚠ invalid args (rejected)' + cachedStr;
+    const failedStr = hasFailed ? ' ⚠ ' + failed.length + ' failed' : '';
     const delta = (!hasFailed && (added != null || deleted != null))
       ? ' (+' + (added||0) + '/-' + (deleted||0) + ')' : '';
-    if (files && files.length) {
-      const names = files.map(f => f.split('/').pop());
-      const list = names.slice(0,3).join(', ') + (names.length > 3 ? ' +' + (names.length-3) : '');
-      return list + delta + failedStr + cachedStr;
-    }
-    return 'code change' + delta + failedStr + cachedStr;
+    return who + delta + failedStr + cachedStr;
   }
   if (type === 'shell') {
     const cmds = parseJsonField(d['shell/commands']);
