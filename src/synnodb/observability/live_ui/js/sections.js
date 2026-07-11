@@ -108,11 +108,9 @@ function setHoveredSection(desc, first, last) {
   document.querySelectorAll('.pl-item[data-desc]').forEach(item => {
     item.classList.toggle('pl-hovered', item.dataset.desc === desc);
   });
-  document.querySelectorAll('details.log-entry').forEach(entry => {
-    const step = +entry.dataset.step;
-    entry.classList.toggle('log-highlighted',
-      desc != null && first != null && step >= first && step <= last);
-  });
+  // The log is virtualized — only mounted rows exist in the DOM — so hand the
+  // highlight range to log.js, which also applies it to rows as they mount.
+  applyLogHover(first, last, desc != null && first != null);
 }
 
 // ── Chart.js plugin: section background fills + dividers + labels ────────
