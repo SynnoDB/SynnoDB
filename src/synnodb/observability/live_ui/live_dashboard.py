@@ -106,6 +106,7 @@ _ACTIVE_SNAPSHOT: dict = {
         {"meta": {}, "steps": [], "data": {}, "latest": None, "count": 0}
     ),
     "workspace": lambda: None,
+    "body": lambda step=None: None,
 }
 
 
@@ -125,7 +126,46 @@ def _parse_since(raw: "str | None") -> "int | None":
         return None
 
 
-def _finalize_snapshot(payload: dict, since: "int | None") -> str:
+# Heavy per-step text fields. These dominate the /api/stats payload (a single
+# shell/llm turn can be tens of KB) yet are only ever read to fill the activity
+# log's expanded body view. They are stripped from every snapshot and served on
+# demand, one step at a time, via /api/step_body — so the browser parses and
+# holds only what it renders up front, and each poll delta stays small on a run
+# that is streaming output continuously.
+_BODY_FIELDS = (
+    "llm/output_text",
+    "shell/outputs",
+    "data_inspect/output",
+    "apply_patch/string",
+)
+
+
+def _strip_bodies(data: dict) -> dict:
+    """Return a copy of a ``{step: fields}`` map with _BODY_FIELDS removed.
+
+    The input is never mutated (a cached source dict must stay intact); each row
+    is shallow-copied without its body fields.
+    """
+    return {
+        step: {k: v for k, v in row.items() if k not in _BODY_FIELDS}
+        for step, row in data.items()
+    }
+
+
+def _body_fields_payload(data: dict, step: "str | int") -> "bytes | None":
+    """JSON body for /api/step_body: the _BODY_FIELDS of one step (None → 404).
+
+    ``data`` is the full (unstripped) ``{step: fields}`` store keyed by string
+    step id. Only the body fields actually present on that step are returned.
+    """
+    row = data.get(str(step))
+    if row is None:
+        return None
+    fields = {k: row[k] for k in _BODY_FIELDS if k in row}
+    return json.dumps({"step": str(step), "fields": fields}).encode()
+
+
+def _finalize_snapshot(payload: dict, since: "int | None", *, strip: bool = True) -> str:
     """Attach the incremental-protocol fields to a full snapshot dict and serialize.
 
     ``latest``/``count`` are the max step id and total step count of the *full*
@@ -133,18 +173,23 @@ def _finalize_snapshot(payload: dict, since: "int | None") -> str:
     reset its timeline) and refetch. When ``since`` is given, only steps at or
     beyond it are kept and ``incremental`` is set; the untouched dict is never
     mutated so a cached source dict stays intact.
+
+    ``strip`` removes the heavy body fields (served separately via
+    /api/step_body). It is turned off only for the remote proxy, which passes an
+    upstream dashboard's already-shaped payload through verbatim.
     """
     data = payload.get("data", {})
     ids = sorted(int(k) for k in data)
     latest = ids[-1] if ids else None
     count = len(ids)
+    prep = _strip_bodies if strip else (lambda d: d)
     if since is None:
-        out = {**payload, "latest": latest, "count": count}
+        out = {**payload, "data": prep(data), "latest": latest, "count": count}
     else:
         kept = {k: v for k, v in data.items() if int(k) >= since}
         out = {
             **payload,
-            "data": kept,
+            "data": prep(kept),
             "steps": sorted(int(k) for k in kept),
             "latest": latest,
             "count": count,
@@ -174,6 +219,7 @@ def _make_http_server(
     post_handlers: dict | None = None,
     file_list_fn=None,
     file_read_fn=None,
+    body_fn=None,
 ) -> tuple[int, "socketserver.TCPServer"]:
     """Bind an HTTP server that calls snapshot_fn() for /api/stats.
 
@@ -182,6 +228,8 @@ def _make_http_server(
     /api/files; file_read_fn(rel) returns the JSON body (bytes) for /api/file or
     None for 404. Together they back the code inspector. When file_list_fn is
     None the inspector endpoints report the workspace as unavailable.
+    body_fn(step), if given, returns the JSON body (bytes) for /api/step_body —
+    the heavy per-step body fields stripped from /api/stats — or None for 404.
     Returns (port, server) — caller is responsible for starting the serve thread.
     """
     import http.server
@@ -210,6 +258,14 @@ def _make_http_server(
             if path == "/api/file":
                 rel = (parse_qs(urlparse(self.path).query).get("path") or [""])[0]
                 body = file_read_fn(rel) if file_read_fn is not None else None
+                if body is None:
+                    self.send_error(404)
+                    return
+                self._reply(body, "application/json")
+                return
+            if path == "/api/step_body":
+                step = (parse_qs(urlparse(self.path).query).get("step") or [""])[0]
+                body = body_fn(step) if body_fn is not None else None
                 if body is None:
                     self.send_error(404)
                     return
@@ -453,6 +509,24 @@ def _remote_file_payload(api_url: str, rel: str) -> "bytes | None":
         return None
 
 
+def _remote_body_payload(api_url: str, step: str) -> "bytes | None":
+    """Proxy /api/step_body from a remote live dashboard (None → 404)."""
+    if not step:
+        return None
+    from urllib.error import URLError
+    from urllib.parse import quote
+    from urllib.request import urlopen
+
+    try:
+        with urlopen(  # noqa: S310
+            _remote_base_url(api_url) + "/api/step_body?step=" + quote(str(step)),
+            timeout=10,
+        ) as response:
+            return response.read()
+    except URLError:  # includes HTTPError (e.g. remote 404 / older build)
+        return None
+
+
 class StandaloneDashboard:
     """HTTP dashboard server that reads from DuckDB, W&B, or a remote live API.
 
@@ -500,6 +574,7 @@ class StandaloneDashboard:
             },
             file_list_fn=self._files_payload,
             file_read_fn=self._file_payload,
+            body_fn=self._body_payload,
         )
         self._port = port
         t = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -532,6 +607,35 @@ class StandaloneDashboard:
             return _remote_file_payload(api_url, rel)
         return None
 
+    def _body_payload(self, step: str) -> "bytes | None":
+        """JSON body for /api/step_body, dispatched by the current source.
+
+        DuckDB re-reads the file (it re-reads on every stats poll anyway); W&B
+        reads the cached history (building it if this is the first request);
+        remote proxies upstream. The body fields were stripped from /api/stats,
+        so this endpoint is how the client fetches an expanded entry's text.
+        """
+        with self._lock:
+            db_path = self._db_path
+            api_url = self._api_url
+            wandb_run_id = self._wandb_run_id
+            wandb_cache = self._wandb_cache
+        if api_url:
+            return _remote_body_payload(api_url, step)
+        if db_path is not None:
+            data = json.loads(_duckdb_snapshot(db_path)).get("data", {})
+            return _body_fields_payload(data, step)
+        if wandb_run_id:
+            if wandb_cache is None:
+                self._snapshot()  # populates _wandb_cache (unstripped history)
+                with self._lock:
+                    wandb_cache = self._wandb_cache
+            if wandb_cache is None:
+                return None
+            data = json.loads(wandb_cache).get("data", {})
+            return _body_fields_payload(data, step)
+        return None
+
     def serve_forever(self) -> None:
         import time
 
@@ -559,8 +663,11 @@ class StandaloneDashboard:
                 raw["meta"]["_source_ref"] = str(self._db_path)
                 return _finalize_snapshot(raw, since)
             if self._api_url is not None:
+                # The upstream dashboard already stripped bodies (or, if it is an
+                # older build, inlined them); pass its payload through verbatim and
+                # proxy body fetches to it rather than re-shaping here.
                 return _finalize_snapshot(
-                    json.loads(_remote_api_snapshot(self._api_url)), since
+                    json.loads(_remote_api_snapshot(self._api_url)), since, strip=False
                 )
             if self._wandb_cache is None:
                 assert self._wandb_run_id is not None
@@ -868,8 +975,14 @@ class LiveDashboardDrain(DataDrain):
             meta["stages"] = [dict(s) for s in self._stages]
 
             kept = ids if since is None else [k for k in ids if k >= since]
+            # Body fields are stripped here (served via /api/step_body) so neither
+            # the cached full snapshot nor the per-poll delta carries them.
             data = {
-                str(k): {ck: _clean(cv) for ck, cv in self._data[k].items()}
+                str(k): {
+                    ck: _clean(cv)
+                    for ck, cv in self._data[k].items()
+                    if ck not in _BODY_FIELDS
+                }
                 for k in kept
             }
             payload: dict = {
@@ -887,6 +1000,19 @@ class LiveDashboardDrain(DataDrain):
             payload["incremental"] = True
             return json.dumps(payload)
 
+    def _body_fields(self, step: str) -> "bytes | None":
+        """JSON body for /api/step_body: this step's stripped body fields (None → 404)."""
+        try:
+            gstep = int(step)
+        except (TypeError, ValueError):
+            return None
+        with self._lock:
+            row = self._data.get(gstep)
+            if row is None:
+                return None
+            fields = {k: row[k] for k in _BODY_FIELDS if k in row}
+        return json.dumps({"step": str(gstep), "fields": fields}).encode()
+
     def _start_server(self, host: str, start_port: int) -> int:
         # Retarget the shared server at THIS stage's data, binding the server only the first time.
         # Reading _ACTIVE_SNAPSHOT["fn"] per request (via the closure below) means a later stage's
@@ -894,6 +1020,7 @@ class LiveDashboardDrain(DataDrain):
         global _SHARED_SERVER
         _ACTIVE_SNAPSHOT["fn"] = self._snapshot
         _ACTIVE_SNAPSHOT["workspace"] = self._workspace_root
+        _ACTIVE_SNAPSHOT["body"] = self._body_fields
         with _SHARED_SERVER_LOCK:
             if _SHARED_SERVER is not None:
                 return _SHARED_SERVER[1]
@@ -907,6 +1034,7 @@ class LiveDashboardDrain(DataDrain):
                 file_read_fn=lambda rel: _local_file_payload(
                     _ACTIVE_SNAPSHOT["workspace"](), rel
                 ),
+                body_fn=lambda step: _ACTIVE_SNAPSHOT["body"](step),
             )
             t = threading.Thread(target=server.serve_forever, daemon=True)
             t.start()
