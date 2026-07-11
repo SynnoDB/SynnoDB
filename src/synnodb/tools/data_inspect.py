@@ -277,7 +277,7 @@ class DataInspectTool:
             log_and_increment=True,
         )
         self.run_stats_collector.add_to_activity_summary(
-            f"Data Inspect Tool called: {status}{' (cached)' if cached else ''}"
+            f"Data Inspect Tool called: {status}"
         )
 
     def _run_and_render(

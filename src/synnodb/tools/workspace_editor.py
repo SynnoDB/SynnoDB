@@ -134,7 +134,6 @@ class WorkspaceEditor:
             run_impl=lambda: self._replace_in_file_impl(
                 path, old_string, new_string, replace_all
             ),
-            legacy_activity=lambda _status, _output: None,
         )
 
     # ---------- cache wrapper ----------
@@ -161,11 +160,6 @@ class WorkspaceEditor:
             path=operation.path,
             cache_extra={"diff": operation.diff},
             run_impl=lambda: impl(operation),
-            legacy_activity=lambda status, output: (
-                self._legacy_activity_summary_entry_for_cached_result(
-                    op_type, operation, status, output
-                )
-            ),
         )
 
     def _run_cached(
@@ -174,7 +168,6 @@ class WorkspaceEditor:
         path: str,
         cache_extra: dict,
         run_impl,
-        legacy_activity,
     ) -> ApplyPatchResult:
         # Build cache key from current workspace state + operation. The cache
         # entry captures both the result and the post-op snapshot so a hit can
@@ -198,26 +191,48 @@ class WorkspaceEditor:
         key = utils.sha256(hash_payload)
         cache_path = self._cache_path_for(key)
 
-        if cache_path.exists():
-            cached = utils.load_pickle(cache_path, ApplyPatchCacheType)
-            assert cached is not None
+        cached = (
+            utils.load_pickle(cache_path, ApplyPatchCacheType)
+            if cache_path.exists()
+            else None
+        )
+
+        # An entry is only replayable if it carries the stored activity-summary
+        # line. That line feeds the supervisor prompt (and thus the supervisor LLM
+        # cache key), so it must be reproduced byte-for-byte on replay: we store it
+        # verbatim when the op runs and replay it verbatim here, never reconstruct
+        # it from the result text. Entries written before this field existed lack
+        # the attribute; they are treated as a miss and recomputed below (which
+        # regenerates the current-format entry) rather than guessed at.
+        if cached is not None and hasattr(cached, "activity_summary_entry"):
             if self._runtime_tracker is not None:
                 self._runtime_tracker.add_skipped_time(cached.runtime_seconds)
             self._snapshotter.restore(cached.snapshot_hash)
-            activity_summary_entry = getattr(
-                cached, "activity_summary_entry", None
-            ) or legacy_activity(cached.result_status, cached.result_output)
-            self._record_activity_summary(activity_summary_entry)
+            self._record_activity_summary(cached.activity_summary_entry)
             self._run_stats_collector.record_apply_patch_cache_hit()
             logger.debug(f"Apply_patch ({op_type} {path}) replayed from cache")
             return ApplyPatchResult(
                 status=cached.result_status,  # type: ignore[arg-type]
                 output=cached.result_output,
             )
-        elif self._only_from_cache:
-            raise ValueError(
-                f"Apply_patch result not found in cache for operation {op_type} {path} and only_from_cache is enabled. Cache path: {cache_path}\nPayload: {hash_payload}"
+
+        if self._only_from_cache:
+            detail = (
+                "cache entry predates the stored activity-summary format and "
+                "cannot be replayed deterministically; re-record the cache"
+                if cached is not None
+                else "result not found in cache"
             )
+            raise ValueError(
+                f"Apply_patch {detail} for operation {op_type} {path} and "
+                f"only_from_cache is enabled. Cache path: {cache_path}\nPayload: {hash_payload}"
+            )
+
+        if cached is not None:
+            # A stale legacy entry occupies this key but can't be replayed. Drop it
+            # so the recompute below can rewrite the key in the current format
+            # (dump_pickle refuses to overwrite an existing file).
+            cache_path.unlink(missing_ok=True)
 
         start = time.perf_counter()
         try:
@@ -255,42 +270,6 @@ class WorkspaceEditor:
     def _record_activity_summary(self, entry: str | None) -> None:
         if entry is not None:
             self._run_stats_collector.add_to_activity_summary(entry)
-
-    def _legacy_activity_summary_entry_for_cached_result(
-        self,
-        op_type: str,
-        operation: ApplyPatchOperation,
-        result_status: str | None,
-        result_output: str | None,
-    ) -> str | None:
-        if result_status == "completed":
-            action = {
-                "create_file": "Create file",
-                "update_file": "Update file",
-                "delete_file": "Delete file",
-            }.get(op_type)
-            if action is None:
-                return None
-            return f"Apply_patch called: {action} {operation.path}"
-
-        if result_status != "failed":
-            return None
-
-        output = result_output or ""
-        action = {
-            "create_file": "Create file",
-            "update_file": "Update file",
-            "delete_file": "Delete file",
-        }.get(op_type)
-        if action is None:
-            return None
-
-        if "read-only" in output:
-            return f"Apply_patch called: {action} {operation.path} (FAILED - read-only)"
-        if "Refusing to overwrite non-empty file" in output:
-            return f"Apply_patch called: {action} {operation.path} (FAILED - non-empty file exists)"
-
-        return None
 
     # ---------- raw operations ----------
 
