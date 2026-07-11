@@ -1,3 +1,4 @@
+import gzip
 import json
 import math
 import mimetypes
@@ -101,9 +102,56 @@ def _local_file_payload(root: "Path | None", rel: str) -> "bytes | None":
 _SHARED_SERVER: "tuple[socketserver.TCPServer, int] | None" = None
 _SHARED_SERVER_LOCK = threading.Lock()
 _ACTIVE_SNAPSHOT: dict = {
-    "fn": lambda: json.dumps({"meta": {}, "steps": [], "data": {}}),
+    "fn": lambda since=None: json.dumps(
+        {"meta": {}, "steps": [], "data": {}, "latest": None, "count": 0}
+    ),
     "workspace": lambda: None,
 }
+
+
+def _parse_since(raw: "str | None") -> "int | None":
+    """Parse the ``since`` query arg of /api/stats into a step cursor (None → full).
+
+    The client sends the highest step id it already holds; the server replies with
+    only steps at or beyond it (the boundary step is re-sent because the current,
+    highest turn can still accumulate fields after the client first saw it). A
+    missing or malformed value means "send the full snapshot".
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _finalize_snapshot(payload: dict, since: "int | None") -> str:
+    """Attach the incremental-protocol fields to a full snapshot dict and serialize.
+
+    ``latest``/``count`` are the max step id and total step count of the *full*
+    store, so the client can detect when it has drifted out of sync (e.g. the run
+    reset its timeline) and refetch. When ``since`` is given, only steps at or
+    beyond it are kept and ``incremental`` is set; the untouched dict is never
+    mutated so a cached source dict stays intact.
+    """
+    data = payload.get("data", {})
+    ids = sorted(int(k) for k in data)
+    latest = ids[-1] if ids else None
+    count = len(ids)
+    if since is None:
+        out = {**payload, "latest": latest, "count": count}
+    else:
+        kept = {k: v for k, v in data.items() if int(k) >= since}
+        out = {
+            **payload,
+            "data": kept,
+            "steps": sorted(int(k) for k in kept),
+            "latest": latest,
+            "count": count,
+            "incremental": True,
+        }
+    return json.dumps(out)
+
 
 # A single LiveDashboardDrain instance is shared by every stage that runs in ONE
 # process (e.g. the chained SynnoDB notebook pipeline: createStoragePlan ->
@@ -146,7 +194,10 @@ def _make_http_server(
         def do_GET(self):  # noqa: N802
             path = urlparse(self.path).path
             if path == "/api/stats":
-                self._reply(snapshot_fn().encode(), "application/json")
+                since = _parse_since(
+                    (parse_qs(urlparse(self.path).query).get("since") or [None])[0]
+                )
+                self._reply(snapshot_fn(since).encode(), "application/json")
                 return
             if path == "/api/files":
                 body = (
@@ -186,8 +237,25 @@ def _make_http_server(
 
         def _reply(self, body: bytes, ct: str) -> None:
             try:
+                headers = [("Content-Type", ct)]
+                # The stats feed is JSON text and compresses ~5x; gzip it (and any
+                # other text body) whenever the client accepts it and the payload is
+                # big enough to be worth the CPU. Tiny idle deltas fall below the
+                # threshold and are sent as-is. Already-compressed binaries (images)
+                # are left untouched. The urllib-based remote proxy does not send
+                # Accept-Encoding, so proxied fetches stay uncompressed end to end.
+                compressible = (
+                    ct.startswith("application/json")
+                    or ct.startswith("text/")
+                    or "javascript" in ct
+                )
+                accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "")
+                if compressible and accepts_gzip and len(body) >= 1400:
+                    body = gzip.compress(body, 5)
+                    headers.append(("Content-Encoding", "gzip"))
                 self.send_response(200)
-                self.send_header("Content-Type", ct)
+                for key, value in headers:
+                    self.send_header(key, value)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
@@ -470,27 +538,30 @@ class StandaloneDashboard:
         while True:
             time.sleep(1)
 
-    def _snapshot(self) -> str:
+    def _snapshot(self, since: "int | None" = None) -> str:
         with self._lock:
             if (
                 self._db_path is None
                 and self._wandb_run_id is None
                 and self._api_url is None
             ):
-                return json.dumps(
+                return _finalize_snapshot(
                     {
                         "meta": {"_source_type": "standalone", "_source_ref": None},
                         "steps": [],
                         "data": {},
-                    }
+                    },
+                    since,
                 )
             if self._db_path is not None:
                 raw = json.loads(_duckdb_snapshot(self._db_path))
                 raw["meta"]["_source_type"] = "db"
                 raw["meta"]["_source_ref"] = str(self._db_path)
-                return json.dumps(raw)
+                return _finalize_snapshot(raw, since)
             if self._api_url is not None:
-                return _remote_api_snapshot(self._api_url)
+                return _finalize_snapshot(
+                    json.loads(_remote_api_snapshot(self._api_url)), since
+                )
             if self._wandb_cache is None:
                 assert self._wandb_run_id is not None
                 raw = json.loads(
@@ -503,7 +574,7 @@ class StandaloneDashboard:
                 raw["meta"]["_source_type"] = "wandb"
                 raw["meta"]["_source_ref"] = self._wandb_run_id
                 self._wandb_cache = json.dumps(raw)
-            return self._wandb_cache
+            return _finalize_snapshot(json.loads(self._wandb_cache), since)
 
     def _handle_reload(self, _body: bytes) -> bytes:
         with self._lock:
@@ -583,6 +654,13 @@ class LiveDashboardDrain(DataDrain):
         self._workspace_dir = Path(workspace_dir).resolve() if workspace_dir else None
         self._data: dict[int, dict] = {}
         self._lock = threading.Lock()
+        # Monotonic revision bumped on every mutation of _data/_meta. The full
+        # snapshot is expensive to serialize (all steps + their bodies), so it is
+        # cached and only rebuilt when the revision moves. Incremental deltas are
+        # cheap and always built fresh. See _snapshot.
+        self._rev = 0
+        self._cache_full: str | None = None
+        self._cache_rev = -1
         # Per-stage accumulation bookkeeping.
         self._stage_base = 0  # global-step offset for the active stage
         self._carry: dict[
@@ -668,6 +746,7 @@ class LiveDashboardDrain(DataDrain):
                 self._stages[-1] = entry
             else:
                 self._stages.append(entry)
+            self._rev += 1
 
     def register_planned_stages(
         self, previews: list[dict], stage_name: str | None = None
@@ -686,6 +765,7 @@ class LiveDashboardDrain(DataDrain):
                 "stage_name": stage_name,
                 "stages": list(previews),
             }
+            self._rev += 1
 
     def report_error(
         self,
@@ -708,6 +788,7 @@ class LiveDashboardDrain(DataDrain):
                 "log_file": log_file,
                 "time": datetime.now().isoformat(timespec="seconds"),
             }
+            self._rev += 1
 
     def _reset(self) -> None:
         """Wipe accumulated data so the next stage starts a fresh pipeline. The
@@ -724,6 +805,7 @@ class LiveDashboardDrain(DataDrain):
             self._meta["wandb_run_id"] = None
             self._meta["num_threads"] = None
             self._meta["start_time"] = datetime.now().isoformat(timespec="seconds")
+            self._rev += 1
 
     # ------------------------------------------------------------------ emit --
 
@@ -748,6 +830,7 @@ class LiveDashboardDrain(DataDrain):
                 if k == "run/num_threads":
                     self._meta["num_threads"] = coerced
                 row[k] = coerced
+            self._rev += 1
 
     # -------------------------------------------------------------- internals --
 
@@ -755,27 +838,54 @@ class LiveDashboardDrain(DataDrain):
         """The generated-code workspace this run operates in (passed in by main)."""
         return self._workspace_dir
 
-    def _snapshot(self) -> str:
-        with self._lock:
-            snapshot = {k: dict(v) for k, v in sorted(self._data.items())}
-            meta = dict(self._meta)
-            meta["stages"] = [dict(s) for s in self._stages]
+    def _snapshot(self, since: "int | None" = None) -> str:
+        """Serialize the run state for /api/stats.
+
+        ``since=None`` returns the full snapshot (cached until the next mutation,
+        since serializing every step's bodies is the costly path). Otherwise only
+        steps at or beyond ``since`` are returned as an incremental delta - tiny,
+        so it is always built fresh. Both carry ``latest``/``count`` (the full
+        store's max step id and step count) so the client can detect drift.
+        """
 
         def _clean(v):
             if isinstance(v, float) and not math.isfinite(v):
                 return None
             return v
 
-        return json.dumps(
-            {
-                "meta": meta,
-                "steps": list(snapshot.keys()),
-                "data": {
-                    str(k): {ck: _clean(cv) for ck, cv in v.items()}
-                    for k, v in snapshot.items()
-                },
+        with self._lock:
+            if (
+                since is None
+                and self._cache_full is not None
+                and self._cache_rev == self._rev
+            ):
+                return self._cache_full
+
+            ids = sorted(self._data)
+            latest = ids[-1] if ids else None
+            count = len(ids)
+            meta = dict(self._meta)
+            meta["stages"] = [dict(s) for s in self._stages]
+
+            kept = ids if since is None else [k for k in ids if k >= since]
+            data = {
+                str(k): {ck: _clean(cv) for ck, cv in self._data[k].items()}
+                for k in kept
             }
-        )
+            payload: dict = {
+                "meta": meta,
+                "steps": kept,
+                "data": data,
+                "latest": latest,
+                "count": count,
+            }
+            if since is None:
+                out = json.dumps(payload)
+                self._cache_full = out
+                self._cache_rev = self._rev
+                return out
+            payload["incremental"] = True
+            return json.dumps(payload)
 
     def _start_server(self, host: str, start_port: int) -> int:
         # Retarget the shared server at THIS stage's data, binding the server only the first time.
@@ -790,7 +900,7 @@ class LiveDashboardDrain(DataDrain):
             port, server = _make_http_server(
                 host,
                 start_port,
-                lambda: _ACTIVE_SNAPSHOT["fn"](),
+                lambda since=None: _ACTIVE_SNAPSHOT["fn"](since),
                 file_list_fn=lambda: _local_files_payload(
                     _ACTIVE_SNAPSHOT["workspace"]()
                 ),
