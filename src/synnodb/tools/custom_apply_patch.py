@@ -12,8 +12,18 @@ class CustomApplyPatchTool:
     def __init__(self, editor: WorkspaceEditor) -> None:
         self._editor = editor
 
-    @staticmethod
-    def _normalize_diff(diff: str, op_type: str) -> str:
+    # apply_patch envelope markers a model sometimes wraps the hunk body in. Not
+    # part of the V4A content, so they are dropped during normalization.
+    _ENVELOPE_PREFIXES = (
+        "*** Begin Patch",
+        "*** End Patch",
+        "*** Add File:",
+        "*** Update File:",
+        "*** Delete File:",
+    )
+
+    @classmethod
+    def _normalize_diff(cls, diff: str, op_type: str) -> str:
         lines = diff.splitlines()
         # Strip unified diff headers if present.
         cleaned: list[str] = []
@@ -26,7 +36,7 @@ class CustomApplyPatchTool:
                 continue
             if line.startswith("+++ "):
                 continue
-            if line == "*** Begin Patch":
+            if line.startswith(cls._ENVELOPE_PREFIXES):
                 continue
             if re.match(r"@@ .* @@$", line):
                 cleaned.append("@@")
@@ -34,14 +44,45 @@ class CustomApplyPatchTool:
             cleaned.append(line)
 
         if op_type == "create_file":
-            # apply_diff(create) expects only "+" lines.
-            cleaned = [line for line in cleaned if line.startswith("+")]
+            # create expects either all lines to start with "+" (diff format) or no lines to start with "+" (raw format).
+            body = [line for line in cleaned if line != "@@"]
+            is_diff_formatted = all(
+                line.startswith("+") for line in body if line.strip() != ""
+            )
+            if is_diff_formatted:
+                # V4A add-diff: drop the diff "+", keep bare blank lines as-is.
+                content = [line[1:] if line.startswith("+") else line for line in body]
+            else:
+                # Raw body: every line is content verbatim, a leading "+" included.
+                content = body
+                logger.debug(
+                    "create_file diff is not in diff format; treating all lines as raw content."
+                )
+            cleaned = [f"+{line}" for line in content]
 
         return "\n".join(cleaned)
 
     async def __call__(self, op_type: str, path: str, diff: str | None) -> str:
+        raw_diff = diff
         if diff is not None:
             diff = self._normalize_diff(diff, op_type)
+
+        # A create whose payload carried real text but normalized to nothing (only
+        # headers/envelope markers) must fail loudly - never silently write a 0-byte
+        # file the model believes it just created. An intentionally empty create
+        # (empty/blank payload) still passes through.
+        if (
+            op_type == "create_file"
+            and raw_diff is not None
+            and raw_diff.strip()
+            and not (diff or "").strip()
+        ):
+            return (
+                f"Error: create_file for {path} received no file content (only "
+                "headers/markers). Resend the full file body; lines without a "
+                "leading '+' are written as-is."
+            )
+
         op = ApplyPatchOperation(type=op_type, path=path, diff=diff)  # type: ignore
 
         if op.type == "create_file":

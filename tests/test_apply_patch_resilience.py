@@ -15,6 +15,7 @@ from pathlib import Path
 
 from agents.editor import ApplyPatchOperation
 
+from synnodb.tools.custom_apply_patch import CustomApplyPatchTool
 from synnodb.tools.workspace_editor import (
     WorkspaceEditor,
     _strip_code_fences,
@@ -194,6 +195,103 @@ def test_create_file_impl_still_blocks_readonly(tmp_path):
     result, _ = editor._create_file_impl(op)
     assert result.status == "failed" and "read-only" in result.output
     assert (workspace / "args_parser.hpp").read_text(encoding="utf-8") == "// framework"
+
+
+# ───────────── create_file normalization: content must never be dropped ─────────
+#
+# The create payload IS the whole file body. The old "keep only lines starting with
+# '+'" filter silently dropped any un-prefixed line, so a body sent as raw lines
+# became an EMPTY file and one with bare blank lines became a TRUNCATED file - both
+# reported to the agent as a successful "Created". Normalization now prefixes any
+# not-yet-'+' line so the body survives verbatim.
+
+
+def _create_content(diff: str) -> str:
+    from agents import apply_diff
+
+    norm = CustomApplyPatchTool._normalize_diff(diff, "create_file")
+    return apply_diff("", norm, mode="create")
+
+
+def test_create_normalizes_raw_body_without_plus_prefixes():
+    # a body sent with no '+' prefixes at all used to normalize to "" (empty file)
+    raw = "#include <x>\nint main(){ return 0; }\n"
+    assert _create_content(raw) == "#include <x>\nint main(){ return 0; }"
+
+
+def test_create_preserves_proper_v4a_body_unchanged():
+    v4a = "+#include <x>\n+\n+int main(){}\n"
+    assert _create_content(v4a) == "#include <x>\n\nint main(){}"
+
+
+def test_create_keeps_bare_blank_lines_that_were_previously_truncated():
+    mixed = "+#include <x>\n\n+int main(){}\n"  # blank line sent bare, not as '+'
+    assert _create_content(mixed) == "#include <x>\n\nint main(){}"
+
+
+def test_create_raw_body_preserves_lines_that_start_with_plus():
+    # A raw (non-diff) body may contain a line that naturally starts with '+' - a
+    # pre-increment statement at column 0, a unary-plus expression, a markdown
+    # bullet. The format decision is made for the whole payload (this body is NOT
+    # diff-formatted because other lines lack '+'), so those '+' are content, not
+    # diff markers, and must survive verbatim.
+    raw = "int main(){\n++counter;\nreturn 0;\n}\n"
+    assert _create_content(raw) == "int main(){\n++counter;\nreturn 0;\n}"
+
+
+def test_create_raw_markdown_bullets_survive_when_body_is_not_diff_formatted():
+    raw = "# Title\n\n+ item one\n+ item two\n"
+    assert _create_content(raw) == "# Title\n\n+ item one\n+ item two"
+
+
+def test_create_strips_envelope_but_keeps_unprefixed_body():
+    enveloped = (
+        "*** Begin Patch\n*** Add File: q.cpp\n#include <y>\nint f();\n*** End Patch"
+    )
+    assert _create_content(enveloped) == "#include <y>\nint f();"
+
+
+def test_create_file_impl_writes_unprefixed_body_end_to_end(tmp_path):
+    editor, workspace = _make_editor(tmp_path)
+    op = ApplyPatchOperation(
+        type="create_file",
+        path="query3.cpp",
+        # raw body, no '+' prefixes - the exact shape that used to yield a 0-byte file
+        diff=CustomApplyPatchTool._normalize_diff(
+            "int query3(){ return 3; }\n", "create_file"
+        ),
+    )
+    result, _ = editor._create_file_impl(op)
+    assert result.status == "completed"
+    assert (workspace / "query3.cpp").read_text(encoding="utf-8") == (
+        "int query3(){ return 3; }"
+    )
+
+
+def test_apply_patch_tool_rejects_contentless_create(tmp_path):
+    # A create whose payload carried text but reduced to nothing (only headers/markers)
+    # must FAIL, never write a silent 0-byte file the agent believes it created.
+    import asyncio
+
+    editor, workspace = _make_editor(tmp_path)
+    tool = CustomApplyPatchTool(editor)
+    out = asyncio.run(
+        tool("create_file", "empty.cpp", "*** Begin Patch\n*** End Patch")
+    )
+    assert "no file content" in out
+    assert not (workspace / "empty.cpp").exists()
+
+
+def test_apply_patch_tool_writes_unprefixed_body_end_to_end(tmp_path):
+    # Full path through the tool: a raw body with no '+' prefixes (the shape that used
+    # to yield a 0-byte file) is written verbatim.
+    import asyncio
+
+    editor, workspace = _make_editor(tmp_path)
+    tool = CustomApplyPatchTool(editor)
+    out = asyncio.run(tool("create_file", "q.cpp", "int q(){ return 1; }\n"))
+    assert "Created" in out or "Overwrote" in out
+    assert (workspace / "q.cpp").read_text(encoding="utf-8") == "int q(){ return 1; }"
 
 
 def test_update_file_impl_strips_fence_and_applies(tmp_path):
