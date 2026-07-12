@@ -40,6 +40,10 @@ let _expectedSourceRef = null;
 // still accumulate). null → request the full snapshot (first load / after a
 // reset). See poll() in main.js.
 let _pollCursor = null;
+// Revision hash of the meta block held in _lastMeta. Echoed as ?meta_rev= so
+// the server can omit the (comparatively large) meta from a delta whose meta
+// has not changed; the client then keeps using _lastMeta. See poll() in main.js.
+let _metaRev = null;
 // Raw text of the last /api/stats response we rendered. A byte-identical
 // response means nothing changed since the last render, so we skip the parse and
 // the full chart rebuild entirely — the dominant idle cost on a long run.

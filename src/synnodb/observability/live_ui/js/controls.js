@@ -81,23 +81,52 @@ function renderAgentConfig(config) {
   return parts.join('') || '<p class="cfg-empty">No config details available.</p>';
 }
 
-function openPromptModal(desc) {
-  const text   = _promptsByDesc.get(desc);
-  const config = _configByDesc.get(desc);
-  if (!text && !config) return;
-
+// Render the modal's prompt/config panes. `text` may be null (nothing
+// recorded); the config pane renders its own empty state.
+function _fillPromptModal(desc, text, config) {
   _promptModalText = text || '';
-  promptModalTitle.textContent = desc;
   const futureBanner = _futurePrompts.has(desc)
     ? '<div class="prompt-preview-banner">Scheduled stage - not executed yet. This is a preview; values known only at runtime appear as «placeholders».</div>'
     : '';
   promptModalBody.innerHTML    = futureBanner + (text ? renderMarkdown(text) : '<p style="color:var(--muted)">No prompt text recorded.</p>');
   promptModalBody.scrollTop    = 0;
   promptModalConfig.innerHTML  = renderAgentConfig(config || null);
-  promptModalCopy.textContent  = 'Copy';
-
   setPromptModalTab(text ? 'prompt' : 'config');
+}
+
+// The prompt text and agent config are lazily served (stripped from
+// /api/stats), so an executed stage's modal opens with a placeholder and fills
+// in when its section-start step's fields arrive; scheduled stages carry their
+// preview text inline in meta.planned_stages, no fetch needed.
+function openPromptModal(desc) {
+  const step = _promptStepByDesc.get(desc);
+  const isFuture = _futurePrompts.has(desc);
+  if (step == null && !isFuture) return;
+
+  promptModalTitle.textContent = desc;
+  promptModalCopy.textContent  = 'Copy';
   promptModal.hidden = false;
+
+  if (step == null) {
+    _fillPromptModal(desc, _futurePreviewByDesc.get(desc) || null, null);
+    return;
+  }
+
+  _promptModalText = '';
+  promptModalBody.innerHTML   = '<p style="color:var(--muted)">Loading…</p>';
+  promptModalConfig.innerHTML = '';
+  setPromptModalTab('prompt');
+  fetchStepFields(step).then(fields => {
+    // Ignore if the modal was closed or reopened for another stage meanwhile.
+    if (promptModal.hidden || promptModalTitle.textContent !== desc) return;
+    const d = (_lastData && _lastData[step]) || {};
+    const merged = fields ? Object.assign({}, d, fields) : d;
+    _fillPromptModal(
+      desc,
+      merged.current_prompt || null,
+      parseJsonField(merged.agent_config) || null
+    );
+  });
 }
 
 promptModalCopy.addEventListener('click', async () => {

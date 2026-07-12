@@ -8,7 +8,7 @@ An in-process HTTP server + single-page dashboard that streams run statistics in
 
 `StandaloneDashboard` can serve the same UI while reading data from a local DuckDB file, W&B run history, or a remote live dashboard API on another host.
 
-The browser polls `/api/stats` every 3 seconds and updates the UI without a page reload.
+The browser polls `/api/stats` every 3 seconds and updates the UI without a page reload. The wire format is kept lean three ways: responses are gzipped; heavy per-step fields (`_LAZY_FIELDS`: log bodies, `current_prompt`, `agent_config`, debug hashes) are stripped from every snapshot and served one step at a time via `/api/step_body`; and floats are trimmed to six decimals. The client echoes the hash of the meta block it holds as `?meta_rev=` and the server omits `meta` from a delta whose meta is unchanged - meta (stage lists, planned-stage previews) would otherwise dominate every idle poll.
 
 ## Chained stages — one continuous timeline
 
@@ -55,7 +55,7 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 ```json
 {
   "meta": {
-    "run_name": "...", "stages": [{"run_name": "...", "base_step": 0}, ...],
+    "run_name": "...", "model": "...", "stages": [{"run_name": "...", "base_step": 0}, ...],
     "planned_stages": {
       "base_step": 12, "stage_name": "runOptimLoop",
       "stages": [
@@ -68,11 +68,12 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
   "data": {
     "0": { "type": "llm", "input_tokens": 1234, ... },
     "1": { ... }
-  }
+  },
+  "meta_rev": "1a2b3c4d5e6f", "latest": 2, "count": 3
 }
 ```
 
-`steps` is a sorted list of integer turn indices. `data` keys are step numbers as strings.
+`steps` is a sorted list of integer turn indices. `data` keys are step numbers as strings. `meta.model` is the model of the newest agent_config the run has seen (the per-step configs themselves are lazily served). `meta_rev` hashes the meta block; a `?since=` delta whose meta still matches the client's `?meta_rev=` omits `meta` entirely and the client keeps its copy. `latest`/`count` always describe the full store so the client can detect drift.
 
 ## Scheduled (future) stages in the prompts pane
 

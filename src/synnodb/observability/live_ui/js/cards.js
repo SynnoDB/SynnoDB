@@ -74,18 +74,14 @@ function updateHeaderMeta(meta = {}) {
   }
 }
 
-// Surface the model driving the run in the header. The model lives in each
-// step's agent_config (published per stage), so walk back to the most recent
-// step that carries one and show it; hide the chip until one is known.
-function updateHeaderModel(steps, data) {
+// Surface the model driving the run in the header. The backend lifts it out of
+// the newest agent_config into meta.model (the per-step configs are lazily
+// served and absent from the snapshot); hide the chip until one is known.
+function updateHeaderModel() {
   const el  = document.getElementById('hdr-model');
   const val = document.getElementById('hdr-model-val');
   if (!el || !val) return;
-  let model = null;
-  for (let i = steps.length - 1; i >= 0 && model == null; i--) {
-    const cfg = parseJsonField((data[steps[i]] || {}).agent_config);
-    if (cfg && cfg.model) model = cfg.model;
-  }
+  const model = _lastMeta && _lastMeta.model;
   if (model) {
     val.textContent = model;
     val.title = model;
@@ -133,7 +129,7 @@ document.getElementById('cost-mode-toggle').addEventListener('click', e => {
 
 // ── Cards ────────────────────────────────────────────────────────────────
 function updateCards(steps, data) {
-  updateHeaderModel(steps, data);
+  updateHeaderModel();
   const last = steps.length ? steps[steps.length-1] : null;
   const d = last != null ? (data[last] || {}) : {};
   document.getElementById('v-turn').textContent = last ?? '—';
@@ -145,11 +141,15 @@ function updateCards(steps, data) {
   tickTimer();
 }
 
-// Maps section desc → full prompt text / agent config, populated by updatePrompts.
-const _promptsByDesc = new Map();
-const _configByDesc  = new Map();
+// Maps section desc → the step whose row carries the section's prompt text and
+// agent config (its first step). The text itself is lazily served — the modal
+// fetches it from /api/step_body on open. Populated by updatePrompts.
+const _promptStepByDesc = new Map();
+// desc → preview text for scheduled (not-yet-executed) stages, straight from
+// meta.planned_stages — inline, no fetch needed.
+const _futurePreviewByDesc = new Map();
 // Descriptors currently rendered as not-yet-executed (scheduled) stages. Their
-// prompt text in _promptsByDesc is a best-effort preview, so the modal flags it.
+// preview text is best-effort, so the modal flags it.
 const _futurePrompts = new Set();
 
 // Determine which of the running conversation's scheduled stages have not been
@@ -211,14 +211,11 @@ function updatePrompts(steps, data) {
   };
   const valueBefore = (startIdx, key, fallback = 0) => valueAtOrBefore(startIdx - 1, key, fallback);
 
-  _promptsByDesc.clear();
-  _configByDesc.clear();
+  _promptStepByDesc.clear();
+  _futurePreviewByDesc.clear();
   _futurePrompts.clear();
   for (const sec of sections) {
-    const promptText = (data[steps[sec.startIdx]] || {}).current_prompt || null;
-    if (promptText) _promptsByDesc.set(sec.desc, promptText);
-    const configRaw = (data[steps[sec.startIdx]] || {}).agent_config || null;
-    if (configRaw) _configByDesc.set(sec.desc, parseJsonField(configRaw));
+    _promptStepByDesc.set(sec.desc, steps[sec.startIdx]);
   }
 
   const costKey = costMode === 'real' ? 'total/real_cost_usd' : 'total/cost_usd';
@@ -245,8 +242,8 @@ function updatePrompts(steps, data) {
   const futureHtml = future.map(fs => {
     const desc = fs.descriptor;
     _futurePrompts.add(desc);
-    if (!_promptsByDesc.has(desc)) {
-      _promptsByDesc.set(
+    if (!_promptStepByDesc.has(desc)) {
+      _futurePreviewByDesc.set(
         desc,
         fs.prompt_preview ||
           '_The prompt for this scheduled stage is generated at runtime and is not known yet._'
