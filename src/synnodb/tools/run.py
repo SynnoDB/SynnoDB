@@ -84,6 +84,43 @@ class RunWorkerResult:
     ingest_time_ms: Optional[float] = None
 
 
+def _run_outcome_label(
+    success: bool,
+    metrics: Dict,
+    stdout: str | None,
+    stderr: str | None,
+    msg: str | None,
+) -> str:
+    """Describe a run's outcome for the activity-summary line the supervisor reads.
+
+    The label previously collapsed EVERY non-compile failure to "incorrect query
+    output", so a crash, timeout, or OOM was reported to the supervisor as a wrong
+    answer - and the supervisor then wrongly faulted the agent for dismissing a
+    transient infra failure as such. Distinguish a genuine correctness mismatch
+    from an execution failure using the metrics' error flag (assemble_error sets
+    ``validation/error=True`` for a thrown/killed/missing-result run and False for a
+    real answer mismatch), and name a timeout / OOM / crash specifically when the
+    captured output shows it.
+    """
+    if success:
+        return "success"
+
+    # A run that threw, was killed, or produced no result is an execution failure,
+    # not a wrong answer. Only a clean run whose output disagrees with the reference
+    # is "incorrect query output".
+    if not metrics.get("validation/error"):
+        return "incorrect query output"
+
+    haystack = "\n".join(part for part in (stderr, stdout, msg) if part).lower()
+    if "bad_alloc" in haystack or "out of memory" in haystack or "oom" in haystack:
+        return "run failed (out of memory)"
+    if "timeout" in haystack or "timed out" in haystack:
+        return "run failed (timeout)"
+    if "signal" in haystack or "sigsegv" in haystack or "sigkill" in haystack:
+        return "run failed (crash)"
+    return "run failed (execution error)"
+
+
 class RunTool:
     """Runs the database and executes a query by id"""
 
@@ -709,7 +746,7 @@ class RunTool:
             )
 
             self.run_stats_collector.add_to_activity_summary(
-                f"Run Tool called: {'success' if success else 'incorrect query output'}"
+                f"Run Tool called: {_run_outcome_label(success, metrics, stdout, stderr, msg)}"
             )
 
         # perform truncation
