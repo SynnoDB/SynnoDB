@@ -20,9 +20,12 @@ import pandas as pd
 sys.path.append(Path(__file__).resolve().parents[2].as_posix())
 
 from synnodb.observability.plots.utils.per_stage_data_prep import (
-    _target_sf_for_benchmark,
+    _target_sf_from_history,
 )
-from synnodb.observability.plots.utils.wandb_utils import get_wandb_stats
+from synnodb.observability.plots.utils.wandb_utils import (
+    SCALE_FACTOR_COL,
+    get_wandb_stats,
+)
 
 _WANDB_CACHE = Path("/mnt/labstore/bespoke_olap/wandb_cache")
 _BENCHMARK_NAMES = {"tpch": "TPC-H", "ceb": "CEB"}
@@ -59,7 +62,7 @@ def _final_query_runtimes(
     """
     f = history
     for col, want in (
-        ("validation/scale_factor", target_sf),
+        (SCALE_FACTOR_COL, target_sf),
         ("validation/trace_mode", False),
         ("validation/num_queries", num_queries),
         ("validation/compile_with_optimize", True),
@@ -139,7 +142,7 @@ def analyze_flat_vs_bespoke_storage(
         summary, history, _config = get_wandb_stats(
             run_id, skip_cache=False, wandb_run_cache_path=_WANDB_CACHE
         )
-        target_sf = _target_sf_for_benchmark(benchmark)
+        target_sf = _target_sf_from_history(history)
         query_ids, num_queries = _query_ids(summary)
         runtimes = _final_query_runtimes(history, query_ids, num_queries, target_sf)
         if not runtimes:

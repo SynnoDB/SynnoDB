@@ -51,6 +51,28 @@ def get_wandb_entity_project(
     return entity, project
 
 
+def wandb_logging_enabled(
+    entity: str | None = None, project: str | None = None
+) -> bool:
+    """Whether W&B logging should run for this configuration.
+
+    W&B is opt-in and has no separate on/off flag: it is enabled iff an entity or
+    project is supplied - either explicitly (``entity``/``project`` here) or via
+    ``WANDB_ENTITY``/``WANDB_PROJECT`` in the environment (or ``.env``). The
+    single source of truth for *that decision*, shared by the CLI and the Python
+    API so ``.env`` behaves identically on both.
+
+    The project *default* (``DEFAULT_WANDB_PROJECT``) deliberately does NOT count
+    as opting in - otherwise every run would log. Only an explicitly provided
+    entity/project or a set env var turns W&B on; ``get_wandb_entity_project``
+    then resolves *where* the enabled run logs.
+    """
+    if entity is not None or project is not None:
+        return True
+    load_dotenv()  # harmless if already loaded; lets .env opt in without configure()
+    return bool(os.getenv("WANDB_ENTITY") or os.getenv("WANDB_PROJECT"))
+
+
 def configure(
     *,
     data_dir: str | os.PathLike[str] | None = None,

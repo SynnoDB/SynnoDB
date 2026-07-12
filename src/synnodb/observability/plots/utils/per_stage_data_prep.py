@@ -5,6 +5,7 @@ import numpy as np
 
 from synnodb.observability.plots.utils.wandb_trace_preprocessor import SECTION_RULES
 from synnodb.observability.plots.utils.wandb_utils import (
+    SCALE_FACTOR_COL,
     combine_histories,
     get_wandb_stats,
 )
@@ -35,15 +36,21 @@ COMMIT_HASH_KEY = "__commit_hash__"
 _SNAPSHOT_HASH_COL = "code/snapshot_hash"
 
 
-def _target_sf_for_benchmark(benchmark_name):
-    if benchmark_name.lower() == "tpch":
-        return 20
-    elif benchmark_name.lower() == "tpch_st":
-        # TPCH single table
-        return 20
-    elif benchmark_name.lower() == "ceb":
-        return 2
-    raise ValueError(f"Unknown benchmark: {benchmark_name}")
+def _target_sf_from_history(history) -> float | None:
+    """Scale factor to report speedups at: the largest one actually validated.
+
+    There is no longer a fixed per-benchmark scale factor. A run validates
+    correctness cheapest-first across several rungs (e.g. 0.02 / 0.1 / 1.0) and
+    the headline numbers are always taken at the final, largest rung, so the
+    target is derived from the logged data rather than a hardcoded table. Returns
+    ``None`` when the run logged no scale factor at all.
+    """
+    if SCALE_FACTOR_COL not in history.columns:
+        return None
+    scale_factors = history[SCALE_FACTOR_COL].dropna()
+    if scale_factors.empty:
+        return None
+    return float(scale_factors.max())
 
 
 def load_wandb_data(
@@ -87,10 +94,8 @@ def load_wandb_data(
         history_dict[tag] = history
         config_dict[tag] = config
 
-    benchmark = config_dict[next(iter(config_dict))]["benchmark"]
-
     if target_sf is None:
-        target_sf = _target_sf_for_benchmark(benchmark)
+        target_sf = _target_sf_from_history(history_dict[next(iter(history_dict))])
 
     return history_dict, config_dict, summary_dict, target_sf
 
@@ -214,22 +219,15 @@ def process_data(history_dict, config_dict, summary_dict, cmp_to: str = "duckdb"
             # that actually has speedup data in this stage window (the MT stage,
             # for example, runs at a different SF than the rest of the pipeline).
             rows = window_rows
-            if "validation/scale_factor" in window_rows.columns:
-                rows = window_rows[window_rows["validation/scale_factor"] == target_sf]
+            if SCALE_FACTOR_COL in window_rows.columns:
+                rows = window_rows[window_rows[SCALE_FACTOR_COL] == target_sf]
                 if rows.empty or not any(
                     rows[c].notna().any() for c in speedup_cols if c in rows.columns
                 ):
-                    sfs = (
-                        window_rows["validation/scale_factor"]
-                        .dropna()
-                        .unique()
-                        .tolist()
-                    )
+                    sfs = window_rows[SCALE_FACTOR_COL].dropna().unique().tolist()
                     sfs = sorted([s for s in sfs if np.isfinite(s)], reverse=True)
                     for sf in sfs:
-                        candidate = window_rows[
-                            window_rows["validation/scale_factor"] == sf
-                        ]
+                        candidate = window_rows[window_rows[SCALE_FACTOR_COL] == sf]
                         if any(
                             candidate[c].notna().any()
                             for c in speedup_cols
@@ -280,7 +278,7 @@ def process_data(history_dict, config_dict, summary_dict, cmp_to: str = "duckdb"
     all_stage_speedups = {}
     for tag, hist in history_dict.items():
         benchmark = config_dict[tag]["benchmark"]
-        target_sf = _target_sf_for_benchmark(benchmark)
+        target_sf = _target_sf_from_history(hist)
         qids = query_ids_by_tag[tag]
 
         run_info[tag] = {
