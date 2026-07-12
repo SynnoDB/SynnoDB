@@ -119,6 +119,9 @@ def test_outside_workspace_returns_error(tmp_path):
     assert "no subdirs" not in result
     # the failed read is still surfaced in the activity log
     assert any("FAILED" in entry for entry in stats.activity_summary)
+    # and the attempted path is recorded so the rejected read stays diagnosable
+    # in the trace/live UI (not logged with a null path).
+    assert stats.read_file_paths == [str(outside)]
 
 
 def test_subdirectory_read_returns_error(tmp_path):
@@ -146,3 +149,4 @@ def test_binary_file_returns_error(tmp_path):
     assert result.startswith("Error:")
     assert "UTF-8" in result
     assert any("FAILED" in entry for entry in stats.activity_summary)
+    assert stats.read_file_paths == ["blob.bin"]

@@ -181,13 +181,18 @@ class WorkspaceEditor:
         # workspace root) into a graceful error string itself. A disallowed read
         # is a recoverable tool failure the model should see, not an unhandled
         # exception that crashes the whole run.
+        #
+        # Record the attempted path up front, before any early return:
+        # on_tool_start reset read_file_path to None and on_tool_end emits it, so
+        # a rejected read that returned before this ran would be logged with a
+        # null path and lose its diagnosability in the trace/live UI.
+        self._run_stats_collector.log_read_file_stats(path)
         try:
             target = self._resolve(path)
         except RuntimeError as e:
             self._record_activity_summary(f"read_file called: {path} (FAILED - {e})")
             return f"Error: {e}"
         relative = target.relative_to(self._root).as_posix()
-        self._run_stats_collector.log_read_file_stats(path)
         if not target.exists():
             return f"Error: file {relative} does not exist."
         if target.is_dir():
