@@ -31,8 +31,10 @@ from synnodb.llm.sdk.agents_sdk.openai_make_data_inspect_tool import (
 from synnodb.llm.sdk.agents_sdk.openai_make_run_tool import make_openai_run_tool
 from synnodb.llm.sdk.agents_sdk.openai_sdk_tools import (
     make_custom_openai_apply_patch_tool,
+    make_custom_openai_read_file_tool,
     make_custom_openai_replace_in_file_tool,
     make_custom_openai_shell_tool,
+    make_custom_openai_write_file_tool,
 )
 from synnodb.llm.sdk.agents_sdk.openai_token_usage import (
     openai_get_tokens_context_and_dollar_info,
@@ -115,6 +117,13 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
         # needs only a locally-unique old_string (no verbatim context hunks), so
         # weak local models avoid apply_patch's context-match failures.
         self.tools.append(make_custom_openai_replace_in_file_tool(editor=self.editor))
+
+        # Also expose simpler full-file write/read primitives alongside
+        # apply_patch: write_file takes raw content (no V4A diff syntax) and
+        # read_file returns cat -n-style numbered lines, both modeled after
+        # Claude Code's own Write/Read tools.
+        self.tools.append(make_custom_openai_write_file_tool(editor=self.editor))
+        self.tools.append(make_custom_openai_read_file_tool(editor=self.editor))
 
         if self.args.tool_search_tool:
             logger.info("Utilizing tool search tool.")

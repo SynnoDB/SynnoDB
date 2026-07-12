@@ -12,7 +12,9 @@ from agents.tool import FunctionTool
 from pydantic import BaseModel, Field, ValidationError
 
 from synnodb.tools.custom_apply_patch import CustomApplyPatchTool
+from synnodb.tools.custom_read_file import CustomReadFileTool
 from synnodb.tools.custom_replace_in_file import CustomReplaceInFileTool
+from synnodb.tools.custom_write_file import CustomWriteFileTool
 from synnodb.tools.shell_executor import ShellExecutor
 from synnodb.tools.workspace_editor import WorkspaceEditor
 
@@ -299,6 +301,118 @@ def make_custom_openai_replace_in_file_tool(
             "args_parser.hpp."
         ),
         params_json_schema=_REPLACE_IN_FILE_SCHEMA,
+        on_invoke_tool=on_invoke,
+        defer_loading=False,  # always shown to the model
+    )
+
+
+class WriteFileArgs(BaseModel):
+    path: str = Field(..., description="Path relative to workspace root")
+    content: str = Field(..., description="The full content to write to the file")
+
+
+_WRITE_FILE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Path relative to workspace root",
+        },
+        "content": {
+            "type": "string",
+            "description": (
+                "The COMPLETE file content to write. Creates the file if it does "
+                "not exist, or overwrites it entirely if it does - this is not a "
+                "diff or a partial update, the previous content is fully replaced."
+            ),
+        },
+    },
+    "required": ["path", "content"],
+}
+
+
+def make_custom_openai_write_file_tool(
+    editor: WorkspaceEditor,
+) -> FunctionTool:
+    impl = CustomWriteFileTool(editor=editor)
+
+    async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
+        try:
+            args = WriteFileArgs.model_validate_json(args_json)
+        except ValidationError as e:
+            # See make_custom_openai_apply_patch_tool's on_invoke for why this is
+            # reported back to the model instead of left to propagate and crash
+            # the run.
+            logger.warning(
+                "write_file received arguments that failed schema validation: %s", e
+            )
+            return (
+                "Error: write_file arguments failed validation. Retry with a valid "
+                f"path (str) and content (str). Details: {e}"
+            )
+        return await impl(args.path, args.content)
+
+    return FunctionTool(
+        name="write_file",
+        description=(
+            "Creates a new file or overwrites an existing one with the given full "
+            "content. No diff/patch syntax needed - just the complete file text. "
+            "Use this instead of apply_patch's create_file/update_file when it's "
+            "simpler to (re)write the whole file in one shot. For a small, "
+            "localized change to an existing file, prefer `replace_in_file` - it "
+            "only touches the part that changed. Read-only files that cannot be "
+            "written: parquet_reader.cpp, parquet_reader.hpp, query_impl.cpp, "
+            "query_impl.hpp, args_parser.hpp."
+        ),
+        params_json_schema=_WRITE_FILE_SCHEMA,
+        on_invoke_tool=on_invoke,
+        defer_loading=False,  # always shown to the model
+    )
+
+
+class ReadFileArgs(BaseModel):
+    path: str = Field(..., description="Path relative to workspace root")
+    offset: int | None = Field(
+        None,
+        description="1-based line number to start reading from (optional, default 1)",
+    )
+    limit: int | None = Field(
+        None, description="Maximum number of lines to return (optional, default 2000)"
+    )
+
+
+def make_custom_openai_read_file_tool(
+    editor: WorkspaceEditor,
+) -> FunctionTool:
+    impl = CustomReadFileTool(editor=editor)
+
+    async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
+        try:
+            args = ReadFileArgs.model_validate_json(args_json)
+        except ValidationError as e:
+            # See make_custom_openai_apply_patch_tool's on_invoke for why this is
+            # reported back to the model instead of left to propagate and crash
+            # the run.
+            logger.warning(
+                "read_file received arguments that failed schema validation: %s", e
+            )
+            return (
+                "Error: read_file arguments failed validation. Retry with a valid "
+                "path (str) and, if provided, integer offset/limit. "
+                f"Details: {e}"
+            )
+        return await impl(args.path, args.offset, args.limit)
+
+    return FunctionTool(
+        name="read_file",
+        description=(
+            "Reads a file's contents with line numbers (like `cat -n`). Prefer "
+            "this over `shell cat` for viewing a file you plan to edit - the line "
+            "numbers make it easy to build a precise replace_in_file or "
+            "apply_patch edit. Returns up to 2000 lines by default; use "
+            "offset/limit to page through a larger file."
+        ),
+        params_json_schema=ReadFileArgs.model_json_schema(),
         on_invoke_tool=on_invoke,
         defer_loading=False,  # always shown to the model
     )
