@@ -23,9 +23,9 @@ CLAUDE.md
 # Private webpage — tracked in its own separate PRIVATE repo, kept out of the public SynnoDB repo
 webpage/
 code_v*/
-observability/analysis_model_behaviour/analysis
-observability/analysis_model_behaviour/llm_cache
 .synno_data/
+src/synnodb/observability/analysis_model_behaviour/llm_cache
+src/synnodb/observability/analysis_model_behaviour/analysis
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

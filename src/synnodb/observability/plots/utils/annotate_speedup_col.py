@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from synnodb.observability.plots.utils.wandb_utils import SCALE_FACTOR_COL
+
 
 def _normalize_query_id(raw_query_id: Any) -> str:
     """Normalize query ids so '020' and '20' map to the same key."""
@@ -120,7 +122,7 @@ def annotate_total_speedup_per_turn(history, cmp_to: str = "duckdb") -> str | No
     speedup_series: List[Optional[float]] = []
 
     for _, row in history.iterrows():
-        row_sf = pd.to_numeric(row.get("validation/scale_factor"), errors="coerce")  # type: ignore
+        row_sf = pd.to_numeric(row.get(SCALE_FACTOR_COL), errors="coerce")  # type: ignore
         optimize_compile_flag_set = row.get("validation/compile_with_optimize")
         trace_set = row.get("validation/trace_mode")
         skip_validate = row.get("validation/skip_validate")
