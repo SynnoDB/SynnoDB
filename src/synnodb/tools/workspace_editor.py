@@ -175,15 +175,37 @@ class WorkspaceEditor:
         # _run_cached: the underlying file content is already reproducible from
         # the deterministic snapshot state, and routing reads through the cache
         # would only bloat the cache dir for no benefit.
-        relative = self._relative_path(path)
-        target = self._resolve(path)
+        #
+        # Because it skips _run_cached, it also skips that wrapper's try/except,
+        # so it must convert a _resolve failure (e.g. a path outside the flat
+        # workspace root) into a graceful error string itself. A disallowed read
+        # is a recoverable tool failure the model should see, not an unhandled
+        # exception that crashes the whole run.
+        #
+        # Record the attempted path up front, before any early return:
+        # on_tool_start reset read_file_path to None and on_tool_end emits it, so
+        # a rejected read that returned before this ran would be logged with a
+        # null path and lose its diagnosability in the trace/live UI.
         self._run_stats_collector.log_read_file_stats(path)
+        try:
+            target = self._resolve(path)
+        except RuntimeError as e:
+            self._record_activity_summary(f"read_file called: {path} (FAILED - {e})")
+            return f"Error: {e}"
+        relative = target.relative_to(self._root).as_posix()
         if not target.exists():
             return f"Error: file {relative} does not exist."
         if target.is_dir():
             return f"Error: {relative} is a directory, not a file."
 
-        original = target.read_text(encoding="utf-8")
+        try:
+            original = target.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError) as e:
+            # A non-UTF-8/binary file (or a transient OS read error) must also
+            # come back as a tool error, not crash the run: read_file skips the
+            # _run_cached try/except that shields the mutating ops.
+            self._record_activity_summary(f"read_file called: {path} (FAILED - {e})")
+            return f"Error: could not read {relative} as UTF-8 text: {e}"
         rendered = _render_numbered_lines(original, offset, limit)
         self._record_activity_summary(f"read_file called: {path}")
         return rendered
@@ -812,15 +834,19 @@ class WorkspaceEditor:
         candidate = Path(relative)
         target = candidate if candidate.is_absolute() else (self._root / candidate)
         target = target.resolve()
-        # Only allow files directly in the root directory (no subdirectories)
-        if target.parent != self._root:
-            raise RuntimeError(
-                f"Operation outside allowed root dir (no subdirs): {relative}"
-            )
+        # Containment first: a path pointing outside the workspace entirely (e.g.
+        # an absolute path into the source tree) must be reported as such. The
+        # flat-dir guard below is stricter and also trips on out-of-workspace
+        # paths, so if it ran first it would mislabel them "no subdirs".
         try:
             target.relative_to(self._root)
         except ValueError:
             raise RuntimeError(f"Operation outside workspace: {relative}") from None
+        # Only allow files directly in the root directory (no subdirectories).
+        if target.parent != self._root:
+            raise RuntimeError(
+                f"Operation outside allowed root dir (no subdirs): {relative}"
+            )
         if ensure_parent:
             target.parent.mkdir(parents=True, exist_ok=True)
         return target
