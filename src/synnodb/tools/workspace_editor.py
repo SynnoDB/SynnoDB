@@ -165,7 +165,6 @@ class WorkspaceEditor:
             path=path,
             cache_extra={"content": content},
             run_impl=lambda: self._write_file_impl(path, content),
-            legacy_activity=lambda _status, _output: None,
         )
 
     def read_file(
