@@ -137,6 +137,7 @@ _BODY_FIELDS = (
     "shell/outputs",
     "data_inspect/output",
     "apply_patch/string",
+    "read_file/output",
 )
 
 
@@ -315,6 +316,10 @@ def _make_http_server(
                 for key, value in headers:
                     self.send_header(key, value)
                 self.send_header("Content-Length", str(len(body)))
+                # Force revalidation so edited static assets (js/css/html) are
+                # never silently served from the browser's heuristic cache - the
+                # dashboard is a live dev tool and files change under it.
+                self.send_header("Cache-Control", "no-cache")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(body)
