@@ -112,6 +112,26 @@ def test_no_change_rejected(tmp_path):
     assert "no change" in result.output
 
 
+def test_creates_new_empty_file(tmp_path):
+    editor, ws, *_ = _make_editor(tmp_path)
+
+    result = editor.write_file("empty.cpp", "")
+
+    assert result.status == "completed"
+    assert result.output == "Wrote empty.cpp"
+    assert (ws / "empty.cpp").read_text() == ""
+
+
+def test_no_change_rejected_for_existing_empty_file(tmp_path):
+    editor, ws, *_ = _make_editor(tmp_path)
+    (ws / "empty.cpp").write_text("")
+
+    result = editor.write_file("empty.cpp", "")
+
+    assert result.status == "failed"
+    assert "no change" in result.output
+
+
 # ---------- caching ----------
 
 

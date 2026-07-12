@@ -725,7 +725,7 @@ class WorkspaceEditor:
             existed = target.exists()
             original = target.read_text(encoding="utf-8") if existed else ""
 
-            if original == content:
+            if existed and original == content:
                 return self._write_failed(
                     path,
                     f"Error: write produced no change in {relative}.",
@@ -743,7 +743,7 @@ class WorkspaceEditor:
 
             target.write_text(content, encoding="utf-8")
 
-            str_diff = f"=== WRITING: {target} ===\n{diff[:1000]}\n"
+            str_diff = f"=== WRITING: {target} ===\n{diff[:8000]}\n"
             self._run_stats_collector.log_apply_patch_stats(
                 "write",
                 added_lines=added,
