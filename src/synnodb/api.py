@@ -112,8 +112,12 @@ class SynnoConfig:
     # ``wandb_entity`` or ``wandb_project`` is set here OR via the
     # ``WANDB_ENTITY``/``WANDB_PROJECT`` env vars (or ``.env``). With none of
     # those set nothing wandb-related runs — no login, init, or logging.
-    wandb_entity: str | None = None  # None -> $WANDB_ENTITY, else the user's default W&B entity
-    wandb_project: str | None = None  # None -> $WANDB_PROJECT, else the default "SynnoDB" project
+    wandb_entity: str | None = (
+        None  # None -> $WANDB_ENTITY, else the user's default W&B entity
+    )
+    wandb_project: str | None = (
+        None  # None -> $WANDB_PROJECT, else the default "SynnoDB" project
+    )
     auto_confirm: bool = True  # --auto_u
     auto_finish: bool = True
     disable_openai_tracing: bool = True
