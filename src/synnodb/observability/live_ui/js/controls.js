@@ -62,6 +62,10 @@ function renderAgentConfig(config) {
     parts.push(`<div class="cfg-section"><div class="cfg-label">Model</div><div class="cfg-model-val">${esc(config.model)}</div></div>`);
   }
 
+  if (config.instructions) {
+    parts.push(`<div class="cfg-section"><div class="cfg-label">System Prompt</div><details class="cfg-instructions"><summary>Show / Hide</summary><pre class="cfg-pre">${esc(config.instructions)}</pre></details></div>`);
+  }
+
   if (config.tools && config.tools.length) {
     const toolItems = config.tools.map(t => {
       const paramTable = _renderSchemaParams(t.schema);
@@ -72,10 +76,6 @@ function renderAgentConfig(config) {
       </div>`;
     }).join('');
     parts.push(`<div class="cfg-section"><div class="cfg-label">Tools (${config.tools.length})</div><div class="cfg-tools">${toolItems}</div></div>`);
-  }
-
-  if (config.instructions) {
-    parts.push(`<div class="cfg-section"><div class="cfg-label">Instructions</div><details class="cfg-instructions"><summary>Show / Hide</summary><pre class="cfg-pre">${esc(config.instructions)}</pre></details></div>`);
   }
 
   return parts.join('') || '<p class="cfg-empty">No config details available.</p>';

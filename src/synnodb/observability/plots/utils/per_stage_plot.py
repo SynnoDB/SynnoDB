@@ -7,6 +7,7 @@ from synnodb.observability.plots.utils.per_stage_data_prep import (
     _get_stage_starts,
     geomean,
 )
+from synnodb.observability.plots.utils.wandb_utils import SCALE_FACTOR_COL
 
 prop_colors = [c["color"] for c in plt.rcParams["axes.prop_cycle"]]
 journal_primary_blue = "#2E86AB"
@@ -336,8 +337,8 @@ def plot_per_query_and_stage_runtimes(
     def _extract_runtime_series(history, query_ids, target_sf, stages_config):
         val = history[history["type"] == "validate"].copy()
 
-        if "validation/scale_factor" in val.columns:
-            val = val[val["validation/scale_factor"] == target_sf]
+        if SCALE_FACTOR_COL in val.columns:
+            val = val[val[SCALE_FACTOR_COL] == target_sf]
         if "validation/trace_mode" in val.columns:
             val = val[~val["validation/trace_mode"].astype(bool)]
         val = val.sort_values("_step")
