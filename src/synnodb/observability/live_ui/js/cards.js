@@ -271,63 +271,102 @@ function updatePrompts(steps, data) {
 }
 
 // ── Correctness strip ────────────────────────────────────────────────────
-// One marker per step, appended incrementally: recreating all N markers on every
-// poll (via innerHTML over the full steps array) was an O(steps) DOM rebuild
-// every few seconds on a long run. We keep the running correctness state (each
-// marker carries forward the last known verdict) and only mint markers for steps
-// beyond the last one rendered; a diverging prefix (source switch / timeline
-// reset) rebuilds from scratch.
-let _corrState = null;   // carried-forward verdict: 'ok' | 'err' | null
-let _corrCount = 0;      // markers currently in the DOM
+// The carried-forward verdict rarely changes from one step to the next, so the
+// strip is stored and rendered as run-length segments: one <div> per contiguous
+// run of the same verdict. A long run yields a handful of segments where
+// per-step markers used to pile up thousands of DOM nodes, every one of which
+// had to be repositioned on each chart layout. Ingestion is incremental; the
+// newest ingested step is rolled back and re-read on every update because its
+// turn can still be accumulating fields (its validation verdict may arrive on
+// a later poll). A diverging prefix (source switch / timeline reset) rebuilds
+// from scratch.
+let _corrSegs = [];        // {cls, startIdx, endIdx, el}, in step order
+let _corrState = null;     // carried-forward verdict: 'ok' | 'err' | null
+let _corrCount = 0;        // steps ingested
+let _corrFirstStep = null;
 let _corrLastStep = null;
+let _corrFirstRow = null;  // identity of data[steps[0]] at last ingest
+
+function _corrReset(row) {
+  row.innerHTML = '';
+  _corrSegs = [];
+  _corrState = null;
+  _corrCount = 0;
+  _corrFirstStep = null;
+  _corrLastStep = null;
+  _corrFirstRow = null;
+}
+
+function _corrSegTitle(seg, steps) {
+  const lbl = seg.cls === 'ok' ? '✓ correct' : seg.cls === 'err' ? '✗ incorrect' : 'n/a';
+  const a = steps[seg.startIdx], b = steps[seg.endIdx];
+  return (a === b ? `Turn ${a}` : `Turns ${a}-${b}`) + `: ${lbl}`;
+}
+
+// Drop ingested steps at index >= k from the segments so they can be re-read.
+function _corrRollbackTo(k, steps) {
+  while (_corrSegs.length && _corrSegs[_corrSegs.length - 1].startIdx >= k) {
+    _corrSegs.pop().el.remove();
+  }
+  const last = _corrSegs[_corrSegs.length - 1];
+  if (last && last.endIdx >= k) {
+    last.endIdx = k - 1;
+    last.el.title = _corrSegTitle(last, steps);
+  }
+  _corrState = last && last.cls !== 'na' ? last.cls : null;
+}
 
 function updateCorrectness(steps, data) {
   const row = document.getElementById('corr-row');
 
+  // Step ids alone cannot detect a generation reset (numbering restarts at 0),
+  // so the first row's object identity is checked too: every store replacement
+  // swaps it, while delta polls never re-send it once it stops being the
+  // newest step.
   const diverged = steps.length < _corrCount ||
-    (_corrCount > 0 && String(steps[_corrCount - 1]) !== _corrLastStep);
-  if (diverged) { row.innerHTML = ''; _corrState = null; _corrCount = 0; _corrLastStep = null; }
+    (_corrCount > 0 && (String(steps[_corrCount - 1]) !== _corrLastStep ||
+                        String(steps[0]) !== _corrFirstStep ||
+                        data[steps[0]] !== _corrFirstRow));
+  if (diverged) _corrReset(row);
+  else if (_corrCount > 0) { _corrRollbackTo(_corrCount - 1, steps); _corrCount -= 1; }
 
-  let frag = null;
   for (let i = _corrCount; i < steps.length; i++) {
-    const s = steps[i];
-    const c = (data[s] || {})['validation/correct'];
+    const c = (data[steps[i]] || {})['validation/correct'];
     if (c === true) _corrState = 'ok';
     else if (c === false) _corrState = 'err';
     const cls = _corrState ?? 'na';
-    const lbl = cls === 'ok' ? '✓ correct' : cls === 'err' ? '✗ incorrect' : 'n/a';
-    const div = document.createElement('div');
-    div.className = 'corr ' + cls;
-    div.dataset.step = s;
-    div.title = `Turn ${s}: ${lbl}`;
-    (frag || (frag = document.createDocumentFragment())).appendChild(div);
+    const last = _corrSegs[_corrSegs.length - 1];
+    if (last && last.cls === cls) {
+      last.endIdx = i;
+      last.el.title = _corrSegTitle(last, steps);
+    } else {
+      const el = document.createElement('div');
+      el.className = 'corr ' + cls;
+      const seg = {cls, startIdx: i, endIdx: i, el};
+      el.title = _corrSegTitle(seg, steps);
+      row.appendChild(el);
+      _corrSegs.push(seg);
+    }
   }
-  if (frag) row.appendChild(frag);
 
   _corrCount = steps.length;
+  _corrFirstStep = steps.length ? String(steps[0]) : null;
   _corrLastStep = steps.length ? String(steps[steps.length - 1]) : null;
+  _corrFirstRow = steps.length ? data[steps[0]] : null;
   layoutCorrectnessWithChart();
 }
 
-// Pin each correctness marker under its corresponding x-position on the
-// timeline chart. Triggered on data updates and from the correctnessAlign
-// Chart.js plugin so resizes stay in sync.
+// Pin each correctness segment under its x-range on the timeline chart.
+// Triggered on data updates and from the correctnessAlign Chart.js plugin so
+// resizes stay in sync.
 function layoutCorrectnessWithChart(activeChart = chart) {
   const row = document.getElementById('corr-row');
   if (!row) return;
 
-  const markers = [...row.querySelectorAll('.corr')];
-  if (!markers.length) {
-    row.style.marginLeft = '';
-    row.style.marginRight = '';
-    row.style.width = '';
-    return;
-  }
-
   const chartArea = activeChart?.chartArea;
   const xScale    = activeChart?.scales?.x;
   const points    = activeChart?._timelinePoints;
-  if (!chartArea || !xScale || !points?.length) {
+  if (!_corrSegs.length || !chartArea || !xScale || !points?.length) {
     row.style.marginLeft = '';
     row.style.marginRight = '';
     row.style.width = '';
@@ -339,12 +378,13 @@ function layoutCorrectnessWithChart(activeChart = chart) {
   row.style.marginRight = '';
   row.style.width = `${plotWidth}px`;
 
-  markers.forEach((marker, idx) => {
-    const bounds = getSegmentBounds(points, idx);
-    if (!bounds) return;
-    const left  = xScale.getPixelForValue(bounds.left)  - chartArea.left;
-    const right = xScale.getPixelForValue(bounds.right) - chartArea.left;
-    marker.style.left  = `${left}px`;
-    marker.style.width = `${Math.max(2, right - left)}px`;
-  });
+  for (const seg of _corrSegs) {
+    const startBounds = getSegmentBounds(points, seg.startIdx);
+    const endBounds   = getSegmentBounds(points, seg.endIdx);
+    if (!startBounds || !endBounds) continue;
+    const left  = xScale.getPixelForValue(startBounds.left) - chartArea.left;
+    const right = xScale.getPixelForValue(endBounds.right)  - chartArea.left;
+    seg.el.style.left  = `${left}px`;
+    seg.el.style.width = `${Math.max(2, right - left)}px`;
+  }
 }
