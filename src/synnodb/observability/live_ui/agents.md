@@ -8,7 +8,7 @@ An in-process HTTP server + single-page dashboard that streams run statistics in
 
 `StandaloneDashboard` can serve the same UI while reading data from a local DuckDB file, W&B run history, or a remote live dashboard API on another host.
 
-The browser polls `/api/stats` every 3 seconds and updates the UI without a page reload.
+The browser polls `/api/stats` every 3 seconds and updates the UI without a page reload. The wire format is kept lean three ways: responses are gzipped; heavy per-step fields (`_LAZY_FIELDS`: log bodies, `current_prompt`, `agent_config`, debug hashes) are stripped from every snapshot and served one step at a time via `/api/step_body`; and floats are trimmed to six decimals. The client echoes the hash of the meta block it holds as `?meta_rev=` and the server omits `meta` from a delta whose meta is unchanged - meta (stage lists, planned-stage previews) would otherwise dominate every idle poll.
 
 ## Chained stages — one continuous timeline
 
@@ -38,12 +38,12 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 | `js/state.js` | Shared mutable globals: last poll snapshot, chart instances, mode flags, time-travel cursor, hover state |
 | `js/util.js` | Pure helpers — `esc`, `fmtCost`/`fmtTime`/`fmtNum`/`fmtPieTime`/`fmtTimelineTick`, `parseJsonField`, `normalizeQueryId`/`parseQueryIds`, `isMetricTrue`/`isMetricFalse`, `addAxisHeadroom`, `getSegmentBounds` |
 | `js/sections.js` | Section colour palette + `getSections` + `setHoveredSection` + `sectionBgPlugin` (Chart.js) |
-| `js/metrics.js` | Per-query runtime extraction and cumulative speedup computation (`computeSpeedupSeries`, `getQueryRuntimes`, `getQueryAxisMax`); each speedup point carries `complete` (covers every query the run ever measures — derived from the logged runtimes, no dedicated total-queries metric) so preliminary points can be drawn dashed |
-| `js/chart-timeline.js` | Main timeline chart (tokens / LOC / speedup), time-travel cursor + drag scrubbing, `correctnessAlignPlugin`; speedup line is dashed while preliminary and solid once all queries are implemented (`isCompleteSpeedupSegment`) |
+| `js/metrics.js` | Per-query runtime extraction and cumulative speedup computation (`computeSpeedupSeries`, `getQueryRuntimes`, `getQueryAxisMax`); each speedup point carries `complete` (covers every query the run ever measures — derived from the logged runtimes, no dedicated total-queries metric) so preliminary points can be drawn dashed. Backed by an incremental per-row parse cache: rows are parsed once when their step is final (the newest step is re-parsed while its turn accumulates), so a render costs O(new steps), not O(run) |
+| `js/chart-timeline.js` | Main timeline chart (tokens / LOC / speedup), time-travel cursor + drag scrubbing, `correctnessAlignPlugin`; speedup line is dashed while preliminary and solid once all queries are implemented (`isCompleteSpeedupSegment`). Long runs are decimated to a shared per-bucket min/max subsample before hitting Chart.js; the full-resolution points stay on `chart._timelinePoints` for the plugins, correctness strip, and scrubbing |
 | `js/chart-query.js` | Per-query speedup/runtime bar chart with inline legend and `Speedup = 1` reference line |
 | `js/chart-dist.js` | Modal charts: pie of wall-clock per type, stacked-area cumulative time, call-count bar |
 | `js/log.js` | Activity log panel — type metadata, per-type `logDesc`/`logBody`, incremental `updateLog` |
-| `js/cards.js` | Header meta, KPI cards, turn timer, prompts list, correctness strip, cost-mode toggle |
+| `js/cards.js` | Header meta, KPI cards, turn timer, prompts list, correctness strip (stored as run-length segments — one node per contiguous verdict run, not per step), cost-mode toggle |
 | `js/source.js` | Standalone source selector (W&B / DuckDB / remote API), URL-param sync, cluster auto-discovery |
 | `js/controls.js` | Wiring for prompt-list hover, distribution modal, panel collapse, chart-mode toggles, `Esc` shortcut |
 | `js/highlight.js` | Dependency-free syntax highlighter for the code inspector — tokenizes C/C++ and Markdown source into `tok-*` spans (`highlightCode`), plain-text fallback otherwise |
@@ -55,7 +55,7 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
 ```json
 {
   "meta": {
-    "run_name": "...", "stages": [{"run_name": "...", "base_step": 0}, ...],
+    "run_name": "...", "model": "...", "stages": [{"run_name": "...", "base_step": 0}, ...],
     "planned_stages": {
       "base_step": 12, "stage_name": "runOptimLoop",
       "stages": [
@@ -68,11 +68,12 @@ The frontend is split across `js/`. Files are loaded as plain `<script>` tags (n
   "data": {
     "0": { "type": "llm", "input_tokens": 1234, ... },
     "1": { ... }
-  }
+  },
+  "meta_rev": "1a2b3c4d5e6f", "latest": 2, "count": 3
 }
 ```
 
-`steps` is a sorted list of integer turn indices. `data` keys are step numbers as strings.
+`steps` is a sorted list of integer turn indices. `data` keys are step numbers as strings. `meta.model` is the model of the newest agent_config the run has seen (the per-step configs themselves are lazily served). `meta_rev` hashes the meta block; a `?since=` delta whose meta still matches the client's `?meta_rev=` omits `meta` entirely and the client keeps its copy. `latest`/`count` always describe the full store so the client can detect drift.
 
 ## Scheduled (future) stages in the prompts pane
 

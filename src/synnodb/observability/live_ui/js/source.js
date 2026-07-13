@@ -113,9 +113,13 @@ function _sourceRefFromBody(body) {
 function resetDashboardData() {
   _lastSteps = [];
   _lastData  = {};
+  // Drop the old source's meta too - panels fed from it (model chip, planned
+  // stages) must not linger while the new source has no data yet.
+  _lastMeta  = {};
   // Force the next poll to refetch a full snapshot for the new source rather than
   // an incremental delta against the old run's step cursor.
   _pollCursor   = null;
+  _metaRev      = null;
   _lastRespText = null;
   timeTravelStep = null;
   hoveredDesc    = null;
@@ -199,6 +203,7 @@ async function reloadData() {
     // Explicit refresh: drop the incremental cursor so poll() re-pulls the whole
     // snapshot and re-renders even if the step count is unchanged.
     _pollCursor   = null;
+    _metaRev      = null;
     _lastRespText = null;
     document.getElementById('ts-txt').textContent = 'Reloading…';
     await poll();

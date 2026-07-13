@@ -371,11 +371,38 @@ function _logSummaryHtml(row) {
     </summary>`;
 }
 
-// Body text is stripped from /api/stats and fetched per step from /api/step_body
-// (see the backend). These are the log types whose body lives in a stripped
-// field, and the field each one carries. A snapshot that still inlines the body
-// (a source that does not strip) is used directly — no round-trip.
+// Heavy per-step fields (bodies, prompt/config text, debug metadata) are
+// stripped from /api/stats and fetched per step from /api/step_body (see the
+// backend's _LAZY_FIELDS). Deduped and cached so every consumer — an expanding
+// log row, its "view full" modal, the prompt modal — shares one request per
+// step. Cleared on source switch along with the rest of the log state.
+let _stepFieldsCache = new Map();  // step -> Promise<fields | null>
+
+function fetchStepFields(step) {
+  const key = String(step);
+  if (_stepFieldsCache.has(key)) return _stepFieldsCache.get(key);
+  const p = (async () => {
+    try {
+      const r = await fetch('/api/step_body?step=' + encodeURIComponent(key));
+      if (r.ok) return (await r.json()).fields || {};
+    } catch (_) { /* unavailable — callers fall back to the snapshot fields */ }
+    // Failure (404 on a non-stripping source, or a transient hiccup) is not
+    // memoized: evicting lets the next consumer retry instead of pinning the
+    // degraded fallback for the rest of the session.
+    _stepFieldsCache.delete(key);
+    return null;
+  })();
+  _stepFieldsCache.set(key, p);
+  return p;
+}
+
+// The log types whose body text lives in a lazily-served field, and the field
+// each one carries. A snapshot that still inlines the body (a source that does
+// not strip) is used directly — no round-trip. Every other type's expanded view
+// dumps the step's full field set, which includes lazily-served debug fields,
+// so it fetches /api/step_body on first expand too.
 const LOG_BODY_TYPES = new Set(['llm', 'shell', 'data_inspect', 'apply_patch', 'write_file', 'read_file']);
+
 const LOG_BODY_FIELD_BY_TYPE = {
   llm: 'llm/output_text',
   shell: 'shell/outputs',
@@ -396,14 +423,13 @@ function _hasInlineBody(type, d) {
 }
 
 // The body text for a step if it can be produced without a server round-trip —
-// a non-body type (built entirely from fields already in the snapshot) or a
-// snapshot that still inlines the body. Returns null when /api/step_body is
+// a snapshot that still inlines the body. Returns null when /api/step_body is
 // needed. Caches whatever it resolves.
 function _logResolveInlineBody(step) {
   if (_logBodyText.has(step)) return _logBodyText.get(step);
   const d = (_lastData && _lastData[step]) || {};
   const type = (d['type'] || 'other').toLowerCase();
-  if (!LOG_BODY_TYPES.has(type) || _hasInlineBody(type, d)) {
+  if (LOG_BODY_TYPES.has(type) && _hasInlineBody(type, d)) {
     const body = logBody(type, d);
     _logBodyText.set(step, body);
     return body;
@@ -411,7 +437,7 @@ function _logResolveInlineBody(step) {
   return null;
 }
 
-// Resolve a step's body text, fetching it from /api/step_body when it was
+// Resolve a step's body text, fetching its lazily-served fields when they were
 // stripped from the snapshot. Deduped and cached.
 function fetchLogBody(step) {
   const inline = _logResolveInlineBody(step);
@@ -419,17 +445,12 @@ function fetchLogBody(step) {
   if (_logBodyPending.has(step)) return _logBodyPending.get(step);
   const d = (_lastData && _lastData[step]) || {};
   const type = (d['type'] || 'other').toLowerCase();
-  const p = (async () => {
-    let fields = null;
-    try {
-      const r = await fetch('/api/step_body?step=' + encodeURIComponent(step));
-      if (r.ok) fields = (await r.json()).fields || {};
-    } catch (_) { /* fall back to the fields we already have */ }
+  const p = fetchStepFields(step).then(fields => {
     const body = logBody(type, fields ? Object.assign({}, d, fields) : d);
     _logBodyText.set(step, body);
     _logBodyPending.delete(step);
     return body;
-  })();
+  });
   _logBodyPending.set(step, p);
   return p;
 }
@@ -552,6 +573,7 @@ function _logReset() {
   _logHeights.clear();
   _logBodyText.clear();
   _logBodyPending.clear();
+  _stepFieldsCache.clear();
   for (const [, el] of _logMounted) el.remove();
   _logMounted.clear();
   _logOffsets = [];

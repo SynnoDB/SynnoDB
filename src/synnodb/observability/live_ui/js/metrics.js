@@ -28,37 +28,92 @@ function getRowScaleFactor(row) {
   return Number(raw);
 }
 
-function isBenchmarkRuntimeRow(row, scaleFactor = null) {
-  if ((row.type || '').toLowerCase() !== 'validate') return false;
-  if (!isMetricTrue(row['validation/compile_with_optimize'])) return false;
-  if (!isMetricFalse(row['validation/trace_mode'])) return false;
-  if (!isMetricFalse(row['validation/skip_validate'])) return false;
-  if (!isMetricTrue(row['validation/correct'])) return false;
+// ── Incremental row cache ────────────────────────────────────────────────
+// Everything this module derives starts from the same per-row parse: the
+// runtime columns (a regex over every key of the row), the scale factor, the
+// benchmark-row predicate, and the executed query ids. Recomputing that for
+// all rows on every render made each poll O(steps × keys) several times over.
+// Rows are immutable once ingested — the incremental poll only ever re-sends
+// the newest step while its turn is still accumulating — so we parse each row
+// once and reuse the result.
+//
+// The cache is positional: entry i describes steps[i] of the store the caller
+// passes in. The final index of the live list is never committed (its row can
+// still gain fields); it is re-parsed on every access. Time-travel hands us a
+// strict prefix of the same store, which reads the same committed entries.
+// A generation reset or source switch replaces the row objects wholesale, so
+// spot-checking the identity of the first and last committed row detects every
+// divergence (steps restart at 0 after a reset, so step ids alone would not).
+const _rowCache = {keys: [], rows: [], infos: [], size: 0};
+
+function _resetMetricsCaches() {
+  _rowCache.keys.length = 0;
+  _rowCache.rows.length = 0;
+  _rowCache.infos.length = 0;
+  _rowCache.size = 0;
+  _speedupCache.sf = undefined;
+  _speedupCache.entries = [];
+  _speedupCache.runtimes = new Map();
+  _speedupCache.expected = new Set();
+}
+
+function _computeRowInfo(row) {
+  const cols = getRuntimeColumns(row);
   const sf = getRowScaleFactor(row);
-  if (!Number.isFinite(sf)) return false;
-  if (scaleFactor != null && Math.abs(sf - scaleFactor) >= 1e-12) return false;
-  return getRuntimeColumns(row).size > 0;
+  const bench = (row.type || '').toLowerCase() === 'validate'
+    && isMetricTrue(row['validation/compile_with_optimize'])
+    && isMetricFalse(row['validation/trace_mode'])
+    && isMetricFalse(row['validation/skip_validate'])
+    && isMetricTrue(row['validation/correct'])
+    && Number.isFinite(sf)
+    && cols.size > 0;
+  return {cols, sf, bench, queryIds: parseQueryIds(row['validation/query_ids_executed'])};
+}
+
+// Sync the cache against the caller's (steps, data) and commit every row that
+// is final (all but the last of the given list). Returns nothing; afterwards
+// _rowInfoAt serves committed entries from the cache and parses the rest fresh.
+function _ingestRows(steps, data) {
+  const c = _rowCache;
+  const upTo = Math.min(c.size, steps.length);
+  if (upTo > 0 &&
+      (c.keys[0] !== String(steps[0]) || c.rows[0] !== data[steps[0]] ||
+       c.keys[upTo - 1] !== String(steps[upTo - 1]) || c.rows[upTo - 1] !== data[steps[upTo - 1]])) {
+    _resetMetricsCaches();
+  }
+  for (let i = c.size; i < steps.length - 1; i++) {
+    c.keys.push(String(steps[i]));
+    c.rows.push(data[steps[i]]);
+    c.infos.push(_computeRowInfo(data[steps[i]] || {}));
+  }
+  c.size = Math.max(c.size, steps.length - 1);
+}
+
+function _rowInfoAt(steps, data, i) {
+  return i < _rowCache.size ? _rowCache.infos[i] : _computeRowInfo(data[steps[i]] || {});
+}
+
+function _matchesSf(info, targetSf) {
+  return info.bench && (targetSf == null || Math.abs(info.sf - targetSf) < 1e-12);
 }
 
 function getMaxScaleFactor(steps, data) {
+  _ingestRows(steps, data);
   let maxSf = null;
-  for (const step of steps) {
-    const row = data[step] || {};
-    if (!isBenchmarkRuntimeRow(row)) continue;
-    const sf = getRowScaleFactor(row);
-    if (!Number.isFinite(sf)) continue;
-    maxSf = maxSf == null ? sf : Math.max(maxSf, sf);
+  for (let i = 0; i < steps.length; i++) {
+    const info = _rowInfoAt(steps, data, i);
+    if (!info.bench) continue;
+    maxSf = maxSf == null ? info.sf : Math.max(maxSf, info.sf);
   }
   return maxSf;
 }
 
 function getAvailableScaleFactors(steps, data) {
+  _ingestRows(steps, data);
   const sfs = new Set();
-  for (const step of steps) {
-    const row = data[step] || {};
-    if (!isBenchmarkRuntimeRow(row)) continue;
-    const sf = getRowScaleFactor(row);
-    if (Number.isFinite(sf)) sfs.add(sf);
+  for (let i = 0; i < steps.length; i++) {
+    const info = _rowInfoAt(steps, data, i);
+    if (info.bench) sfs.add(info.sf);
   }
   return [...sfs].sort((a, b) => a - b);
 }
@@ -76,6 +131,7 @@ function getEffectiveScaleFactor(steps, data) {
   return getMaxScaleFactor(steps, data);
 }
 
+// ── Cumulative speedup series ────────────────────────────────────────────
 // Cumulative cross-query speedup at each step. Pinned to the effective scale
 // factor (user pick, or largest observed) so the line stays consistent.
 //
@@ -84,55 +140,88 @@ function getEffectiveScaleFactor(steps, data) {
 // set of benchmark queries the run ever covers, and `nQueries` is how many this
 // point covers. A point is preliminary (drawn dashed) while it covers fewer
 // than `total` queries, and final (solid) once it covers them all.
+//
+// The walk accumulates left to right, so committed steps never change their
+// {value, nQueries} once written: we keep the accumulator state (latest
+// runtimes per query, union of queries seen) alongside the committed entries
+// and only walk the new tail on each render. The accumulating final row is
+// evaluated against copies so nothing provisional is committed. The whole
+// cache is keyed on the target scale factor: when it changes (a larger SF
+// appears, or the user picks one), the series is rebuilt from scratch.
+const _speedupCache = {
+  sf: undefined,          // targetSf the committed entries were built at
+  entries: [],            // committed {value, nQueries}, entry i for steps[i]
+  runtimes: new Map(),    // qid -> {impl, duck} after the committed rows
+  expected: new Set(),    // union of benchmark queries after the committed rows
+};
+
+// Fold steps[i] into the accumulator state (latest runtimes + expected set).
+function _applySpeedupRow(runtimes, expected, steps, data, i, targetSf) {
+  const info = _rowInfoAt(steps, data, i);
+  const row = data[steps[i]] || {};
+  for (const qid of info.queryIds) {
+    const cols = info.cols.get(qid);
+    if (cols?.duckCol && cols?.implCol) expected.add(qid);
+  }
+  if (!_matchesSf(info, targetSf)) return;
+  for (const [qid, cols] of info.cols) {
+    if (!cols.duckCol || !cols.implCol) continue;
+    const impl = Number(row[cols.implCol]);
+    const duck = Number(row[cols.duckCol]);
+    if (!Number.isFinite(impl) || !Number.isFinite(duck)) continue;
+    runtimes.set(qid, {impl, duck});
+    expected.add(qid);
+  }
+}
+
+// The speedup entry for the current accumulator state.
+function _speedupEntry(runtimes, expected) {
+  if (!expected.size) return {value: null, nQueries: 0};
+  let totalImpl = 0, totalDuck = 0, haveAll = true;
+  for (const qid of expected) {
+    const r = runtimes.get(qid);
+    if (!r) { haveAll = false; break; }
+    totalImpl += r.impl;
+    totalDuck += r.duck;
+  }
+  return {value: haveAll && totalImpl > 0 ? totalDuck / totalImpl : null, nQueries: expected.size};
+}
+
 function computeSpeedupSeries(steps, data) {
+  _ingestRows(steps, data);
   const targetSf = getEffectiveScaleFactor(steps, data);
-  const currentRuntimes = new Map(); // qid -> {impl, duck}
-  const expectedQueries = new Set();
-  const series = [];
+  const sc = _speedupCache;
+  if (!Object.is(sc.sf, targetSf)) {
+    sc.sf = targetSf;
+    sc.entries = [];
+    sc.runtimes = new Map();
+    sc.expected = new Set();
+  }
 
-  for (const step of steps) {
-    const row = data[step] || {};
-    const rowColumns = getRuntimeColumns(row);
-    const rowQueryIds = parseQueryIds(row['validation/query_ids_executed']);
-
-    for (const qid of rowQueryIds) {
-      const cols = rowColumns.get(qid);
-      if (cols?.duckCol && cols?.implCol) expectedQueries.add(qid);
+  const n = steps.length;
+  const out = sc.entries.slice(0, Math.min(sc.entries.length, n));
+  for (let i = sc.entries.length; i < n; i++) {
+    if (i < _rowCache.size) {
+      // Final row: fold it into the committed state and keep its entry.
+      _applySpeedupRow(sc.runtimes, sc.expected, steps, data, i, targetSf);
+      sc.entries.push(_speedupEntry(sc.runtimes, sc.expected));
+      out.push(sc.entries[i]);
+    } else {
+      // The still-accumulating final row: evaluate against copies so a later
+      // render re-folds its (possibly grown) fields from the committed state.
+      const runtimes = new Map(sc.runtimes);
+      const expected = new Set(sc.expected);
+      _applySpeedupRow(runtimes, expected, steps, data, i, targetSf);
+      out.push(_speedupEntry(runtimes, expected));
     }
-
-    if (isBenchmarkRuntimeRow(row, targetSf)) {
-      for (const [qid, cols] of rowColumns.entries()) {
-        if (!cols.duckCol || !cols.implCol) continue;
-        const impl = Number(row[cols.implCol]);
-        const duck = Number(row[cols.duckCol]);
-        if (!Number.isFinite(impl) || !Number.isFinite(duck)) continue;
-        currentRuntimes.set(qid, {impl, duck});
-        expectedQueries.add(qid);
-      }
-    }
-
-    if (!expectedQueries.size) {
-      series.push({value: null, nQueries: 0});
-      continue;
-    }
-
-    let totalImpl = 0, totalDuck = 0, haveAll = true;
-    for (const qid of expectedQueries) {
-      const runtimes = currentRuntimes.get(qid);
-      if (!runtimes) { haveAll = false; break; }
-      totalImpl += runtimes.impl;
-      totalDuck += runtimes.duck;
-    }
-    const value = haveAll && totalImpl > 0 ? totalDuck / totalImpl : null;
-    series.push({value, nQueries: expectedQueries.size});
   }
 
   // The full benchmark suite for this run is the largest set of queries we ever
   // accumulate (expectedQueries grows monotonically, so this is its final size).
   // Any point covering fewer queries than that is preliminary. Derived purely
   // from the runtimes already logged — no dedicated "total queries" metric.
-  const total = series.reduce((m, s) => Math.max(m, s.nQueries), 0) || null;
-  return series.map(s => ({
+  const total = out.reduce((m, s) => Math.max(m, s.nQueries), 0) || null;
+  return out.map(s => ({
     value: s.value,
     nQueries: s.nQueries,
     total,
@@ -142,21 +231,20 @@ function computeSpeedupSeries(steps, data) {
 
 // Latest impl/duck per query across all steps (sorted numerically when ids are integers).
 function getQueryRuntimes(steps, data) {
+  _ingestRows(steps, data);
   const targetSf = getEffectiveScaleFactor(steps, data);
   const map = new Map(); // id -> {duck, impl}
-  for (const s of steps) {
-    const d = data[s] || {};
-    if (!isBenchmarkRuntimeRow(d, targetSf)) continue;
-    for (const k of Object.keys(d)) {
-      const m = k.match(/^validation\/query_(.+?)\/(duckdb|impl|bespoke)_runtime_ms$/);
-      if (!m) continue;
-      const qid = normalizeQueryId(m[1]);
+  for (let i = 0; i < steps.length; i++) {
+    const info = _rowInfoAt(steps, data, i);
+    if (!_matchesSf(info, targetSf)) continue;
+    const d = data[steps[i]] || {};
+    for (const [qid, cols] of info.cols) {
       if (!map.has(qid)) map.set(qid, {duck: null, impl: null});
       const row = map.get(qid);
-      const val = d[k] != null ? +d[k] : null;
-      if (val == null) continue;
-      if (m[2] === 'duckdb') row.duck = val;
-      else                   row.impl = val;
+      const duck = cols.duckCol != null ? d[cols.duckCol] : null;
+      const impl = cols.implCol != null ? d[cols.implCol] : null;
+      if (duck != null) row.duck = +duck;
+      if (impl != null) row.impl = +impl;
     }
   }
   return [...map.entries()]
@@ -191,11 +279,13 @@ function sharedThreadCountFromCoreIds(row) {
 // surfaced in the panel. Falls back to the shared core_ids/parallelism config
 // for runs predating the explicit per-engine metrics.
 function getThreadCounts(steps, data) {
+  _ingestRows(steps, data);
   const targetSf = getEffectiveScaleFactor(steps, data);
   let result = null;
-  for (const s of steps) {
-    const row = data[s] || {};
-    if (!isBenchmarkRuntimeRow(row, targetSf)) continue;
+  for (let i = 0; i < steps.length; i++) {
+    const info = _rowInfoAt(steps, data, i);
+    if (!_matchesSf(info, targetSf)) continue;
+    const row = data[steps[i]] || {};
     const duckdb = readThreadCount(row, 'validation/duckdb_num_threads');
     const bespoke = readThreadCount(row, 'validation/bespoke_num_threads');
     if (duckdb != null || bespoke != null) {

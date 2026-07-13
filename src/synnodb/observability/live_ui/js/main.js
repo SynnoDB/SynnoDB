@@ -41,7 +41,10 @@ function renderAll() {
 
 async function poll() {
   try {
-    const url = _pollCursor == null ? '/api/stats' : '/api/stats?since=' + _pollCursor;
+    const url = _pollCursor == null
+      ? '/api/stats'
+      : '/api/stats?since=' + _pollCursor +
+        (_metaRev != null ? '&meta_rev=' + encodeURIComponent(_metaRev) : '');
     const r = await fetch(url);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const text = await r.text();
@@ -49,7 +52,14 @@ async function poll() {
     // and the O(turns) chart rebuild. This is what keeps an idle long run cheap.
     if (text === _lastRespText) return;
     const payload = JSON.parse(text);
-    const {meta, steps, data} = payload;
+    // The server omits meta from a delta whose meta still hashes to the
+    // revision we sent - we keep using _lastMeta. Only honor the omission when
+    // the echoed revision matches what we currently hold: a stale in-flight
+    // response (sent before a source switch or reset) echoes an older rev and
+    // must not be merged under the new source's meta.
+    if (payload.meta === undefined && payload.meta_rev !== _metaRev) return;
+    const meta = payload.meta !== undefined ? payload.meta : _lastMeta;
+    const {steps, data} = payload;
     // Drop responses for a source the user has already switched away from.
     // Without this, an in-flight /api/stats from before the switch can resolve
     // after the new data has rendered and briefly overwrites the UI with the
@@ -64,10 +74,16 @@ async function poll() {
     const generation = meta?.start_time;
     if (generation != null && _runGeneration != null && generation !== _runGeneration) {
       _pollCursor = null;
+      _metaRev = null;
       _lastRespText = null;
       _lastSteps = [];
       _lastData = {};
       _runGeneration = generation;
+      // The new pipeline restarts step numbering at 0, so per-step caches keyed
+      // by step id (log rows, lazily fetched bodies/prompts) would serve the
+      // previous run's content if its ids overlap. updateLog's own divergence
+      // check cannot see a superset id range, so reset explicitly.
+      _logReset();
       return;
     }
     if (generation != null) _runGeneration = generation;
@@ -81,6 +97,7 @@ async function poll() {
     // cursor so the next poll refetches a full snapshot from scratch.
     if (typeof payload.count === 'number' && _lastSteps.length !== payload.count) {
       _pollCursor = null;
+      _metaRev = null;
       _lastRespText = null;
       return;
     }
@@ -88,6 +105,9 @@ async function poll() {
     _lastRespText = text;
 
     _lastMeta = meta || {};
+    // Adopt the meta revision only once the response has passed every guard
+    // above, so _metaRev always describes the meta actually held in _lastMeta.
+    if (payload.meta !== undefined) _metaRev = payload.meta_rev ?? null;
     updateHeaderMeta(meta);
     updateSourceUI(meta);
     if (!_applyingInitialSource && !_initialSourceApplied && meta?._source_type === 'standalone') {

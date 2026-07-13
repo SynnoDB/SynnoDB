@@ -32,6 +32,9 @@ function getTimelinePoints(steps, data, mode = timelineChartMode) {
 
 // ── Time-travel: pin per-query view to a past turn (null = live) ─────────
 function setTimeTravelStep(step) {
+  // Scrubbing fires this on every pointer frame; re-rendering the query chart
+  // is only warranted when the pinned turn actually changed.
+  if (step === timeTravelStep) return;
   timeTravelStep = step;
   const ind = document.getElementById('timetravel-indicator');
   const btn = document.getElementById('timetravel-live-btn');
@@ -104,7 +107,9 @@ function initChart() {
           data: [],
           borderColor: '#8696b5',
           backgroundColor: 'rgba(134,150,181,0.07)',
-          pointRadius: 2, pointHoverRadius: 5,
+          // No permanent markers — drawing one circle per turn is a large part
+          // of the redraw cost on long runs; a point still appears on hover.
+          pointRadius: 0, pointHoverRadius: 5,
           tension: 0.25, fill: false, order: 3, spanGaps: true,
         },
         { // 1 — Code Size / LOC (right axis 1, dashed)
@@ -141,8 +146,12 @@ function initChart() {
       animation: false,
       interaction: {mode:'index', intersect:false},
       onHover(event, elements) {
-        const idx = elements.length ? elements[0].index : null;
-        if (idx == null) { setHoveredSection(null, null, null); return; }
+        if (!elements.length) { setHoveredSection(null, null, null); return; }
+        // The datasets may hold a decimated subsample, so the element index is
+        // mapped back to the full-resolution index the sections are built on.
+        const el  = elements[0];
+        const raw = chart.data.datasets[el.datasetIndex]?.data?.[el.index];
+        const idx = raw?.fullIdx ?? el.index;
         const sections = chart.options.plugins.sectionBg?.sections ?? [];
         const points   = chart._timelinePoints ?? [];
         const sec = sections.find(s => idx >= s.startIdx && idx <= s.endIdx);
@@ -255,6 +264,20 @@ function _wireTimelineDrag() {
     if (!xScale || !ca || !points.length) return null;
     const clamped = Math.max(ca.left, Math.min(ca.right, canvasX));
     const val = xScale.getValueForPixel(clamped);
+    if (chart._timelineSorted) {
+      // First point with x >= val, then pick the closer of it and its left
+      // neighbour.
+      let lo = 0, hi = points.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (points[mid].x < val) lo = mid + 1;
+        else hi = mid;
+      }
+      const right = points[lo], left = points[lo - 1];
+      return left && Math.abs(left.x - val) <= Math.abs(right.x - val) ? left : right;
+    }
+    // Time mode can be non-monotonic when some rows lack a runtime (their x
+    // falls back to the turn index), so fall back to a scan.
     let best = null, bestDist = Infinity;
     for (const pt of points) {
       const d = Math.abs(pt.x - val);
@@ -275,12 +298,26 @@ function _wireTimelineDrag() {
     if (pt) setTimeTravelStep(pt.step);
   });
 
+  // Coalesce scrub moves to one nearest-point lookup per animation frame; the
+  // latest pointer position wins.
+  let dragPendingX = null;
   window.addEventListener('mousemove', e => {
     if (!dragActive) return;
     if (Math.abs(e.clientX - dragStartX) > 4) dragMoved = true;
-    const rect = tcCanvas.getBoundingClientRect();
-    const pt = nearestPoint(e.clientX - rect.left);
-    if (pt) setTimeTravelStep(pt.step);
+    const alreadyQueued = dragPendingX != null;
+    dragPendingX = e.clientX;
+    if (alreadyQueued) return;
+    requestAnimationFrame(() => {
+      const clientX = dragPendingX;
+      dragPendingX = null;
+      // The drag may have ended before this frame ran; applying the stale
+      // position now would re-pin time-travel after mouseup already acted on
+      // (or cleared) it.
+      if (!dragActive || clientX == null) return;
+      const rect = tcCanvas.getBoundingClientRect();
+      const pt = nearestPoint(clientX - rect.left);
+      if (pt) setTimeTravelStep(pt.step);
+    });
   });
 
   window.addEventListener('mouseup', () => {
@@ -299,6 +336,52 @@ function _wireTimelineDrag() {
   });
 }
 
+// ── Decimation ───────────────────────────────────────────────────────────
+// Chart.js renders every point it is given, and past a couple of thousand
+// points per series the full redraw — which runs on every poll and on every
+// tooltip move — dominates the page. Long runs therefore hand Chart.js a
+// subsample of step indices: per x-bucket the min and max of each series
+// survive (spikes stay visible), plus the first/last points and every
+// speedup complete-flag transition (the dashed/solid boundary stays exact).
+// All series sample the same index set, which keeps index-mode tooltips
+// aligned across datasets. The full-resolution points stay available on
+// chart._timelinePoints for the section/stage plugins, the correctness strip,
+// and scrubbing, which all work in x-values rather than element indices.
+const TIMELINE_MAX_POINTS = 2000;
+const TIMELINE_BUCKETS = 500;
+
+function decimateTimelineIndices(points, seriesList, speedup) {
+  const n = points.length;
+  if (n <= TIMELINE_MAX_POINTS) return null;
+  const x0 = points[0].x;
+  const span = points[n - 1].x - x0 || 1;
+  const keep = new Set([0, n - 1]);
+  for (const values of seriesList) {
+    let bucket = -1, minI = -1, maxI = -1;
+    for (let i = 0; i < n; i++) {
+      if (values[i] == null) continue;
+      const b = Math.min(TIMELINE_BUCKETS - 1,
+        Math.floor(((points[i].x - x0) / span) * TIMELINE_BUCKETS));
+      if (b !== bucket) {
+        if (minI >= 0) { keep.add(minI); keep.add(maxI); }
+        bucket = b;
+        minI = maxI = i;
+      } else {
+        if (values[i] < values[minI]) minI = i;
+        if (values[i] > values[maxI]) maxI = i;
+      }
+    }
+    if (minI >= 0) { keep.add(minI); keep.add(maxI); }
+  }
+  for (let i = 1; i < n; i++) {
+    if (!!speedup[i].complete !== !!speedup[i - 1].complete) {
+      keep.add(i - 1);
+      keep.add(i);
+    }
+  }
+  return [...keep].sort((a, b) => a - b);
+}
+
 function updateChart(steps, data) {
   if (!chart) return;
   const points   = getTimelinePoints(steps, data);
@@ -310,11 +393,15 @@ function updateChart(steps, data) {
   const hasSpeedup = speedup.some(s => s.value != null);
 
   chart._timelinePoints = points;
-  chart.data.labels           = steps.map(String);
-  chart.data.datasets[0].data = points.map((p, i) => ({x: p.x, y: tokens[i],  step: p.step, time: p.time}));
-  chart.data.datasets[1].data = points.map((p, i) => ({x: p.x, y: loc[i],     step: p.step, time: p.time}));
-  chart.data.datasets[2].data = points.map((p, i) => ({
-    x: p.x, y: speedup[i].value, step: p.step, time: p.time,
+  chart._timelineSorted = points.every((p, i) => i === 0 || points[i - 1].x <= p.x);
+  const sampled = decimateTimelineIndices(points, [tokens, loc, speedup.map(s => s.value)], speedup);
+  const idxs = sampled ?? points.map((_, i) => i);
+  chart.data.datasets[0].data = idxs.map(i =>
+    ({x: points[i].x, y: tokens[i], step: points[i].step, time: points[i].time, fullIdx: i}));
+  chart.data.datasets[1].data = idxs.map(i =>
+    ({x: points[i].x, y: loc[i],    step: points[i].step, time: points[i].time, fullIdx: i}));
+  chart.data.datasets[2].data = idxs.map(i => ({
+    x: points[i].x, y: speedup[i].value, step: points[i].step, time: points[i].time, fullIdx: i,
     complete: speedup[i].complete, nQueries: speedup[i].nQueries, total: speedup[i].total,
   }));
   chart.options.plugins.sectionBg.sections = sections;
