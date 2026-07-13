@@ -747,7 +747,9 @@ class StandaloneDashboard:
         while True:
             time.sleep(1)
 
-    def _snapshot(self, since: "int | None" = None, meta_rev: "str | None" = None) -> str:
+    def _snapshot(
+        self, since: "int | None" = None, meta_rev: "str | None" = None
+    ) -> str:
         with self._lock:
             if (
                 self._db_path is None
@@ -1067,7 +1069,9 @@ class LiveDashboardDrain(DataDrain):
         """The generated-code workspace this run operates in (passed in by main)."""
         return self._workspace_dir
 
-    def _snapshot(self, since: "int | None" = None, meta_rev: "str | None" = None) -> str:
+    def _snapshot(
+        self, since: "int | None" = None, meta_rev: "str | None" = None
+    ) -> str:
         """Serialize the run state for /api/stats.
 
         ``since=None`` returns the full snapshot (cached until the next mutation,
