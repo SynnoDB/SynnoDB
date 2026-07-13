@@ -811,3 +811,30 @@ def test_menu_points_at_the_largest_subset_when_benchmark_is_absent(tmp_path):
     # when warning about cost, so assert on the label itself, not the phrase.)
     assert "(benchmark scale" not in menu
     assert "on the largest available subset (`1`)" in menu
+
+
+def test_no_agent_facing_text_tells_the_agent_to_extrapolate(tmp_path):
+    """Three surfaces carry query_data guidance - the agent instructions (DATA_INSPECT_HINT), the
+    tool description, and the subset menu in the planner prompts. They must agree that a subset is
+    a *sample*: none may tell the agent to scale a small subset's numbers up to benchmark scale.
+    They drifted once (the menu was rewritten and the instructions hint was left saying "row counts
+    ... must be extrapolated to benchmark scale"), and the agent was getting both at once."""
+    from synnodb.llm.sdk.agents_sdk.openai_make_data_inspect_tool import _description
+    from synnodb.llm.sdk.agents_sdk.openai_sdk import DATA_INSPECT_HINT
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    tool = _two_subset_tool(base)
+
+    surfaces = {
+        "agent instructions": DATA_INSPECT_HINT,
+        "tool description": _description(tool),
+        "subset menu": subset_menu_for(tool.workload_provider),
+    }
+    for name, text in surfaces.items():
+        lowered = text.lower()
+        assert "extrapolat" not in lowered, f"{name} tells the agent to extrapolate"
+        assert "scale up" not in lowered, f"{name} tells the agent to scale numbers up"
+        # Every surface steers to the smallest subset - that is the point of choosing.
+        assert "smallest" in lowered, f"{name} lost the prefer-smallest rule"
