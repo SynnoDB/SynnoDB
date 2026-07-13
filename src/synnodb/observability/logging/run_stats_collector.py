@@ -147,6 +147,7 @@ class RunStatsCollector(RunHooks):
 
         # per tool stats
         self.apply_patch_stats = defaultdict(int)
+        self.read_file_path: str | None = None
 
         self.cloc_cache_dir = cloc_cache_dir
         self.do_not_cache = do_not_cache
@@ -269,6 +270,10 @@ class RunStatsCollector(RunHooks):
 
         self.metrics_list.append(metrics)
         self._emit_metrics(metrics, step=turn)
+
+    def log_read_file_stats(self, path: str) -> None:
+        """Record the path read by the in-flight read_file call."""
+        self.read_file_path = path
 
     def log_apply_patch_stats(
         self,
@@ -464,7 +469,7 @@ class RunStatsCollector(RunHooks):
         tool_name = tool.name if hasattr(tool, "name") else str(tool)
         logger.debug(f"starting tool: {tool_name} (turn {self.last_turn})")
 
-        if tool_name in ("apply_patch", "replace_in_file"):
+        if tool_name in ("apply_patch", "replace_in_file", "write_file"):
             self.apply_patch_added_ctr = 0
             self.apply_patch_deleted_ctr = 0
             self.apply_patch_str = ""
@@ -472,6 +477,8 @@ class RunStatsCollector(RunHooks):
             self.apply_patch_failed = []
             self.apply_patch_cached = False
             self.apply_patch_rejected = False
+        elif tool_name == "read_file":
+            self.read_file_path = None
 
     async def on_tool_end(
         self,
@@ -491,14 +498,18 @@ class RunStatsCollector(RunHooks):
         if self.debug_logger:
             self.debug_logger.log_tool_result(self.last_turn, tool_name, result)
 
-        if tool_name in ("apply_patch", "replace_in_file"):
+        if tool_name in ("apply_patch", "replace_in_file", "write_file"):
             operation_type_dict = dict()
             for operation_type, count in self.apply_patch_stats.items():
                 operation_type_dict[f"apply_patch/{operation_type}_count"] = count
 
+            # write_file gets its own type so the live UI can render it
+            # distinctly from apply_patch/replace_in_file diffs, even though it
+            # shares the same underlying diff-stat fields.
+            metric_type = "write_file" if tool_name == "write_file" else "apply_patch"
             self.log_metrics_callback(
                 {
-                    "type": "apply_patch",
+                    "type": metric_type,
                     "apply_patch/cached": self.apply_patch_cached,
                     "apply_patch/rejected": self.apply_patch_rejected,
                     "apply_patch/added_loc_count": self.apply_patch_added_ctr,
@@ -510,6 +521,16 @@ class RunStatsCollector(RunHooks):
                     if len(self.apply_patch_failed) > 0
                     else None,
                     **operation_type_dict,
+                },
+                log_and_increment=True,
+            )
+        elif tool_name == "read_file":
+            self.log_metrics_callback(
+                {
+                    "type": "read_file",
+                    "read_file/path": self.read_file_path,
+                    "read_file/output": result[:20000],
+                    "read_file/truncated": len(result) > 20000,
                 },
                 log_and_increment=True,
             )

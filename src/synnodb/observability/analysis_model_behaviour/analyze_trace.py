@@ -52,7 +52,7 @@ def get_run_info(
                 sum_list.append(entry)
                 sum_list_long.append(entry)
 
-            elif type == "apply_patch":
+            elif type in ("apply_patch", "write_file"):
                 sum_list.append(f"apply patch: {row['apply_patch/string'][:100]}...")
                 sum_list_long.append(f"apply patch: {row['apply_patch/string']}")
             elif type == "compile":
