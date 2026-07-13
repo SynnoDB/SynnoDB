@@ -6,19 +6,19 @@ distributions, null density, min/max ranges, distinct counts, join fan-out - the
 that drives physical-design choices (element types, encodings, partitioning, join order).
 
 It is a lightweight replacement for parquet-dump shell commands, meant for *simple* queries -
-peeking at rows, ranges, and per-column stats. The agent picks *which* subset each query runs on
-(``sf``): every subset materialized on disk is on the menu, including the benchmark one, and the
-prompts steer it to the smallest subset that answers the question. Omitting ``sf`` reads the
-cheapest representative subset (the workload's smallest fast-check rung). That default is
-deliberately spec-derived rather than read off the disk, because the resolved subset is part of
-the cache key - a disk-dependent default would resolve differently on an ``only_from_cache``
-replay (which runs with the data gone) than on the recording run. Relative facts - distributions,
-distinct ratios, null density, value ranges - carry over from a small subset; absolute row counts
-do not, which is why the menu labels the benchmark subset. Two guards keep a stray heavy query
-from stalling the whole conversation: every statement runs under a wall-clock budget
-(:data:`QUERY_TIMEOUT_S`, flat across subsets) and is interrupted if it overruns - the message
-then points at the smaller subsets it could retry on - and it runs on an isolated cursor so that
-interrupt never touches the cached connection.
+peeking at rows, ranges, and per-column stats. The agent chooses *what* each query reads with one
+boolean, ``full_dataset``: the cheap **sample** (the default) or the **full dataset** - the scale
+its design must actually serve. The workload's subset ladder can hold several rungs, but the agent
+is not asked to reason about them; the tool maps the boolean onto two of them (the smallest
+fast-check rung, and the benchmark subset). Both are spec-derived rather than read off the disk,
+because the resolved subset is part of the cache key - a disk-dependent choice would resolve
+differently on an ``only_from_cache`` replay (which runs with the data gone) than on the recording
+run. Distribution shape carries over from the sample; row counts, min/max and distinct counts do
+not, which is why the menu sends the agent to the full dataset for any number it sizes a design
+from. Two guards keep a stray heavy query from stalling the whole conversation: every statement
+runs under a wall-clock budget (:data:`QUERY_TIMEOUT_S`, the same for both datasets) and is
+interrupted if it overruns - the message then offers the sample as a cheaper retry - and it runs on
+an isolated cursor so that interrupt never touches the cached connection.
 
 It is strictly read-only: every statement is gated by the same read-only classifier the
 DuckDB-compat write guard uses, and DuckDB-native subsets are additionally opened
@@ -73,34 +73,35 @@ _TIMEOUT_ERROR_PREFIX = "Error: query exceeded the"
 
 
 def subset_menu_for(workload_provider: Any) -> str:
-    """The ``query_data`` subset menu for a workload, for the planner / storage-plan prompts.
+    """The ``query_data`` sample-vs-full-dataset note for a workload, for the planner /
+    storage-plan prompts.
 
     The same text the tool description carries, built here so the prompts and the tool cannot
-    disagree about which subsets exist or which one is the default. Empty when the workload cannot
-    back the tool at all (the same guard ``main`` uses to decide whether to build it) or when
-    nothing is materialized on disk - the prompts then simply say nothing about subsets."""
+    disagree about which datasets exist or which one the boolean reaches. Empty when the workload
+    cannot back the tool at all (the same guard ``main`` uses to decide whether to build it) or when
+    nothing is materialized on disk - the prompts then simply say nothing about the data."""
     if not hasattr(workload_provider, "spec") or not hasattr(
         workload_provider, "benchmark_sf"
     ):
         return ""
     # Same order as the tool: prepare() first (it downscales a BYO workload's fractional rungs),
-    # so the prompt cannot advertise a menu that differs from the one the tool will honour.
+    # so the prompt cannot advertise data that differs from what the tool will honour.
     workload_provider.prepare()
     available = available_subsets(
         workload_provider.spec, Path(workload_provider.base_parquet_dir)
     )
     return format_subset_menu(
         available=available,
-        benchmark_sf=workload_provider.benchmark_sf,
-        default_sf=DataInspectTool._default_inspect_sf(workload_provider),
+        sample_sf=_canon_sf(DataInspectTool._default_inspect_sf(workload_provider)),
+        full_sf=_canon_sf(workload_provider.benchmark_sf),
     )
 
 
 def _canon_sf(value: float) -> float:
     """One spelling per subset: integral values as ints (``1``, not ``1.0``), matching how the
-    spec's SF ladders and :func:`available_subsets` spell them. The subset is part of the cache
-    key, so without this the agent passing ``sf=1`` (JSON float) and the spec's own ``1`` (int)
-    would cache the identical inspection twice and re-run it."""
+    spec's SF ladders and :func:`available_subsets` spell them. The resolved subset is part of the
+    cache key, so without this a workload spelling its benchmark scale ``1.0`` and one spelling it
+    ``1`` would cache the identical inspection twice and re-run it."""
     as_float = float(value)
     return int(as_float) if as_float.is_integer() else as_float
 
@@ -148,7 +149,7 @@ class DataInspectTool:
     def __init__(
         self,
         workload_provider: Any,
-        sf: float | None = None,
+        sample_sf: float | None = None,
         cache_dir: Path | None = None,
         do_not_cache: bool = False,
         only_from_cache: bool = False,
@@ -157,14 +158,18 @@ class DataInspectTool:
     ):
         self.workload_provider = workload_provider
         self.spec = workload_provider.spec
-        # The subset a call that passes no ``sf`` reads: the smallest fast-check rung, which is the
-        # cheapest representative one. A query that needs benchmark-scale row counts can ask for a
-        # bigger subset explicitly; the prompts steer it to the smallest one that suffices.
-        self.sf: float = (
-            sf if sf is not None else self._default_inspect_sf(workload_provider)
+        # The two subsets the agent's ``full_dataset`` boolean picks between. The sample is the
+        # workload's smallest fast-check rung (the cheapest representative one); the full dataset is
+        # the benchmark subset - the scale the design must actually serve. A workload with no
+        # fast-check ladder collapses the two, and the menu then says the flag is a no-op.
+        self.sample_sf: float = _canon_sf(
+            sample_sf
+            if sample_sf is not None
+            else self._default_inspect_sf(workload_provider)
         )
+        self.full_sf: float = _canon_sf(workload_provider.benchmark_sf)
         # One connection per inspected subset, opened on first use and reused after (the agent
-        # typically hops between the small subset and the benchmark one).
+        # typically hops between the sample and the full dataset).
         self._cons: dict[float, duckdb.DuckDBPyConnection] = {}
 
         # Disk cache, keyed by query + row cap + subset identity. Disabled (None) when no cache
@@ -188,7 +193,8 @@ class DataInspectTool:
         return min(fast_check_sfs) if fast_check_sfs else workload_provider.benchmark_sf
 
     def available_subsets(self) -> list[float]:
-        """The subsets the agent may query: every one fully materialized on disk, ascending.
+        """The subsets fully materialized on disk, ascending. The agent never sees this list - it
+        only picks sample-or-full - but the tool checks the subset it resolved to against it.
 
         Read off the filesystem (after ``prepare()``, which downscales a BYO workload's fractional
         rungs) rather than off the spec's SF ladders, because nothing guarantees a spec rung exists
@@ -198,18 +204,25 @@ class DataInspectTool:
             self.spec, Path(self.workload_provider.base_parquet_dir)
         )
 
-    def _smaller_subset_hint(self, sf: float) -> str:
-        """The retry-on-something-cheaper half of the timeout message. A query that overran on a
-        big subset is often fine on a small one, and the distributions it is after carry over -
-        so name the cheaper subsets explicitly rather than only telling it to simplify the SQL.
-        Empty when it already ran on the smallest subset (there is nothing cheaper to suggest)."""
-        smaller = [value for value in self.available_subsets() if value < sf]
-        if not smaller:
+    def _subset_for(self, full_dataset: bool) -> float:
+        """The subset one call reads. Spec-derived on both branches, so an ``only_from_cache``
+        replay (which runs with the data gone) resolves the same cache key as the recording run."""
+        return self.full_sf if full_dataset else self.sample_sf
+
+    def _sample_retry_hint(self, full_dataset: bool) -> str:
+        """The retry-on-something-cheaper half of the timeout message. A query that overran on the
+        full dataset is often fine on the sample, and the distribution shape it is usually after
+        carries over - so offer that explicitly rather than only telling it to simplify the SQL.
+        Empty when it already ran on the sample, or when no sample is materialized: there is then
+        nothing cheaper to suggest. Deliberately does not claim value ranges carry over - they do
+        not, and the menu says so."""
+        if not full_dataset or self.sample_sf == self.full_sf:
             return ""
-        listed = ", ".join(f"{value:g}" for value in smaller)
+        if self.sample_sf not in self.available_subsets():
+            return ""
         return (
-            f" You ran this on subset {sf:g}; re-running it on a smaller subset ({listed}) is "
-            "usually enough, since distributions and value ranges carry over."
+            " You ran this on the full dataset; re-running it on the sample (omit `full_dataset`) "
+            "is far cheaper, and is usually enough for distribution shape."
         )
 
     def _resolve_subset_dir(self, sf: float) -> Path:
@@ -274,7 +287,7 @@ class DataInspectTool:
         return hash_payload, utils.sha256(hash_payload)
 
     def __call__(
-        self, sql: str, max_rows: int | None = None, sf: float | None = None
+        self, sql: str, max_rows: int | None = None, full_dataset: bool = False
     ) -> str:
         row_limit = (
             DEFAULT_MAX_ROWS
@@ -282,12 +295,15 @@ class DataInspectTool:
             else max(1, min(int(max_rows), MAX_ROWS_CAP))
         )
         sql = (sql or "").strip()
-        subset = _canon_sf(self.sf if sf is None else sf)
-        output, status, cached = self._inspect(sql, row_limit, subset)
-        self._report(sql, row_limit, subset, output, status, cached)
+        full_dataset = bool(full_dataset)
+        subset = self._subset_for(full_dataset)
+        output, status, cached = self._inspect(sql, row_limit, subset, full_dataset)
+        self._report(sql, row_limit, subset, full_dataset, output, status, cached)
         return output
 
-    def _inspect(self, sql: str, row_limit: int, sf: float) -> tuple[str, str, bool]:
+    def _inspect(
+        self, sql: str, row_limit: int, sf: float, full_dataset: bool
+    ) -> tuple[str, str, bool]:
         """Resolve one inspection to ``(output_text, status, served_from_cache)``. ``status`` is a
         short label (``ok`` / ``sql_error`` / ``timeout`` / ``rejected`` / ``bad_subset`` /
         ``empty`` / ``prep_error``) that drives the dashboard row and activity-summary line; the
@@ -341,23 +357,18 @@ class DataInspectTool:
                 )
 
         # About to actually run, so the subset must exist. Only now is it safe to touch the disk.
-        # Catches the default too: the spec's smallest rung is not guaranteed to be materialized
-        # (built-in sf<N> dirs come from an out-of-band dbgen step), and a listing of what *is*
-        # there beats the bare FileNotFoundError the connect below would otherwise raise.
+        # Neither dataset is guaranteed to be materialized (built-in sf<N> dirs come from an
+        # out-of-band dbgen step), and telling the agent to flip the boolean beats the bare
+        # FileNotFoundError the connect below would otherwise raise.
         available = self.available_subsets()
         if available and sf not in available:
-            logger.debug("query_data rejected unknown subset sf=%g", sf)
-            # Only offer the omit-sf route when the default is actually on disk, or the agent
-            # would be sent straight back into this same error.
-            fallback = (
-                f", or omit sf to use the default ({self.sf:g})"
-                if self.sf in available
-                else ""
+            logger.debug(
+                "query_data rejected an unmaterialized subset sf=%g (full_dataset=%s)",
+                sf,
+                full_dataset,
             )
             return (
-                f"Error: no data subset {sf:g}. Available subsets: "
-                f"{', '.join(f'{value:g}' for value in available)}. "
-                f"Pass one of these as sf{fallback}.",
+                self._missing_dataset_message(full_dataset, available),
                 "bad_subset",
                 False,
             )
@@ -368,7 +379,7 @@ class DataInspectTool:
             logger.warning("query_data could not prepare data (sf=%g): %s", sf, exc)
             return f"Error preparing data for inspection: {exc}", "prep_error", False
 
-        output, elapsed = self._run_and_render(con, sql, row_limit, sf)
+        output, elapsed = self._run_and_render(con, sql, row_limit, full_dataset)
         # Cache every executed outcome - a result set, a SQL error, or a timeout alike. Both
         # successful and unsuccessful executions are keyed on the query and the read-only subset,
         # so a repeated inspection replays from disk and ``only_from_cache`` never misses on a
@@ -383,11 +394,33 @@ class DataInspectTool:
             )
         return output, _status_from_output(output), False
 
+    def _missing_dataset_message(
+        self, full_dataset: bool, available: list[float]
+    ) -> str:
+        """The dataset the call asked for is not on disk. Point the agent at the other one when
+        that one *is* there (flipping the boolean is the whole fix), and otherwise say plainly that
+        there is nothing to read rather than sending it round the same failure again."""
+        requested, other = (
+            ("full dataset", "sample") if full_dataset else ("sample", "full dataset")
+        )
+        other_sf = self.sample_sf if full_dataset else self.full_sf
+        if other_sf == self._subset_for(full_dataset) or other_sf not in available:
+            return (
+                f"Error: the {requested} is not materialized on disk, and neither is the "
+                f"{other} - query_data has no data to read for this workload."
+            )
+        flag = "false" if full_dataset else "true"
+        return (
+            f"Error: the {requested} is not materialized on disk. Re-run this query with "
+            f"`full_dataset={flag}` to read the {other} instead."
+        )
+
     def _report(
         self,
         sql: str,
         row_limit: int,
         sf: float,
+        full_dataset: bool,
         output: str,
         status: str,
         cached: bool,
@@ -403,6 +436,7 @@ class DataInspectTool:
                 "data_inspect/sql": sql[:20000],
                 "data_inspect/max_rows": row_limit,
                 "data_inspect/sf": sf,
+                "data_inspect/full_dataset": full_dataset,
                 "data_inspect/status": status,
                 "data_inspect/error": is_error,
                 "data_inspect/cached": cached,
@@ -416,7 +450,11 @@ class DataInspectTool:
         )
 
     def _run_and_render(
-        self, con: duckdb.DuckDBPyConnection, sql: str, row_limit: int, sf: float
+        self,
+        con: duckdb.DuckDBPyConnection,
+        sql: str,
+        row_limit: int,
+        full_dataset: bool,
     ) -> tuple[str, float]:
         """Execute *sql* on a throwaway cursor under the wall-clock budget and render the result.
 
@@ -425,11 +463,12 @@ class DataInspectTool:
         inspection; ``Timer.cancel()`` is a no-op once the timer has already fired. A result set,
         a SQL error, and a timeout are all returned as rendered text and cached by the caller; the
         outcome is recovered from that text by :func:`_status_from_output`."""
+        dataset = "the full dataset" if full_dataset else "the sample"
         cur = con.cursor()
         timer = threading.Timer(QUERY_TIMEOUT_S, cur.interrupt)
         timer.daemon = True
         timer.start()
-        logger.debug("query_data (sf=%g): %s", sf, _short_sql(sql))
+        logger.debug("query_data (%s): %s", dataset, _short_sql(sql))
         started = time.perf_counter()
         try:
             cur.execute(sql)
@@ -438,18 +477,18 @@ class DataInspectTool:
         except duckdb.InterruptException:
             elapsed = time.perf_counter() - started
             logger.warning(
-                "query_data exceeded the %gs budget on subset %g, cancelled after %.1fs: %s",
+                "query_data exceeded the %gs budget on %s, cancelled after %.1fs: %s",
                 QUERY_TIMEOUT_S,
-                sf,
+                dataset,
                 elapsed,
                 _short_sql(sql),
             )
             return (
-                f"{_TIMEOUT_ERROR_PREFIX} {QUERY_TIMEOUT_S:g}s inspection budget on subset "
-                f"{sf:g} and was cancelled. query_data is for simple, cheap look-ups - narrow it "
+                f"{_TIMEOUT_ERROR_PREFIX} {QUERY_TIMEOUT_S:g}s inspection budget on {dataset} "
+                "and was cancelled. query_data is for simple, cheap look-ups - narrow it "
                 "with a WHERE filter, add LIMIT, aggregate fewer columns, or use "
                 "SUMMARIZE/DESCRIBE on a single table instead of scanning or joining large "
-                f"tables.{self._smaller_subset_hint(sf)}",
+                f"tables.{self._sample_retry_hint(full_dataset)}",
                 elapsed,
             )
         except Exception as exc:  # noqa: BLE001 - return DuckDB's message so the agent can fix it

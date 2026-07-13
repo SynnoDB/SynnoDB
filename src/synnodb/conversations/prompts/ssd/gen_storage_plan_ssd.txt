@@ -7,7 +7,7 @@ You have flexibility to explore creative encodings, hybrid layouts, and unconven
 For every table accessed by the workload, the plan must explicitly state:
 
 1. **Per-column type, chosen from observed cardinality — not the SQL nominal type**
-Declare the smallest fixed-width type that fits the actual value range (e.g. `col ∈ [1,50]` → `int8`, not `int32`, even if the SQL type is `INTEGER`). State the observed `(min, max, distinct)` the choice is based on. Use the `query_data` tool to measure these directly from the benchmark data rather than estimating; fall back to an estimate only if a measurement is genuinely unavailable. Measure them **at benchmark scale** - a smaller subset understates both range and cardinality, so a width chosen from it overflows on the real data.
+Declare the smallest fixed-width type that fits the actual value range (e.g. `col ∈ [1,50]` → `int8`, not `int32`, even if the SQL type is `INTEGER`). State the observed `(min, max, distinct)` the choice is based on. Use the `query_data` tool to measure these directly from the benchmark data rather than estimating; fall back to an estimate only if a measurement is genuinely unavailable. Measure them **on the full dataset** (`full_dataset=true`) - the sample understates both range and cardinality, so a width chosen from it overflows on the real data.
 
 2. **Per-column encoding**
 Pick one of: raw fixed-width, frame-of-reference (FOR), bit-packing, RLE, dictionary, or packed-tuple (correlated narrow columns combined into a single code). Justify the choice in one line tied to the column's cardinality and clustering. For non-raw encodings, state the decode strategy at query time.

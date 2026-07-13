@@ -90,7 +90,7 @@ def gen_storage_plan_prompt(
         schema=schema,
         storage_plan_filename=storage_plan_filename,
         parallelism_note=parallelism_note(num_threads),
-        # Which data subsets query_data may read, and which one is benchmark scale. Empty when the
+        # What query_data may read - the cheap sample, the full dataset, or both. Empty when the
         # caller has no workload on hand (the tool is then absent from the conversation anyway).
         data_subsets=data_subsets_note,
     )
@@ -145,13 +145,13 @@ def base_planner_prompt(
         )
 
     # Beyond the schema, the agent can read the actual data to ground its physical-design choices.
-    # The subset note (when the caller supplies one) names the subsets it may read and which of
-    # them is benchmark scale, so a row count is never mistaken for the scale the design serves.
+    # The data note (when the caller supplies one) explains the sample-vs-full-dataset choice, so a
+    # sampled row count is never mistaken for the scale the design actually serves.
     schema_hint += (
         "\n\nWith the query_data tool you can run simple, cheap read-only SQL queries against the "
         "benchmark data. Keep queries light (SUMMARIZE, DESCRIBE, WHERE filters, LIMIT, "
         "per-column stats). A query that scans or joins large tables and runs too long is "
-        "cancelled and you are asked to simplify or to re-run it on a smaller subset."
+        "cancelled and you are asked to simplify it or to re-run it on the sample."
     )
     if data_subsets_note:
         schema_hint += f"\n\n{data_subsets_note}"

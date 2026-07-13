@@ -24,12 +24,12 @@ class QueryDataArgs(BaseModel):
             "aggregation or LIMIT for large results."
         ),
     )
-    sf: float | None = Field(
-        None,
+    full_dataset: bool = Field(
+        False,
         description=(
-            "Which data subset to query, chosen from the subsets listed in the tool description. "
-            "Omit for the default (the smallest). Prefer the smallest subset that can answer the "
-            "question; only pick a larger one when you need absolute row counts at scale."
+            "Run against the full dataset instead of the small sample. Default false (the sample), "
+            "which is far cheaper - prefer it. Set true only for numbers a sample cannot give you: "
+            "real row counts, min/max ranges and distinct counts, which a sample understates."
         ),
     )
 
@@ -44,13 +44,13 @@ DESCRIPTION = (
 
 
 def _description(data_inspect_tool: DataInspectTool) -> str:
-    """The tool description with the subset menu appended. Built per run rather than kept as a
-    module constant: which subsets exist depends on the workload and on what is materialized on
-    disk, and the agent cannot choose a subset it was never told about."""
+    """The tool description with the sample-vs-full-dataset note appended. Built per run rather
+    than kept as a module constant: whether both datasets are materialized depends on the workload
+    and on what is on disk, and the agent must not be offered one it cannot read."""
     menu = format_subset_menu(
         available=data_inspect_tool.available_subsets(),
-        benchmark_sf=data_inspect_tool.workload_provider.benchmark_sf,
-        default_sf=data_inspect_tool.sf,
+        sample_sf=data_inspect_tool.sample_sf,
+        full_sf=data_inspect_tool.full_sf,
     )
     return f"{DESCRIPTION} {menu}" if menu else DESCRIPTION
 
@@ -61,7 +61,9 @@ def make_openai_data_inspect_tool(
 ) -> FunctionTool:
     async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
         args = QueryDataArgs.model_validate_json(args_json)
-        return data_inspect_tool(sql=args.sql, max_rows=args.max_rows, sf=args.sf)
+        return data_inspect_tool(
+            sql=args.sql, max_rows=args.max_rows, full_dataset=args.full_dataset
+        )
 
     return FunctionTool(
         name="query_data",

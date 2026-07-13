@@ -49,18 +49,17 @@ from synnodb.utils.model_setup import resolve_model_extra_body, setup_model_conf
 logger = logging.getLogger(__name__)
 
 # Injected into the agent instructions when query_data is wired up. It must not contradict the
-# subset menu the tool description and the planner prompts carry (see
-# ``workload_spec.format_subset_menu``): both say a subset is a *sample*, so counts, ranges and
-# distincts are measured at benchmark scale, never scaled up from a small subset. An earlier
-# version of this string told the agent to extrapolate row counts and silently fought the menu.
+# sample-vs-full-dataset note the tool description and the planner prompts carry (see
+# ``workload_spec.format_subset_menu``): both say the sample is a *sample*, so counts, ranges and
+# distincts are measured on the full dataset, never scaled up from the sample. An earlier version
+# of this string told the agent to extrapolate row counts and silently fought that note.
 DATA_INSPECT_HINT = (
     "You can run read-only SQL against the actual benchmark data with the query_data tool to "
     "inspect data distributions, cardinalities, null density, and value ranges that inform your "
-    "physical-design choices. Its `sf` argument picks which data subset to read (the tool "
-    "description lists them); prefer the smallest subset that answers your question, but never "
-    "scale a small subset's row counts, min/max or distinct counts up to benchmark scale - a "
-    "subset is a sample, so measure any number you bake into the design on the benchmark subset "
-    "itself. "
+    "physical-design choices. Its `full_dataset` flag chooses what it reads: prefer the sample "
+    "(the default, and far cheaper), and set `full_dataset=true` only when you need real numbers. "
+    "Never scale the sample's row counts, min/max or distinct counts up to full scale - it is a "
+    "sample, so measure any number you bake into the design on the full dataset itself. "
 )
 
 
