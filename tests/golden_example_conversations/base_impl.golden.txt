@@ -41,7 +41,13 @@ The output of each query should be written to `result<RUN_NR>.csv` (where `<RUN_
 
 Table schemas can be inspected with: parquet-dump-schema `/golden/data/tpch_parquet/sf20/lineitem.parquet`
 
-With the query_data tool you can run simple, cheap read-only SQL queries against a small representative subset of the benchmark data. Keep queries light (SUMMARIZE, DESCRIBE, WHERE filters, LIMIT, per-column stats). A query that scans or joins large tables and runs too long is cancelled and you are asked to simplify.
+With the query_data tool you can run simple, cheap read-only SQL queries against the benchmark data. Keep queries light (SUMMARIZE, DESCRIBE, WHERE filters, LIMIT, per-column stats). A query that scans or joins large tables and runs too long is cancelled and you are asked to simplify or to re-run it on a smaller subset.
+
+Data subsets for query_data: `1` (default, smallest), `2`, `20` (benchmark scale - what your design must actually serve). Pass `sf` to choose one; omit it for the default. These are subset selectors, not standard scale factors - do not infer row counts from a subset's name.
+
+Default to the smallest subset that can answer the question, and only reach for a bigger one when you actually need the numbers below - a scan or join at benchmark scale is far more expensive and can hit the query time budget. Shape transfers from a small subset: distributions, skew, null density, clustering, correlations.
+
+But a subset is a *sample*, so row counts, min/max and distinct counts do NOT transfer. A sample's min/max lie inside the true range (rare extremes are missing) and its distinct counts are understated, so a type width, encoding or allocation sized from them overflows or undersizes at full scale. Row counts also shrink unevenly per table - small dimension tables are often kept whole, so an unchanged count between subsets is expected; never scale a count by a ratio. Measure any number you bake into the design on the benchmark subset `20`: `count(*)`, `min`/`max` and `approx_count_distinct` are single-pass and cheap even at full scale.
 
 # Your Task
 Create a TODO plan for implementing this database engine. Write your plan to `base_impl_todo.txt`. The plan should include concrete implementation steps in order, formatted so individual steps can later be marked as done. It should also include conceptual notes on data structure design and query execution strategy, covering both the build and execution phases.

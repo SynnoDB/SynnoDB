@@ -74,6 +74,7 @@ def gen_storage_plan_prompt(
     storage_plan_filename: str,
     persistent_storage: bool,
     num_threads: int,
+    data_subsets_note: str = "",
 ) -> str:
     if persistent_storage:
         # SSD/persistent base implementations are not parallel-ready (the in-memory pool is
@@ -89,6 +90,9 @@ def gen_storage_plan_prompt(
         schema=schema,
         storage_plan_filename=storage_plan_filename,
         parallelism_note=parallelism_note(num_threads),
+        # Which data subsets query_data may read, and which one is benchmark scale. Empty when the
+        # caller has no workload on hand (the tool is then absent from the conversation anyway).
+        data_subsets=data_subsets_note,
     )
 
 
@@ -112,6 +116,7 @@ def base_planner_prompt(
     num_threads: int,
     serve_from: "str" = "parquet",
     schema_ddl: str | None = None,
+    data_subsets_note: str = "",
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_planner_ssd.txt"
@@ -140,12 +145,16 @@ def base_planner_prompt(
         )
 
     # Beyond the schema, the agent can read the actual data to ground its physical-design choices.
+    # The subset note (when the caller supplies one) names the subsets it may read and which of
+    # them is benchmark scale, so a row count is never mistaken for the scale the design serves.
     schema_hint += (
-        "\n\nWith the query_data tool you can run simple, cheap read-only SQL queries against a "
-        "small representative subset of the benchmark data. Keep queries light (SUMMARIZE, DESCRIBE, WHERE filters, LIMIT, "
+        "\n\nWith the query_data tool you can run simple, cheap read-only SQL queries against the "
+        "benchmark data. Keep queries light (SUMMARIZE, DESCRIBE, WHERE filters, LIMIT, "
         "per-column stats). A query that scans or joins large tables and runs too long is "
-        "cancelled and you are asked to simplify."
+        "cancelled and you are asked to simplify or to re-run it on a smaller subset."
     )
+    if data_subsets_note:
+        schema_hint += f"\n\n{data_subsets_note}"
 
     # In-memory loading: the framework owns turning Arrow columns into typed C++ vectors,
     # which is easy to get wrong. The agent composes these helpers rather than decoding

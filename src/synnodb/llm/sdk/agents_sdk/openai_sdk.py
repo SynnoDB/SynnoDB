@@ -108,7 +108,10 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
         data_inspect_hint = (
             "You can run read-only SQL against the actual benchmark data with the query_data "
             "tool to inspect data distributions, cardinalities, null density, and value ranges "
-            "that inform your physical-design choices. "
+            "that inform your physical-design choices. Its `sf` argument picks which data subset "
+            "to read (the tool description lists them); prefer the smallest subset that answers "
+            "your question, and remember that row counts taken from a smaller subset must be "
+            "extrapolated to benchmark scale. "
             if openai_data_inspect_tool is not None
             else ""
         )

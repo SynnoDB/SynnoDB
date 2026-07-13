@@ -12,6 +12,7 @@ modules or require SYNNO_DATA_DIR until they are actually used.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -205,6 +206,149 @@ def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | Non
             if candidate.exists():
                 return candidate
     return None
+
+
+def discover_subset_values(base_parquet_dir: Path | str) -> list[float]:
+    """Subset values that have a directory on disk under a parquet root, ascending.
+
+    Reads whichever naming convention the root uses - ``fraction<f>`` (sampling fraction, written
+    by the referential downscaler) or the legacy ``sf<N>`` - and normalizes integral values to
+    ints so they format back to ``fraction1``/``sf50`` rather than ``fraction1.0``/``sf50.0``.
+    Directory names only: use :func:`available_subsets` when the subset must also be complete."""
+    values: list[float] = []
+    base = Path(base_parquet_dir)
+    if not base.is_dir():
+        return values
+    for prefix in ("fraction", "sf"):
+        for child in base.glob(f"{prefix}*"):
+            if not child.is_dir():
+                continue
+            try:
+                value = float(child.name[len(prefix) :])
+            except ValueError:
+                continue
+            values.append(int(value) if value.is_integer() else value)
+    return sorted(set(values))
+
+
+def available_subsets(spec: WorkloadSpec, base_parquet_dir: Path | str) -> list[float]:
+    """Subset values fully materialized on disk under a parquet root, ascending.
+
+    A subset counts as available only when every file it physically needs is present (per
+    :meth:`WorkloadSpec.subset_files`: a single ``subset.duckdb`` for a DuckDB-native workload,
+    one ``<table>.parquet`` per table otherwise), so a half-written or aborted subset is skipped.
+    Driven by the filesystem rather than the spec's SF ladders, so a subset generated out-of-band
+    (e.g. an extra dbgen scale factor) is offered too."""
+    base = Path(base_parquet_dir)
+    complete: list[float] = []
+    for value in discover_subset_values(base):
+        subset_dir = find_sf_dir(base, value)
+        if subset_dir is None:
+            continue
+        if all(path.exists() for path in spec.subset_files(subset_dir)):
+            complete.append(value)
+    return complete
+
+
+def format_subset_menu(
+    available: Sequence[float], benchmark_sf: float, default_sf: float
+) -> str:
+    """The agent-facing menu of inspectable data subsets, shared by the ``query_data`` tool
+    description and the planner/storage-plan prompts so the two can never drift.
+
+    Names every subset the agent may query, marks the default (smallest) and the benchmark-scale
+    one, and states the prefer-smallest rule.
+
+    Crucially it separates what a *sample* preserves from what it does not. Measured against the
+    real downscaler, a 5% subset reproduced low-cardinality domains and whole-kept dimension tables
+    exactly, but understated a bounded column's max (141 vs 148.5), a key's max, and every
+    medium/high-cardinality distinct count (27 vs 100; 11.6k vs 200k). Distribution shape, skew,
+    null density, clustering and correlations transfer; **row counts, min/max and distinct counts
+    do not**, and those three are exactly the numbers a physical design is sized from - a type
+    width chosen from a sample's max overflows at full scale, and a dictionary sized from a
+    sample's distinct count is orders of magnitude too small.
+
+    It also tells the agent **not to extrapolate row counts by a ratio**. A subset is not a
+    uniform shrink of the benchmark data, on either path:
+
+    * A downscaled subset (``fraction<f>``) samples only the *anchor* (largest) table at ``f``.
+      Tables at or below the small-row threshold, and tables off the join graph, are kept **whole**
+      - the same rows in every subset - and every other table's size is emergent from join
+      propagation, at whatever size keeps the joins non-vacuous (see
+      :mod:`...dataset.custom_scaler.duckdb_downscale`).
+    * A generated scale factor (``sf<N>``) is not uniform either: a generator typically scales its
+      fact tables with the scale factor while holding small reference tables at a fixed size.
+
+    So a per-table count from a small subset times the subset ratio is simply wrong. An earlier
+    version of this menu said "multiply by the ratio", and a real run shows the damage: the agent
+    scaled a whole-kept dimension up by 50x, could not reconcile the result with the subset it had
+    asked for, and concluded the subset labels must be inverted. Shape carries over; counts must be
+    measured where they matter. The values are also described as *selectors* rather than scale
+    factors, so an agent does not read standard benchmark row counts into a subset's name.
+
+    Neither the default nor the benchmark subset is guaranteed to be materialized (a built-in
+    workload's ``sf<N>`` dirs come from an out-of-band generation step), so the menu only promises
+    what is actually on disk: it advertises omitting ``sf`` only when the default exists, and
+    points at the benchmark subset for real counts only when that subset exists."""
+    if not available:
+        return ""
+    assert list(available) == sorted(available), (
+        "available subsets must be ascending; the menu labels the first as the smallest"
+    )
+    assert benchmark_sf > 0 and default_sf > 0, (
+        f"subset values are scale factors / sampling fractions, always > 0 "
+        f"(benchmark_sf={benchmark_sf}, default_sf={default_sf})"
+    )
+
+    def _fmt(value: float) -> str:
+        return _subset_value_spellings(value)[0]
+
+    default_available = default_sf in available
+    benchmark_available = benchmark_sf in available
+
+    entries: list[str] = []
+    for value in available:
+        labels = []
+        if value == default_sf:
+            labels.append("default")
+        if value == available[0]:
+            labels.append("smallest")
+        if value == benchmark_sf:
+            labels.append("benchmark scale - what your design must actually serve")
+        suffix = f" ({', '.join(labels)})" if labels else ""
+        entries.append(f"`{_fmt(value)}`{suffix}")
+
+    pick = (
+        "Pass `sf` to choose one; omit it for the default."
+        if default_available
+        else "Pass `sf` to choose one."
+    )
+    # Where a trustworthy number comes from: the benchmark subset when it is on disk, otherwise
+    # the largest subset there is, named as the approximation it is.
+    if benchmark_available:
+        verify_on = f"the benchmark subset `{_fmt(benchmark_sf)}`"
+    else:
+        verify_on = f"the largest available subset (`{_fmt(available[-1])}`)"
+
+    menu = (
+        "Data subsets for query_data: "
+        + ", ".join(entries)
+        + f". {pick} These are subset selectors, not standard scale factors - do not infer row "
+        "counts from a subset's name.\n\n"
+        "Default to the smallest subset that can answer the question, and only reach for a bigger "
+        "one when you actually need the numbers below - a scan or join at benchmark scale is far "
+        "more expensive and can hit the query time budget. Shape transfers from a small subset: "
+        "distributions, skew, null density, clustering, correlations.\n\n"
+        "But a subset is a *sample*, so row counts, min/max and distinct counts do NOT transfer. A "
+        "sample's min/max lie inside the true range (rare extremes are missing) and its distinct "
+        "counts are understated, so a type width, encoding or allocation sized from them overflows "
+        "or undersizes at full scale. Row counts also shrink unevenly per table - small dimension "
+        "tables are often kept whole, so an unchanged count between subsets is expected; never "
+        "scale a count by a ratio. Measure any number you bake into the design on "
+        f"{verify_on}: `count(*)`, `min`/`max` and `approx_count_distinct` are single-pass and "
+        "cheap even at full scale."
+    )
+    return menu
 
 
 def managed_parquet_root(name: str, dataset_name: str) -> Path:

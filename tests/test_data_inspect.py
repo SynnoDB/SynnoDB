@@ -58,6 +58,13 @@ def _provider(base: Path, serve_from: ServeFrom) -> SimpleNamespace:
         serve_from=serve_from,
         tables=_TABLES,
         fast_check_sfs=(),
+        # Mirrors WorkloadSpec.subset_files: the files a subset physically needs, which is how the
+        # tool decides a subset is complete enough to offer the agent.
+        subset_files=lambda subset_dir: (
+            [subset_dir / "subset.duckdb"]
+            if serve_from == ServeFrom.DUCKDB
+            else [subset_dir / f"{table}.parquet" for table in _TABLES]
+        ),
     )
     return SimpleNamespace(
         spec=spec,
@@ -132,9 +139,10 @@ def test_empty_sql(tool):
     assert tool("   ") == "Error: empty SQL query."
 
 
-def test_default_inspects_smallest_fast_check_rung(tmp_path):
-    """By default the tool reads the smallest fast-check rung, not the benchmark subset."""
-    base = tmp_path / "parquet_root"
+def _make_two_subsets(base: Path) -> None:
+    """A root holding two DuckDB-native subsets: ``fraction0.1`` (3 nation / 3 orders rows) and
+    ``fraction1``, the benchmark one (5 nation / 200 orders). The differing row counts are how a
+    test tells which subset a query actually read."""
     (base / "fraction0.1").mkdir(parents=True)
     small = duckdb.connect(str(base / "fraction0.1" / "subset.duckdb"))
     small.execute("CREATE TABLE nation AS SELECT i AS n_nationkey FROM range(3) t(i)")
@@ -142,13 +150,116 @@ def test_default_inspects_smallest_fast_check_rung(tmp_path):
     small.close()
     _make_duckdb_subset(base)  # fraction1 with 5 nation / 200 orders rows
 
+
+def _two_subset_tool(base: Path, **kwargs) -> DataInspectTool:
     provider = _provider(base, ServeFrom.DUCKDB)
     provider.spec.fast_check_sfs = (0.1, 0.5)
-    tool = DataInspectTool(workload_provider=provider)
+    return DataInspectTool(workload_provider=provider, **kwargs)
+
+
+def test_default_inspects_smallest_fast_check_rung(tmp_path):
+    """By default the tool reads the smallest fast-check rung, not the benchmark subset."""
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    tool = _two_subset_tool(base)
 
     assert tool.sf == 0.1
     # The count reflects the small rung (3), not the benchmark subset (5).
     assert "3" in tool("SELECT count(*) AS n FROM nation")
+
+
+def test_explicit_sf_reads_the_requested_subset(tmp_path):
+    """The agent picks the subset per query: the same SQL answers from whichever it names."""
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    tool = _two_subset_tool(base)
+
+    # 3 orders in the small subset, 200 in the benchmark one - so the row count identifies it.
+    assert "3" in tool("SELECT count(*) AS n FROM orders", sf=0.1)
+    assert "200" in tool("SELECT count(*) AS n FROM orders", sf=1)
+    # Both subsets stay usable: each keeps its own connection.
+    assert "3" in tool("SELECT count(*) AS n FROM orders", sf=0.1)
+
+
+def test_only_materialized_subsets_are_offered(tmp_path):
+    """The menu is what is complete on disk, not what the spec's SF ladder claims."""
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    # fraction0.5 is in the spec's fast-check ladder but was never materialized.
+    assert _two_subset_tool(base).available_subsets() == [0.1, 1]
+
+
+def test_unknown_subset_lists_the_available_ones(tmp_path):
+    """An sf that does not exist is refused as text (never an exception), naming the real ones."""
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    tool = _two_subset_tool(base)
+
+    out = tool("SELECT count(*) FROM orders", sf=99)
+    assert out.startswith("Error: no data subset 99")
+    assert "0.1" in out and "1" in out
+    # The tool is still usable afterwards.
+    assert "3" in tool("SELECT count(*) AS n FROM orders")
+
+
+def test_subset_is_part_of_the_cache_key(tmp_path):
+    """The same SQL at two subsets caches (and replays) as two distinct results."""
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    cache_dir = tmp_path / "cache"
+    tool = _two_subset_tool(base, cache_dir=cache_dir)
+
+    assert "3" in tool("SELECT count(*) AS n FROM orders", sf=0.1)
+    assert "200" in tool("SELECT count(*) AS n FROM orders", sf=1)
+    assert len(list(cache_dir.glob("*.pkl"))) == 2, (
+        "one entry per subset, not one shared"
+    )
+
+    # A replay with the data gone must still tell the two subsets apart.
+    import shutil
+
+    shutil.rmtree(base)
+    replay = _two_subset_tool(base, cache_dir=cache_dir, only_from_cache=True)
+    assert "3" in replay("SELECT count(*) AS n FROM orders", sf=0.1)
+    assert "200" in replay("SELECT count(*) AS n FROM orders", sf=1)
+
+
+def test_timeout_points_at_a_smaller_subset(tmp_path, monkeypatch):
+    """A query that overruns on a big subset is told which cheaper subsets it could retry on."""
+    import synnodb.tools.data_inspect as di
+
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    tool = _two_subset_tool(base)
+    monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
+
+    out = tool(
+        "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b",
+        sf=1,
+    )
+    assert "inspection budget on subset 1" in out
+    assert "smaller subset (0.1)" in out
+    # The interrupt hit only that subset's throwaway cursor; the other subset is untouched.
+    monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 15.0)
+    assert "3" in tool("SELECT count(*) AS n FROM orders", sf=0.1)
+    assert "200" in tool("SELECT count(*) AS n FROM orders", sf=1)
+
+
+def test_timeout_on_smallest_subset_suggests_no_smaller_one(tmp_path, monkeypatch):
+    """Nothing cheaper to fall back to, so the message sticks to simplifying the query."""
+    import synnodb.tools.data_inspect as di
+
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    tool = _two_subset_tool(base)
+    monkeypatch.setattr(di, "QUERY_TIMEOUT_S", 0.2)
+
+    out = tool(
+        "SELECT max(a.range * b.range) AS m FROM range(10000000) a, range(10000000) b",
+        sf=0.1,
+    )
+    assert "inspection budget on subset 0.1" in out
+    assert "smaller subset" not in out
 
 
 def test_no_fast_check_ladder_falls_back_to_benchmark_sf(tmp_path):
@@ -450,3 +561,253 @@ def test_cache_hit_is_reported_as_cached(tmp_path):
         "Data Inspect Tool called: ok",
         "Data Inspect Tool called: ok",
     ]
+
+
+def test_reported_sf_is_the_queried_subset(tmp_path):
+    """The dashboard row shows the subset the query actually ran on, not the tool's default."""
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    collector = _FakeCollector()
+    provider = _provider(base, ServeFrom.DUCKDB)
+    provider.spec.fast_check_sfs = (0.1, 0.5)
+    tool = DataInspectTool(workload_provider=provider, run_stats_collector=collector)
+
+    tool("SELECT count(*) AS n FROM orders")
+    tool("SELECT count(*) AS n FROM orders", sf=1)
+
+    assert [m["data_inspect/sf"] for m in collector.metrics] == [0.1, 1.0]
+
+
+def test_subset_menu_names_the_benchmark_subset(tmp_path):
+    """The menu the agent reads (tool description + prompts) marks the default and the benchmark
+    subset, and points at the benchmark one for absolute counts - the whole point of choosing."""
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    provider = _provider(base, ServeFrom.DUCKDB)
+    provider.spec.fast_check_sfs = (0.1, 0.5)
+
+    menu = subset_menu_for(provider)
+    assert "`0.1` (default, smallest)" in menu
+    assert "benchmark scale" in menu
+    assert (
+        "Measure any number you bake into the design on the benchmark subset `1`"
+        in menu
+    )
+
+
+def test_subset_menu_forbids_extrapolating_row_counts(tmp_path):
+    """Subsets are not uniform shrinks: the downscaler keeps small dimension tables whole and sizes
+    joined tables by referential propagation, and generated scale factors hold reference tables
+    fixed. The menu must never tell the agent to multiply a subset's counts by a ratio - an earlier
+    version did, and a real run scaled a whole-kept table up by 50x and decided the subset labels
+    were inverted."""
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    provider = _provider(base, ServeFrom.DUCKDB)
+    provider.spec.fast_check_sfs = (0.1, 0.5)
+
+    menu = subset_menu_for(provider)
+    assert "never scale a count by a ratio" in menu
+    assert "shrink unevenly per table" in menu
+    # The ratio-extrapolation advice must be gone, in every spelling.
+    assert "extrapolate" not in menu
+    assert "of the benchmark rows" not in menu
+    # And it says an unchanged count across subsets is expected, not a bug worth chasing.
+    assert "an unchanged count between subsets is expected" in menu
+
+
+def test_subset_menu_warns_that_ranges_and_distincts_do_not_transfer(tmp_path):
+    """A subset is a *sample*: measured against the real downscaler, a 5% subset understated a
+    bounded column's max (141 vs 148.5) and its distinct count (27 vs 100). Those are exactly the
+    numbers a physical design is sized from, so the menu must name them as not transferring - an
+    earlier version claimed "value ranges and distinct counts carry over", which would have an
+    agent pick a fixed-width type that overflows on the real data."""
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    provider = _provider(base, ServeFrom.DUCKDB)
+    provider.spec.fast_check_sfs = (0.1, 0.5)
+
+    menu = subset_menu_for(provider)
+    # A sample's extremes are contained within the true ones, so a type sized from them overflows.
+    assert "min/max lie inside the true range" in menu
+    assert "overflows or undersizes at full scale" in menu
+    # And its distinct counts are understated, so a dictionary sized from them is far too small.
+    assert "distinct counts are understated" in menu
+    # The old, wrong claim must not reappear in any form.
+    assert "value ranges, distinct counts, null density, distributions" not in menu
+
+
+def test_subset_menu_is_empty_without_data(tmp_path):
+    """No subsets on disk - the prompts simply say nothing about them rather than lying."""
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    assert subset_menu_for(_provider(base, ServeFrom.DUCKDB)) == ""
+
+
+def test_int_and_float_spellings_share_one_cache_entry(tmp_path):
+    """`sf=1` from the agent (a JSON float) and the spec's own int `1` are the same subset, so they
+    must not cache the identical inspection twice."""
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)
+    cache_dir = tmp_path / "cache"
+    tool = _two_subset_tool(base, cache_dir=cache_dir)
+
+    tool("SELECT count(*) AS n FROM orders", sf=1)
+    tool("SELECT count(*) AS n FROM orders", sf=1.0)
+    assert len(list(cache_dir.glob("*.pkl"))) == 1
+
+
+def _one_subset_root(tmp_path: Path) -> Path:
+    """A root where only the benchmark subset (fraction1) exists - the spec's smallest fast-check
+    rung was never generated. Real for a built-in workload: the sf<N> dirs come from an
+    out-of-band dbgen step, so nothing guarantees the default rung is on disk."""
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)  # fraction1 only
+    return base
+
+
+def test_unmaterialized_default_is_reported_with_what_exists(tmp_path):
+    """Omitting sf when the spec's default rung was never generated must not blow up with a bare
+    FileNotFoundError - the agent is told which subsets do exist, and must not be told to omit sf
+    (that is what just failed)."""
+    base = _one_subset_root(tmp_path)
+    provider = _provider(base, ServeFrom.DUCKDB)
+    provider.spec.fast_check_sfs = (0.1,)  # default 0.1, but only fraction1 is on disk
+    tool = DataInspectTool(workload_provider=provider)
+
+    out = tool("SELECT count(*) AS n FROM orders")
+    assert out.startswith("Error: no data subset 0.1")
+    assert "Available subsets: 1" in out
+    assert "omit sf" not in out
+    # And the subset that does exist still answers.
+    assert "200" in tool("SELECT count(*) AS n FROM orders", sf=1)
+
+
+def test_menu_never_advertises_an_unmaterialized_default(tmp_path):
+    """The prompt menu promises only what is on disk: no 'omit it for the default' when the
+    default subset does not exist, and no 'default' label on any subset."""
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    base = _one_subset_root(tmp_path)
+    provider = _provider(base, ServeFrom.DUCKDB)
+    provider.spec.fast_check_sfs = (0.1,)
+
+    menu = subset_menu_for(provider)
+    assert "`1` (smallest, benchmark scale" in menu
+    assert "default" not in menu
+    assert "omit" not in menu
+
+
+def test_menu_is_empty_for_a_provider_that_cannot_back_the_tool(tmp_path):
+    """main only builds query_data for providers exposing spec + benchmark_sf; the prompts must
+    stay silent about subsets for anything else rather than raising at prompt-render time."""
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    assert subset_menu_for(SimpleNamespace()) == ""
+
+
+def test_legacy_sf_dirs_and_parquet_layout(tmp_path):
+    """The other real subset shape: a built-in workload's legacy ``sf<N>/`` dirs holding one
+    ``<table>.parquet`` per table (TPC-H), rather than the downscaler's ``fraction<f>/subset.duckdb``.
+    Both conventions must be discoverable and selectable."""
+    base = tmp_path / "parquet_root"
+    for sf, n_orders in ((1, 50), (20, 900)):
+        subset_dir = base / f"sf{sf}"
+        subset_dir.mkdir(parents=True)
+        con = duckdb.connect()
+        con.execute(
+            f"CREATE TABLE nation AS SELECT i AS n_nationkey FROM range({sf}) t(i)"
+        )
+        con.execute(
+            f"CREATE TABLE orders AS SELECT i AS o_orderkey, (i % 5) AS o_nationkey, "
+            f"(i * 1.5)::DECIMAL(15,2) AS o_total FROM range({n_orders}) t(i)"
+        )
+        for table in _TABLES:
+            con.execute(
+                f"COPY {table} TO '{(subset_dir / (table + '.parquet')).as_posix()}' (FORMAT PARQUET)"
+            )
+        con.close()
+
+    provider = _provider(base, ServeFrom.PARQUET)
+    provider.spec.fast_check_sfs = (1,)
+    provider.benchmark_sf = 20
+    tool = DataInspectTool(workload_provider=provider)
+
+    assert tool.available_subsets() == [1, 20]
+    assert tool.sf == 1
+    # Row counts differ per subset, so they prove which directory was actually read.
+    assert "50" in tool("SELECT count(*) AS n FROM orders")
+    assert "900" in tool("SELECT count(*) AS n FROM orders", sf=20)
+
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    menu = subset_menu_for(provider)
+    assert "`1` (default, smallest)" in menu
+    assert "`20` (benchmark scale" in menu
+    assert (
+        "Measure any number you bake into the design on the benchmark subset `20`"
+        in menu
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SUMMARIZE nation; SUMMARIZE orders",
+        "DESCRIBE nation; DESCRIBE orders",
+        "SELECT count(*) FROM nation; SUMMARIZE orders",
+    ],
+)
+def test_read_only_batch_is_refused_as_a_batch_not_as_a_write(tool, sql):
+    """A batch of read-only statements must be refused for being a batch. The read-only classifier
+    only passes a multi-statement batch when every statement is a plain SELECT/WITH, so these used
+    to come back as "this statement would write or change state" - which is untrue, and a real run
+    burned turns on an agent hunting for a write it never wrote."""
+    out = tool(sql)
+    assert out.startswith("Error: query_data runs one statement per call")
+    assert "read-only" not in out
+    # Still usable: the refusal is about shape, and the same statements work one at a time.
+    assert "5" in tool("SELECT count(*) AS n FROM nation")
+
+
+def test_batch_hiding_a_write_is_still_refused_as_a_write(tool):
+    """The batch message must not become a way to soften a write: anything containing a write
+    keeps falling through to the read-only gate."""
+    out = tool("SELECT 1; DROP TABLE nation")
+    assert out.startswith("Error: query_data is strictly read-only")
+    assert "5" in tool("SELECT count(*) AS n FROM nation")
+
+
+def test_semicolon_inside_a_string_literal_is_not_a_batch(tool):
+    """DuckDB's parser does the splitting, so a semicolon in a literal is not a statement break."""
+    out = tool("SELECT ';' AS semi")
+    assert "semi" in out
+    assert "one statement per call" not in out
+
+
+def test_menu_points_at_the_largest_subset_when_benchmark_is_absent(tmp_path):
+    """Absolute counts have to be measured somewhere real. When the benchmark subset was never
+    materialized, the menu names the largest subset that does exist rather than pointing the agent
+    at one it cannot read."""
+    from synnodb.tools.data_inspect import subset_menu_for
+
+    base = tmp_path / "parquet_root"
+    _make_two_subsets(base)  # fraction0.1 + fraction1
+    provider = _provider(base, ServeFrom.DUCKDB)
+    provider.spec.fast_check_sfs = (0.1,)
+    provider.benchmark_sf = 20  # a benchmark subset nobody generated
+
+    menu = subset_menu_for(provider)
+    # No subset on disk may carry the benchmark label. (The prose still says "benchmark scale"
+    # when warning about cost, so assert on the label itself, not the phrase.)
+    assert "(benchmark scale" not in menu
+    assert "on the largest available subset (`1`)" in menu
