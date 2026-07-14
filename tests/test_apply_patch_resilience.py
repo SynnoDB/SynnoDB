@@ -31,6 +31,7 @@ class _FakeRunStatsCollector:
     def __init__(self) -> None:
         self.activity_summary: list[str] = []
         self.stats: list[dict] = []
+        self.rejected: list[tuple[str | None, str]] = []
         self.model = "test-model"
         self.last_turn = 0
 
@@ -39,6 +40,9 @@ class _FakeRunStatsCollector:
 
     def log_apply_patch_stats(self, op_type, **kwargs) -> None:
         self.stats.append({"op_type": op_type, **kwargs})
+
+    def record_apply_patch_rejected(self, path: str | None, reason: str) -> None:
+        self.rejected.append((path, reason))
 
 
 class _FakeSnapshotter:
@@ -280,6 +284,29 @@ def test_apply_patch_tool_rejects_contentless_create(tmp_path):
     )
     assert "no file content" in out
     assert not (workspace / "empty.cpp").exists()
+    # ... and it is recorded as the rejection the model saw. This returns before the editor
+    # runs, but on_tool_end emits an edit metric either way - unrecorded, the failed create is
+    # logged as a successful +0/-0 no-op.
+    assert editor._run_stats_collector.rejected == [
+        ("empty.cpp", "create_file with no content")
+    ]
+
+
+def test_apply_patch_tool_rejects_unknown_operation_type(tmp_path):
+    # An op type outside create/update/delete reaches no editor op, so - like the
+    # contentless create above - it has to record its own rejection or be logged as a
+    # clean no-op edit.
+    import asyncio
+
+    editor, _workspace = _make_editor(tmp_path)
+    tool = CustomApplyPatchTool(editor)
+
+    out = asyncio.run(tool("patch_file", "db_loader.cpp", "+x"))
+
+    assert "Unknown apply_patch operation type" in out
+    assert editor._run_stats_collector.rejected == [
+        ("db_loader.cpp", "unknown operation type: patch_file")
+    ]
 
 
 def test_apply_patch_tool_writes_unprefixed_body_end_to_end(tmp_path):

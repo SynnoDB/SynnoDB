@@ -1,14 +1,12 @@
-import logging
 from typing import Any
 
 from agents.run_context import RunContextWrapper
 from agents.tool import FunctionTool
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
+from synnodb.llm.sdk.agents_sdk.guarded_tool import make_guarded_function_tool
 from synnodb.tools.data_inspect import DataInspectTool
 from synnodb.workloads.workload_spec import format_subset_menu
-
-logger = logging.getLogger(__name__)
 
 
 class QueryDataArgs(BaseModel):
@@ -62,30 +60,19 @@ def make_openai_data_inspect_tool(
     data_inspect_tool: DataInspectTool,
     defer_loading: bool = False,
 ) -> FunctionTool:
-    async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
-        try:
-            args = QueryDataArgs.model_validate_json(args_json)
-        except ValidationError as e:
-            # Report a malformed call back to the model as a tool result - matching how this tool
-            # surfaces every other failure (bad SQL, a write, a timeout) - so it can retry instead
-            # of the ValidationError propagating and killing the run. See
-            # ``openai_sdk_tools.make_custom_openai_apply_patch_tool`` for the same guard.
-            logger.warning(
-                "query_data received arguments that failed schema validation: %s", e
-            )
-            return (
-                "Error: query_data arguments failed validation. Retry with sql (str) and, if "
-                "provided, an integer max_rows and a boolean full_dataset.\n"
-                f"Details: {e}"
-            )
+    async def run(ctx: RunContextWrapper[Any], args: QueryDataArgs) -> str:
         return data_inspect_tool(
             sql=args.sql, max_rows=args.max_rows, full_dataset=args.full_dataset
         )
 
-    return FunctionTool(
+    return make_guarded_function_tool(
         name="query_data",
         description=_description(data_inspect_tool),
-        params_json_schema=QueryDataArgs.model_json_schema(),
-        on_invoke_tool=on_invoke,
+        args_model=QueryDataArgs,
+        handler=run,
+        retry_hint=(
+            "Retry with sql (str) and, if provided, an integer max_rows and a boolean "
+            "full_dataset."
+        ),
         defer_loading=defer_loading,  # loaded when needed
     )
