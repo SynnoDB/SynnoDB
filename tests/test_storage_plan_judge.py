@@ -20,7 +20,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from synnodb.conversations.conv_context import ConvContext
-from synnodb.conversations.examples.storage_plan import _judge_storage_plan
+from synnodb.conversations.examples.storage_plan import (
+    JUDGE_MAX_TOKENS,
+    _judge_storage_plan,
+)
 from synnodb.conversations.filenames import Filenames
 from synnodb.utils.utils import DBStorage
 
@@ -57,7 +60,7 @@ async def test_routes_through_agent_sdk_wrapper_not_litellm_directly():
     call = wrapper.run_one_off_completion.await_args
     assert SCHEMA in call.args[0]
     assert PLAN_TEXT in call.args[0]
-    assert call.kwargs["max_tokens"] == 200
+    assert call.kwargs["max_tokens"] == JUDGE_MAX_TOKENS
 
 
 @pytest.mark.asyncio
@@ -90,3 +93,28 @@ async def test_missing_agent_sdk_wrapper_asserts_instead_of_skipping():
 
     with pytest.raises(AssertionError):
         await _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
+
+
+@pytest.mark.parametrize("verdict", ["", "   \n  "])
+@pytest.mark.asyncio
+async def test_empty_verdict_skips_the_check_without_crashing(verdict):
+    """The judge can come back empty (nothing returned, or the token budget spent on reasoning).
+    That is a judge failure, not a verdict: skip the check, exactly like a call failure. It used
+    to crash the whole run on `verdict.splitlines()[0]` (IndexError on an empty string)."""
+    wrapper = MagicMock(name="agent_sdk_wrapper")
+    wrapper.run_one_off_completion = AsyncMock(return_value=verdict)
+    ctx = _make_ctx(agent_sdk_wrapper=wrapper)
+
+    result = await _judge_storage_plan(ctx, SCHEMA, PLAN_TEXT)
+
+    assert (
+        result is None
+    )  # skipped, not "invalid" - a plan nobody faulted must not be rejected
+
+
+def test_judge_token_budget_leaves_room_for_reasoning():
+    """The judge asks for a one-line answer, but on a reasoning model the thinking comes out of the
+    same output budget. At 200 tokens a real run spent the entire budget reasoning about the plan,
+    emitted no content, and the empty verdict crashed the stage. Keep the budget well clear of
+    that: this is the fix, and the empty-verdict guard above is only the backstop."""
+    assert JUDGE_MAX_TOKENS >= 2000
