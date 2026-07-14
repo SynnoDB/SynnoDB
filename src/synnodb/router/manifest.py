@@ -188,13 +188,31 @@ class EngineManifest:
         return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
+# The suffixes an engine's sources can have, and the build directories that are
+# not part of it. Kept in step with results._ENGINE_SOURCE_SUFFIXES.
+_SOURCE_SUFFIXES = (".cpp", ".hpp", ".h", ".rs")
+_SKIP_DIRS = {"build", "target", "obj", ".git", "__pycache__", ".reload"}
+
+
 def engine_source_files(engine_dir: "str | Path") -> Dict[str, str]:
-    """Read the generated C++ sources of an engine (``*.cpp`` / ``*.hpp``) by name."""
+    """Read an engine's generated sources, keyed by path relative to the engine dir.
+
+    The engine_id is content-addressed from exactly this, so the walk must see
+    every source file: a Rust engine nests them (``builder/src/lib.rs``), and a
+    non-recursive ``*.cpp``/``*.hpp`` glob would find NONE of them -- giving every
+    Rust engine the same id, so publishing one would silently overwrite another.
+    A flat C++ workspace is unaffected: the relative path is just the filename.
+    """
     engine_dir = Path(engine_dir)
     files: Dict[str, str] = {}
-    for path in sorted(engine_dir.glob("*.cpp")) + sorted(engine_dir.glob("*.hpp")):
+    for path in sorted(engine_dir.rglob("*")):
+        if path.suffix not in _SOURCE_SUFFIXES or not path.is_file():
+            continue
+        rel = path.relative_to(engine_dir)
+        if _SKIP_DIRS.intersection(rel.parts):
+            continue
         try:
-            files[path.name] = path.read_text(encoding="utf-8", errors="replace")
+            files[rel.as_posix()] = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             pass
     return files
@@ -212,6 +230,7 @@ def build_manifest_from_dir(
     shm_capable: bool = False,
     source_db: Optional[str] = None,
     threads: Optional[int] = None,
+    language: str = "cpp",
     write: bool = True,
 ) -> EngineManifest:
     """Assemble (and optionally write) an :class:`EngineManifest` for a generated engine.
@@ -233,6 +252,7 @@ def build_manifest_from_dir(
         shm_capable=shm_capable,
         source_db=source_db,
         threads=threads,
+        language=language,
         expected_tables={t: tuple(cols) for t, cols in (expected_tables or {}).items()},
     )
     if write:

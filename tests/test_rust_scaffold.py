@@ -123,3 +123,29 @@ def test_ssd_is_refused_rather_than_silently_wrong(scaffold, tmp_path):
     features = PrepareFeatures(language="rust").resolve(DBStorage.SSD)
     with pytest.raises(NotImplementedError, match="in-memory"):
         prep.build_scaffold_files(features)
+
+
+def test_rust_engine_ids_are_content_addressed_not_collided(tmp_path):
+    """engine_source_files must see a Rust engine's nested sources.
+
+    A non-recursive *.cpp/*.hpp glob finds NOTHING in a Rust workspace, so every
+    Rust engine would content-address to the id of the empty file set -- and
+    publishing one would silently overwrite another.
+    """
+    from synnodb.router.manifest import content_engine_id, engine_source_files
+
+    def engine(root: Path, body: str) -> Path:
+        (root / "builder" / "src").mkdir(parents=True)
+        (root / "builder" / "src" / "lib.rs").write_text(body)
+        # cargo scratch: large, regenerable, and must not enter the id.
+        (root / "target").mkdir()
+        (root / "target" / "junk.rs").write_text("XXX")
+        return root
+
+    a = engine(tmp_path / "a", "pub struct Database { x: i32 }")
+    b = engine(tmp_path / "b", "pub struct Database { y: i64 }")
+
+    files_a = engine_source_files(a)
+    assert set(files_a) == {"builder/src/lib.rs"}  # nested source found, target/ skipped
+
+    assert content_engine_id(files_a) != content_engine_id(engine_source_files(b))
