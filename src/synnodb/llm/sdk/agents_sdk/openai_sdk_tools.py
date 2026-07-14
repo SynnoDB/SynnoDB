@@ -39,7 +39,25 @@ def make_custom_openai_shell_tool(
     async def on_invoke(
         ctx: RunContextWrapper[Any], args_json: str
     ) -> Dict[int, Dict[str, str]]:
-        args = CustomShellArgs.model_validate_json(args_json)
+        try:
+            args = CustomShellArgs.model_validate_json(args_json)
+        except ValidationError as e:
+            # See make_custom_openai_apply_patch_tool's on_invoke for why this is reported back to
+            # the model instead of left to propagate and crash the run. Reported in this tool's own
+            # result shape (a failed command), so the model reads it the way it reads any failure.
+            logger.warning(
+                "shell received arguments that failed schema validation: %s", e
+            )
+            return {
+                0: {
+                    "stdout": "",
+                    "stderr": (
+                        "Error: shell arguments failed validation. Retry with command (str) and, "
+                        f"if provided, an integer timeout_ms.\nDetails: {e}"
+                    ),
+                    "exit_code": 1,
+                }
+            }
 
         # assemble ShellCommandRequest object
         request = ShellCommandRequest(
@@ -284,7 +302,23 @@ def make_custom_openai_replace_in_file_tool(
     impl = CustomReplaceInFileTool(editor=editor)
 
     async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
-        args = ReplaceInFileArgs.model_validate_json(args_json)
+        try:
+            args = ReplaceInFileArgs.model_validate_json(args_json)
+        except ValidationError as e:
+            # See make_custom_openai_apply_patch_tool's on_invoke for why this is reported back to
+            # the model instead of left to propagate and crash the run. The common miss here is a
+            # model conflating this tool with apply_patch and sending {file_path, diff} - it has no
+            # old_string/new_string, so name them explicitly rather than only echoing pydantic.
+            logger.warning(
+                "replace_in_file received arguments that failed schema validation: %s",
+                e,
+            )
+            return (
+                "Error: replace_in_file arguments failed validation. It takes an exact-string "
+                "edit, not a diff: retry with file_path (str), old_string (str, the current text "
+                "byte-for-byte) and new_string (str). To apply a diff hunk instead, call "
+                f"apply_patch.\nDetails: {e}"
+            )
         return await impl(
             args.file_path, args.old_string, args.new_string, args.replace_all
         )
