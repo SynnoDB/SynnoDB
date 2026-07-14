@@ -45,14 +45,18 @@ def _js_types() -> dict[str, tuple[str, str]]:
 def _chips() -> dict[str, tuple[str, str, list[str]]]:
     """Type-filter chips as {data-val: (label, css_class, all_classes)}, in DOM order."""
     block = re.search(
-        r'<div class="log-filter-chips" data-filter="type">(.*?)</div>', _INDEX_HTML, re.S
+        r'<div class="log-filter-chips" data-filter="type">(.*?)</div>',
+        _INDEX_HTML,
+        re.S,
     )
     assert block, 'type chip container (data-filter="type") not found in index.html'
     chips = {}
     for classes, val, label in (m.groups() for m in _CHIP_RE.finditer(block.group(1))):
         cls_list = classes.split()
         lt_cls = [c for c in cls_list if c.startswith("lt-")]
-        assert len(lt_cls) == 1, f"chip {val!r} must carry exactly one lt-* class, got {lt_cls}"
+        assert len(lt_cls) == 1, (
+            f"chip {val!r} must carry exactly one lt-* class, got {lt_cls}"
+        )
         chips[val] = (label.strip(), lt_cls[0], cls_list)
     assert chips, "no chips parsed out of the type filter"
     return chips
@@ -81,8 +85,12 @@ def test_chip_labels_and_colors_match_the_badges() -> None:
     chips = _chips()
     for log_type, (label, cls) in _js_types().items():
         chip_label, chip_cls, _ = chips[log_type]
-        assert chip_label == label, f"{log_type} chip reads {chip_label!r}, badge reads {label!r}"
-        assert chip_cls == cls, f"{log_type} chip is styled {chip_cls!r}, badge is {cls!r}"
+        assert chip_label == label, (
+            f"{log_type} chip reads {chip_label!r}, badge reads {label!r}"
+        )
+        assert chip_cls == cls, (
+            f"{log_type} chip is styled {chip_cls!r}, badge is {cls!r}"
+        )
 
 
 def test_chip_styles_are_defined() -> None:
