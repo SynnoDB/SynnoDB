@@ -44,6 +44,7 @@ from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils.utils import DataSource, DBStorage
 from synnodb.workloads.workload_provider import ExecSettings
 from synnodb.workloads.workload_provider_olap import OLAPExecSettings, OLAPWorkload
+from synnodb.workloads.workload_spec import get_workload_spec
 
 GOLDEN_DIR = Path(__file__).parent / "golden_example_conversations"
 UPDATE_GOLDEN = os.environ.get("UPDATE_GOLDEN") == "1"
@@ -94,13 +95,39 @@ def _mock_run_tool() -> MagicMock:
     return run_tool
 
 
-def _make_ctx(db_storage: DBStorage) -> ConvContext:
+@pytest.fixture(autouse=True)
+def _golden_subset_root(tmp_path_factory) -> Path:
+    """The parquet root the golden ConvContext points at.
+
+    The planner / storage-plan prompts list the data subsets `query_data` may read, and that list
+    is read off the parquet root, so the goldens need a real one. Materialize the TPC-H ladder
+    (sf1, sf2, sf20) as empty files: `available_subsets` only checks that each subset's files
+    exist, and the rendered menu names subset *values*, never paths - so the golden bytes stay
+    byte-stable across machines and runs."""
+    root = tmp_path_factory.mktemp("golden_parquet_root")
+    spec = get_workload_spec(OLAPWorkload.TPCH.value)
+    for sf in (1, 2, 20):
+        subset_dir = root / f"sf{sf}"
+        subset_dir.mkdir()
+        for path in spec.subset_files(subset_dir):
+            path.touch()
+    return root
+
+
+def _make_ctx(db_storage: DBStorage, subset_root: Path) -> ConvContext:
     """A ConvContext with every lazy input pinned to a fixed synthetic value.
 
     The lazy caches are pre-seeded so the builders render deterministic prompt
     bytes without touching a workload provider or the query-execution cache."""
     provider = MagicMock(name="workload_provider")
     provider.dataset_schema = SCHEMA
+    # The data-subset menu in the prompts comes off the provider, so give it a real spec and a
+    # real (if empty) parquet root: the prompt then renders the subset list an actual TPC-H run
+    # shows. A MagicMock spec would not do - its `fast_check_sfs` is truthy but iterates empty.
+    provider.spec = get_workload_spec(OLAPWorkload.TPCH.value)
+    provider.benchmark_sf = 20
+    provider.base_parquet_dir = subset_root
+    provider.prepare = lambda: None
 
     ctx = ConvContext(
         query_ids=QUERY_IDS,
@@ -251,65 +278,73 @@ def _assert_matches_golden(name: str, doc: str) -> None:
 
 
 # ------------------- rendered documents, one per example conversation --------
-def _storage_plan_doc() -> str:
+def _storage_plan_doc(subset_root: Path) -> str:
     from synnodb.conversations.examples import storage_plan
 
-    ctx = _make_ctx(DBStorage.IN_MEMORY)
+    ctx = _make_ctx(DBStorage.IN_MEMORY, subset_root)
     return _render_doc([("stages", storage_plan.build(ctx))], ctx)
 
 
-def _base_impl_doc() -> str:
+def _base_impl_doc(subset_root: Path) -> str:
     from synnodb.conversations.examples import base_impl
 
-    ctx = _make_ctx(DBStorage.IN_MEMORY)
+    ctx = _make_ctx(DBStorage.IN_MEMORY, subset_root)
     return _render_doc([("stages", base_impl.build(ctx))], ctx)
 
 
-def _optim_round1_doc(db_storage: DBStorage) -> str:
+def _optim_round1_doc(db_storage: DBStorage, subset_root: Path) -> str:
     from synnodb.conversations.examples import optim
 
-    ctx = _make_ctx(db_storage)
+    ctx = _make_ctx(db_storage, subset_root)
     return _render_doc([("stages", optim.build(ctx, plan_source="umbra"))], ctx)
 
 
-def _mt_round2_doc(db_storage: DBStorage) -> str:
+def _mt_round2_doc(db_storage: DBStorage, subset_root: Path) -> str:
     from synnodb.conversations.examples import add_mt
 
-    ctx = _make_ctx(db_storage)
+    ctx = _make_ctx(db_storage, subset_root)
     return _render_doc([("stages", add_mt.build(ctx))], ctx)
 
 
-def _check_sf_doc() -> str:
+def _check_sf_doc(subset_root: Path) -> str:
     from synnodb.conversations.examples import check_sf
 
-    ctx = _make_ctx(DBStorage.IN_MEMORY)
+    ctx = _make_ctx(DBStorage.IN_MEMORY, subset_root)
     return _render_doc([("stages", check_sf.build(ctx, target_sf=100))], ctx)
 
 
 # ------------------------------------ tests ----------------------------------
-def test_golden_storage_plan():
-    _assert_matches_golden("storage_plan", _storage_plan_doc())
+def test_golden_storage_plan(_golden_subset_root):
+    _assert_matches_golden("storage_plan", _storage_plan_doc(_golden_subset_root))
 
 
-def test_golden_base_impl():
-    _assert_matches_golden("base_impl", _base_impl_doc())
+def test_golden_base_impl(_golden_subset_root):
+    _assert_matches_golden("base_impl", _base_impl_doc(_golden_subset_root))
 
 
-def test_golden_in_mem_1_optim():
-    _assert_matches_golden("in_mem_1_optim", _optim_round1_doc(DBStorage.IN_MEMORY))
+def test_golden_in_mem_1_optim(_golden_subset_root):
+    _assert_matches_golden(
+        "in_mem_1_optim", _optim_round1_doc(DBStorage.IN_MEMORY, _golden_subset_root)
+    )
 
 
-def test_golden_ssd_1_st_optim():
-    _assert_matches_golden("ssd_1_st_optim", _optim_round1_doc(DBStorage.SSD))
+def test_golden_ssd_1_st_optim(_golden_subset_root):
+    _assert_matches_golden(
+        "ssd_1_st_optim", _optim_round1_doc(DBStorage.SSD, _golden_subset_root)
+    )
 
 
-def test_golden_in_mem_2_mt():
-    _assert_matches_golden("in_mem_2_mt", _mt_round2_doc(DBStorage.IN_MEMORY))
+def test_golden_in_mem_2_mt(_golden_subset_root):
+    _assert_matches_golden(
+        "in_mem_2_mt", _mt_round2_doc(DBStorage.IN_MEMORY, _golden_subset_root)
+    )
 
 
-def test_golden_ssd_2_mt():
-    _assert_matches_golden("ssd_2_mt", _mt_round2_doc(DBStorage.SSD))
+def test_golden_ssd_2_mt(_golden_subset_root):
+    _assert_matches_golden(
+        "ssd_2_mt", _mt_round2_doc(DBStorage.SSD, _golden_subset_root)
+    )
 
 
-def test_golden_check_sf():
-    _assert_matches_golden("check_sf", _check_sf_doc())
+def test_golden_check_sf(_golden_subset_root):
+    _assert_matches_golden("check_sf", _check_sf_doc(_golden_subset_root))

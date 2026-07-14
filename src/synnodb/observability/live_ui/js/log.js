@@ -169,9 +169,13 @@ function logDesc(type, d) {
   if (type === 'data_inspect') {
     const status = d['data_inspect/status'] || (d['data_inspect/error'] ? 'error' : 'ok');
     const cached = d['data_inspect/cached'] ? ' · cached' : '';
+    // The agent picks sample-or-full per query, so which one it read is part of the story.
+    const sf = d['data_inspect/full_dataset'] != null
+      ? (d['data_inspect/full_dataset'] ? 'full dataset' : 'sample')
+      : (d['data_inspect/sf'] != null ? 'sf ' + d['data_inspect/sf'] : null);
     const sql = String(d['data_inspect/sql'] || '').replace(/\s+/g, ' ').trim();
     const q = sql.length > 48 ? sql.slice(0, 46) + '…' : sql;
-    return [status, q].filter(Boolean).join(' · ') + cached;
+    return [status, sf, q].filter(Boolean).join(' · ') + cached;
   }
   if (type === 'validate') {
     const mode = d['validation/run_mode'];

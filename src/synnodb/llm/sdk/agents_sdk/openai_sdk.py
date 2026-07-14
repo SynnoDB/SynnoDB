@@ -48,6 +48,20 @@ from synnodb.utils.model_setup import resolve_model_extra_body, setup_model_conf
 
 logger = logging.getLogger(__name__)
 
+# Injected into the agent instructions when query_data is wired up. It must not contradict the
+# sample-vs-full-dataset note the tool description and the planner prompts carry (see
+# ``workload_spec.format_subset_menu``): both say the sample is a *sample*, so counts, ranges and
+# distincts are measured on the full dataset, never scaled up from the sample. An earlier version
+# of this string told the agent to extrapolate row counts and silently fought that note.
+DATA_INSPECT_HINT = (
+    "You can run read-only SQL against the actual benchmark data with the query_data tool to "
+    "inspect data distributions, cardinalities, null density, and value ranges that inform your "
+    "physical-design choices. Its `full_dataset` flag chooses what it reads: prefer the sample "
+    "(the default, and far cheaper), and set `full_dataset=true` only when you need real numbers. "
+    "Never scale the sample's row counts, min/max or distinct counts up to full scale - it is a "
+    "sample, so measure any number you bake into the design on the full dataset itself. "
+)
+
 
 class OpenAIAgentsSDKWrapper(SDKWrapper):
     def __init__(
@@ -106,11 +120,7 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
         # Mention the data-inspection tool in the agent instructions only when it is actually
         # available, so the system prompt never advertises a tool the model cannot call.
         data_inspect_hint = (
-            "You can run read-only SQL against the actual benchmark data with the query_data "
-            "tool to inspect data distributions, cardinalities, null density, and value ranges "
-            "that inform your physical-design choices. "
-            if openai_data_inspect_tool is not None
-            else ""
+            DATA_INSPECT_HINT if openai_data_inspect_tool is not None else ""
         )
 
         # Always expose the search/replace edit tool alongside apply_patch. It
