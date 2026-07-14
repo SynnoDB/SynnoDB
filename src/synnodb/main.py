@@ -21,7 +21,7 @@ from synnodb.cpp_runner.prepare_repo.prepare_features import (
 )
 from synnodb.cpp_runner.prepare_repo.prepare_workspace import PrepareWorkspace
 from synnodb.ram_check import InsufficientRamError
-from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWorkspace
+from synnodb.cpp_runner.engine_factory import make_prepare_workspace
 from synnodb.cpp_runner.prepare_repo.retrieve_framework_version_hash import (
     get_framework_version_artifacts_str,
 )
@@ -294,7 +294,8 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     framework_code_content = get_framework_version_artifacts_str()
 
     if usecase == Usecase.OLAP:
-        prepare_ws = OLAPPrepareWorkspace(
+        prepare_ws = make_prepare_workspace(
+            language,
             db_storage=db_storage,
             workload_provider=workload_provider,
             workspace_dir=workspace_path,
@@ -501,6 +502,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         output_truncation=compile_output_truncate,
         db_storage=db_storage,
         usecase=usecase,
+        language=language,
         untracked_cpp_runner_content=framework_code_content,
     )
 

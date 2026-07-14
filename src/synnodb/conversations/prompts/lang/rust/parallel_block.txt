@@ -1,0 +1,22 @@
+Parallel-ready execution structure: the workspace already provides the shared query pool
+through `synno_rt::pool` (`parallel_for`, `parallel_reduce`), backed by rayon and sized/pinned
+from CORE_IDS. Non-parallel base validation runs with CORE_IDS=1, so these primitives take
+their serial fast path and are identical to a plain loop; later MT stages scale the same code
+by raising the thread count. Write the base implementation so changing CORE_IDS alone keeps
+the query correct - no separate ST/MT code path should be needed. For the dominant
+scan/aggregation in this query, prefer
+`parallel_reduce(n_morsels_or_rows, identity, fold, combine)` now instead of writing a serial
+loop you intend to parallelize later. Keep the shape workload-agnostic:
+- partition by logical row ranges or morsels of the dominant input table;
+- fold each slice into private per-thread/per-slice state only - the fold closure takes the
+  accumulator by value and returns it, so there is no shared hot-loop map, output vector,
+  counter, or Mutex to contend on;
+- build shared lookup/hash structures before the parallel region and borrow them read-only
+  inside it (an immutable `&` borrow is all rayon needs, and the compiler enforces it);
+- merge partials deterministically in `combine`. For aggregates, use associative/commutative
+  integer or exact fixed-point merges (`+`, min, max, bit-or, element-wise bucket add). For
+  ordered projections, merge earlier logical slices before later slices, then apply SQL
+  ORDER BY/LIMIT;
+- do not nest `parallel_for` / `parallel_reduce`, and do not reduce DECIMAL/INT aggregates
+  through floating point. If a query genuinely cannot benefit from the pool, keep the
+  accumulator shape private-and-mergeable so it can be parallelized safely later.

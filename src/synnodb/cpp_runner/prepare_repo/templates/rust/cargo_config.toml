@@ -1,0 +1,8 @@
+# The host hot-reloads a plugin by comparing its GNU build-id (hotpatch/plugin.hpp:
+# needs_reload() diffs the id in the file against the id of the loaded image).
+# rustc does not emit one by default, so without this every Rust plugin would
+# have an empty build-id, needs_reload() would compare "" == "" and always answer
+# false, and a recompiled engine would never actually be reloaded -- the run would
+# silently keep executing the previous code.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--build-id=sha1"]

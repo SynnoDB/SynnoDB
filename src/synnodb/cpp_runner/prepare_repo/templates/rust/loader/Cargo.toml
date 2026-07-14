@@ -1,0 +1,13 @@
+[package]
+name = "engine_loader"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+synno_rt = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }

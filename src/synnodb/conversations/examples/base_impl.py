@@ -104,6 +104,8 @@ def build(ctx: ConvContext) -> list[StageItem]:
             base_impl_todo_filename=base_impl_todo_filename,
             read_storage_plan=ctx.bespoke_storage,
             lang=ctx.lang_profile,
+            query_file=ctx.filenames.query_file(qid),
+            query_file_glob=ctx.filenames.query_file_glob,
         )
 
     def _exec_validate_prompt(_exec_settings, _rt, *, qid: str):

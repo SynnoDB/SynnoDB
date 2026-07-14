@@ -79,9 +79,22 @@ CPP_PROFILE = LanguageProfile(
     aliasing_hint="restrict semantics",
 )
 
+RUST_PROFILE = LanguageProfile(
+    name="rust",
+    display_name="Rust",
+    parallel_primitive="parallel_reduce",
+    decimal_accum_type="i128",
+    hot_parse_antipatterns="str::parse, String allocation, slicing into a new String",
+    # Rust has no `restrict`. The equivalent signal is to hand the optimizer a
+    # slice whose bounds it can prove, so it can drop the per-element bounds
+    # check and vectorize -- iterators and chunks_exact rather than indexing.
+    aliasing_hint="iterating slices directly (or chunks_exact) so the bounds check is elided",
+)
+
 
 _PROFILES: dict[str, LanguageProfile] = {
     CPP_PROFILE.name: CPP_PROFILE,
+    RUST_PROFILE.name: RUST_PROFILE,
 }
 
 

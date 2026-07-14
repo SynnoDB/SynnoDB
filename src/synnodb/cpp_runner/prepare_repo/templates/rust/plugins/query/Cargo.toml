@@ -1,0 +1,18 @@
+[package]
+name = "query_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+name = "query"
+crate-type = ["cdylib"]
+
+[features]
+trace = ["engine_query/trace"]
+
+[dependencies]
+synno_rt = { workspace = true }
+engine_query = { path = "../../query" }
+# For Database: the shim casts the host's opaque handle back to it.
+engine_builder = { path = "../../builder" }

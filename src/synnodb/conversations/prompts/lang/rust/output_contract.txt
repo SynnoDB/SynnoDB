@@ -1,0 +1,38 @@
+Output contract (CRITICAL for exactness): run_q${query_id} returns `Result<RecordBatch>` built with
+`synno_rt::egress` (`use synno_rt::prelude::*;`). Each output column must reproduce DuckDB's
+type AND value exactly:
+- `synno_rt::egress` is the sanctioned extension point for generic output behavior. READ it
+  before emitting results. If a supported flat scalar output family or exact target type is
+  missing, extend `egress` once with a reusable builder that preserves exact values, null
+  masks, and Arrow safe casts, then call that builder from `q${query_id}.rs`. Do NOT format values
+  as strings, route exact values through f64, or build ad hoc Arrow arrays in the query file to
+  work around a missing helper. If the result type is truly unsupported by the framework, fail
+  explicitly (return an Err) instead of returning a lossy table.
+- A DECIMAL output column (a SUM of decimals, or a decimal expression) MUST be accumulated as
+  the exact unscaled integer in i128 - never through f64 or a formatted string - and emitted
+  with `decimal_column(&values, precision, scale, &valid)`, where scale is DuckDB's column
+  scale. The scales COMPOSE through the arithmetic: a DECIMAL(_,2) price times (1 - a
+  DECIMAL(_,2) discount) is scale 4, and times (1 + a DECIMAL(_,2) tax) is scale 6, so do that
+  arithmetic on the unscaled integers and declare the resulting scale. precision > 38 emits
+  decimal256 automatically. A HUGEINT output is the same exact-integer family: emit it with
+  `hugeint_column(&values, &valid)`.
+- Only genuinely DOUBLE columns (AVG, ...) use `double_column`. AVG is DOUBLE in DuckDB even
+  over a DECIMAL column: keep the SUM exact in i128 and divide once at the end. Pick the
+  builder that matches the output column's value family and your Rust accumulator/storage type:
+  `integer_column(&v, &valid, target)` for signed/unsigned integer vectors of any Rust width,
+  `uint64_column` for UBIGINT values above i64::MAX, `bool_column` for BOOLEAN, `string_column`
+  for text, `date_column` for DATE (i32 days since 1970-01-01). Pass an Arrow target like
+  `Some(&DataType::Int32)` when the DuckDB output type is narrower than the canonical family.
+  The builder casts to the column's exact Arrow type and returns an Err on an
+  impossible/overflowing cast, so feed it the matching type. Build the result with
+  `make_table(vec![(name, column), ...])` in DuckDB's column order.
+- NULLs are first class and must follow SQL semantics, never null->0/"". If an output cell can
+  be NULL (a LEFT JOIN miss, MIN/MAX/AVG over an empty/all-null group, NULLIF, a
+  NULL-propagating expression, a value derived from a nullable input column), build a Validity
+  mask (valid[i]==0 marks row i NULL) and pass it to the builder. An empty Validity means "no
+  nulls". For a NULLABLE input column, read its nulls with the ingest helper's `*_nullable`
+  variant - `as_integer_nullable::<T>(&t, "c")?` returns both the values and the mask - and
+  honour them (COUNT(col)/AVG skip NULL; NULL=NULL is not equality; arithmetic on NULL is NULL).
+The correctness check compares DECIMAL/INT/DATE/STRING/BOOL/TIMESTAMP columns for EXACT equality
+and a NULL as distinct from any value (only DOUBLE columns are tolerant), so a decimal routed
+through f64, a wrong type, or a NULL emitted as 0 will all fail.

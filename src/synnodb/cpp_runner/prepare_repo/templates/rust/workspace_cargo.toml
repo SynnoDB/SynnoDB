@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "loader", "builder", "query",
+    "plugins/loader", "plugins/builder", "plugins/query",
+]
+
+# Six crates, three .so files. The split mirrors the C++ engine exactly:
+#
+#   loader/ builder/ query/   are rlibs holding the TYPES and the logic. The
+#                            builder needs loader::ParquetTables and the query
+#                            needs builder::Database, so those crates depend on
+#                            each other -- the Rust equivalent of sharing a
+#                            struct through parquet_reader.hpp / db_loader.hpp.
+#
+#   plugins/*                are the cdylibs the host dlopens. Each exports
+#                            plugin_query() and nothing else.
+#
+# The shim MUST be its own crate. plugin_query is #[no_mangle], so if it lived in
+# the rlibs, linking libquery.so (which statically links builder and loader for
+# their types) would pull in three definitions of it and fail on a duplicate
+# symbol. C++ avoids this the same way: builder_api.cpp is a separate translation
+# unit compiled only into libbuilder.so.
+
+[workspace.dependencies]
+synno_rt = { path = "$synno_rt_path" }
+arrow = "59"
+parquet = "59"
+rayon = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = true       # the crash handler symbolizes backtraces; -O3 with symbols, like the C++ build
+
+[profile.dev]
+opt-level = 0
+debug = true

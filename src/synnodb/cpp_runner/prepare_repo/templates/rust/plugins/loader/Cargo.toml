@@ -1,0 +1,15 @@
+[package]
+name = "loader_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+# `name` (not the package name) sets the file name: the host dlopens
+# ./build/libloader.so.
+name = "loader"
+crate-type = ["cdylib"]
+
+[dependencies]
+synno_rt = { workspace = true }
+engine_loader = { path = "../../loader" }

@@ -106,9 +106,26 @@ class PrepareWorkspace:
                 files[filename] = DELETE_KW
         return files
 
-    @staticmethod
-    def _get_readonly_files() -> tuple[set[str], set[str]]:
-        readonly_files_not_git_tracked = {
+    @classmethod
+    def _get_readonly_files(cls) -> tuple[set[str], set[str]]:
+        """The scaffold files the agent may not edit.
+
+        A classmethod, not a static one: the names are language-specific
+        (``query_impl.cpp`` vs ``query/src/lib.rs``), so a Rust workspace
+        overrides the untracked half.
+        """
+        return cls._readonly_scaffold_files(), {
+            "queries.md",
+            # The workspace's prepare record: committed with every snapshot (it
+            # is the authoritative record of what the files were prepared with)
+            # but never modifiable by the agent.
+            PREPARE_METADATA_FILENAME,
+        }
+
+    @classmethod
+    def _readonly_scaffold_files(cls) -> set[str]:
+        """Read-only scaffold that is NOT git-tracked (always rewritten on prepare)."""
+        return {
             "args_parser.hpp",
             "query_impl.hpp",
             "query_impl.cpp",
@@ -117,16 +134,6 @@ class PrepareWorkspace:
             "query_pool.hpp",
             "thread_pool.hpp",
         }
-
-        readonly_files_to_be_git_tracked = {
-            "queries.md",
-            # The workspace's prepare record: committed with every snapshot (it
-            # is the authoritative record of what the files were prepared with)
-            # but never modifiable by the agent.
-            PREPARE_METADATA_FILENAME,
-        }
-
-        return readonly_files_not_git_tracked, readonly_files_to_be_git_tracked
 
     # ------------------------ interpreter entry points -------------------------
     def prepare(

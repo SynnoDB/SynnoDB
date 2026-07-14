@@ -449,6 +449,8 @@ def base_impl_query_prompt(
     base_impl_todo_filename: str,
     read_storage_plan: bool,
     lang: LanguageProfile = CPP_PROFILE,
+    query_file: str | None = None,
+    query_file_glob: str | None = None,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_impl_query_ssd.txt"
@@ -512,6 +514,10 @@ def base_impl_query_prompt(
         storage_plan_check=storage_plan_check,
         storage_plan_file_list_item=storage_plan_file_list_item,
         lang_parallel_primitive=lang.parallel_primitive,
+        # The file the model writes this query into. Language-specific
+        # (query1.cpp vs query/src/q1.rs), so it comes from Filenames.
+        query_file=query_file or f"query{query_id}.cpp",
+        query_file_glob=query_file_glob or "query*.cpp",
     )
     # The parallel-execution structure and the exact-output contract are the two
     # blocks that are wholly language-specific (helper APIs, the exact-decimal

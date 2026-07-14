@@ -13,6 +13,7 @@
 //! it produces an engine that is quietly wrong on some queries.
 
 pub mod abi;
+pub mod args;
 pub mod egress;
 pub mod ingest;
 pub mod pool;
@@ -44,6 +45,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// What a generated query file works with.
 pub mod prelude {
+    pub use crate::args::ArgScanner;
     pub use crate::egress::{
         bool_column, date_column, decimal_column, double_column, hugeint_column, int64_column,
         integer_column, make_table, string_column, uint64_column, Validity,

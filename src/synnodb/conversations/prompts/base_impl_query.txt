@@ -2,7 +2,7 @@ ${prefix} query ${query_id}.
 The SQL query template to implement is:
 ${sql}
 
-Add the query execution logic to `query${query_id}.cpp`.
+Add the query execution logic to `${query_file}`.
 Align with the existing storage layout and value-encoding implementation in `${builder_path}`.
 To generate speedups over DuckDB you need to leverage the storage plan implementation fully. Since we are a bespoke system we expect large speedups.
 You may use utmost optimizations like SIMD, later materialization etc.
@@ -11,7 +11,7 @@ ${storage_plan_check}
 
 The test for where a piece of logic belongs is whether it depends on this call's arguments, not how fast or how cleanly it is written: anything derived purely from the base columns - independent of this request's arguments - is build-time state and must be computed once in `${builder_path}` and read from `Database`, never recomputed inside `run_q${query_id}`. This holds even if the recomputation itself is well-optimized (e.g. a clean `${lang_parallel_primitive}` over the full table): an efficient full-table pass repeated on every call is still wasted work compared to doing it once at build time, and does not satisfy the storage plan. Only logic that genuinely varies per call (filtering/joining against this request's argument values) belongs in the query file. The storage layer must actually provide what the plan promised before this query counts as implemented.
 
-Limit file inspection to: `${builder_path}`, `${query_impl_path}`${storage_plan_file_list_item}, `${base_impl_todo_filename}`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
+Limit file inspection to: `${builder_path}`, `${query_impl_path}`${storage_plan_file_list_item}, `${base_impl_todo_filename}`, and at most 3 similar `${query_file_glob}` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
 
 Correctness is the gate: an incorrect result is worthless no matter how fast it is. But that is not license to defer the storage-plan structures, SIMD, or the ${lang_parallel_primitive} work described below to a later pass - implement them now, as part of getting this query both correct and fast. Do not ship a correct-but-naive version with the optimization left as a followup.
 

@@ -1,0 +1,19 @@
+[package]
+name = "engine_query"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+# Mirrors -DTRACE: the profiling macros compile away unless this is on.
+trace = ["synno_rt/trace"]
+
+[dependencies]
+synno_rt = { workspace = true }
+engine_builder = { path = "../builder" }
+engine_loader = { path = "../loader" }
+arrow = { workspace = true }
+rayon = { workspace = true }

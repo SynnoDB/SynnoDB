@@ -7,6 +7,11 @@ edition = "2021"
 # the model. Mirrors cpp_helpers/ + api/ on the C++ side, and is shipped inside
 # the Python package the same way, path-depended on from the generated workspace.
 
+[features]
+# Mirrors -DTRACE on the C++ side: the profile_scope!/trace_count! macros compile
+# away entirely unless this is on, so an untraced build pays nothing for them.
+trace = []
+
 [dependencies]
 arrow = "59"
 parquet = "59"

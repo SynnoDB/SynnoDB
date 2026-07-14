@@ -2,12 +2,12 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from synnodb.cpp_runner.compiler.compiler_factory_olap import OLAPCompilerFactory
+from synnodb.cpp_runner.engine_factory import make_engine_builder
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.synth_framework.runtime_tracker import RuntimeTracker
 from synnodb.utils.cli_config import Usecase
-from synnodb.utils.utils import DBStorage
+from synnodb.utils.utils import DBStorage, EngineLang
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ class CompileTool:
         db_storage: DBStorage,
         untracked_cpp_runner_content: str,
         usecase: Usecase = Usecase.OLAP,
+        language: EngineLang = EngineLang.CPP,
         compile_cache_dir: Optional[Path] = None,
         do_not_cache: bool = False,
         only_from_cache: bool = False,
@@ -32,10 +33,14 @@ class CompileTool:
         ] = None,  # restrict to 10000 chars ~ 2.5 Thousand tokens
     ) -> None:
         self.cwd = cwd
-        if usecase == Usecase.OLAP:
-            factory = OLAPCompilerFactory(db_storage=db_storage)
-        self.compiler = factory.make_compiler(
-            cwd,
+        if usecase != Usecase.OLAP:
+            raise ValueError(f"Unsupported usecase: {usecase}")
+        # The only thing the language changes here is which toolchain gets built;
+        # __call__ below is identical for both (see EngineBuilder).
+        self.compiler = make_engine_builder(
+            language,
+            cwd=cwd,
+            db_storage=db_storage,
             compile_cache_dir=compile_cache_dir,
             git_snapshotter=git_snapshotter,
             runtime_tracker=runtime_tracker,

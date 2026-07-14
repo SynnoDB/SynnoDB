@@ -1,0 +1,15 @@
+[package]
+name = "builder_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+name = "builder"
+crate-type = ["cdylib"]
+
+[dependencies]
+synno_rt = { workspace = true }
+engine_builder = { path = "../../builder" }
+# For ParquetTables: the shim casts the host's opaque handle back to it.
+engine_loader = { path = "../../loader" }

@@ -1,0 +1,14 @@
+[package]
+name = "engine_builder"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+synno_rt = { workspace = true }
+engine_loader = { path = "../loader" }
+arrow = { workspace = true }
+rayon = { workspace = true }
