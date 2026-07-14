@@ -64,14 +64,18 @@ class ApplyPatchCacheType:
 
 
 class RejectedApplyPatchCacheType:
-    """Cache entry for an apply_patch call rejected at argument-schema validation.
+    """Cache entry for an edit-tool call rejected at argument-schema validation.
 
-    Keyed on the raw tool arguments and looked up BEFORE the arguments are
-    re-validated, so the recorded verdict - not the current rules - decides the
-    outcome on replay. This keeps old runs replayable even if what counts as an
-    invalid apply_patch later changes. The rejection has no file side effects, so
-    the entry stores only what a faithful replay needs: the exact ``message``
-    returned to the model, plus ``path``/``reason`` for the live-ui stats."""
+    Keyed on the tool name plus the raw tool arguments and looked up BEFORE the
+    arguments are re-validated, so the recorded verdict - not the current rules -
+    decides the outcome on replay. This keeps old runs replayable even if what counts
+    as an invalid call later changes. The rejection has no file side effects, so the
+    entry stores only what a faithful replay needs: the exact ``message`` returned to
+    the model, plus ``path``/``reason`` for the live-ui stats.
+
+    The class name predates apply_patch's siblings (replace_in_file, write_file) being
+    folded into the same path; it is kept as-is because pickled cache entries are
+    unpickled by class name."""
 
     def __init__(self, args_json: str, path: str | None, reason: str, message: str):
         self.args_json = args_json
@@ -345,53 +349,77 @@ class WorkspaceEditor:
         if entry is not None:
             self._run_stats_collector.add_to_activity_summary(entry)
 
-    def _rejected_patch_key(self, args_json: str) -> str:
+    def _rejected_call_key(self, tool_name: str, args_json: str) -> str:
+        # The tool name is part of the key: the edit tools overlap in argument shape (a
+        # bare {"path": ...} is an invalid call to both apply_patch and write_file), so
+        # keying on the arguments alone would let one tool replay the other's rejection
+        # message. For apply_patch this still hashes to "rejected_apply_patch", the key
+        # used before the other tools were folded in, so existing caches keep replaying.
+        assert tool_name, (
+            "A rejected call must be keyed by tool name; without it the edit tools - "
+            "which overlap in argument shape - would replay each other's verdicts."
+        )
         return utils.sha256(
             utils.stable_json(
-                {"op_type": "rejected_apply_patch", "args_json": args_json}
+                {"op_type": f"rejected_{tool_name}", "args_json": args_json}
             )
         )
 
-    def replay_rejected_patch(self, args_json: str) -> str | None:
-        """If these exact apply_patch arguments were recorded as a rejection, replay
-        that rejection from cache and return the original tool message; otherwise
-        return None (the caller then validates the arguments live).
+    def replay_rejected_call(self, tool_name: str, args_json: str) -> str | None:
+        """If these exact tool arguments were recorded as a rejection, replay that
+        rejection from cache and return the original tool message; otherwise return
+        None (the caller then validates the arguments live).
 
         This is looked up BEFORE argument validation, so the recorded verdict wins
-        over the current rules: a later change to what counts as an invalid
-        apply_patch cannot alter the outcome of an already-recorded run. The stored
-        message is returned verbatim so the model sees the identical tool result it
-        saw when the run was recorded."""
+        over the current rules: a later change to what counts as an invalid call
+        cannot alter the outcome of an already-recorded run. The stored message is
+        returned verbatim so the model sees the identical tool result it saw when the
+        run was recorded."""
         if self._cache_dir is None:
             return None
-        cache_path = self._cache_path_for(self._rejected_patch_key(args_json))
+        cache_path = self._cache_path_for(self._rejected_call_key(tool_name, args_json))
         if not cache_path.exists():
             return None
         entry = utils.load_pickle(cache_path, RejectedApplyPatchCacheType)
-        assert entry is not None, f"Corrupt rejected-apply_patch cache: {cache_path}"
+        assert entry is not None, f"Corrupt rejected-call cache: {cache_path}"
+        assert entry.message, (
+            f"Rejected-{tool_name} cache entry carries no message: {cache_path}. The "
+            "message IS the replay - an empty one hands the model an empty tool result "
+            "where the recorded run showed it an error."
+        )
         self._run_stats_collector.record_apply_patch_rejected(entry.path, entry.reason)
         self._run_stats_collector.record_apply_patch_cache_hit()
-        logger.debug("Rejected apply_patch replayed from cache")
+        logger.debug("Rejected %s replayed from cache", tool_name)
         return entry.message
 
-    def record_rejected_patch(
-        self, args_json: str, path: str | None, reason: str, message: str
+    def record_rejected_call(
+        self,
+        tool_name: str,
+        args_json: str,
+        path: str | None,
+        reason: str,
+        message: str,
     ) -> None:
-        """Persist a freshly-rejected apply_patch, keyed on its raw arguments, so
-        later replays reproduce this exact rejection via replay_rejected_patch, and
+        """Persist a freshly-rejected edit-tool call, keyed on its raw arguments, so
+        later replays reproduce this exact rejection via replay_rejected_call, and
         record the rejection stats for the live-ui. Called only after a live
-        validation failure (i.e. replay_rejected_patch found no entry).
+        validation failure (i.e. replay_rejected_call found no entry).
 
         The rejection has no file side effects, so - unlike a real edit - it needs
         no snapshot and no activity-summary line (an activity line would perturb the
         supervisor prompt and its cache key). Writing is skipped under
         only_from_cache to honour read-only replay."""
-        self._run_stats_collector.record_apply_patch_rejected(path, reason)
+        assert message, (
+            f"A rejected {tool_name} must be recorded with the message the model was "
+            "given: it is returned verbatim on replay, so an empty one silently becomes "
+            "an empty tool result."
+        )
+        self.record_rejected_operation(path, reason)
 
         if self._cache_dir is None or self._do_not_cache or self._only_from_cache:
             return
 
-        cache_path = self._cache_path_for(self._rejected_patch_key(args_json))
+        cache_path = self._cache_path_for(self._rejected_call_key(tool_name, args_json))
         if cache_path.exists():
             return  # idempotent: an identical rejection was already recorded
 
@@ -402,6 +430,28 @@ class WorkspaceEditor:
             ),
             do_not_cache=self._do_not_cache,
         )
+
+    def record_rejected_operation(self, path: str | None, reason: str) -> None:
+        """Record an edit-tool call rejected before it reached the editor, so the
+        live-ui renders it as the rejected call the model saw rather than a silent,
+        uncached +0/-0 no-op (on_tool_end emits an edit metric either way).
+
+        Unlike record_rejected_call this caches nothing: it is for rejections a replay
+        re-derives on its own - the tool's own deterministic checks on already-validated
+        arguments - where there is no verdict to pin."""
+        self._run_stats_collector.record_apply_patch_rejected(path, reason)
+
+    def record_attempted_read(self, path: str) -> None:
+        """Record the path a read_file call was aimed at when the call is rejected before
+        reaching read_file itself, which is otherwise the only thing that logs it. Without
+        this, on_tool_end emits the step with a null path (see the note in read_file)."""
+        # The path is scraped off arguments that FAILED validation, so it is only as good
+        # as the caller's own check that it found a real one. A None here would be
+        # indistinguishable from the null path this exists to prevent.
+        assert isinstance(path, str) and path, (
+            f"record_attempted_read needs the path the read was aimed at, got {path!r}"
+        )
+        self._run_stats_collector.log_read_file_stats(path)
 
     # ---------- raw operations ----------
 

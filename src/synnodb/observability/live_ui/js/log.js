@@ -35,7 +35,11 @@ function logHasError(type, d) {
   if (type === 'validate') {
     return d['validation/compile_error'] === true || d['validation/correct'] === false;
   }
-  if (type === 'apply_patch') {
+  // write_file is a separate log type but carries the same apply_patch/* failure and
+  // rejection fields, so it fails on the same signals - omitting it here would render a
+  // rejected write as "⚠ invalid args (rejected)" (see logDesc) while the errors-only
+  // filter quietly dropped it.
+  if (type === 'apply_patch' || type === 'write_file') {
     const failed = parseJsonField(d['apply_patch/failed']);
     return (failed && failed.length > 0) || d['apply_patch/rejected'] === true;
   }

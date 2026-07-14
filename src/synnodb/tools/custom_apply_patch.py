@@ -77,6 +77,10 @@ class CustomApplyPatchTool:
             and raw_diff.strip()
             and not (diff or "").strip()
         ):
+            # Record it: this returns before the editor runs, and on_tool_end emits an
+            # edit metric regardless - an unrecorded rejection is logged as a successful
+            # +0/-0 no-op rather than the failure the model saw.
+            self._editor.record_rejected_operation(path, "create_file with no content")
             return (
                 f"Error: create_file for {path} received no file content (only "
                 "headers/markers). Resend the full file body; lines without a "
@@ -92,6 +96,9 @@ class CustomApplyPatchTool:
         elif op.type == "delete_file":
             result = self._editor.delete_file(op)
         else:
+            self._editor.record_rejected_operation(
+                path, f"unknown operation type: {op_type}"
+            )
             return f"Error: Unknown apply_patch operation type: {op_type}"
 
         if hasattr(result, "output") and result.output is not None:
