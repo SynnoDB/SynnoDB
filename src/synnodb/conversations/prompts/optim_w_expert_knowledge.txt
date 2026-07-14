@@ -1,4 +1,4 @@
-Optimize query ${query_id} using the expert knowledge on high-performance in-memory OLAP systems:
+Optimize query ${query_id} using the expert knowledge on high-performance ${storage_kind} OLAP systems:
 
 ${expert_knowledge}
 

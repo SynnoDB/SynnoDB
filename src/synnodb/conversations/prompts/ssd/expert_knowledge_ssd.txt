@@ -50,7 +50,7 @@ Avoid division or other high-latency operations per element.
 Precompute constants or perform normalization after aggregation.
 
 13. Avoid expensive general-purpose parsing in hot paths
-Do not use high-level string conversions or substring allocation inside tight loops (e.g. std::stoi, std::stod, substr).
+Do not use high-level string conversions or substring allocation inside tight loops (e.g. ${lang_hot_parse_antipatterns}).
 Prefer fixed-format, allocation-free parsing directly from raw memory.
 
 ## Containers & Lookup Structures
@@ -69,7 +69,7 @@ For fixed-width numeric keys or sortable primitives, prefer non-comparison-based
 ## Compiler Optimization Signals
 
 17. Communicate aliasing guarantees
-Tell the compiler when memory regions do not overlap (e.g. restrict semantics).
+Tell the compiler when memory regions do not overlap (e.g. ${lang_aliasing_hint}).
 
 18. Inline hot functions when beneficial
 Reduces call overhead and exposes optimization opportunities.

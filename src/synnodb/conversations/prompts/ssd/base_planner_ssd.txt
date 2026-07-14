@@ -1,7 +1,7 @@
 You are an expert database engineer and skilled programmer.
 
 # Context
-You will implement a specialized high-performance database engine in C++ that is optimized to only execute a predefined set of SQL queries. The engine has two phases:
+You will implement a specialized high-performance database engine in ${lang_display_name} that is optimized to only execute a predefined set of SQL queries. The engine has two phases:
 
 1. Build phase: Open the Parquet file paths provided by `ParquetTables`, stream the needed columns to flat binary files on disk, and populate a Database struct with ColumnHandle<T> descriptors backed by a shared BufferPool. The BufferPool pages column data in/out of a fixed RAM budget on demand - do NOT load all data into std::vector<T> RAM structures. Datatypes can be hard-coded to avoid interpretation overhead.
 2. Execution phase: Execute the predefined queries by streaming column pages through the buffer pool and writing results to CSV files. Query kernels receive typed pointers from pin_page() and release them with unpin_page() after processing each page.

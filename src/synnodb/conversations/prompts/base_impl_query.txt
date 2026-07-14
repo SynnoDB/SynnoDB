@@ -9,67 +9,16 @@ You may use utmost optimizations like SIMD, later materialization etc.
 
 ${storage_plan_check}
 
-The test for where a piece of logic belongs is whether it depends on this call's arguments, not how fast or how cleanly it is written: anything derived purely from the base columns - independent of this request's arguments - is build-time state and must be computed once in `${builder_path}` and read from `Database`, never recomputed inside `run_q${query_id}`. This holds even if the recomputation itself is well-optimized (e.g. a clean `parallel_reduce` over the full table): an efficient full-table pass repeated on every call is still wasted work compared to doing it once at build time, and does not satisfy the storage plan. Only logic that genuinely varies per call (filtering/joining against this request's argument values) belongs in the query file. The storage layer must actually provide what the plan promised before this query counts as implemented.
+The test for where a piece of logic belongs is whether it depends on this call's arguments, not how fast or how cleanly it is written: anything derived purely from the base columns - independent of this request's arguments - is build-time state and must be computed once in `${builder_path}` and read from `Database`, never recomputed inside `run_q${query_id}`. This holds even if the recomputation itself is well-optimized (e.g. a clean `${lang_parallel_primitive}` over the full table): an efficient full-table pass repeated on every call is still wasted work compared to doing it once at build time, and does not satisfy the storage plan. Only logic that genuinely varies per call (filtering/joining against this request's argument values) belongs in the query file. The storage layer must actually provide what the plan promised before this query counts as implemented.
 
 Limit file inspection to: `${builder_path}`, `${query_impl_path}`${storage_plan_file_list_item}, `${base_impl_todo_filename}`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
 
-Correctness is the gate: an incorrect result is worthless no matter how fast it is. But that is not license to defer the storage-plan structures, SIMD, or the parallel_reduce work described below to a later pass - implement them now, as part of getting this query both correct and fast. Do not ship a correct-but-naive version with the optimization left as a followup.
+Correctness is the gate: an incorrect result is worthless no matter how fast it is. But that is not license to defer the storage-plan structures, SIMD, or the ${lang_parallel_primitive} work described below to a later pass - implement them now, as part of getting this query both correct and fast. Do not ship a correct-but-naive version with the optimization left as a followup.
 
 ${parallelism_note}
 
-Parallel-ready execution structure: the in-memory workspace already provides the shared query pool
-through `query_pool.hpp` / `thread_pool.hpp` (`get_query_pool()`, `parallel_for`, and
-`parallel_reduce<T>`). Non-parallel base validation runs with CORE_IDS=1, so these primitives take
-their serial fast path and should be byte-identical to a plain loop; later MT stages can scale the
-same code by raising the thread count. Write the base implementation so changing CORE_IDS alone
-keeps the query correct - no separate ST/MT code path should be needed. For the dominant scan/aggregation in this query, prefer
-`parallel_reduce<T>(get_query_pool(), n_morsels_or_rows, identity, fold, combine)` now instead of
-writing a serial loop you intend to parallelize later. Keep the shape workload-agnostic:
-- partition by logical row ranges or morsels of the dominant input table;
-- fold each slice into private per-thread/per-slice state only - no shared hot-loop map, output
-  vector, counter, or mutex-protected accumulator;
-- build shared lookup/hash structures before the parallel region and treat them as read-only inside;
-- merge partials deterministically after the region. For aggregates, use associative/commutative
-  integer or exact fixed-point merges (`+`, min, max, bit-or, element-wise bucket add). For ordered
-  projections, merge earlier logical slices before later slices, then apply SQL ORDER BY/LIMIT;
-- do not nest `parallel_for` / `parallel_reduce`, and do not reduce DECIMAL/INT aggregates through
-  floating point. If a query genuinely cannot benefit from the pool, keep the accumulator shape
-  private-and-mergeable so it can be parallelized safely later.
+${lang_parallel_block}
 
-Output contract (CRITICAL for exactness): run_q${query_id} returns std::shared_ptr<arrow::Table>
-built with cpp_helpers/column_egress.hpp (`using namespace synnodb::egress;`). Each output column
-must reproduce DuckDB's type AND value exactly:
-- `column_egress.hpp` is the sanctioned extension point for generic output behavior. READ it before
-  emitting results. If a supported flat scalar output family or exact target type is missing, extend
-  `column_egress.hpp` once with a reusable builder that preserves exact values, null masks, and
-  Arrow safe casts, then call that builder from `query${query_id}.cpp`. Do NOT format values as
-  strings, route exact values through DOUBLE, or build ad hoc Arrow arrays in the query file to work
-  around a missing helper. If the result type is truly unsupported by the framework (for example a
-  nested value or unsigned 128-bit value), fail explicitly instead of returning a lossy table.
-- A DECIMAL output column (a SUM of decimals, or a decimal expression) MUST be accumulated as the
-  exact unscaled integer in __int128 - never through double or a formatted string - and emitted
-  with decimal_column(values, precision, scale), where scale is DuckDB's column scale (e.g.
-  SUM(l_extendedprice) -> DECIMAL(38,2), scale 2; a product of two DECIMAL(_,2) -> scale 4).
-  precision>38 emits decimal256 automatically. A HUGEINT output is the same exact-integer family:
-  emit it with hugeint_column(values) or decimal_column(values, 38, 0), not double/string.
-- Only genuinely DOUBLE columns (AVG, ...) use double_column. Pick the builder that matches the
-  output column's value family and your C++ accumulator/storage type: integer_column(v, ..., target)
-  for signed/unsigned integer vectors of any C++ width, uint64_column for UBIGINT values that may
-  exceed INT64_MAX, bool_column for BOOLEAN, string_column for text, date_column for DATE, and
-  timestamp_column for TIMESTAMP. Pass an Arrow target like arrow::int32()/arrow::uint16() when
-  the DuckDB output type is narrower than the canonical family. The builder casts to the column's
-  exact Arrow type and THROWS on an impossible/overflowing cast, so feed it the matching type.
-  Build the result with make_table({{name, column}, ...}) in DuckDB's column order.
-- NULLs are first class and must follow SQL semantics, never null->0/"". If an output cell can be
-  NULL (a LEFT JOIN miss, MIN/MAX/AVG over an empty/all-null group, NULLIF, a NULL-propagating
-  expression, a value derived from a nullable input column), build a Validity mask (valid[i]==0
-  marks row i NULL) and pass it to the builder, e.g. integer_column(values, valid). For a NULLABLE
-  input column, read its nulls with the ingest helper's out-param - as_integer<T>(*tbl, "c", &valid),
-  scaled_integer<T>(*tbl, "c", scale, &valid), as_string(..., &valid), etc. - and honour them
-  (COUNT(col)/AVG skip NULL; NULL=NULL is not equality; arithmetic on NULL is NULL). A column with
-  no NULLs needs no mask.
-The correctness check compares DECIMAL/INT/DATE/STRING/BOOL/TIMESTAMP columns for EXACT equality
-and a NULL as distinct from any value (only DOUBLE columns are tolerant), so a decimal routed
-through double, a wrong type, or a NULL emitted as 0 will all fail.
+${lang_output_contract}
 
 ${sample_args_str}

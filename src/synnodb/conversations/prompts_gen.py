@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
+from synnodb.conversations.profiles import CPP_PROFILE, LanguageProfile
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.workloads.workload_provider import ExecSettings
 
@@ -13,6 +14,11 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 def _load_txt(path: Path) -> str:
     with open(path, "r") as f:
         return f.read()
+
+
+def storage_kind(persistent_storage: bool) -> str:
+    """How the storage backend is named in prose ("in-memory" / "SSD-backed")."""
+    return "SSD-backed" if persistent_storage else "in-memory"
 
 
 def parallelism_note(num_threads: int) -> str:
@@ -117,6 +123,7 @@ def base_planner_prompt(
     serve_from: "str" = "parquet",
     schema_ddl: str | None = None,
     data_subsets_note: str = "",
+    lang: LanguageProfile = CPP_PROFILE,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_planner_ssd.txt"
@@ -156,37 +163,14 @@ def base_planner_prompt(
     if data_subsets_note:
         schema_hint += f"\n\n{data_subsets_note}"
 
-    # In-memory loading: the framework owns turning Arrow columns into typed C++ vectors,
+    # In-memory loading: the framework owns turning Arrow columns into typed columns,
     # which is easy to get wrong. The agent composes these helpers rather than decoding
     # Arrow itself; the helpers cast via Arrow, so physical representations are handled
     # centrally and a bad cast or overflow raises. See
     # docs/CAUGHT_ERRORS_IN_GENERATION.md (G2: a hand-written decimal decode loaded every
-    # value column as zero).
-    ingest_hint = (
-        " To populate the in-memory columns from the input ArrowTables, you MUST compose "
-        "the framework helpers in `column_ingest.hpp` (already on the include path: add "
-        '`#include "column_ingest.hpp"`). Do NOT decode Arrow buffers yourself '
-        "(no raw_values()/GetValue()/Decimal128/endianness/scale handling — that is a "
-        "frequent source of silent bugs like all aggregates coming out zero). `column_ingest.hpp` "
-        "is the sanctioned extension point for generic ingest behavior: if a flat scalar column "
-        "needs handling the current helpers do not cover, extend that helper once while preserving "
-        "Arrow safe-cast, null-mask, scale, and range-check semantics, then call it from the loader. "
-        "Each helper takes the table and column name, accepts Arrow physical representations "
-        "through Arrow casts, and returns a "
-        "std::vector you index positionally into your struct-of-arrays. Use Arrow casts to decode "
-        "correctly, then store the narrowest correct C++ representation chosen by the storage plan:\n"
-        '  - DECIMAL / money / quantity -> `synnodb::ingest::scaled_integer<T>(*tables->TBL, "COL", DECIMALS)` '
-        "(std::vector<T> of value*10^DECIMALS, exact fixed-point; choose T as the narrowest safe "
-        "integer such as int16_t/int32_t/int64_t, and use the column's decimal scale);\n"
-        '  - integer/code/key columns -> `synnodb::ingest::as_integer<T>(*tables->TBL, "COL")` '
-        "(choose T from int8_t/uint8_t/.../int64_t/uint64_t based on the declared/ranged domain; "
-        "do not default to int64_t when the plan proves a narrower type is correct);\n"
-        '  - string columns  -> `synnodb::ingest::as_string(*tables->TBL, "COL")`;\n'
-        '  - date columns    -> `synnodb::ingest::as_date_days(*tables->TBL, "COL")` (int32 days since 1970-01-01);\n'
-        '  - floating columns -> `synnodb::ingest::as_double(*tables->TBL, "COL")`.\n'
-        "`as_int64` and `scaled_int64` remain compatibility aliases, not a storage-layout default. "
-        "Declare each Database column with the matching narrow element type."
-    )
+    # value column as zero). The helper names and vector type are language-specific, so
+    # the block lives in the language pack (prompts/lang/<lang>/ingest_hint.txt).
+    ingest_hint = lang.block("ingest_hint")
 
     if read_storage_plan:
         if persistent_storage:
@@ -202,7 +186,7 @@ def base_planner_prompt(
         else:
             storage_hint = "The minimum should be a struct-of-arrays." + ingest_hint
 
-    return template.substitute(
+    substitutions = dict(
         queries_path=queries_path,
         query_str=query_str,
         builder_path=builder_path,
@@ -215,7 +199,14 @@ def base_planner_prompt(
         schema_hint=schema_hint,
         num_threads=num_threads,
         storage_plan_path=storage_plan_path,
+        lang_display_name=lang.display_name,
     )
+    # Only the in-memory planner carries the ingest-helper schema note; the SSD
+    # document has its own (language-neutral) one.
+    if not persistent_storage:
+        substitutions["lang_schema_note"] = lang.block("schema_note")
+
+    return template.substitute(**substitutions)
 
 
 def base_impl_storage(
@@ -456,6 +447,7 @@ def base_impl_query_prompt(
     storage_plan_filename: str,
     base_impl_todo_filename: str,
     read_storage_plan: bool,
+    lang: LanguageProfile = CPP_PROFILE,
 ) -> str:
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "base_impl_query_ssd.txt"
@@ -504,7 +496,7 @@ def base_impl_query_prompt(
         )
         storage_plan_file_list_item = ""
 
-    return template.substitute(
+    substitutions = dict(
         prefix=prefix,
         query_id=query_id,
         sample_args_str=sample_args_str,
@@ -518,7 +510,19 @@ def base_impl_query_prompt(
         base_impl_todo_filename=base_impl_todo_filename,
         storage_plan_check=storage_plan_check,
         storage_plan_file_list_item=storage_plan_file_list_item,
+        lang_parallel_primitive=lang.parallel_primitive,
     )
+    # The parallel-execution structure and the exact-output contract are the two
+    # blocks that are wholly language-specific (helper APIs, the exact-decimal
+    # accumulator, the reduce primitive). The in-memory document slots them in;
+    # the SSD document carries its own prose and does not.
+    if not persistent_storage:
+        substitutions["lang_parallel_block"] = lang.block("parallel_block")
+        substitutions["lang_output_contract"] = lang.block(
+            "output_contract", query_id=query_id
+        )
+
+    return template.substitute(**substitutions)
 
 
 def base_exec_validate_for_query_prompt(
@@ -804,12 +808,23 @@ def optim_prompt_w_human_reference(
     )
 
 
-def load_expert_knowledge(persistent_storage: bool) -> str:
+def load_expert_knowledge(
+    persistent_storage: bool, lang: LanguageProfile = CPP_PROFILE
+) -> str:
+    """The CPU/memory-layout advice for the optimizer.
+
+    Almost all of it is about hardware, not about a language, so both storage
+    variants share one document per storage mode and only the two genuinely
+    language-bound lines (hot-loop parsing calls, the no-alias hint) are slots.
+    """
     if persistent_storage:
         prompt_path = _PROMPTS_DIR / "ssd" / "expert_knowledge_ssd.txt"
     else:
         prompt_path = _PROMPTS_DIR / "expert_knowledge.txt"
-    return _load_txt(prompt_path)
+    return Template(_load_txt(prompt_path)).substitute(
+        lang_hot_parse_antipatterns=lang.hot_parse_antipatterns,
+        lang_aliasing_hint=lang.aliasing_hint,
+    )
 
 
 def optim_prompt_w_expert_knowledge(
@@ -822,12 +837,9 @@ def optim_prompt_w_expert_knowledge(
     model: str,
     persistent_storage: bool,
 ) -> str:
-    if persistent_storage:
-        prompt_path = _PROMPTS_DIR / "ssd" / "optim_w_expert_knowledge_ssd.txt"
-    else:
-        prompt_path = _PROMPTS_DIR / "optim_w_expert_knowledge.txt"
-
-    template_str = _load_txt(prompt_path)
+    # One document for both storage modes: the SSD twin differed only in naming
+    # the storage kind, which is now a slot.
+    template_str = _load_txt(_PROMPTS_DIR / "optim_w_expert_knowledge.txt")
     template = Template(template_str)
     return template.substitute(
         query_id=query_id,
@@ -838,6 +850,7 @@ def optim_prompt_w_expert_knowledge(
         else "",
         general_pretext=general_pretext,
         misc=target_rt_prompt(model, current_rt_ms),
+        storage_kind=storage_kind(persistent_storage),
     )
 
 
