@@ -1,0 +1,19 @@
+[package]
+name = "conformance"
+version = "0.1.0"
+edition = "2021"
+
+# The Rust half of the cross-language conformance harness. Prints the SAME
+# key=value lines as tests/cpp/column_ingest_test.cpp so that one table of
+# assertions in tests/test_column_ingest.py / test_column_egress.py grades both
+# runtimes. A divergence between them is a failing test, not a wrong query
+# result discovered six weeks later.
+
+[dependencies]
+synno_rt = { path = "../../../src/synnodb/rust_runner/synno_rt" }
+arrow = "59"
+parquet = "59"
+
+[[bin]]
+name = "column_conformance"
+path = "src/main.rs"

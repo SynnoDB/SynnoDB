@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned so a generated Rust engine builds identically everywhere. The compile
+# cache keys on the workspace sources and the framework version, not on the
+# toolchain, so a silent toolchain drift would otherwise be invisible.
+channel = "1.97.0"
+components = ["rustfmt"]

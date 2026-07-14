@@ -1,0 +1,17 @@
+[package]
+name = "synno_rt"
+version = "0.1.0"
+edition = "2021"
+
+# The Rust engine runtime: the half of a generated engine that is NOT written by
+# the model. Mirrors cpp_helpers/ + api/ on the C++ side, and is shipped inside
+# the Python package the same way, path-depended on from the generated workspace.
+
+[dependencies]
+arrow = "59"
+parquet = "59"
+rayon = "1"
+libc = "0.2"   # sched_setaffinity: the query pool pins its workers, as the C++ pool does
+
+[lib]
+crate-type = ["rlib"]
