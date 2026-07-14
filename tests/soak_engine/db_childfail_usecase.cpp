@@ -8,10 +8,10 @@
 // then unblock (no trace is ever written, yet the child holds the trace pipe
 // open) and report the failure to the caller instead of hanging.
 //
-// g_database stays null - the query stage never runs - and Database is only
-// forward-declared (query_api.hpp), which is enough for the pointer.
+// g_database stays null - the query stage never runs. It is an opaque handle in
+// the plugin ABI (api/plugin_abi.h), so no Database type is needed here at all.
 
-Database* g_database = nullptr;
+void* g_database = nullptr;
 
 bool usecase_parse_args(int, char**) { return true; }
 

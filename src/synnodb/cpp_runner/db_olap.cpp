@@ -10,16 +10,34 @@
 #include <iostream>
 #include <stdexcept>
 
-// FILE_VERSION: 1
+// FILE_VERSION: 2
 
-Database* g_database = nullptr;
+// Opaque plugin-owned handles: this file moves them from stage to stage and
+// never looks inside them. See api/plugin_abi.h.
+void* g_database = nullptr;
 
 struct OlapState {
     std::string parquet_path;
-    ParquetTables* parquet_tables = nullptr;
+    void* parquet_tables = nullptr;
 };
 
 static OlapState olap_state;
+
+// A plugin reports failure by returning NULL and leaving a message in
+// last_error(), because an exception must not unwind across the C ABI. Rethrow
+// it here, on the host's side of the boundary, so pipeline.hpp's existing
+// stage-failure path sees a normal C++ exception carrying the original text.
+template <class Api>
+static void* require(const Api& api, void* handle, const char* what) {
+    if (!handle) {
+        const char* msg = api.last_error ? api.last_error() : "";
+        throw std::runtime_error(
+            (msg && msg[0] != '\0')
+                ? std::string(msg)
+                : std::string(what) + " failed without reporting an error");
+    }
+    return handle;
+}
 
 static void clear_storage_dir_if_configured() {
     const char* env = std::getenv("STORAGE_DIR");
@@ -92,9 +110,10 @@ void usecase_run_child(int read_fd, int done_fd) {
         // the new builder via the COW fork, so no re-ingest from parquet happens.
         restart_child_on_source_change(stage<RunPolicy::OnChange>("./build/libloader.so",
             [](Plugin& plugin) {
-                auto api = plugin.get<LoaderApi>();
+                auto api = plugin.get<SynnoLoaderApi>();
                 std::cerr << "loader start\n";
-                olap_state.parquet_tables = api.load(olap_state.parquet_path);
+                olap_state.parquet_tables =
+                    require(api, api.load(olap_state.parquet_path.c_str()), "loader");
                 std::cerr << "loader done\n";
                 return 0;
             },
@@ -102,7 +121,7 @@ void usecase_run_child(int read_fd, int done_fd) {
                 // Destroy old tables with the old plugin BEFORE dlclose so that
                 // shared_ptr deleters and Arrow statics in libloader.so are still
                 // mapped when the destructor chain runs.
-                auto api = plugin.get<LoaderApi>();
+                auto api = plugin.get<SynnoLoaderApi>();
                 if (olap_state.parquet_tables) {
                     api.destroy(olap_state.parquet_tables);
                     olap_state.parquet_tables = nullptr;
@@ -127,11 +146,12 @@ void usecase_run_child(int read_fd, int done_fd) {
         //     storage-layout or loader/builder reloads rebuild them from scratch.
         stage<RunPolicy::OnChange>("./build/libbuilder.so",
             [](Plugin& plugin, int) {
-                auto api = plugin.get<BuilderApi>();
+                auto api = plugin.get<SynnoBuilderApi>();
                 clear_storage_dir_if_configured();
                 std::cerr << "builder start\n";
                 const auto t0 = std::chrono::steady_clock::now();
-                g_database = api.build(olap_state.parquet_tables);
+                g_database =
+                    require(api, api.build(olap_state.parquet_tables), "builder");
                 std::cerr << "builder done\n";
                 const auto t1 = std::chrono::steady_clock::now();
                 const float ms =
@@ -140,7 +160,7 @@ void usecase_run_child(int read_fd, int done_fd) {
                 return 0;
             },
             [](Plugin& plugin) {
-                auto api = plugin.get<BuilderApi>();
+                auto api = plugin.get<SynnoBuilderApi>();
                 if (g_database) {
                     api.destroy(g_database);
                     g_database = nullptr;
