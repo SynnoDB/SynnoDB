@@ -37,7 +37,7 @@ from synnodb.results import (
     StoragePlan,
 )
 from synnodb.utils.cli_config import DEFAULT_MODEL, RunConfig, Usecase
-from synnodb.utils.utils import DBStorage, ServeFrom
+from synnodb.utils.utils import DBStorage, EngineLang, ServeFrom
 from synnodb.workloads.workload_provider import Workload, WorkloadId
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
@@ -107,6 +107,11 @@ class SynnoConfig:
     workload: Workload | WorkloadId = OLAPWorkload.TPCH
     db_storage: DBStorage = DBStorage.IN_MEMORY
     usecase: Usecase = Usecase.OLAP
+    # The language the engine is generated in. The host that loads the compiled
+    # engine is language-agnostic (see cpp_runner/api/plugin_abi.h), so this only
+    # selects the workspace scaffold, the build toolchain, and the language slots
+    # of the prompts.
+    language: EngineLang = EngineLang.CPP
     queries: str = "1"
     # wandb is opt-in and has no separate on/off flag: it is enabled iff a
     # ``wandb_entity`` or ``wandb_project`` is set here OR via the
@@ -161,6 +166,7 @@ def _base_run_config(cfg: SynnoConfig) -> dict[str, Any]:
         benchmark=cfg.workload,
         db_storage=cfg.db_storage,
         usecase=cfg.usecase,
+        language=cfg.language,
         queries_str=cfg.queries,
         notify=cfg.notify,
         disable_openai_tracing=cfg.disable_openai_tracing,

@@ -71,7 +71,11 @@ class StoragePlan(StageArtifact):
 
 @dataclass(frozen=True)
 class GeneratedEngine(StageArtifact):
-    """A generated C++ engine (base / optimized / multi-threaded variants)."""
+    """A generated engine (base / optimized / multi-threaded variants).
+
+    ``files`` is keyed by path relative to the workspace, so a flat C++ engine
+    keys on ``db_loader.cpp`` and a Rust one on ``builder/src/lib.rs``.
+    """
 
     files: Mapping[str, str]  # filename -> source, captured when the stage finished
 
@@ -124,11 +128,29 @@ ResultBuilder = Callable[
 ]
 
 
+# Source suffixes an engine can be written in, and the build/scratch directories
+# that are never part of it (cargo's "target", the C++ "build", the snapshotter's
+# ".git").
+_ENGINE_SOURCE_SUFFIXES = (".cpp", ".hpp", ".h", ".rs")
+_ENGINE_SKIP_DIRS = {"build", "target", "obj", ".git", "__pycache__", ".reload"}
+
+
 def _engine_files(workspace: Path) -> dict[str, str]:
+    """The engine's sources, keyed by path relative to the workspace.
+
+    Recursive, because a Rust engine nests its sources (``builder/src/lib.rs``)
+    while a C++ one is flat. For a flat workspace the relative path is just the
+    filename, so C++ keys are unchanged.
+    """
     files: dict[str, str] = {}
-    for p in sorted(workspace.glob("*.cpp")) + sorted(workspace.glob("*.hpp")):
+    for p in sorted(workspace.rglob("*")):
+        if p.suffix not in _ENGINE_SOURCE_SUFFIXES or not p.is_file():
+            continue
+        rel = p.relative_to(workspace)
+        if _ENGINE_SKIP_DIRS.intersection(rel.parts):
+            continue
         try:
-            files[p.name] = p.read_text(encoding="utf-8", errors="replace")
+            files[rel.as_posix()] = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             pass
     return files

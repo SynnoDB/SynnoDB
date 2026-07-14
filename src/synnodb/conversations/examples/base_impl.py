@@ -103,6 +103,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
             storage_plan_filename=storage_plan_filename,
             base_impl_todo_filename=base_impl_todo_filename,
             read_storage_plan=ctx.bespoke_storage,
+            lang=ctx.lang_profile,
         )
 
     def _exec_validate_prompt(_exec_settings, _rt, *, qid: str):
@@ -172,6 +173,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 serve_from=spec.serve_from.value,
                 schema_ddl=spec.schema(),
                 data_subsets_note=subset_menu_for(ctx.workload_provider),
+                lang=ctx.lang_profile,
             ),
             measure_performance_after_stage=False,
             auto_revert_on_regression=False,
@@ -222,7 +224,8 @@ def build(ctx: ConvContext) -> list[StageItem]:
     for i, query_id in enumerate(ctx.query_ids):
 
         def _validate_query_impl_exists(qid) -> str | None:
-            impl_path = ctx.workspace_path / f"query{qid}.cpp"
+            query_file = ctx.filenames.query_file(qid)
+            impl_path = ctx.workspace_path / query_file
             if impl_path.exists():
                 return None  # impl exists, proceed to next stage
             else:
@@ -230,7 +233,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 logger.error(
                     f"Query implementation file {impl_path} does not exist. Reprompting the LLM now"
                 )
-                return f"You were supposed to implement query {qid} in a file called `query{qid}.cpp`. However, no such file exists in your workspace. Please implement the query and write it to `query{qid}.cpp` before proceeding to the execution & validation stage."
+                return f"You were supposed to implement query {qid} in a file called `{query_file}`. However, no such file exists in your workspace. Please implement the query and write it to `{query_file}` before proceeding to the execution & validation stage."
 
         stage_list.extend(
             [
@@ -331,6 +334,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 query_ids=ctx.query_ids,
                 builder_path=builder_path,
                 max_turns=ctx.max_turns,
+                query_file_pattern=ctx.filenames.query_file_pattern,
             )
         )
 
@@ -532,6 +536,7 @@ class ValidateMultiThreadedStage(DynamicStageConfig):
         query_ids: list[str],
         builder_path: str,
         max_turns: int | None = None,
+        query_file_pattern: str = "query{qid}.cpp",
     ):
         super().__init__(
             descriptor="validate multi-threaded correctness", max_turns=max_turns
@@ -540,6 +545,7 @@ class ValidateMultiThreadedStage(DynamicStageConfig):
         self.num_threads = num_threads
         self.query_ids = list(query_ids)
         self.builder_path = builder_path
+        self.query_file_pattern = query_file_pattern
         self.idx = 0  # index of the query currently under validation
         self.fix_attempts = 0  # fix attempts for the query at self.idx
 
@@ -591,6 +597,7 @@ class ValidateMultiThreadedStage(DynamicStageConfig):
                 num_threads=self.num_threads,
                 builder_path=self.builder_path,
                 error=error,
+                query_file=self.query_file_pattern.format(qid=qid),
             )
 
         return None

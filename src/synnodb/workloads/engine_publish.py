@@ -245,7 +245,15 @@ def build_query_templates(
 # Build intermediates and per-run scratch are not needed by a published engine; the binary
 # finds its build/*.so relative to its own location, so build/ (minus obj/) must come along.
 _PUBLISH_IGNORE = shutil.ignore_patterns(
-    "obj", "results", "debug_logs", "__pycache__", ".git"
+    # "target" is cargo's build directory in a Rust workspace: intermediate
+    # artifacts only (the .so files the engine needs are copied into build/),
+    # and large enough to dwarf the engine itself.
+    "obj",
+    "target",
+    "results",
+    "debug_logs",
+    "__pycache__",
+    ".git",
 )
 
 

@@ -107,7 +107,9 @@ def build_query_stages(
     # artificially serial one.
 
     # load expert knowledge once - shared across all query optimization stages
-    expert_knowledge = load_expert_knowledge(persistent_storage=ctx.persistent_storage)
+    expert_knowledge = load_expert_knowledge(
+        persistent_storage=ctx.persistent_storage, lang=ctx.lang_profile
+    )
 
     return [
         PromptStage(

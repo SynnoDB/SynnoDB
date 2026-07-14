@@ -41,8 +41,8 @@ from .registry import ColumnSpec, PlaceholderSpec
 # database an optimize_database engine was built for). v5 adds ``threads`` (the degree of
 # parallelism the engine was built/validated for; the runtime serves it at this thread count).
 # Older manifests still load.
-SCHEMA_VERSION = 5
-_SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
+SCHEMA_VERSION = 6
+_SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4, 5, 6)
 
 
 def content_engine_id(source_files: Mapping[str, str], *, prefix: str = "eng") -> str:
@@ -118,6 +118,11 @@ class EngineManifest:
     # runs at the same thread count it was built for. None = unknown (older engines): the runtime
     # leaves the thread count to the engine's own default.
     threads: Optional[int] = None
+    # The language the engine was generated in ("cpp" | "rust"). The runtime does not
+    # branch on it -- a published engine is a `db` binary behind the same protocol
+    # whatever it was written in -- but the manifest is the engine's identity record
+    # and must say what it is. Older engines predate the language axis and are C++.
+    language: str = "cpp"
 
     # ---- serialization --------------------------------------------------
     def to_dict(self) -> dict:
@@ -131,6 +136,7 @@ class EngineManifest:
             "shm_capable": self.shm_capable,
             "source_db": self.source_db,
             "threads": self.threads,
+            "language": self.language,
             "expected_tables": {
                 table: [[c.name, c.type] for c in cols]
                 for table, cols in self.expected_tables.items()
@@ -156,6 +162,8 @@ class EngineManifest:
             shm_capable=bool(d.get("shm_capable", False)),
             source_db=d.get("source_db"),
             threads=d.get("threads"),
+            # Engines published before the language axis carry no field and are C++.
+            language=d.get("language", "cpp"),
             expected_tables={
                 table: tuple(ColumnSpec(n, t) for n, t in cols)
                 for table, cols in d.get("expected_tables", {}).items()

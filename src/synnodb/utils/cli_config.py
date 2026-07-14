@@ -5,7 +5,7 @@ import enum
 from dataclasses import dataclass
 from typing import Any
 
-from synnodb.utils.utils import DBStorage
+from synnodb.utils.utils import DBStorage, EngineLang
 from synnodb.workloads.workload_provider import Workload
 from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
@@ -80,6 +80,7 @@ class RunConfig:
     memory_budget_mb: int | None = None
     include_mem_budget_for_in_mem_in_hashes: bool = False
     usecase: Usecase = Usecase.OLAP
+    language: EngineLang = EngineLang.CPP
     workspace_dir: str | None = (
         None  # output/workspace dir; None -> settings.get_workspace_dir() (local ./output)
     )

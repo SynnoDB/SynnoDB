@@ -57,6 +57,7 @@ from synnodb.utils.pkgconfig import check_pkg
 from synnodb.utils.snapshot_utils import load_storage_plan_from_snapshot
 from synnodb.utils.utils import (
     DBStorage,
+    EngineLang,
     ask_yes_no,
     create_dir_and_set_permissions,
     exclude_workspace_from_enclosing_repo,
@@ -155,6 +156,11 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     # storage related setup
     db_storage = get_effective_db_storage(usecase, args.db_storage)
     args.db_storage = db_storage
+
+    # The language the engine is generated in. Selects the workspace scaffold,
+    # the build toolchain, and the prompts' language slots; nothing downstream of
+    # the compiled engine (host, router, validator) branches on it.
+    language = getattr(args, "language", EngineLang.CPP)
     assert db_storage in [
         DBStorage.IN_MEMORY,
         DBStorage.SSD,
@@ -283,7 +289,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     else:
         storage_plan = None
 
-    filenames_dict = get_filenames(usecase)
+    filenames_dict = get_filenames(usecase, language)
 
     framework_code_content = get_framework_version_artifacts_str()
 
@@ -311,10 +317,16 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         # path (checkSfCorrectness), which reuses the features recorded in the
         # restored snapshot's workspace metadata.
         features = plan.prepare
-        if features is not None and storage_plan is not None:
+        if features is not None:
             import dataclasses
 
-            features = dataclasses.replace(features, storage_plan_text=storage_plan)
+            # The plans are language-agnostic; the run's language is what decides
+            # which scaffold gets written, so stamp it on here.
+            features = dataclasses.replace(features, language=language.value)
+            if storage_plan is not None:
+                features = dataclasses.replace(
+                    features, storage_plan_text=storage_plan
+                )
 
         prepare_result = prepare_repo_and_load_snapshot(
             snapshotter=snapshotter,
@@ -598,7 +610,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
     async def _conv_run():
         ctx = ConvContext(
             query_ids=query_list,
-            filenames=Filenames.for_usecase(usecase),
+            filenames=Filenames.for_usecase(usecase, language),
             workspace_path=workspace_path,
             db_storage=db_storage,
             threads=target_threads,
@@ -607,6 +619,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
             workload_provider=workload_provider,
             sql_dict=workload_provider.sql_dict,
             workload=args.benchmark,
+            language=language,
             bespoke_storage=args.bespoke_storage,
             max_turns=args.max_turns,
             query_validator=query_validator,

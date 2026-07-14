@@ -168,8 +168,29 @@ def test_manifest_round_trips_threads():
     )
     d = m.to_dict()
     assert d["threads"] == 4
-    assert d["schema_version"] == 5
+    assert d["schema_version"] == 6
     assert EngineManifest.from_dict(d).threads == 4
+
+
+def test_manifest_round_trips_language():
+    m = EngineManifest(
+        engine_id="eng-rs", queries=(QueryTemplate("1", "SELECT 1"),), language="rust"
+    )
+    d = m.to_dict()
+    assert d["language"] == "rust"
+    assert EngineManifest.from_dict(d).language == "rust"
+
+
+def test_manifest_back_compat_without_language():
+    # An engine published before the language axis carries no ``language`` key.
+    # It was necessarily generated in C++, so that is what it must read back as -
+    # not None, which would leave the engine's identity unstated.
+    old = {
+        "schema_version": 5,
+        "engine_id": "eng-old",
+        "queries": [{"query_id": "1", "sql_template": "SELECT 1", "placeholders": []}],
+    }
+    assert EngineManifest.from_dict(old).language == "cpp"
 
 
 def test_manifest_back_compat_without_threads():

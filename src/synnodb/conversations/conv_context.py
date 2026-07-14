@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict
 
 from synnodb.conversations.filenames import Filenames
-from synnodb.utils.utils import DBStorage, is_persistent_storage
+from synnodb.conversations.profiles import LanguageProfile, get_language_profile
+from synnodb.utils.utils import DBStorage, EngineLang, is_persistent_storage
 
 if TYPE_CHECKING:
     from synnodb.llm.sdk.sdk_wrapper import SDKWrapper
@@ -46,6 +47,10 @@ class ConvContext:
     workload_provider: "OLAPWorkloadProvider"
     sql_dict: dict[str, str]
     workload: "Workload"
+    # The language the engine is generated in. Selects the workspace scaffold,
+    # the build toolchain, and the language slots of the prompts; nothing else in
+    # the conversation machinery branches on it.
+    language: EngineLang = EngineLang.CPP
     bespoke_storage: bool = True
     max_turns: int | None = None
     query_validator: "QueryValidator | None" = None
@@ -69,6 +74,11 @@ class ConvContext:
     @property
     def persistent_storage(self) -> bool:
         return is_persistent_storage(self.db_storage)
+
+    @property
+    def lang_profile(self) -> LanguageProfile:
+        """The language slots the prompt generators substitute (see profiles.py)."""
+        return get_language_profile(self.language.value)
 
     def reference_plans(
         self, source: str = "umbra", cleanup: bool = True

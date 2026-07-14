@@ -45,7 +45,7 @@ PREPARE_METADATA_FILENAME = ".synnodb_prepare.json"
 # the thread count is no longer a build-time single/multi enum but the run's canonical
 # num_threads (resolved from SynnoDB(threads=N)), so it is not recorded here. Older (v4)
 # records raise on read and must be re-produced.
-_METADATA_FORMAT_VERSION = 5
+_METADATA_FORMAT_VERSION = 6
 
 
 def _storage_variant(db_storage: DBStorage) -> Literal["in_memory", "ssd"]:
@@ -63,6 +63,10 @@ class PrepareFeatures:
     - ``storage``: which scaffold variant to write - ``"in_memory"`` or
       ``"ssd"`` (persistent, file-backed). ``"auto"`` resolves from the run's
       storage backend.
+    - ``language``: which language the scaffold is generated in (``"cpp"`` or
+      ``"rust"``). Recorded, so it is part of the prepare record and every
+      snapshot-keyed cache: switching language correctly misses the cache
+      instead of reusing a workspace scaffolded for the other one.
     - ``parallel_ready_impl``: generate the query-impl scaffold in
       parallel-ready shape. ``"auto"`` resolves to True for in-memory storage.
     - ``tracing``: query_impl.cpp assembled with tracing/flush instrumentation;
@@ -82,6 +86,7 @@ class PrepareFeatures:
 
     scaffold: Literal["full", "queries_md_only"] = "full"
     storage: Literal["in_memory", "ssd", "auto"] = "auto"
+    language: Literal["cpp", "rust"] = "cpp"
     parallel_ready_impl: bool | Literal["auto"] = "auto"
     tracing: bool = False
     sample_trace: bool = False

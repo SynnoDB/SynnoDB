@@ -32,6 +32,29 @@ def is_persistent_storage(db_storage: DBStorage) -> bool:
     return db_storage in (DBStorage.LABSTORE, DBStorage.SSD)
 
 
+class EngineLang(str, enum.Enum):
+    """The language the engine is generated in.
+
+    An engine is three plugin shared objects behind a C ABI
+    (``cpp_runner/api/plugin_abi.h``); the host that loads them is language-
+    agnostic, so the language only selects the workspace scaffold, the build
+    toolchain, and the language slots of the prompts. Everything else - the
+    conversation plans, the tools, the validator, the router - is shared.
+    """
+
+    CPP = "cpp"
+    RUST = "rust"
+
+
+def parse_engine_lang(s: str) -> "EngineLang":
+    try:
+        return EngineLang(s)
+    except ValueError:
+        raise ValueError(
+            f"Invalid engine language: {s}. Valid options are: {[e.value for e in EngineLang]}"
+        )
+
+
 class DataSource(str, enum.Enum):
     """How the queried data is physically represented for a run.
 
