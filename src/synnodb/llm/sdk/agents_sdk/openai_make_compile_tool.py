@@ -4,6 +4,7 @@ from agents.run_context import RunContextWrapper
 from agents.tool import FunctionTool
 from pydantic import BaseModel, Field
 
+from synnodb.llm.sdk.agents_sdk.guarded_tool import make_guarded_function_tool
 from synnodb.tools.compile import CompileTool
 
 
@@ -15,14 +16,14 @@ def make_openai_compile_tool(
     compile_tool: CompileTool,
     defer_loading: bool = False,
 ) -> FunctionTool:
-    async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
-        args = CompileArgs.model_validate_json(args_json)
+    async def run(ctx: RunContextWrapper[Any], args: CompileArgs) -> str:
         return compile_tool(optimize=args.optimize)
 
-    return FunctionTool(
+    return make_guarded_function_tool(
         name="compile",
         description="Compiles the database",
-        params_json_schema=CompileArgs.model_json_schema(),
-        on_invoke_tool=on_invoke,
+        args_model=CompileArgs,
+        handler=run,
+        retry_hint="Retry with optimize (bool).",
         defer_loading=defer_loading,  # loaded when needed
     )

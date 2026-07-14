@@ -219,18 +219,20 @@ def _rejected_editor(tmp_path: Path, **kwargs) -> tuple[WorkspaceEditor, object,
 
 def test_rejected_apply_patch_records_then_replays_from_cache(tmp_path: Path) -> None:
     # A schema-rejected apply_patch (never reaches the file ops) is cached on its raw
-    # arguments. The first encounter is a live miss: replay_rejected_patch returns
-    # None, and record_rejected_patch writes the entry. An identical later call is
+    # arguments. The first encounter is a live miss: replay_rejected_call returns
+    # None, and record_rejected_call writes the entry. An identical later call is
     # replayed verbatim from cache.
     args_json = '{"path": "db_loader.cpp", "diff": "+x\\n"}'  # missing `type`
     message = "Error: apply_patch arguments failed validation. Retry ...\ntype missing"
     editor, stats, cache_dir = _rejected_editor(tmp_path)
 
     # miss: nothing cached yet
-    assert editor.replay_rejected_patch(args_json) is None
+    assert editor.replay_rejected_call("apply_patch", args_json) is None
     assert getattr(stats, "cache_hits", 0) == 0
 
-    editor.record_rejected_patch(args_json, "db_loader.cpp", "missing type", message)
+    editor.record_rejected_call(
+        "apply_patch", args_json, "db_loader.cpp", "missing type", message
+    )
     assert stats.rejected == [("db_loader.cpp", "missing type")]
 
     entry = utils.load_pickle(
@@ -240,9 +242,40 @@ def test_rejected_apply_patch_records_then_replays_from_cache(tmp_path: Path) ->
     assert entry is not None and entry.message == message
 
     # replay: the recorded verdict + exact message come back from cache
-    assert editor.replay_rejected_patch(args_json) == message
+    assert editor.replay_rejected_call("apply_patch", args_json) == message
     assert stats.cache_hits == 1
     assert stats.rejected[-1] == ("db_loader.cpp", "missing type")
+
+
+def test_rejected_call_cache_is_keyed_by_tool(tmp_path: Path) -> None:
+    # The edit tools overlap in argument shape, so these very arguments are an invalid
+    # call to apply_patch AND to write_file. Keying the cache on the arguments alone
+    # would make one tool replay the other's rejection message; the tool name is part
+    # of the key precisely so it cannot.
+    args_json = '{"path": "db_loader.cpp"}'
+    editor, _stats, _cache_dir = _rejected_editor(tmp_path)
+
+    editor.record_rejected_call(
+        "apply_patch", args_json, "db_loader.cpp", "missing type", "apply_patch verdict"
+    )
+
+    assert (
+        editor.replay_rejected_call("apply_patch", args_json) == "apply_patch verdict"
+    )
+    assert editor.replay_rejected_call("write_file", args_json) is None
+
+
+def test_rejected_apply_patch_key_is_unchanged_by_the_tool_name(tmp_path: Path) -> None:
+    # Back-compat: folding the other edit tools into this path must not orphan the
+    # apply_patch rejections already sitting in run caches, so apply_patch's key has to
+    # keep hashing to exactly what it hashed to before ("rejected_apply_patch").
+    args_json = '{"path": "db_loader.cpp"}'
+    editor, _stats, _cache_dir = _rejected_editor(tmp_path)
+
+    legacy_key = utils.sha256(
+        utils.stable_json({"op_type": "rejected_apply_patch", "args_json": args_json})
+    )
+    assert editor._rejected_call_key("apply_patch", args_json) == legacy_key
 
 
 def test_rejected_apply_patch_replays_even_if_current_rules_would_accept_it(
@@ -255,9 +288,11 @@ def test_rejected_apply_patch_replays_even_if_current_rules_would_accept_it(
     args_json = '{"path": "db_loader.cpp"}'
     message = "Error: apply_patch arguments failed validation. Retry ...\nold verdict"
     editor, stats, _cache_dir = _rejected_editor(tmp_path)
-    editor.record_rejected_patch(args_json, "db_loader.cpp", "old rule", message)
+    editor.record_rejected_call(
+        "apply_patch", args_json, "db_loader.cpp", "old rule", message
+    )
 
-    assert editor.replay_rejected_patch(args_json) == message
+    assert editor.replay_rejected_call("apply_patch", args_json) == message
     assert stats.cache_hits == 1
 
 
@@ -268,7 +303,9 @@ def test_rejected_apply_patch_record_is_readonly_under_only_from_cache(
     # still surfaced as a rejected step, but no cache entry is created.
     editor, stats, cache_dir = _rejected_editor(tmp_path, only_from_cache=True)
 
-    editor.record_rejected_patch('{"path": "x"}', "x", "missing type", "msg")
+    editor.record_rejected_call(
+        "apply_patch", '{"path": "x"}', "x", "missing type", "msg"
+    )
 
     assert stats.rejected == [("x", "missing type")]
     assert list(cache_dir.glob("*.pkl")) == []

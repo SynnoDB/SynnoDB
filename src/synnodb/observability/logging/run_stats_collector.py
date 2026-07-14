@@ -301,10 +301,12 @@ class RunStatsCollector(RunHooks):
         self.apply_patch_cached = True
 
     def record_apply_patch_rejected(self, path: str | None, reason: str) -> None:
-        """Mark that the current apply_patch tool call was rejected during
-        argument schema validation (e.g. the required ``type`` field was omitted)
-        and so never reached the workspace editor - it neither ran nor consulted
-        the cache. Consumed by on_tool_end so the live-ui can render the step as a
+        """Mark that the current apply_patch/replace_in_file/write_file call was
+        rejected before it reached the workspace editor - so it neither ran nor
+        consulted the cache. Two kinds of rejection land here: the argument schema
+        (e.g. the required ``type`` field was omitted), and the edit tools' own
+        checks on otherwise-valid arguments (a create_file whose diff carried no
+        content). Consumed by on_tool_end so the live-ui can render the step as a
         rejected call rather than a silent, uncached +0/-0 no-op that looks like a
         cache miss. Reset per tool call in on_tool_start."""
         self.apply_patch_rejected = True
