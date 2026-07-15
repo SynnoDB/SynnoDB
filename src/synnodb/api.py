@@ -65,6 +65,10 @@ def _as_usecase(v: Usecase | str) -> Usecase:
     return v if isinstance(v, Usecase) else Usecase(str(v))
 
 
+def _as_language(v: EngineLang | str) -> EngineLang:
+    return v if isinstance(v, EngineLang) else EngineLang(str(v))
+
+
 def _as_run_id(v: Any) -> str:
     """A stage artifact collapses to its run id; everything else stringifies."""
     if isinstance(v, StageArtifact):
@@ -150,6 +154,7 @@ class SynnoConfig:
         object.__setattr__(self, "workload", _as_workload(self.workload))
         object.__setattr__(self, "db_storage", _as_storage(self.db_storage))
         object.__setattr__(self, "usecase", _as_usecase(self.usecase))
+        object.__setattr__(self, "language", _as_language(self.language))
 
     @property
     def wandb_enabled(self) -> bool:
