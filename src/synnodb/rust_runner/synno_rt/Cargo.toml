@@ -16,7 +16,8 @@ trace = []
 arrow = "59"
 parquet = "59"
 rayon = "1"
-libc = "0.2"   # sched_setaffinity: the query pool pins its workers, as the C++ pool does
+libc = "0.2"     # sched_setaffinity: the query pool pins its workers, as the C++ pool does
+memmap2 = "0.9"  # zero-copy shm ingest: map a /dev/shm Arrow-IPC segment, decode arrays as views into it
 
 [lib]
 crate-type = ["rlib"]

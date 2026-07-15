@@ -45,11 +45,39 @@ fn main() {
         "nullable" => nullable(),
         "lineitem" => lineitem(&args[2]),
         "synth" => synth(&args[2]),
+        "shm-read" => shm_read(&args[2]),
         m => {
             eprintln!("unknown mode: {m}");
             std::process::exit(2);
         }
     }
+}
+
+/// Map a /dev/shm Arrow-IPC segment via the same zero-copy path a Rust engine's
+/// loader uses, and print the same line the C++ driver's `read` mode prints
+/// (tests/cpp/shm_io_test.cpp) so one assertion grades both. The first column is
+/// int64 (the test writes it that way), summed to prove values survive the map.
+fn shm_read(path: &str) {
+    use arrow::array::Int64Array;
+
+    let batch = synno_rt::shm::read_table(path).expect("shm read");
+    let col0 = batch.column(0);
+    let a = col0
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("col0 is int64");
+    let mut sum: i64 = 0;
+    for i in 0..a.len() {
+        if !a.is_null(i) {
+            sum += a.value(i);
+        }
+    }
+    println!(
+        "rows={} cols={} col0={} sum0={sum}",
+        batch.num_rows(),
+        batch.num_columns(),
+        batch.schema().field(0).name(),
+    );
 }
 
 /// In-memory nullable column [10, NULL, 20]. Ingest records the null in the

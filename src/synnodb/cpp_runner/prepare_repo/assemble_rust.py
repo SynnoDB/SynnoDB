@@ -62,16 +62,38 @@ def assemble_args_file(
 
 
 def assemble_loader_file(table_names: list[str]) -> str:
-    """loader/src/lib.rs: the ParquetTables fields and their reads."""
+    """loader/src/lib.rs: the ParquetTables fields, plus the shm/parquet plane branch.
+
+    Mirrors ``prepare_workspace_olap._gen_table_reads``: one binary serves both
+    planes, and the choice is made at run time by the ``SYNNODB_SHM_INGEST`` env.
+    """
     template = (_TEMPLATES / "loader" / "lib.rs").read_text()
 
     defs = "\n".join(
         f"    pub {name}: std::sync::Arc<RecordBatch>," for name in table_names
     )
-    reads = "\n".join(
-        f'        {name}: read_parquet_table(&format!("{{path}}{name}.parquet"))?,'
+
+    shm_reads = "\n".join(
+        f'            {name}: synno_rt::shm::read_table('
+        f'&synno_rt::shm::ingest_path_for("{name}"))?,'
         for name in table_names
     )
+    parquet_reads = "\n".join(
+        f'            {name}: read_parquet_table(&format!("{{path}}{name}.parquet"))?,'
+        for name in table_names
+    )
+    reads = (
+        "    if synno_rt::shm::ingest_enabled() {\n"
+        "        Ok(Box::new(ParquetTables {\n"
+        f"{shm_reads}\n"
+        "        }))\n"
+        "    } else {\n"
+        "        Ok(Box::new(ParquetTables {\n"
+        f"{parquet_reads}\n"
+        "        }))\n"
+        "    }"
+    )
+
     template = replace_marked_block(template, "table-defs", defs)
     template = replace_marked_block(template, "table-reads", reads)
     return template

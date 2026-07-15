@@ -45,10 +45,10 @@ pub fn load_tables(dir: &str) -> Result<Box<ParquetTables>, Error> {
     } else {
         format!("{dir}/")
     };
-    let _ = &path;
 
-    Ok(Box::new(ParquetTables {
-        // start: table-reads
-        // end: table-reads
-    }))
+    // The reads block below is generated (assemble_rust.py). One binary serves
+    // both planes: when SYNNODB_SHM_INGEST is set the tables are mapped zero-copy
+    // from /dev/shm Arrow segments, otherwise they are read from parquet on disk.
+    // start: table-reads
+    // end: table-reads
 }

@@ -34,6 +34,7 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 CPP_HELPERS = REPO / "src" / "synnodb" / "cpp_runner" / "cpp_helpers"
 CPP_DRIVER = REPO / "tests" / "cpp" / "column_ingest_test.cpp"
+CPP_SHM_DRIVER = REPO / "tests" / "cpp" / "shm_io_test.cpp"
 RUST_DRIVER_DIR = REPO / "tests" / "rust" / "conformance"
 
 LANGS = ("cpp", "rust")
@@ -280,3 +281,70 @@ def test_runtimes_print_the_same_keys(drivers, synth_parquet):
             f"conformance drivers disagree on which keys they report for {args[0]}: "
             f"only in C++={sorted(cpp - rust)}, only in Rust={sorted(rust - cpp)}"
         )
+
+
+# --------------------------------------------------------------- shm plane --
+# The zero-copy /dev/shm hot-load plane: the Python transport writes an Arrow-IPC
+# segment, and the engine's loader maps it. The Rust loader must read a segment
+# written by router/shm_transport.py byte-for-byte the same as the C++ loader --
+# both are validated against the one canonical Python transport.
+@pytest.fixture(scope="module")
+def shm_segment(tmp_path_factory) -> Path:
+    """A segment written by the REAL transport (write_arrow_segments), as
+    ShmHotLoadEngine.ingest writes it. First column int64 so the drivers can sum
+    it (sum 0..999 = 499500); a string column exercises variable-length buffers."""
+    pytest.importorskip("pyarrow")
+    import pyarrow as pa
+
+    from synnodb.router.shm_transport import write_arrow_segments
+
+    table = pa.table(
+        {
+            "a": pa.array(list(range(1000)), pa.int64()),
+            "label": pa.array([f"r{i % 7}" for i in range(1000)], pa.utf8()),
+        }
+    )
+    seg_dir = tmp_path_factory.mktemp("shm")
+    write_arrow_segments(seg_dir, {"seg": table})
+    return seg_dir / "seg.arrow"
+
+
+@pytest.fixture(scope="module")
+def cpp_shm_reader(tmp_path_factory) -> Path | None:
+    """The C++ shm reader (shm_io_test.cpp), or None without a C++/Arrow toolchain."""
+    if not _cpp_ok():
+        return None
+    cc = "g++" if shutil.which("g++") else "clang++"
+    cflags = subprocess.run(
+        ["pkg-config", "--cflags", "arrow"], capture_output=True, text=True
+    ).stdout.split()
+    libs = subprocess.run(
+        ["pkg-config", "--libs", "arrow"], capture_output=True, text=True
+    ).stdout.split()
+    binary = tmp_path_factory.mktemp("cppshm") / "shm_io_test"
+    proc = subprocess.run(
+        [cc, "-std=c++20", "-O2", "-I", str(CPP_HELPERS), *cflags,
+         str(CPP_SHM_DRIVER), *libs, "-o", str(binary)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        pytest.fail(f"C++ shm driver failed to compile:\n{proc.stderr}")
+    return binary
+
+
+def test_rust_reads_python_shm_segment(drivers, shm_segment):
+    """The Rust loader maps a Python-written segment and recovers it exactly."""
+    if "rust" not in drivers:
+        pytest.skip("no rust toolchain")
+    out = _keys(_run(drivers["rust"], "shm-read", str(shm_segment)))
+    assert out == {"rows": 1000, "cols": 2, "sum0": 499500}
+
+
+def test_shm_readers_agree(drivers, shm_segment, cpp_shm_reader):
+    """The C++ and Rust loaders map the same segment to the same result -- the
+    zero-copy plane's cross-language gate."""
+    if "rust" not in drivers or cpp_shm_reader is None:
+        pytest.skip("need both toolchains to compare them")
+    cpp = _keys(_run(cpp_shm_reader, "read", str(shm_segment)))
+    rust = _keys(_run(drivers["rust"], "shm-read", str(shm_segment)))
+    assert cpp == rust, f"shm loaders diverge:\nC++ ={cpp}\nRust={rust}"

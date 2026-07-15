@@ -18,6 +18,7 @@ pub mod egress;
 pub mod ingest;
 pub mod pool;
 pub mod result_writer;
+pub mod shm;
 pub mod trace;
 
 use std::fmt;
