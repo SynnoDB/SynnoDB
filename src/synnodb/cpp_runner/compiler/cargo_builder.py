@@ -16,12 +16,13 @@ workspace, so the freshly built .so files are copied there after every build.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,49 @@ class CargoBuilder:
             return proc.stderr or proc.stdout or "cargo build failed with no output"
 
         return self._stage_plugins()
+
+    def build_cached(
+        self,
+        skip_cache: bool = False,
+        write_cache: bool = True,
+        current_git_snapshot: Optional[str] = None,
+    ) -> Tuple[Optional[str], bool, str]:
+        """See EngineBuilder.build_cached.
+
+        There is no content-addressed cache layer here -- cargo already does
+        incremental compilation, so a second build of unchanged sources is fast on
+        its own. But the key_hash must still change with the source, because the
+        VALIDATION cache chains on it: returning a constant would let one engine's
+        validated query results be replayed for a different engine. So the hash
+        covers the workspace sources (and the build profile), which is exactly what
+        changes when the model edits the engine.
+        """
+        err = self.build()
+        return err, False, self._source_key()
+
+    def _source_key(self) -> str:
+        """A content hash of the engine's Rust sources plus the build profile.
+
+        Walks the workspace rather than trusting the git snapshot, so it is
+        correct even when no snapshotter is attached (tests, ad-hoc runs). Skips
+        the cargo/host build dirs, which are regenerated and would make the key
+        unstable.
+        """
+        digest = hashlib.sha256()
+        digest.update(f"opt={self.optimize};trace={self.trace_mode}\0".encode())
+        skip = {"target", "build", ".git", ".reload", "__pycache__"}
+        for path in sorted(self.workdir.rglob("*.rs")):
+            rel = path.relative_to(self.workdir)
+            if skip.intersection(rel.parts):
+                continue
+            digest.update(rel.as_posix().encode())
+            digest.update(b"\0")
+            try:
+                digest.update(path.read_bytes())
+            except OSError:
+                pass
+            digest.update(b"\0")
+        return digest.hexdigest()
 
     # -- internals -------------------------------------------------------------
     def _build_host(self) -> Optional[str]:
