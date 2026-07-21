@@ -12,6 +12,7 @@ modules or require SYNNO_DATA_DIR until they are actually used.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -205,6 +206,150 @@ def find_sf_dir(base_parquet_dir: Path | str, scale_factor: float) -> Path | Non
             if candidate.exists():
                 return candidate
     return None
+
+
+def discover_subset_values(base_parquet_dir: Path | str) -> list[float]:
+    """Subset values that have a directory on disk under a parquet root, ascending.
+
+    Reads whichever naming convention the root uses - ``fraction<f>`` (sampling fraction, written
+    by the referential downscaler) or the legacy ``sf<N>`` - and normalizes integral values to
+    ints so they format back to ``fraction1``/``sf50`` rather than ``fraction1.0``/``sf50.0``.
+    Directory names only: use :func:`available_subsets` when the subset must also be complete."""
+    values: list[float] = []
+    base = Path(base_parquet_dir)
+    if not base.is_dir():
+        return values
+    for prefix in ("fraction", "sf"):
+        for child in base.glob(f"{prefix}*"):
+            if not child.is_dir():
+                continue
+            try:
+                value = float(child.name[len(prefix) :])
+            except ValueError:
+                continue
+            values.append(int(value) if value.is_integer() else value)
+    return sorted(set(values))
+
+
+def available_subsets(spec: WorkloadSpec, base_parquet_dir: Path | str) -> list[float]:
+    """Subset values fully materialized on disk under a parquet root, ascending.
+
+    A subset counts as available only when every file it physically needs is present (per
+    :meth:`WorkloadSpec.subset_files`: a single ``subset.duckdb`` for a DuckDB-native workload,
+    one ``<table>.parquet`` per table otherwise), so a half-written or aborted subset is skipped.
+    Driven by the filesystem rather than the spec's SF ladders, so a subset generated out-of-band
+    (e.g. an extra dbgen scale factor) is offered too."""
+    base = Path(base_parquet_dir)
+    complete: list[float] = []
+    for value in discover_subset_values(base):
+        subset_dir = find_sf_dir(base, value)
+        if subset_dir is None:
+            continue
+        if all(path.exists() for path in spec.subset_files(subset_dir)):
+            complete.append(value)
+    return complete
+
+
+# What a sample preserves and what it does not - the half of the menu that is true of any sample,
+# so the two menus that mention the sample share one wording. Measured against the real downscaler,
+# a 5% subset reproduced low-cardinality domains and whole-kept dimension tables exactly, but
+# understated a bounded column's max (141 vs 148.5), a key's max, and every medium/high-cardinality
+# distinct count (27 vs 100; 11.6k vs 200k). Shape transfers; the three numbers a physical design is
+# actually sized from do not - a type width chosen from a sample's max overflows at full scale, and
+# a dictionary sized from a sample's distinct count is orders of magnitude too small.
+_SAMPLE_SHAPE_NOTE = "Shape transfers from the sample: distributions, skew, null density, clustering, correlations."
+# Why a count must never be scaled by a ratio: the sample is not a uniform shrink of the full
+# dataset, on either path. A downscaled sample keeps small dimension tables (and tables off the join
+# graph) *whole* and sizes the rest by join propagation; a generated scale factor likewise holds
+# small reference tables at a fixed size while scaling the fact tables. An earlier menu said
+# "multiply by the ratio", and a real run shows the damage: the agent scaled a whole-kept dimension
+# up by 50x, could not reconcile the result with the sample it had asked for, and concluded the
+# subset labels must be inverted.
+_SAMPLE_NUMBERS_NOTE = (
+    "But it is a *sample*, so row counts, min/max and distinct counts do NOT transfer. Its min/max "
+    "lie inside the true range (rare extremes are missing) and its distinct counts are understated, "
+    "so a type width, encoding or allocation sized from them overflows or undersizes at full scale. "
+    "Row counts also shrink unevenly per table - small dimension tables are often kept whole, so an "
+    "unchanged count between sample and full dataset is expected; never scale a count by a ratio."
+)
+
+
+def format_subset_menu(
+    available: Sequence[float], sample_sf: float, full_sf: float
+) -> str:
+    """The agent-facing description of what ``query_data`` can read, shared by the tool description
+    and the planner/storage-plan prompts so the two can never drift.
+
+    The agent gets one boolean, ``full_dataset``: read the cheap **sample** (the default) or the
+    **full dataset** (the scale its design must actually serve). It picks per call. The menu states
+    the prefer-the-sample rule, and - crucially - separates what a sample preserves
+    (:data:`_SAMPLE_SHAPE_NOTE`) from what it does not (:data:`_SAMPLE_NUMBERS_NOTE`), so a design
+    is never sized from a sampled count, range or distinct count.
+
+    Neither dataset is guaranteed to be materialized (a built-in workload's ``sf<N>`` dirs come from
+    an out-of-band generation step), so the menu promises only what is actually on disk: it offers
+    ``full_dataset=true`` only when the full dataset exists, and points there for real numbers only
+    when it does. When the two resolve to the same subset (a workload with no smaller rung), the
+    flag is a no-op and the menu says so rather than advertising a choice that does not exist."""
+    if not available:
+        return ""
+    assert list(available) == sorted(available), (
+        "available subsets must be ascending; the menu reads the first as the smallest"
+    )
+    assert sample_sf > 0 and full_sf > 0, (
+        f"subset values are scale factors / sampling fractions, always > 0 "
+        f"(sample_sf={sample_sf}, full_sf={full_sf})"
+    )
+    assert sample_sf <= full_sf, (
+        f"the sample must not be larger than the full dataset "
+        f"(sample_sf={sample_sf}, full_sf={full_sf})"
+    )
+
+    sample_on_disk = sample_sf in available
+    full_on_disk = full_sf in available
+    cheap_note = (
+        "Keep queries cheap (SUMMARIZE/DESCRIBE, WHERE, LIMIT): a scan or join over the full "
+        "dataset is expensive and can hit the query time budget."
+    )
+
+    if not sample_on_disk and not full_on_disk:
+        # Neither dataset the tool can resolve is materialized. Say nothing rather than describe
+        # data the agent cannot actually read; the tool's own error explains it if it tries.
+        return ""
+
+    if sample_sf == full_sf:
+        # No smaller rung exists, so both settings read the same data and the flag is a no-op.
+        return (
+            "query_data reads the full benchmark data - the scale your design must actually serve. "
+            f"There is no smaller sample, so `full_dataset` makes no difference. {cheap_note}"
+        )
+
+    if not sample_on_disk:
+        return (
+            "query_data can only read the full benchmark data: pass `full_dataset=true` on every "
+            f"call, as the small sample is not materialized. {cheap_note}"
+        )
+
+    if not full_on_disk:
+        return (
+            "query_data reads a small sample of the benchmark data. The full dataset is not "
+            "materialized, so `full_dataset=true` is unavailable.\n\n"
+            f"{_SAMPLE_SHAPE_NOTE} {_SAMPLE_NUMBERS_NOTE} You cannot measure the real numbers here, "
+            "so treat any row count, min/max or distinct count you read as a lower bound on the "
+            "full dataset - never as the value to size a type, encoding or allocation from."
+        )
+
+    return (
+        "query_data reads one of two datasets, chosen per call with `full_dataset`: a small "
+        "**sample** (the default) or the **full dataset** (`full_dataset=true`) - the scale your "
+        "design must actually serve.\n\n"
+        "Default to the sample, and only set `full_dataset=true` when you need the numbers below: "
+        f"a scan or join over the full dataset is far more expensive and can hit the query time "
+        f"budget. {_SAMPLE_SHAPE_NOTE}\n\n"
+        f"{_SAMPLE_NUMBERS_NOTE} Measure any number you bake into the design on the full dataset "
+        "(`full_dataset=true`): `count(*)`, `min`/`max` and `approx_count_distinct` are "
+        "single-pass and cheap even at full scale."
+    )
 
 
 def managed_parquet_root(name: str, dataset_name: str) -> Path:

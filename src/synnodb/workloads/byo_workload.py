@@ -222,24 +222,12 @@ _FAST_RUNG_COUNT = 2
 
 
 def _discover_available_sfs(parquet_dir: Path) -> list[float]:
-    """Subset values that actually have data on disk, ascending.
+    """Subset values that actually have data on disk, ascending. See
+    :func:`~synnodb.workloads.workload_spec.discover_subset_values`, the single scanner for both
+    naming conventions (``fraction<f>`` and the legacy ``sf<N>``)."""
+    from synnodb.workloads.workload_spec import discover_subset_values
 
-    Convention is ``<parquet_dir>/<subset>/<table>.parquet`` where ``<subset>`` is ``fraction<f>``
-    (sampling fraction) or the legacy ``sf<N>``; integral values are returned as ints so they
-    format back to ``fraction1``/``sf50`` rather than ``fraction1.0``/``sf50.0``."""
-    sfs: list[float] = []
-    if not parquet_dir.is_dir():
-        return sfs
-    for prefix in ("fraction", "sf"):
-        for child in parquet_dir.glob(f"{prefix}*"):
-            if not child.is_dir():
-                continue
-            try:
-                value = float(child.name[len(prefix) :])
-            except ValueError:
-                continue
-            sfs.append(int(value) if value.is_integer() else value)
-    return sorted(set(sfs))
+    return discover_subset_values(parquet_dir)
 
 
 def _derive_sf_ladder(

@@ -31,8 +31,10 @@ from synnodb.llm.sdk.agents_sdk.openai_make_data_inspect_tool import (
 from synnodb.llm.sdk.agents_sdk.openai_make_run_tool import make_openai_run_tool
 from synnodb.llm.sdk.agents_sdk.openai_sdk_tools import (
     make_custom_openai_apply_patch_tool,
+    make_custom_openai_read_file_tool,
     make_custom_openai_replace_in_file_tool,
     make_custom_openai_shell_tool,
+    make_custom_openai_write_file_tool,
 )
 from synnodb.llm.sdk.agents_sdk.openai_token_usage import (
     openai_get_tokens_context_and_dollar_info,
@@ -45,6 +47,20 @@ from synnodb.observability.logging.run_stats_collector import (
 from synnodb.utils.model_setup import resolve_model_extra_body, setup_model_config
 
 logger = logging.getLogger(__name__)
+
+# Injected into the agent instructions when query_data is wired up. It must not contradict the
+# sample-vs-full-dataset note the tool description and the planner prompts carry (see
+# ``workload_spec.format_subset_menu``): both say the sample is a *sample*, so counts, ranges and
+# distincts are measured on the full dataset, never scaled up from the sample. An earlier version
+# of this string told the agent to extrapolate row counts and silently fought that note.
+DATA_INSPECT_HINT = (
+    "You can run read-only SQL against the actual benchmark data with the query_data tool to "
+    "inspect data distributions, cardinalities, null density, and value ranges that inform your "
+    "physical-design choices. Its `full_dataset` flag chooses what it reads: prefer the sample "
+    "(the default, and far cheaper), and set `full_dataset=true` only when you need real numbers. "
+    "Never scale the sample's row counts, min/max or distinct counts up to full scale - it is a "
+    "sample, so measure any number you bake into the design on the full dataset itself. "
+)
 
 
 class OpenAIAgentsSDKWrapper(SDKWrapper):
@@ -104,17 +120,20 @@ class OpenAIAgentsSDKWrapper(SDKWrapper):
         # Mention the data-inspection tool in the agent instructions only when it is actually
         # available, so the system prompt never advertises a tool the model cannot call.
         data_inspect_hint = (
-            "You can run read-only SQL against the actual benchmark data with the query_data "
-            "tool to inspect data distributions, cardinalities, null density, and value ranges "
-            "that inform your physical-design choices. "
-            if openai_data_inspect_tool is not None
-            else ""
+            DATA_INSPECT_HINT if openai_data_inspect_tool is not None else ""
         )
 
         # Always expose the search/replace edit tool alongside apply_patch. It
         # needs only a locally-unique old_string (no verbatim context hunks), so
         # weak local models avoid apply_patch's context-match failures.
         self.tools.append(make_custom_openai_replace_in_file_tool(editor=self.editor))
+
+        # Also expose simpler full-file write/read primitives alongside
+        # apply_patch: write_file takes raw content (no V4A diff syntax) and
+        # read_file returns cat -n-style numbered lines, both modeled after
+        # Claude Code's own Write/Read tools.
+        self.tools.append(make_custom_openai_write_file_tool(editor=self.editor))
+        self.tools.append(make_custom_openai_read_file_tool(editor=self.editor))
 
         if self.args.tool_search_tool:
             logger.info("Utilizing tool search tool.")

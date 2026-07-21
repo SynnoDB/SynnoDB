@@ -20,6 +20,10 @@ ${schema}
 
 Based on the given queries and schema, provide a detailed and creative storage layout summary for the tables accessed by the query. Feel free to explore unconventional and novel storage designs, including speculative encoding techniques or experimental ways of organizing data. Write it to the file: `${storage_plan_filename}`.
 
-Do not read build scripts, system paths, or tool internals. Limit inspection to `${queries_path}` and the provided schema. Do not use broad `find`, repo-wide `grep`, or directory scans.
+Before committing to a layout, use the `query_data` tool to inspect the actual benchmark data: run read-only SQL against the accessed tables to measure the real cardinalities, value ranges (min/max), distinct counts, null density, and value distributions that drive your type, encoding, ordering, and partitioning choices. Ground every choice in what you observe from the data - e.g. pick the narrowest type that fits the observed (min, max) and choose dictionary/RLE encodings from the observed distinct counts and clustering - rather than guessing from the schema alone. Measure the (min, max) and distinct counts you size a type or encoding from on the full dataset (`full_dataset=true`) - the sample understates both, and a width chosen from it overflows on the real data.
+
+${data_subsets}
+
+Do not read build scripts, system paths, or tool internals, and do not use broad `find`, repo-wide `grep`, or directory scans. Apart from the `query_data` tool, limit inspection to `${queries_path}` and the provided schema.
 
 
