@@ -14,14 +14,14 @@ from __future__ import annotations
 import random
 
 import pytest
+from tutorials.workloads.tpch.gen_tpch_query import gen_query
 
 from synnodb.router.guards import GuardContext, placeholder_arity_guard
 from synnodb.router.normalize import bind_template, binding_groups, normalize_sql
 from synnodb.router.registry import EngineBinding
-from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
-from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from synnodb.workloads.engine_publish import build_query_templates
 from synnodb.workloads.query_params import substitute
+from tutorials.workloads.tpch.tpch_queries import tpc_h
 
 QIDS = [str(k[1:]) for k in tpc_h if k.startswith("Q")]
 

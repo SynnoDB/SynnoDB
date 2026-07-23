@@ -6,7 +6,7 @@ from typing import List
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import _move_is_null_to_in_clause
+from tutorials.workloads.ceb.gen_ceb_query import _move_is_null_to_in_clause
 
 
 class TestGenCEBQuery(unittest.TestCase):

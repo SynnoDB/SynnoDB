@@ -1,8 +1,23 @@
-"""SynnoDB: From DuckDB to Bespoke in One Import - generation part.
+"""SynnoDB: From DuckDB to Bespoke in One Import - generation part (Stack / StackExchange).
 
-Exported from gen_tpch_demo.ipynb. Covers only the engine-generation flow:
-  Setup -> build TPC-H DuckDB -> register workload -> storage plan -> base impl.
-The benchmark / drop-in steps from the notebook are not included here.
+The bring-your-own sibling of ``gen_full_tpch_demo.py`` and ``gen_full_ceb_demo.py``, run against
+the Stack (Cardinality Estimation Benchmark) workload over the StackExchange dataset. Covers only
+the engine-generation flow:
+  Setup -> open Stack DuckDB -> register workload -> storage plan -> base impl -> optimization.
+The benchmark / drop-in steps are not included here.
+
+Like IMDB and unlike TPC-H there is no ``dbgen`` to synthesize Stack - it is real data (~170
+StackExchange sites unioned by ``site_id``), so this demo opens a ``stack_ce.duckdb`` you point it
+at rather than materializing one. The Stack queries share one join skeleton per class and differ
+only in their filter literals. Nothing about the workload is checked in: this demo builds the queries
+mapping on demand (deterministically). On first use it downloads + caches the raw ``so_queries/`` log
+(6191 tiny ``.sql`` files, ~540 KB compressed) from ``https://rmarcus.info/so_queries.tar.zst``,
+distills one template per class from it, and turns each of the 16 classes into a fixed,
+filter-literal-only template whose placeholders are bound - as a ``tuples`` parameter group - to the
+real StackExchange literal rows recorded from the workload, so at run time SynnoDB samples a whole
+correlated ``(site, tag, threshold, ...)`` binding per execution, the templated bring-your-own shape
+``sync_from_duckdb`` consumes. The builders live in ``tutorials/workloads/stack/`` (``extract_templates.py``
+does the download + template distillation; ``gen_stack_query.py`` turns templates into queries).
 
 Prerequisites: pip install "synnodb[factory]"
 """
@@ -14,15 +29,17 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from synnodb.observability.logging.logger import setup_logging
 from synnodb.utils.path_utils import repo_root
+from synnodb.observability.logging.logger import setup_logging
+
+from workloads.stack.gen_stack_query import build_stack_queries_json
 
 setup_logging(logging.INFO)
 load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come from a .env
 
-# The data root holds everything: the source DuckDB, engines, workspace. Honor SYNNO_DATA_DIR if
-# set, else default to a project-local .synno_data/. It need not exist yet - the next step builds
-# the TPC-H DuckDB into it.
+# The data root holds everything: engines and workspace. Honor SYNNO_DATA_DIR if set, else default
+# to a project-local .synno_data/. It need not exist yet. Unlike the TPC-H demo it does not hold the
+# source database - Stack is real data you bring (SYNNO_STACK_DUCKDB below), not something generated.
 DATA_ROOT = Path(os.environ.get("SYNNO_DATA_DIR") or repo_root() / ".synno_data")
 GENERATED_ENGINES_DIR = DATA_ROOT / "engines"
 
@@ -30,43 +47,47 @@ MODEL = os.environ.get(
     "SYNNO_MODEL", "anthropic/claude-sonnet-5"
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
-QUERIES_JSON = Path(__file__).parent / "workloads" / "tpch" / "tpch_queries.json"
+
+# The queries mapping is built on demand (nothing checked in): the raw so_queries/ log is downloaded
+# + cached on first use, one template per class is distilled from it, and each is reshaped into a
+# filter-literal-only entry. Deterministic - identical every run for a given so_queries/ download.
+QUERIES = build_stack_queries_json()
 
 print("Data root   :", DATA_ROOT)
 print("Generated engines dir :", GENERATED_ENGINES_DIR)
 print("Model       :", MODEL)
 
 
-# --- Your DuckDB database (for the demo: TPC-H) --------------------------------------------
-# SynnoDB works off a DuckDB database you already have. For this demo only we assemble a TPC-H
-# database with DuckDB's built-in dbgen; in your own project this is simply the duckdb.connect(...)
-# you already hold. SF5 is a couple of GB and takes a little while to build.
-import sys
-
+# --- Your DuckDB database (for the demo: Stack / StackExchange) -----------------------------
+# SynnoDB works off a DuckDB database you already have. TPC-H can be synthesized with DuckDB's
+# built-in dbgen; Stack cannot - it is real data - so this demo simply opens a ``stack_ce.duckdb``
+# you already hold (the StackExchange CE-benchmark import; see
+# ``src/synnodb/workloads/dataset/gen_stack/README.md``). In your own project this is just the
+# duckdb.connect(...) you already have. Point SYNNO_STACK_DUCKDB at your file.
 import duckdb
 
-# The TPC-H data generator lives in the tutorials package (real projects bring their own data, so
-# it is a demo helper, not part of synnodb). Put the repo root on sys.path so ``tutorials.*``
-# resolves whether this file is run directly (python tutorials/gen_full_tpch_demo.py) or as a
-# module, since running a script only puts its own directory on the path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tutorials.workloads.tpch.gen_tpc_h_data import generate_tpch_duckdb
-
-TPCH_DB = DATA_ROOT / "tpch.duckdb"  # the single source of truth - one live DuckDB
-
-# --- Demo only: materialize a TPC-H database. Swap this line for your own dataset. ---
-generate_tpch_duckdb(TPCH_DB, 50)
+STACK_DB = Path(
+    os.environ.get(
+        "SYNNO_STACK_DUCKDB",
+        "/mnt/labstore/learned_db/synno_data/workloads/stack/stack_ce.duckdb",
+    )
+)  # the single source of truth - one live DuckDB
+if not STACK_DB.exists():
+    raise SystemExit(
+        f"Stack DuckDB not found: {STACK_DB}\n"
+        "Set SYNNO_STACK_DUCKDB to your stack_ce.duckdb (the StackExchange CE import)."
+    )
 
 # Your live working database. Open it read-only: a read-write connection takes an exclusive OS lock
 # on the file, which would block SynnoDB's own read-only access below. Read-only openers coexist.
-duckdb_con = duckdb.connect(str(TPCH_DB), read_only=True)
+duckdb_con = duckdb.connect(str(STACK_DB), read_only=True)
 print("Source tables:", [r[0] for r in duckdb_con.execute("SHOW TABLES").fetchall()])
 
 
 # --- Step 1: Workload Registration ---------------------------------------------------------
 # Describe the workload once (its queries) and hand SynnoDB the live DuckDB. From that one
-# connection it reads the schema, benchmarks Q1-Q5 at full scale, and derives the cheap correctness
-# rungs by FK-preserving downscaling (no pre-scaled data subsets).
+# connection it reads the schema, benchmarks the first queries at full scale, and derives the cheap
+# correctness rungs by FK-preserving downscaling (no pre-scaled data subsets).
 from synnodb import SynnoDB
 
 # Degree of parallelism the engine is generated, validated, AND served at (the DuckDB-style
@@ -89,9 +110,9 @@ db = SynnoDB(
 # a few downscaled versions of the dataset from that snapshot. Your database is only ever read.
 spec = db.sync_from_duckdb(
     duckdb_con,  # your live duckdb.DuckDBPyConnection (a ".duckdb" path also works)
-    name="tpch_byo",
-    queries_json=QUERIES_JSON,
-    schema_example_table="lineitem",
+    name="stack_byo",
+    queries_json=QUERIES,  # the on-demand-built {qid: entry} dict (a path also works)
+    schema_example_table="question",
 )
 
 duckdb_con.execute("PRAGMA threads=%d" % NUM_THREADS)  # match SynnoDB's thread count

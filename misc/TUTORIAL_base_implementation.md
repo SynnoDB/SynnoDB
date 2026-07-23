@@ -182,7 +182,7 @@ from synnodb import SynnoDB
 db = SynnoDB.for_tpch(
     model="openai/unsloth/MiniMax-M3",
     db_storage="in_memory",                 # serve from RAM
-    queries="1-5",                          # covers Q1 and Q5
+    query_subset="1-5",                     # covers Q1 and Q5
     # No endpoint needed on the lab network (defaults to dgx02). To override, either set
     # LLM_API_BASE in the environment, or pass it through here since SynnoConfig has no
     # api_base field of its own:  extra_config={"api_base": "http://your-host:13505/v1"}
@@ -215,7 +215,7 @@ chain them by run id instead of by passing the in-memory artifact. Enabling W&B
 from synnodb import SynnoDB
 
 db = SynnoDB.for_tpch(
-    model="openai/unsloth/MiniMax-M3", db_storage="in_memory", queries="1-5",
+    model="openai/unsloth/MiniMax-M3", db_storage="in_memory", query_subset="1-5",
     wandb_entity="my-entity",            # presence of entity/project enables W&B logging
 )
 

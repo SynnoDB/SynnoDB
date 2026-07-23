@@ -21,8 +21,12 @@ from synnodb.cpp_runner.prepare_repo.prepare_workspace_olap import OLAPPrepareWo
 from synnodb.synth_framework.git_snapshotter import GitSnapshotter
 from synnodb.utils.cli_config import Usecase
 from synnodb.utils.utils import DBStorage
-from synnodb.workloads.workload_provider import Workload, WorkloadProvider
-from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from synnodb.workloads.workload_provider import (
+    Workload,
+    WorkloadId,
+    WorkloadProvider,
+)
+from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 # Systems that are meaningful per use-case.
 AVAILABLE_SYSTEMS_BY_USECASE: dict[Usecase, tuple[str, ...]] = {
@@ -66,10 +70,17 @@ def available_systems(usecase: Usecase) -> tuple[str, ...]:
     return AVAILABLE_SYSTEMS_BY_USECASE[usecase]
 
 
-def resolve_workload(usecase: Usecase, benchmark: str) -> Workload:
-    """Map a ``--benchmark`` string onto the right Workload enum for the track."""
+def resolve_workload(usecase: Usecase, benchmark: str) -> "Workload | WorkloadId":
+    """Map a ``--benchmark`` string onto a registered workload identity for the track.
+
+    The core ships no built-in workloads; *benchmark* must name one registered from the
+    outside (register_workload(...) or a bring-your-own builder)."""
     if usecase == Usecase.OLAP:
-        return OLAPWorkload(benchmark)
+        from synnodb.workloads.workload_spec import (
+            resolve_workload as resolve_registered_workload,
+        )
+
+        return resolve_registered_workload(benchmark)
     raise ValueError(f"Unknown usecase: {usecase}")
 
 
@@ -98,7 +109,7 @@ def build_track(
     dataset_name = dataset_name_for(usecase, workload)
 
     if usecase == Usecase.OLAP:
-        assert isinstance(workload, OLAPWorkload)
+        assert isinstance(workload, (Workload, WorkloadId))
         provider: WorkloadProvider = OLAPWorkloadProvider(
             benchmark=workload,
             base_parquet_dir=parquet_base_dir,

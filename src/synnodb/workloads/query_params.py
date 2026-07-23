@@ -163,6 +163,73 @@ def substitute(template: str, assignment: dict[str, object]) -> str:
     return sql
 
 
+# A single-quoted SQL string literal, with '' as the escaped embedded quote.
+_QUOTED_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
+
+
+def is_quoted_literal(value) -> bool:
+    """True when ``value`` is a string shaped like a single-quoted SQL literal (``'scifi'``,
+    ``'O''Reilly'``). Placeholder values must be bare - the template supplies the quotes
+    (see :func:`render_value`). A quoted value substitutes into valid SQL, but its single
+    quotes also travel to the engine args line, where the generated C++ parser's
+    ``std::quoted`` strips only the wire double quotes - the single quotes leak into the
+    string field and lookups miss. :func:`hoist_literal_quotes` converts such values."""
+    return isinstance(value, str) and _QUOTED_LITERAL_RE.fullmatch(value) is not None
+
+
+def hoist_literal_quotes(
+    template: str, placeholders: list[str], rows: list[list]
+) -> tuple[str, list[list]]:
+    """Move SQL string quoting from parameter values into the template.
+
+    Extraction-based workloads (Stack, MusicBrainz) record each varying literal exactly as it
+    appears in the SQL, quotes included: values like ``'scifi'`` fill bare template holes
+    (``site_name=[SITE_NAME]``). That substitutes into valid SQL but leaks the single quotes
+    onto the engine args line (see :func:`is_quoted_literal`). The framework convention is
+    the inverse: the template supplies the quotes (``'[NAME]'``) and values travel bare.
+
+    This helper converts a ``tuples`` group to that convention: for every placeholder whose
+    value in *each* row is a quoted literal, the quotes are stripped from the values and the
+    template hole is wrapped as ``'[NAME]'``. Substituted SQL is unchanged; the engine now
+    receives bare values. Numeric values and IN-list values are left untouched (IN-lists are
+    fine as-is: ``parse_in_list`` strips their element quotes engine-side).
+
+    Raises ValueError on a placeholder that mixes quoted and unquoted string values, or whose
+    literal contains an embedded (escaped) quote - hoisting would substitute the bare value
+    into a quoted template hole without re-escaping, so both need manual handling rather
+    than a silent half-conversion.
+    """
+    hoisted_rows = [list(row) for row in rows]
+    for col, name in enumerate(placeholders):
+        values = [row[col] for row in hoisted_rows]
+        quoted = [v for v in values if is_quoted_literal(v)]
+        if not quoted:
+            continue
+        embedded = next((v for v in quoted if "'" in v[1:-1]), None)
+        if embedded is not None:
+            raise ValueError(
+                f"placeholder '{name}': value {embedded!r} contains an embedded quote; "
+                f"hoisting would substitute it unescaped into a quoted template hole. "
+                f"Handle this placeholder manually."
+            )
+        if len(quoted) != len(values):
+            offenders = [v for v in values if not is_quoted_literal(v)][:3]
+            raise ValueError(
+                f"placeholder '{name}': cannot hoist quotes - values mix quoted literals "
+                f"with other shapes (e.g. {offenders!r}). A placeholder must be uniformly "
+                f"quoted (hoistable) or uniformly bare/IN-list."
+            )
+        if f"[{name}]" not in template:
+            raise ValueError(
+                f"placeholder '{name}' does not occur in the template; cannot hoist its "
+                f"quotes."
+            )
+        template = template.replace(f"[{name}]", f"'[{name}]'")
+        for row in hoisted_rows:
+            row[col] = row[col][1:-1]
+    return template, hoisted_rows
+
+
 # --- Typed parameter specs ---------------------------------------------------
 #
 # A scalar spec binds one placeholder; a group spec binds several jointly. Each spec knows
@@ -486,6 +553,29 @@ def _parse_group_spec(idx: int, raw: object):
     )
 
 
+def _warn_quoted_literal_values(space: ParamSpace) -> None:
+    """Warn once per placeholder whose declared values look like quoted SQL literals.
+
+    Such values substitute into valid SQL, so the mistake is otherwise invisible until
+    engine-side lookups silently miss. Metadata already flattens every spec form
+    (categorical, tuples columns, sample domains) to a per-placeholder value list, so this
+    covers them all; numeric specs carry no values and are skipped."""
+    for ph, meta in space.metadata().items():
+        example = next(
+            (v for v in meta.get("values", ()) if is_quoted_literal(v)), None
+        )
+        if example is not None:
+            logger.warning(
+                "placeholder '%s': value %r looks like a quoted SQL literal; the single "
+                "quotes will reach the engine inside the string value and lookups will "
+                "miss. Put the quotes in the template ('[%s]') and supply bare values "
+                "(see synnodb.workloads.query_params.hoist_literal_quotes).",
+                ph,
+                example,
+                ph,
+            )
+
+
 def parse_param_space(
     raw_params: dict | None, raw_groups: list | None, template: str
 ) -> ParamSpace:
@@ -538,4 +628,6 @@ def parse_param_space(
         )
 
     ordered_scalars = {ph: scalars[ph] for ph in phs if ph in scalars}
-    return ParamSpace(tuple(phs), ordered_scalars, tuple(groups))
+    space = ParamSpace(tuple(phs), ordered_scalars, tuple(groups))
+    _warn_quoted_literal_values(space)
+    return space

@@ -50,7 +50,8 @@ def _trivial_plan(**overrides) -> ConversationPlan:
 def _db(tmp_path, monkeypatch) -> SynnoDB:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "ws").mkdir(exist_ok=True)
-    return SynnoDB(workspace="ws")
+    # The core is workload-agnostic (no default workload); name one the conftest registered.
+    return SynnoDB(workspace="ws", workload="tpch")
 
 
 # ------------------------------ plan validation -------------------------------
@@ -117,12 +118,20 @@ def test_run_synthesis_plumbs_plan_and_start(tmp_path, monkeypatch):
     rc = calls["run_config"]
     assert rc.start_snapshot == "cafebabe"
     assert rc.run_tool_offer_trace_option is True
-    assert rc.query_list == "1"  # default queries="1"
+    # default query_subset=None -> every query the registered workload declares
+    assert rc.query_subset is None
+    assert rc.query_list == ",".join(str(i) for i in range(1, 23))
     # the artifact mirrors the workspace prepare record
     assert artifact.snapshot_hash == "newsnap"
     assert artifact.prepare_features == PrepareFeatures.optim().resolve(
         DBStorage.IN_MEMORY
     )
+
+
+def test_query_subset_none_expands_to_the_full_catalog():
+    from synnodb.utils.gen_common import parse_query_ids
+
+    assert parse_query_ids(None, benchmark="tpch") == [str(i) for i in range(1, 23)]
 
 
 def test_run_synthesis_uses_artifact_snapshot_as_start(tmp_path, monkeypatch):
@@ -240,7 +249,7 @@ def _minimal_run_config():
         db_storage=DBStorage.IN_MEMORY,
         continue_run=False,
         benchmark="tpch",
-        queries_str="1",
+        query_subset="1",
         model="model",
         bespoke_storage=False,
         sdk="openai",
