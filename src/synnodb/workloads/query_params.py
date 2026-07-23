@@ -71,7 +71,12 @@ def configure_byo_debug() -> bool:
 
 BYO_DEBUG = configure_byo_debug()
 
-_PLACEHOLDER_RE = re.compile(r"\[([A-Za-z_][A-Za-z0-9_]*)\]")
+# Template placeholders are UPPERCASE by convention (DELTA, NATION1, INFO2, ...). Restricting the
+# match to uppercase names avoids mistaking bracketed *data* literals for holes - e.g. IMDB's
+# ``country_code`` values are genuinely ``'[cz]'`` / ``'[pa]'``, which would otherwise read as
+# placeholders inside a static bring-your-own query. Legitimate placeholders may still sit inside a
+# quoted string (TPC-H Q2's ``'%[TYPE]'``), so quote-awareness alone would not disambiguate.
+_PLACEHOLDER_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)\]")
 
 
 def find_placeholders(sql: str) -> list[str]:

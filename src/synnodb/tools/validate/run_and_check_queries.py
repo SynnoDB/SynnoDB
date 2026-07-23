@@ -1,5 +1,5 @@
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import DefaultDict, Dict, List, Optional
@@ -212,7 +212,10 @@ def check_output_correctness(
         # values as different.
         ref_names = list(reference_table.column_names)
         bes_names = list(bespoke_table.column_names)
-        if set(ref_names) != set(bes_names):
+        # A multiset comparison, not a set one: a query may legitimately project the same column
+        # name twice (e.g. SELECT n.name, cn.name ...), so a plain set would hide a count mismatch
+        # and dedupe the duplicate names.
+        if Counter(ref_names) != Counter(bes_names):
             output = (
                 f"Result columns do not match for query {inst.query_id} "
                 f"with placeholders: {inst.placeholders}\n(SQL: {inst.sql})\n"
@@ -234,7 +237,13 @@ def check_output_correctness(
             log_collector += output + "\n"
         else:
             # Align bespoke columns to the reference order so the positional comparison lines up.
-            bespoke_aligned = bespoke_table.select(ref_names)
+            bes_indices_by_name: DefaultDict[str, deque] = defaultdict(deque)
+            for idx, col_name in enumerate(bes_names):
+                bes_indices_by_name[col_name].append(idx)
+            align_indices = [
+                bes_indices_by_name[col_name].popleft() for col_name in ref_names
+            ]
+            bespoke_aligned = bespoke_table.select(align_indices)
 
             # A top-level ORDER BY makes row order meaningful: resolve its key columns to output
             # indices for a tie-aware comparison; otherwise compare with set/multiset semantics.
