@@ -39,7 +39,9 @@ CLICKBENCH_TEMPLATED_QUERIES: dict[str, dict] = {
             "SELECT AdvEngineID, COUNT(*) AS c FROM hits "
             "WHERE AdvEngineID > [MIN_ADV_ENGINE_ID] GROUP BY AdvEngineID ORDER BY c DESC;"
         ),
-        "params": {"MIN_ADV_ENGINE_ID": {"type": "int", "min": 0, "max": 44, "step": 1}},
+        "params": {
+            "MIN_ADV_ENGINE_ID": {"type": "int", "min": 0, "max": 44, "step": 1}
+        },
     },
     # Based on official Q9 (top regions by distinct users). Templates the LIMIT.
     "2": {
@@ -126,7 +128,9 @@ CLICKBENCH_TEMPLATED_QUERIES: dict[str, dict] = {
             "AVG(STRLEN(Referer)) AS l, COUNT(*) AS c FROM hits WHERE Referer <> '' "
             "GROUP BY domain HAVING COUNT(*) > [MIN_COUNT] ORDER BY l DESC LIMIT 25;"
         ),
-        "params": {"MIN_COUNT": {"type": "int", "min": 1000, "max": 200000, "step": 1000}},
+        "params": {
+            "MIN_COUNT": {"type": "int", "min": 1000, "max": 200000, "step": 1000}
+        },
     },
     # Based on official Q39 (paginated URL pageviews). Templates the date window start,
     # LIMIT, and OFFSET together, exercising pagination with a moving window.

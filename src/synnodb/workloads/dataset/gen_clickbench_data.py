@@ -191,14 +191,15 @@ def ensure_clickbench_parquet(
         if parquet_path.exists() and (
             expected_size is None or parquet_path.stat().st_size == expected_size
         ):
-            print(f"{parquet_path}: present ({parquet_path.stat().st_size:,} bytes), skipping")
+            print(
+                f"{parquet_path}: present ({parquet_path.stat().st_size:,} bytes), skipping"
+            )
             return parquet_path
 
         parquet_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = parquet_path.with_name(parquet_path.name + ".partial")
         print(
-            f"{parquet_path}: downloading from {url} "
-            f"({expected_size / 1e9:.1f} GB) ..."
+            f"{parquet_path}: downloading from {url} ({expected_size / 1e9:.1f} GB) ..."
             if expected_size
             else f"{parquet_path}: downloading from {url} ..."
         )
@@ -209,7 +210,11 @@ def ensure_clickbench_parquet(
                 written += len(chunk)
                 if expected_size:
                     pct = 100 * written / expected_size
-                    print(f"\r  {written / 1e9:.2f} / {expected_size / 1e9:.2f} GB ({pct:.1f}%)", end="", flush=True)
+                    print(
+                        f"\r  {written / 1e9:.2f} / {expected_size / 1e9:.2f} GB ({pct:.1f}%)",
+                        end="",
+                        flush=True,
+                    )
         print()
 
     if expected_size is not None and written != expected_size:

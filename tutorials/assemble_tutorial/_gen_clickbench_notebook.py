@@ -4,7 +4,9 @@ from pathlib import Path
 import nbformat
 from nbformat.v4 import new_notebook, new_markdown_cell, new_code_cell
 
-TUTORIAL_DIR = Path(__file__).parent.parent  # tutorials/, alongside clickbench_queries.json
+TUTORIAL_DIR = Path(
+    __file__
+).parent.parent  # tutorials/, alongside clickbench_queries.json
 
 
 def md(src: str, trailing_nl: bool = False):
@@ -358,7 +360,9 @@ print(f"Engine published to: {DATA_ROOT / 'engines'}")
 
 # ── Step 3a - DuckDB baseline run ────────────────────────────────────────────
 cells.append(
-    md("# Step 3a - Benchmark DuckDB\n### Run all 10 queries on DuckDB as comparison baseline")
+    md(
+        "# Step 3a - Benchmark DuckDB\n### Run all 10 queries on DuckDB as comparison baseline"
+    )
 )
 
 cells.append(
@@ -538,7 +542,11 @@ print("\nAll results match DuckDB exactly.")
 """)
 )
 
-cells.append(md("### Q7 result (top URLs by pageviews in a sampled date window, with timing footer)"))
+cells.append(
+    md(
+        "### Q7 result (top URLs by pageviews in a sampled date window, with timing footer)"
+    )
+)
 
 cells.append(
     code("""
