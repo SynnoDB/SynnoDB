@@ -27,6 +27,8 @@ code_v*/
 src/synnodb/observability/analysis_model_behaviour/llm_cache
 src/synnodb/observability/analysis_model_behaviour/analysis
 src/synnodb/workloads/dataset/gen_music_brainz/mb_queries
+tutorial/workloads/stack/*.json
+tutorial/workloads/music_brainz/*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -258,3 +260,10 @@ __marimo__/
 build_and_test_engine.py
 # Locally generated engine folders (sources + compiled `db` + per-folder .git)
 synthesized_engines/
+
+# On-demand-built MusicBrainz tutorial queries (see gen_full_music_brainz_demo.py)
+tutorials/workloads/music_brainz/musicbrainz_queries.json
+
+# On-demand-built Stack tutorial queries (see gen_full_stack_demo.py)
+tutorials/workloads/stack/queries.json
+tutorials/workloads/stack/stack_queries.json

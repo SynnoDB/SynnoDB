@@ -11,12 +11,14 @@ data (the public MusicBrainz data dump), so this demo opens a ``musicbrainz.duck
 rather than materializing one. Build it once with
 ``tutorials/workloads/music_brainz/load_musicbrainz.py`` (download + load the dump into DuckDB).
 
-The 10 MusicBrainz queries share one template per class and differ only in their filter literals, so
-``musicbrainz_queries.json`` (under ``tutorials/workloads/music_brainz/``) ships each class as a
-fixed template whose placeholders are bound - as a ``tuples`` parameter group - to pre-generated
-correlated literal rows: at run time SynnoDB samples a whole binding per execution, the templated
-bring-your-own shape ``sync_from_duckdb`` consumes. Regenerate it with
-``tutorials/workloads/music_brainz/_gen_musicbrainz_queries.py``.
+The 10 MusicBrainz queries share one template per class and differ only in their filter literals.
+Rather than ship a checked-in ``musicbrainz_queries.json``, this demo builds that mapping on demand
+(deterministically, for a fixed seed) from ``tutorials/workloads/music_brainz/templates.json``: each
+class becomes a fixed template whose placeholders are bound - as a ``tuples`` parameter group - to
+pre-generated correlated literal rows, so at run time SynnoDB samples a whole binding per execution,
+the templated bring-your-own shape ``sync_from_duckdb`` consumes. The builder lives in
+``tutorials/workloads/music_brainz/_gen_musicbrainz_queries.py`` (its ``main()`` can still write the
+JSON out to disk if you want to inspect it).
 
 Prerequisites: pip install "synnodb[factory]"
 """
@@ -27,6 +29,10 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from workloads.music_brainz._gen_musicbrainz_queries import (
+    build_musicbrainz_queries_json,
+)
 
 from synnodb.utils.path_utils import repo_root
 from synnodb.observability.logging.logger import setup_logging
@@ -45,8 +51,13 @@ MODEL = os.environ.get(
     "SYNNO_MODEL", "anthropic/claude-sonnet-5"
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
-QUERIES_JSON = (
-    Path(__file__).parent / "workloads" / "music_brainz" / "musicbrainz_queries.json"
+
+# The queries mapping is built on demand (not checked in): construct the ``{qid: entry}`` dict
+# deterministically from ``templates.json`` (fixed seed => identical queries every run).
+QUERIES = build_musicbrainz_queries_json(
+    templates_json=Path(__file__).parent / "workloads" / "music_brainz" / "templates.json",
+    num_instances=100,
+    seed=42,
 )
 
 print("Data root   :", DATA_ROOT)
@@ -108,7 +119,7 @@ db = SynnoDB(
 spec = db.sync_from_duckdb(
     duckdb_con,  # your live duckdb.DuckDBPyConnection (a ".duckdb" path also works)
     name="musicbrainz_byo",
-    queries_json=QUERIES_JSON,
+    queries_json=QUERIES,  # the on-demand-built {qid: entry} dict (a path also works)
     schema_example_table="recording",
 )
 
