@@ -78,8 +78,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--templates", default=ROOT / "templates.json", type=Path)
     parser.add_argument("--out", default=ROOT / "musicbrainz_queries.json", type=Path)
-    parser.add_argument("--num-instances", default=100, type=int,
-                        help="pre-generated bindings per template")
+    parser.add_argument(
+        "--num-instances",
+        default=100,
+        type=int,
+        help="pre-generated bindings per template",
+    )
     parser.add_argument("--seed", default=42, type=int)
     args = parser.parse_args()
 

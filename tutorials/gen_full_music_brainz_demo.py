@@ -55,7 +55,10 @@ MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
 # The queries mapping is built on demand (not checked in): construct the ``{qid: entry}`` dict
 # deterministically from ``templates.json`` (fixed seed => identical queries every run).
 QUERIES = build_musicbrainz_queries_json(
-    templates_json=Path(__file__).parent / "workloads" / "music_brainz" / "templates.json",
+    templates_json=Path(__file__).parent
+    / "workloads"
+    / "music_brainz"
+    / "templates.json",
     num_instances=100,
     seed=42,
 )

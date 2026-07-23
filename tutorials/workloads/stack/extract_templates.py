@@ -135,9 +135,7 @@ def build_class(files):
 
     # A position is a parameter iff its token text is not identical everywhere.
     varying = [
-        pos
-        for pos in range(n_tokens)
-        if len({tokenized[f][pos][0] for f in files}) > 1
+        pos for pos in range(n_tokens) if len({tokenized[f][pos][0] for f in files}) > 1
     ]
 
     representative = min(files)  # deterministic; formatting is identical class-wide
@@ -168,12 +166,14 @@ def build_class(files):
         by_kind = {"value": {}, "column": {}, "operator": {}}
         for pos in varying:
             by_kind[kinds[pos]][names[pos]] = toks[pos][0]
-        queries.append({
-            "file": f"{f.parent.name}/{f.name}",
-            "parameters": by_kind["value"],
-            "column_name_parameters": by_kind["column"],
-            "operator_parameters": by_kind["operator"],
-        })
+        queries.append(
+            {
+                "file": f"{f.parent.name}/{f.name}",
+                "parameters": by_kind["value"],
+                "column_name_parameters": by_kind["column"],
+                "operator_parameters": by_kind["operator"],
+            }
+        )
 
     return {
         "template": template,
@@ -210,10 +210,14 @@ def ensure_so_queries(dest: Path = QUERY_DIR, url: str = SO_QUERIES_URL) -> Path
             compressed = resp.read()
         reader = zstandard.ZstdDecompressor().stream_reader(io.BytesIO(compressed))
         with tarfile.open(fileobj=reader, mode="r|") as tf:
-            tf.extractall(staging, filter="data")  # filter="data" blocks path-traversal entries
+            tf.extractall(
+                staging, filter="data"
+            )  # filter="data" blocks path-traversal entries
         extracted = staging / "so_queries"
         if not extracted.is_dir():
-            raise RuntimeError(f"{url} did not contain a top-level 'so_queries/' directory")
+            raise RuntimeError(
+                f"{url} did not contain a top-level 'so_queries/' directory"
+            )
         if dest.exists():
             shutil.rmtree(dest)
         extracted.replace(dest)  # atomic move within dest.parent's filesystem
@@ -253,8 +257,11 @@ def main():
         for q in data["queries"]:
             total += 1
             original = (QUERY_DIR / q["file"]).read_text()
-            all_params = {**q["parameters"], **q["column_name_parameters"],
-                          **q["operator_parameters"]}
+            all_params = {
+                **q["parameters"],
+                **q["column_name_parameters"],
+                **q["operator_parameters"],
+            }
             rebuilt = substitute(data["template"], all_params)
             if norm(original) != norm(rebuilt):
                 mismatches += 1
@@ -262,14 +269,18 @@ def main():
     print(f"Wrote {OUTPUT} ({len(result)} classes, {total} queries).")
     print(f"Round-trip check: {total - mismatches}/{total} queries reproduced exactly.")
     print()
-    print(f"{'class':>6}  {'#lit':>4}  {'#col':>4}  {'#op':>3}  "
-          f"column_name_parameters / operator_parameters")
+    print(
+        f"{'class':>6}  {'#lit':>4}  {'#col':>4}  {'#op':>3}  "
+        f"column_name_parameters / operator_parameters"
+    )
     for cls, data in result.items():
         extras = data["column_name_parameters"] + data["operator_parameters"]
-        print(f"{cls:>6}  {len(data['parameters']):>4}  "
-              f"{len(data['column_name_parameters']):>4}  "
-              f"{len(data['operator_parameters']):>3}  "
-              f"{', '.join(extras) if extras else '-'}")
+        print(
+            f"{cls:>6}  {len(data['parameters']):>4}  "
+            f"{len(data['column_name_parameters']):>4}  "
+            f"{len(data['operator_parameters']):>3}  "
+            f"{', '.join(extras) if extras else '-'}"
+        )
 
 
 if __name__ == "__main__":

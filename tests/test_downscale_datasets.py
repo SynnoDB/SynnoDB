@@ -106,7 +106,9 @@ def tpch():
 
     Skips cleanly where the tpch extension or the bundled tpch_queries.json is unavailable.
     """
-    queries_path = repo_root() / "tutorials" / "workloads" / "tpch" / "tpch_queries.json"
+    queries_path = (
+        repo_root() / "tutorials" / "workloads" / "tpch" / "tpch_queries.json"
+    )
     if not queries_path.exists():
         pytest.skip("tutorials/workloads/tpch/tpch_queries.json not present")
     raw = json.loads(queries_path.read_text())

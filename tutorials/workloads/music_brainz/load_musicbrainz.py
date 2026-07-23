@@ -117,7 +117,9 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def download_archive(base_url: str, name: str, dest: Path, expected_sha: str | None) -> None:
+def download_archive(
+    base_url: str, name: str, dest: Path, expected_sha: str | None
+) -> None:
     """Download ``<base_url>/<name>`` to ``dest``, resuming a partial file and verifying SHA256.
 
     A ``dest`` that already matches ``expected_sha`` is left untouched (idempotent re-run). A
@@ -298,7 +300,9 @@ def load_schema(schema_ref: str) -> dict[str, list[tuple[str, str]]]:
             if len(cols) > len(merged.get(table, [])):
                 merged[table] = cols
     if not merged:
-        raise RuntimeError(f"No tables parsed from MusicBrainz DDL at ref {schema_ref!r}")
+        raise RuntimeError(
+            f"No tables parsed from MusicBrainz DDL at ref {schema_ref!r}"
+        )
     return merged
 
 
@@ -324,7 +328,14 @@ def _unescape_expr(col: str) -> str:
     """
     q = f'"{col}"'
     expr = f"replace({q}, '\\\\', chr(1))"
-    for seq, code in (("\\t", 9), ("\\n", 10), ("\\r", 13), ("\\b", 8), ("\\f", 12), ("\\v", 11)):
+    for seq, code in (
+        ("\\t", 9),
+        ("\\n", 10),
+        ("\\r", 13),
+        ("\\b", 8),
+        ("\\f", 12),
+        ("\\v", 11),
+    ):
         expr = f"replace({expr}, '{seq}', chr({code}))"
     return f"replace({expr}, chr(1), chr(92))"
 
@@ -517,7 +528,7 @@ def build_musicbrainz_duckdb(
     for archive in archive_paths:
         extract_archive(archive, extract_dir)
 
-    schema_seq = (extract_dir / "SCHEMA_SEQUENCE")
+    schema_seq = extract_dir / "SCHEMA_SEQUENCE"
     if schema_seq.exists():
         print(f"Dump SCHEMA_SEQUENCE: {schema_seq.read_text().strip()}")
     print(f"Loading schema DDL from musicbrainz-server@{schema_ref} ...")

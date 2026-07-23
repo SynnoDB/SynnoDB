@@ -207,9 +207,7 @@ def _parse_queries(cfg: SynnoConfig) -> list[str]:
 
     assert cfg.workload is not None, "No workload set (checked by _base_run_config)"
     query_ids = parse_query_ids(cfg.query_subset, benchmark=cfg.workload)
-    assert query_ids is not None, (
-        f"Failed to parse query ids from {cfg.query_subset!r}"
-    )
+    assert query_ids is not None, f"Failed to parse query ids from {cfg.query_subset!r}"
     return query_ids
 
 

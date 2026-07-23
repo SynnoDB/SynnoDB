@@ -60,7 +60,9 @@ def _dominant_instantiation(entry: dict) -> Tuple[Dict[str, str], List[str]]:
     if not keys:
         return {}, keys
     combos = Counter(
-        tuple({**q["column_name_parameters"], **q["operator_parameters"]}[k] for k in keys)
+        tuple(
+            {**q["column_name_parameters"], **q["operator_parameters"]}[k] for k in keys
+        )
         for q in entry["queries"]
     )
     best = combos.most_common(1)[0][0]

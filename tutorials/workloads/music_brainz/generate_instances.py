@@ -42,7 +42,9 @@ def sql_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def draw(rule: dict, resolved: dict[str, int], rng: random.Random) -> tuple[str, int | None]:
+def draw(
+    rule: dict, resolved: dict[str, int], rng: random.Random
+) -> tuple[str, int | None]:
     """Return ``(literal, numeric_value)`` for one placeholder.
 
     ``literal`` is the exact text substituted into the query. The numeric
@@ -77,8 +79,9 @@ def instantiate(template: str, params: dict[str, str]) -> str:
     return out
 
 
-def generate_class(cls: str, spec: dict, rng: random.Random, num: int,
-                   max_attempts_factor: int = 20) -> list[dict[str, str]]:
+def generate_class(
+    cls: str, spec: dict, rng: random.Random, num: int, max_attempts_factor: int = 20
+) -> list[dict[str, str]]:
     """Generate ``num`` distinct parameter dictionaries for one template."""
     rules = spec["generation_rules"]
     # int_offset rules reference another placeholder's value, so resolve
@@ -103,8 +106,10 @@ def generate_class(cls: str, spec: dict, rng: random.Random, num: int,
         seen.add(key)
         instances.append({p: params[p] for p in spec["parameters"]})
     if len(instances) < num:
-        print(f"  {cls}: parameter space exhausted, generated "
-              f"{len(instances)}/{num} distinct instances")
+        print(
+            f"  {cls}: parameter space exhausted, generated "
+            f"{len(instances)}/{num} distinct instances"
+        )
     return instances
 
 
@@ -112,18 +117,29 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--templates", default=ROOT / "templates.json", type=Path)
     parser.add_argument("--out", default=ROOT / "musicbrainz_templates.json", type=Path)
-    parser.add_argument("--num-instances", default=100, type=int,
-                        help="queries to generate per template")
+    parser.add_argument(
+        "--num-instances",
+        default=100,
+        type=int,
+        help="queries to generate per template",
+    )
     parser.add_argument("--seed", default=42, type=int)
-    parser.add_argument("--db", default=None,
-                        help="DuckDB file to validate the generated SQL against")
-    parser.add_argument("--execute", default=0, type=int, metavar="N",
-                        help="with --db, additionally execute the first N instances per template")
+    parser.add_argument(
+        "--db", default=None, help="DuckDB file to validate the generated SQL against"
+    )
+    parser.add_argument(
+        "--execute",
+        default=0,
+        type=int,
+        metavar="N",
+        help="with --db, additionally execute the first N instances per template",
+    )
     args = parser.parse_args()
 
     con = None
     if args.db:
         import duckdb
+
         con = duckdb.connect(args.db, read_only=True)
 
     templates = json.loads(args.templates.read_text())
@@ -140,11 +156,13 @@ def main() -> None:
                 con.execute(f"explain {sql}")  # binder check: tables, columns, types
                 if i <= args.execute:
                     con.execute(sql).fetchall()
-            queries.append({
-                "parameters": params,
-                "column_name_parameters": {},
-                "operator_parameters": {},
-            })
+            queries.append(
+                {
+                    "parameters": params,
+                    "column_name_parameters": {},
+                    "operator_parameters": {},
+                }
+            )
 
         result[cls] = {
             "template": spec["template"],
@@ -154,8 +172,10 @@ def main() -> None:
             "num_queries": len(queries),
             "queries": queries,
         }
-        print(f"{cls}: {len(queries)} queries "
-              f"({len(spec['parameters'])} parameters: {', '.join(spec['parameters'])})")
+        print(
+            f"{cls}: {len(queries)} queries "
+            f"({len(spec['parameters'])} parameters: {', '.join(spec['parameters'])})"
+        )
 
     args.out.write_text(json.dumps(result, indent=2))
     print(f"Wrote {args.out}")
