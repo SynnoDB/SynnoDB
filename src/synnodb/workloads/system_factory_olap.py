@@ -15,7 +15,6 @@ from synnodb.workloads.workload_provider import (
 from synnodb.utils.utils import DataSource, ServeFrom
 from synnodb.workloads.workload_provider_olap import (
     OLAPExecSettings,
-    OLAPWorkload,
     OLAPWorkloadProvider,
     validate_storage_combo,
 )
@@ -42,10 +41,10 @@ class OLAPSystemFactory(SystemFactory):
         assert isinstance(exec_settings, OLAPExecSettings), (
             "exec_settings must be an instance of OLAPExecSettings"
         )
-        # Accept a built-in OLAPWorkload enum member or a registered (bring-your-own)
-        # WorkloadId; both expose `.value`, which is all the downstream consumers use.
-        assert isinstance(benchmark, (OLAPWorkload, WorkloadId)), (
-            f"benchmark must be an OLAPWorkload or registered WorkloadId, got {type(benchmark)}"
+        # Accept any registered workload identity - a WorkloadId (the norm) or a workload-package
+        # enum member; both subclass/expose `.value`, which is all the downstream consumers use.
+        assert isinstance(benchmark, (Workload, WorkloadId)), (
+            f"benchmark must be a Workload or registered WorkloadId, got {type(benchmark)}"
         )
 
         if system_name == System.DUCKDB:

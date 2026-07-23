@@ -967,7 +967,7 @@ def run_conv_wrapper(
         conv_name, conv_name_withdatetime = generate_conv_name(
             stage_name=plan.name,
             benchmark=args.benchmark,
-            queries_str=args.queries_str,
+            query_subset=args.query_subset,
             model=args.model,
             bespoke_storage=args.bespoke_storage,
             db_storage=args.db_storage,

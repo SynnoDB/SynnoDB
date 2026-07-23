@@ -5,6 +5,22 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _register_builtin_workloads():
+    """Register the demo workloads (TPC-H, CEB) that live outside the core package.
+
+    The core ``synnodb`` package is workload-agnostic and ships no built-in workload; the
+    concrete workloads live under ``tutorials/workloads/*`` and are registered from the
+    outside. Much of the suite drives runs against ``"tpch"``/``"ceb"``, so register them
+    once here - exactly the way an application or notebook would before using them.
+    """
+    from tutorials.workloads.ceb.synnodb_workload import register as register_ceb
+    from tutorials.workloads.tpch.synnodb_workload import register as register_tpch
+
+    register_tpch()
+    register_ceb()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_snapshotter_repo(tmp_path_factory, monkeypatch):
     """Give every test its own git-snapshotter repository.

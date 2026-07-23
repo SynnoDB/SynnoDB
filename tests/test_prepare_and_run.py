@@ -26,7 +26,7 @@ from synnodb.tools.validate.query_validator_class import QueryValidator
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
 from synnodb.workloads.system_factory_olap import OLAPSystemFactory
-from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 setup_logging(level=logging.DEBUG)
 
@@ -49,7 +49,7 @@ def main(args):
         synno_data_dir = Path(synno_data_dir)
 
     ##### CONFIGURATION #####
-    benchmark = OLAPWorkload.CEB
+    benchmark = "ceb"
     db_storage = DBStorage.IN_MEMORY
     parallelism = False
     core_ids = None  # [3, 4, 5, 6]

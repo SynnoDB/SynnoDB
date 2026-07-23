@@ -1,9 +1,11 @@
 """A workload described as data.
 
-"What is a workload" used to be an `OLAPWorkload` enum that ~9 methods switched on
+"What is a workload" was once a hard-coded workload enum that ~9 methods switched on
 (`if benchmark == TPCH / elif CEB / else raise`), so adding a workload meant editing all
-of them. A `WorkloadSpec` carries the per-workload values instead, and the provider reads
-from the spec; a new workload is a value passed to `register_workload(...)`.
+of them - and the concrete workloads lived inside the core package. A `WorkloadSpec` carries
+the per-workload values instead, and the provider reads from the spec; the core is
+workload-agnostic and a new workload is a value passed to `register_workload(...)` from the
+outside (e.g. from `tutorials/workloads/*`).
 
 The heavy / context-dependent parts (SQL dict, schema DDL, per-query parameter
 generation) are supplied as factories, so importing a spec does not pull in the generator
@@ -23,6 +25,7 @@ from synnodb.utils.utils import ServeFrom
 if TYPE_CHECKING:  # avoid an import cycle; only used for type hints
     from synnodb.workloads.query_params import ParamSpace
     from synnodb.workloads.system_factory import System
+    from synnodb.workloads.workload_provider import WorkloadId
     from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 # Expands a query-range short name whose endpoints are NOT exact catalog ids
@@ -362,65 +365,47 @@ def managed_parquet_root(name: str, dataset_name: str) -> Path:
 
 
 _REGISTRY: dict[str, WorkloadSpec] = {}
-_BUILTINS_LOADED = False
-
-
-def _ensure_builtins() -> None:
-    """Register the built-in (TPC-H, CEB) specs on first registry use.
-
-    They are registered as an import side-effect of `workload_provider_olap`; importing
-    it here (lazily, function-level) means the registry is correctly populated even when
-    a caller imported only `workload_spec`. Guarded so it runs at most once and cannot
-    recurse during that module's own import.
-    """
-    global _BUILTINS_LOADED
-    if _BUILTINS_LOADED:
-        return
-    _BUILTINS_LOADED = True
-    import synnodb.workloads.workload_provider_olap  # noqa: F401  (registers builtins)
 
 
 def register_workload(spec: WorkloadSpec) -> None:
-    """Register a workload so it can be driven by name. Idempotent on identical specs."""
+    """Register a workload so it can be driven by name. Idempotent on identical specs.
+
+    This is the single entry point through which a concrete workload - which always lives
+    *outside* the core package (e.g. under ``tutorials/workloads/``) - hands its
+    :class:`WorkloadSpec` to the framework. Call it before driving the pipeline by that name.
+    The bring-your-own builders in :mod:`synnodb.workloads.byo_workload` funnel through here too.
+    """
     _REGISTRY[spec.name] = spec
 
 
 def get_workload_spec(name: str) -> WorkloadSpec:
-    _ensure_builtins()
     if name not in _REGISTRY:
         raise ValueError(
-            f"Unknown workload '{name}'. Registered workloads: {sorted(_REGISTRY)}"
+            f"Unknown workload '{name}'. Registered workloads: {sorted(_REGISTRY)}. "
+            f"Register it first via register_workload(...) or a bring-your-own builder "
+            f"(see synnodb.workloads.byo_workload)."
         )
     return _REGISTRY[name]
 
 
 def is_registered(name: str) -> bool:
-    _ensure_builtins()
     return name in _REGISTRY
 
 
 def registered_workloads() -> list[str]:
-    _ensure_builtins()
     return sorted(_REGISTRY)
 
 
-def resolve_workload(name: str):
-    """Resolve a workload name to a Workload identity.
+def resolve_workload(name: str) -> "WorkloadId":
+    """Resolve a registered workload name to its `WorkloadId` identity.
 
-    Built-in names resolve to their `OLAPWorkload` enum member (preserving existing
-    cache-key identity); any other registered workload resolves to a `WorkloadId`.
-    Raises for unknown names. This is the single primitive a CLI/entry point should use
-    instead of `OLAPWorkload(name)`, so registered bring-your-own workloads are accepted
-    without an enum member.
+    The core package ships no built-in workloads: every workload, the built-in demos
+    included, is registered from the outside via :func:`register_workload`. Raises for
+    unknown names. This is the single primitive a CLI / entry point should use to turn a
+    workload name into an identity object the pipeline can carry.
     """
-    _ensure_builtins()
     from synnodb.workloads.workload_provider import WorkloadId
-    from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
-    try:
-        return OLAPWorkload(name)
-    except ValueError:
-        pass
     if name in _REGISTRY:
         return WorkloadId(name)
     raise ValueError(

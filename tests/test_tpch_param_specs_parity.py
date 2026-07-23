@@ -12,11 +12,11 @@ import random
 from collections import defaultdict
 
 import pytest
+from tutorials.workloads.tpch.gen_tpch_query import gen_query
+from tutorials.workloads.tpch.tpch_param_specs import TPCH_PARAM_SPECS
 
-from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
-from synnodb.workloads.dataset.gen_tpch.tpch_param_specs import TPCH_PARAM_SPECS
-from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from synnodb.workloads.query_params import find_placeholders, parse_param_space
+from tutorials.workloads.tpch.tpch_queries import tpc_h
 
 # Enough draws to cover the largest domain (Q8 TYPE = 150 combos) many times over.
 N = 20000

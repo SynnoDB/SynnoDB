@@ -47,9 +47,10 @@ the environment or `.env`.
 ```python
 from synnodb import SynnoDB
 
-db = SynnoDB.in_memory(workload="tpch", model="anthropic/claude-sonnet-4-6")
+db = SynnoDB.in_memory(workload="tpch", model="anthropic/claude-sonnet-4-6",
+                       query_subset="1")  # default: every registered query
 
-plan = db.createStoragePlan(queries="1")     # -> StoragePlan
+plan = db.createStoragePlan()                # -> StoragePlan
 print(plan.text)                             # the storage_plan.txt document
 print(plan.path, plan.run_id)                # on disk + wandb provenance
 
@@ -77,7 +78,7 @@ Stages chain in-process (pass the artifact) or across runs via the W&B run id
 from synnodb import SynnoDB
 
 db = SynnoDB.on_ssd(
-    workload="tpch", queries="1-22", model="anthropic/claude-sonnet-4-6",
+    workload="tpch", model="anthropic/claude-sonnet-4-6",
     notify=True, wandb_entity="my-entity",   # presence of entity/project enables W&B
 )
 
@@ -104,7 +105,7 @@ from synnodb import (
     PerQueryLoop, PrepareFeatures, PromptStage, SynnoDB,
 )
 
-db = SynnoDB.in_memory(workload="tpch", queries="1,4,6")
+db = SynnoDB.in_memory(workload="tpch", query_subset="1-6")
 
 def my_stages(ctx: ConvContext):
     return [

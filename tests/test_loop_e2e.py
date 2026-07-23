@@ -45,12 +45,11 @@ pytestmark = pytest.mark.skipif(
 def _provider():
     from synnodb.utils.utils import DBStorage
     from synnodb.workloads.workload_provider_olap import (
-        OLAPWorkload,
         OLAPWorkloadProvider,
     )
 
     return OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH,
+        benchmark="tpch",
         base_parquet_dir=SF_PARENT,
         db_storage=DBStorage.IN_MEMORY,
         bespoke_ssd_storage_dir=None,

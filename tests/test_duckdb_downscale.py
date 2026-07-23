@@ -119,12 +119,14 @@ def test_explicit_relationship_bad_shape_rejected(synthetic_con):
 
 
 def test_join_inference_recovers_tpch_edges():
-    """Feed the real TPC-H queries.json; the recovered join graph must contain the known
+    """Feed the real TPC-H tpch_queries.json; the recovered join graph must contain the known
     TPC-H relationships with no declared constraints and no explicit hints (§9)."""
     pytest.importorskip("sqlglot")
-    queries_path = repo_root() / "tutorials" / "queries.json"
+    queries_path = (
+        repo_root() / "tutorials" / "workloads" / "tpch" / "tpch_queries.json"
+    )
     if not queries_path.exists():
-        pytest.skip("tutorials/queries.json not present")
+        pytest.skip("tutorials/workloads/tpch/tpch_queries.json not present")
     raw = json.loads(queries_path.read_text())
     sql_by_id = {k: (v["sql"] if isinstance(v, dict) else v) for k, v in raw.items()}
 

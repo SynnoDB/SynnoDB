@@ -7,7 +7,7 @@ from synnodb.utils.utils import DBStorage
 def generate_conv_name(
     stage_name: str,
     benchmark: str,
-    queries_str: str,
+    query_subset: str | None,
     model: str,
     bespoke_storage: bool,
     db_storage: DBStorage,
@@ -33,6 +33,8 @@ def generate_conv_name(
         suffix += "_bstorage"
 
     rnd_nr = random.randint(1000, 9999)
-    conv_name = f"{benchmark}_{stage_name}_q{queries_str}_{model_name}{suffix}"
+    # No query subset (None = every registered query) -> no q-segment in the name.
+    q_part = f"_q{query_subset}" if query_subset is not None else ""
+    conv_name = f"{benchmark}_{stage_name}{q_part}_{model_name}{suffix}"
     conv_name_withdatetime = conv_name + f"_{date_time_str}_{rnd_nr}"
     return conv_name, conv_name_withdatetime

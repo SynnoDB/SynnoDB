@@ -14,8 +14,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from synnodb.utils.path_utils import repo_root
 from synnodb.observability.logging.logger import setup_logging
+from synnodb.utils.path_utils import repo_root
 
 setup_logging(logging.INFO)
 load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come from a .env
@@ -26,22 +26,11 @@ load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come f
 DATA_ROOT = Path(os.environ.get("SYNNO_DATA_DIR") or repo_root() / ".synno_data")
 GENERATED_ENGINES_DIR = DATA_ROOT / "engines"
 
-TABLES = [
-    "customer",
-    "lineitem",
-    "nation",
-    "orders",
-    "part",
-    "partsupp",
-    "region",
-    "supplier",
-]
-
 MODEL = os.environ.get(
     "SYNNO_MODEL", "anthropic/claude-sonnet-5"
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
-QUERIES_JSON = Path(__file__).with_name("queries.json")  # lives next to this script
+QUERIES_JSON = Path(__file__).parent / "workloads" / "tpch" / "tpch_queries.json"
 
 print("Data root   :", DATA_ROOT)
 print("Generated engines dir :", GENERATED_ENGINES_DIR)
@@ -52,8 +41,16 @@ print("Model       :", MODEL)
 # SynnoDB works off a DuckDB database you already have. For this demo only we assemble a TPC-H
 # database with DuckDB's built-in dbgen; in your own project this is simply the duckdb.connect(...)
 # you already hold. SF5 is a couple of GB and takes a little while to build.
+import sys
+
 import duckdb
-from synnodb.workloads.dataset.gen_tpc_h_data import generate_tpch_duckdb
+
+# The TPC-H data generator lives in the tutorials package (real projects bring their own data, so
+# it is a demo helper, not part of synnodb). Put the repo root on sys.path so ``tutorials.*``
+# resolves whether this file is run directly (python tutorials/gen_full_tpch_demo.py) or as a
+# module, since running a script only puts its own directory on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tutorials.workloads.tpch.gen_tpc_h_data import generate_tpch_duckdb
 
 TPCH_DB = DATA_ROOT / "tpch.duckdb"  # the single source of truth - one live DuckDB
 
@@ -83,10 +80,9 @@ db = SynnoDB(
     model=MODEL,
     model_extra_body=MODEL_EXTRA_BODY,
     db_storage="in_memory",
-    queries="1-22",
     data_dir=DATA_ROOT,
     threads=NUM_THREADS,
-)
+)  # runs every query in queries.json; narrow with query_subset="1-5"
 
 # Hand your LIVE connection to SynnoDB and register the workload. It reads the schema + queries
 # through this connection once, freezing a consistent point-in-time snapshot it owns - then derives

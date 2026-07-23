@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import build_ceb_query_set
+from tutorials.workloads.ceb.gen_ceb_query import build_ceb_query_set
 
 TUTORIAL_DIR = Path(
     __file__
@@ -27,8 +27,9 @@ CEB_DIR = Path(
 
 def build() -> dict:
     # Each entry is a plain SQL string: the bring-your-own parser reads a bare string as a static
-    # (parameterless) query, so no per-query param section is needed.
-    return build_ceb_query_set(CEB_DIR)
+    # (parameterless) query, so no per-query param section is needed. A fixed seed makes the drawn
+    # binding per id reproducible across runs.
+    return build_ceb_query_set(CEB_DIR, seed=42)
 
 
 if __name__ == "__main__":

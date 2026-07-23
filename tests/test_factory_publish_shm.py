@@ -154,7 +154,6 @@ def test_factory_publish_downgrades_shm_to_parquet_only(tmp_path, monkeypatch):
     unverified). The engine publishes and serves; it just does not advertise the shm hot-load."""
     from synnodb.utils.utils import DBStorage
     from synnodb.workloads.workload_provider_olap import (
-        OLAPWorkload,
         OLAPWorkloadProvider,
     )
 
@@ -164,7 +163,7 @@ def test_factory_publish_downgrades_shm_to_parquet_only(tmp_path, monkeypatch):
     con = duckdb.connect()
     con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
     prov = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH,
+        benchmark="tpch",
         base_parquet_dir=data,
         db_storage=DBStorage.IN_MEMORY,
         bespoke_ssd_storage_dir=None,
@@ -207,7 +206,6 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
     published, even though everything else (db binary, parquet, engines dir) is in place."""
     from synnodb.utils.utils import DBStorage
     from synnodb.workloads.workload_provider_olap import (
-        OLAPWorkload,
         OLAPWorkloadProvider,
     )
 
@@ -217,7 +215,7 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
     con = duckdb.connect()
     con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
     prov = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH,
+        benchmark="tpch",
         base_parquet_dir=data,
         db_storage=DBStorage.IN_MEMORY,
         bespoke_ssd_storage_dir=None,
@@ -254,7 +252,6 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
 def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch):
     from synnodb.utils.utils import DBStorage
     from synnodb.workloads.workload_provider_olap import (
-        OLAPWorkload,
         OLAPWorkloadProvider,
     )
 
@@ -264,7 +261,7 @@ def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch)
     con = duckdb.connect()
     con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
     prov = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH,
+        benchmark="tpch",
         base_parquet_dir=data,
         db_storage=DBStorage.IN_MEMORY,
         bespoke_ssd_storage_dir=None,

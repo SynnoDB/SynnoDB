@@ -42,8 +42,8 @@ from synnodb.conversations.stage_items import (
 )
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils.utils import DataSource, DBStorage
-from synnodb.workloads.workload_provider import ExecSettings
-from synnodb.workloads.workload_provider_olap import OLAPExecSettings, OLAPWorkload
+from synnodb.workloads.workload_provider import ExecSettings, WorkloadId
+from synnodb.workloads.workload_provider_olap import OLAPExecSettings
 from synnodb.workloads.workload_spec import get_workload_spec
 
 GOLDEN_DIR = Path(__file__).parent / "golden_example_conversations"
@@ -105,7 +105,7 @@ def _golden_subset_root(tmp_path_factory) -> Path:
     exist, and the rendered menu names subset *values*, never paths - so the golden bytes stay
     byte-stable across machines and runs."""
     root = tmp_path_factory.mktemp("golden_parquet_root")
-    spec = get_workload_spec(OLAPWorkload.TPCH.value)
+    spec = get_workload_spec("tpch")
     for sf in (1, 2, 20):
         subset_dir = root / f"sf{sf}"
         subset_dir.mkdir()
@@ -124,7 +124,7 @@ def _make_ctx(db_storage: DBStorage, subset_root: Path) -> ConvContext:
     # The data-subset menu in the prompts comes off the provider, so give it a real spec and a
     # real (if empty) parquet root: the prompt then renders the subset list an actual TPC-H run
     # shows. A MagicMock spec would not do - its `fast_check_sfs` is truthy but iterates empty.
-    provider.spec = get_workload_spec(OLAPWorkload.TPCH.value)
+    provider.spec = get_workload_spec("tpch")
     provider.benchmark_sf = 20
     provider.base_parquet_dir = subset_root
     provider.prepare = lambda: None
@@ -139,7 +139,7 @@ def _make_ctx(db_storage: DBStorage, subset_root: Path) -> ConvContext:
         run_tool=_mock_run_tool(),
         workload_provider=provider,
         sql_dict=SQL_DICT,
-        workload=OLAPWorkload.TPCH,
+        workload=WorkloadId("tpch"),
         bespoke_storage=True,
         max_turns=None,
     )

@@ -10,7 +10,7 @@ demo opens an ``imdb.duckdb`` you point it at rather than materializing one. The
 likewise not a declarative parameter space: their placeholders are filled from the real IMDB value
 distributions, so ``ceb_queries.json`` (next to this script) ships one concrete, runnable query per
 CEB id - the exact static bring-your-own shape ``sync_from_duckdb`` consumes. Regenerate it with
-``tutorials/assemble_tutorial/_gen_ceb_queries.py``.
+``tutorials/workloads/ceb/_gen_ceb_queries.py``.
 
 Prerequisites: pip install "synnodb[factory]"
 """
@@ -34,35 +34,11 @@ load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come f
 DATA_ROOT = Path(os.environ.get("SYNNO_DATA_DIR") or repo_root() / ".synno_data")
 GENERATED_ENGINES_DIR = DATA_ROOT / "engines"
 
-TABLES = [
-    "aka_name",
-    "aka_title",
-    "cast_info",
-    "char_name",
-    "comp_cast_type",
-    "company_name",
-    "company_type",
-    "complete_cast",
-    "info_type",
-    "keyword",
-    "kind_type",
-    "link_type",
-    "movie_companies",
-    "movie_info",
-    "movie_info_idx",
-    "movie_keyword",
-    "movie_link",
-    "name",
-    "person_info",
-    "role_type",
-    "title",
-]
-
 MODEL = os.environ.get(
     "SYNNO_MODEL", "anthropic/claude-sonnet-5"
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
-QUERIES_JSON = Path(__file__).with_name("ceb_queries.json")  # lives next to this script
+QUERIES_JSON = Path(__file__).parent / "workloads" / "ceb" / "ceb_queries.json"
 
 print("Data root   :", DATA_ROOT)
 print("Generated engines dir :", GENERATED_ENGINES_DIR)
@@ -110,10 +86,9 @@ db = SynnoDB(
     model=MODEL,
     model_extra_body=MODEL_EXTRA_BODY,
     db_storage="in_memory",
-    queries="1a-11b",
     data_dir=DATA_ROOT,
     threads=NUM_THREADS,
-)
+)  # runs every query in queries.json; narrow with query_subset="1a-3b"
 
 # Hand your LIVE connection to SynnoDB and register the workload. It reads the schema + queries
 # through this connection once, freezing a consistent point-in-time snapshot it owns - then derives
