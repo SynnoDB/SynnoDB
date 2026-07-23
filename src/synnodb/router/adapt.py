@@ -171,6 +171,138 @@ def _multiset_equal(rows_a: List[Row], rows_b: List[Row], tol: float) -> bool:
     return True
 
 
+def _match_float_vecs_subset(a: List[Row], b: List[Row], tol: float) -> bool:
+    """Whether every float-tuple in *a* matches a DISTINCT tolerance-equal tuple in *b*. The
+    containment counterpart of :func:`_match_float_vecs`, with the same size cap and the same
+    conservative fallback: a false mismatch only over-rejects."""
+    if not a:
+        return True
+    if len(a) > len(b):
+        return False
+
+    if len(a[0]) <= 1 or len(b) > _EXACT_MATCH_CAP:
+        sb = sorted(b, key=_vec_sort_key)
+        j = 0
+        for va in sorted(a, key=_vec_sort_key):
+            while j < len(sb) and not all(
+                _float_close(x, y, tol) for x, y in zip(va, sb[j])
+            ):
+                j += 1
+            if j == len(sb):
+                return False
+            j += 1
+        return True
+
+    compat = [
+        [all(_float_close(x, y, tol) for x, y in zip(va, vb)) for vb in b] for va in a
+    ]
+    match = [-1] * len(b)  # match[j] = the a-index assigned to b[j], or -1
+
+    def augment(i: int, seen: List[bool]) -> bool:
+        for j in range(len(b)):
+            if compat[i][j] and not seen[j]:
+                seen[j] = True
+                if match[j] == -1 or augment(match[j], seen):
+                    match[j] = i
+                    return True
+        return False
+
+    return all(augment(i, [False] * len(b)) for i in range(len(a)))
+
+
+def _multiset_contained(rows_a: List[Row], rows_b: List[Row], tol: float) -> bool:
+    """Whether every row of *a* is a row of *b*, counting multiplicity - the same exact-columns
+    grouping and float tolerance as :func:`_multiset_equal`, but containment instead of equality.
+    A row repeated more often in *a* than *b* holds it fails, so an engine cannot fill its result
+    by duplicating one legitimate row."""
+    from collections import defaultdict
+
+    if not rows_a:
+        return True
+    float_idx = _float_columns(rows_a) | _float_columns(rows_b)
+    ncols = len(rows_a[0])
+    exact_idx = [i for i in range(ncols) if i not in float_idx]
+
+    def key(r: Row) -> tuple:
+        return tuple(r[i] for i in exact_idx)
+
+    def fvec(r: Row) -> tuple:
+        return tuple(r[i] for i in float_idx)
+
+    groups_a: dict = defaultdict(list)
+    groups_b: dict = defaultdict(list)
+    for r in rows_a:
+        groups_a[key(r)].append(fvec(r))
+    for r in rows_b:
+        groups_b[key(r)].append(fvec(r))
+    for k, va in groups_a.items():
+        vb = groups_b.get(k)
+        if vb is None or len(va) > len(vb):
+            return False
+        if float_idx and not _match_float_vecs_subset(va, vb, tol):
+            return False
+    return True
+
+
+# How far the reference query may be widened while hunting for the end of the tie group its LIMIT
+# cut through, as a multiple of the rows the original window covers. A group that outruns this is
+# pathological (the whole window sits inside one tied block); the caller then compares strictly
+# rather than re-running an ever-larger query.
+_MAX_WIDEN_FACTOR = 1024
+
+
+def candidate_superset(
+    reference: pa.Table,
+    *,
+    order_keys: Sequence[int],
+    row_limit: Optional[int],
+    row_offset: int,
+    fetch_widened: Any,
+    float_tol: float = 1e-6,
+) -> Optional[List[Row]]:
+    """Every row the query's window could legitimately have contained - the pool a correct engine
+    is free to answer from.
+
+    ``ORDER BY k LIMIT n`` fixes how many rows tied on ``k`` survive the cut but never which ones,
+    so DuckDB's pick at the cut is arbitrary and not even stable across runs of the identical
+    query. Rather than exempt those rows from checking, we re-run the query wide enough to hold the
+    whole tie group it cut through and let the caller verify the engine's rows are members of it.
+
+    *fetch_widened* runs the query over the first N rows of the same ranking (top-level LIMIT set
+    to N, any OFFSET dropped - see ``normalize.widened_query``) and returns its Arrow result, or
+    ``None`` if it cannot. It is called with an exponentially growing N until the superset is
+    provably complete: either the result ends on a different key than the window did, so the
+    window's last tie group is closed inside it, or it came back short of N and is therefore the
+    entire ranking.
+
+    Returns ``None`` when the result was not truncated (the reference is already the complete
+    answer) or the group could not be closed within :data:`_MAX_WIDEN_FACTOR`; the caller then
+    compares strictly, which can only over-reject.
+    """
+    rows = _rows(reference)
+    if not rows or not order_keys or row_limit is None or len(rows) != row_limit:
+        return None
+    last_key = tuple(rows[-1][i] for i in order_keys)
+
+    window = row_offset + row_limit  # rows of the ranking the original query spans
+    limit = window
+    while limit <= window * _MAX_WIDEN_FACTOR:
+        limit *= 2
+        widened = fetch_widened(limit)
+        if widened is None:
+            return None
+        wrows = _rows(widened)
+        if not wrows:
+            return None
+        if len(wrows) < limit or not _row_equal(
+            tuple(wrows[-1][i] for i in order_keys), last_key, float_tol
+        ):
+            # Short of the limit = the whole ranking; a different trailing key = the window's last
+            # tie group closed inside this result. Either way every candidate row is in hand.
+            return wrows
+    return None
+
+
 def results_equal(
     bespoke: pa.Table,
     reference: pa.Table,
@@ -178,6 +310,8 @@ def results_equal(
     ordered: bool,
     order_keys: Optional[Sequence[int]] = None,
     float_tol: float = 1e-6,
+    row_limit: Optional[int] = None,
+    candidates: Optional[Sequence[Row]] = None,
 ) -> bool:
     """Whether two result tables are equal. Exact columns (Decimal/int/date/string/bool) must match
     exactly and a NULL is distinct from any value; only genuine float columns compare with
@@ -187,7 +321,15 @@ def results_equal(
     comparison: the key columns must match positionally - the actual ordering contract - while the
     full rows must match as a multiset, so a correct engine that breaks a tie differently from
     DuckDB is not rejected. Without ``order_keys`` an ordered comparison is strict positional,
-    which is conservative (it can only over-reject)."""
+    which is conservative (it can only over-reject).
+
+    ``candidates`` (with the query's ``row_limit``) handles a result a top-level LIMIT truncated,
+    where matching DuckDB row for row is not merely strict but wrong - it demands the engine
+    reproduce an arbitrary pick from the tie group at the cut. Given the superset of rows the
+    window could have held (see :func:`candidate_superset`), the engine's rows must instead be
+    MEMBERS of that pool: the key sequence pins what each row's rank must be worth, and membership
+    pins each row to a genuine row of the ranking. Together those accept every correct answer and
+    only correct answers - no row goes unchecked."""
     if bespoke.num_columns != reference.num_columns:
         return False
     if bespoke.num_rows != reference.num_rows:
@@ -197,12 +339,22 @@ def results_equal(
         return _multiset_equal(rows_a, rows_b, float_tol)
     if order_keys:
         # The ordering contract is exactly the key sequence; tied rows may permute. Verify the key
-        # columns position-by-position, then the full rows as a multiset (the data).
+        # columns position-by-position, then the rows themselves.
         for a, b in zip(rows_a, rows_b):
             ka = tuple(a[i] for i in order_keys)
             kb = tuple(b[i] for i in order_keys)
             if not _row_equal(ka, kb, float_tol):
                 return False
+        if (
+            candidates is not None
+            and row_limit is not None
+            and len(rows_b) == row_limit
+        ):
+            # Truncated: any member of the ranking carrying the key its position calls for is a
+            # legitimate answer, so check membership rather than identity. Where a key value has
+            # exactly as many rows in the ranking as the window shows, membership IS identity -
+            # the freedom appears only where the query genuinely leaves the choice open.
+            return _multiset_contained(rows_a, list(candidates), float_tol)
         return _multiset_equal(rows_a, rows_b, float_tol)
     return all(_row_equal(a, b, float_tol) for a, b in zip(rows_a, rows_b))
 
@@ -215,13 +367,18 @@ def results_diff(
     order_keys: Optional[Sequence[int]] = None,
     float_tol: float = 1e-6,
     limit: int = 8,
+    row_limit: Optional[int] = None,
+    candidates: Optional[Sequence[Row]] = None,
 ) -> Tuple[List[Tuple[int, str, Any, Any]], int]:
     """Where *bespoke* disagrees with *reference*: up to *limit* ``(row, column, bespoke, duckdb)``
     diffs plus the total count, for building a verbose ``EngineDivergedError`` when the cross-check
     fails. A structural difference (column names or row count) is one diff with row ``-1``; an
     ordered mismatch yields cell diffs; an unordered (multiset) mismatch yields the rows present on
-    only one side. This describes a failure already found by :func:`results_equal`; it does not
-    re-decide equality, so its float bucketing can be approximate."""
+    only one side. With ``candidates`` (a truncated result, see :func:`results_equal`) the rows
+    reported are the engine's own rows that are not in the ranking at all - the actual complaint,
+    since which member of a tie group it picked is not one. This describes a failure already found
+    by :func:`results_equal`; it does not re-decide equality, so its float bucketing can be
+    approximate."""
     bnames, rnames = list(bespoke.column_names), list(reference.column_names)
     if bnames != rnames:
         return [(-1, "<columns>", bnames, rnames)], 1
@@ -243,6 +400,27 @@ def results_diff(
                         key_diffs.append((i, bnames[ci], rb[ci], rr[ci]))
         if key_total:
             return key_diffs, key_total
+        if (
+            candidates is not None
+            and row_limit is not None
+            and len(rows_r) == row_limit
+        ):
+            # Keys agree and the result was truncated, so the failure is rows that are not in the
+            # ranking. Report those, not a row-for-row diff against DuckDB's arbitrary pick.
+            # Consume as we match so a row the engine returned twice, but the ranking holds once,
+            # is reported on its second appearance rather than silently passing.
+            remaining = list(candidates)
+            strays = []
+            for r in rows_b:
+                for j, cand in enumerate(remaining):
+                    if _row_equal(r, cand, float_tol):
+                        remaining.pop(j)
+                        break
+                else:
+                    strays.append(r)
+            return [
+                (-1, "<row not in the ranking>", r, None) for r in strays[:limit]
+            ], len(strays)
         ordered = False  # keys agree -> fall through to the multiset (data) diff
 
     if ordered:

@@ -1,0 +1,180 @@
+{
+  "1": {
+    "sql": "SELECT AdvEngineID, COUNT(*) AS c FROM hits WHERE AdvEngineID > [MIN_ADV_ENGINE_ID] GROUP BY AdvEngineID ORDER BY c DESC;",
+    "params": {
+      "MIN_ADV_ENGINE_ID": {
+        "type": "int",
+        "min": 0,
+        "max": 44,
+        "step": 1
+      }
+    }
+  },
+  "2": {
+    "sql": "SELECT RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY RegionID ORDER BY u DESC LIMIT [TOPK];",
+    "params": {
+      "TOPK": {
+        "type": "int",
+        "min": 5,
+        "max": 50,
+        "step": 5
+      }
+    }
+  },
+  "3": {
+    "sql": "SELECT MobilePhoneModel, COUNT(DISTINCT UserID) AS u FROM hits WHERE MobilePhoneModel <> '' GROUP BY MobilePhoneModel HAVING COUNT(*) >= [MIN_HITS] ORDER BY u DESC LIMIT [TOPK];",
+    "params": {
+      "MIN_HITS": {
+        "type": "int",
+        "min": 10,
+        "max": 10000,
+        "step": 10
+      },
+      "TOPK": {
+        "type": "int",
+        "min": 5,
+        "max": 25,
+        "step": 5
+      }
+    }
+  },
+  "4": {
+    "sql": "SELECT SearchPhrase, COUNT(DISTINCT UserID) AS u FROM hits WHERE SearchPhrase <> '' AND SearchPhrase ILIKE '%[TOKEN]%' GROUP BY SearchPhrase ORDER BY u DESC LIMIT 10;",
+    "params": {
+      "TOKEN": {
+        "type": "categorical",
+        "values": [
+          "a",
+          "e",
+          "o",
+          "com",
+          "ru",
+          "google",
+          "news",
+          "2013"
+        ]
+      }
+    }
+  },
+  "5": {
+    "sql": "SELECT COUNT(*), COUNT(DISTINCT UserID) FROM hits WHERE UserID % 100 = [REMAINDER];",
+    "params": {
+      "REMAINDER": {
+        "type": "int",
+        "min": 0,
+        "max": 99,
+        "step": 1
+      }
+    }
+  },
+  "6": {
+    "sql": "SELECT TraficSourceID, COUNT(*) AS c FROM hits WHERE TraficSourceID IN ([TS1], [TS2], [TS3]) GROUP BY TraficSourceID ORDER BY c DESC;",
+    "param_groups": [
+      {
+        "type": "sample",
+        "placeholders": [
+          "TS1",
+          "TS2",
+          "TS3"
+        ],
+        "domain": [
+          -1,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "distinct": true
+      }
+    ]
+  },
+  "7": {
+    "sql": "SELECT URL, COUNT(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= date '[DATE_FROM]' AND EventDate < date '[DATE_FROM]' + interval '[WINDOW_DAYS]' day AND DontCountHits = 0 AND IsRefresh = 0 AND URL <> '' GROUP BY URL ORDER BY PageViews DESC LIMIT [TOPK];",
+    "params": {
+      "DATE_FROM": {
+        "type": "date",
+        "min": "2013-07-01",
+        "max": "2013-07-24"
+      },
+      "WINDOW_DAYS": {
+        "type": "int",
+        "min": 1,
+        "max": 7,
+        "step": 1
+      },
+      "TOPK": {
+        "type": "int",
+        "min": 5,
+        "max": 25,
+        "step": 5
+      }
+    }
+  },
+  "8": {
+    "sql": "SELECT REGEXP_REPLACE(Referer, '^https?://(?:www\\.)?([^/]+)/.*$', '\\1') AS domain, AVG(STRLEN(Referer)) AS l, COUNT(*) AS c FROM hits WHERE Referer <> '' GROUP BY domain HAVING COUNT(*) > [MIN_COUNT] ORDER BY l DESC LIMIT 25;",
+    "params": {
+      "MIN_COUNT": {
+        "type": "int",
+        "min": 1000,
+        "max": 200000,
+        "step": 1000
+      }
+    }
+  },
+  "9": {
+    "sql": "SELECT URL, COUNT(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= date '[DATE_FROM]' AND EventDate < date '[DATE_FROM]' + interval '7' day AND IsRefresh = 0 AND IsLink <> 0 AND IsDownload = 0 GROUP BY URL ORDER BY PageViews DESC LIMIT [TOPK] OFFSET [OFFSET];",
+    "params": {
+      "DATE_FROM": {
+        "type": "date",
+        "min": "2013-07-01",
+        "max": "2013-07-24"
+      },
+      "TOPK": {
+        "type": "int",
+        "min": 5,
+        "max": 25,
+        "step": 5
+      },
+      "OFFSET": {
+        "type": "int",
+        "min": 0,
+        "max": 2000,
+        "step": 100
+      }
+    }
+  },
+  "10": {
+    "sql": "SELECT DATE_TRUNC('minute', EventTime) AS M, COUNT(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventTime >= date '[DATE_FROM]' AND EventTime < date '[DATE_FROM]' + interval '[WINDOW_HOURS]' hour AND IsRefresh = 0 GROUP BY M ORDER BY M LIMIT [TOPK] OFFSET [OFFSET];",
+    "params": {
+      "DATE_FROM": {
+        "type": "date",
+        "min": "2013-07-01",
+        "max": "2013-07-29"
+      },
+      "WINDOW_HOURS": {
+        "type": "int",
+        "min": 6,
+        "max": 48,
+        "step": 6
+      },
+      "TOPK": {
+        "type": "int",
+        "min": 5,
+        "max": 20,
+        "step": 5
+      },
+      "OFFSET": {
+        "type": "int",
+        "min": 0,
+        "max": 500,
+        "step": 50
+      }
+    }
+  }
+}

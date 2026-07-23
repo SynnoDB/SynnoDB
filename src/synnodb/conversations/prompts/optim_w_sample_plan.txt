@@ -8,7 +8,7 @@ ${tracing_block}
 
 This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
 - Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
-- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Aggregation strategy (group-by key choice, partial per-thread/per-morsel aggregation then merge, sort order). Aggregate at query time only - do not precompute/store aggregate results at build time.
 - Filter ordering and selectivity-driven predicate evaluation.
 ${additional_instructions}
 

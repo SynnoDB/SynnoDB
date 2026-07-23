@@ -10,6 +10,32 @@ from synnodb.workloads.workload_provider import ExecSettings
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+# ── Anti-cheat storage/build constraint ──────────────────────────────────────
+# The rule that forbids shifting query RESULTS from execution into ingestion.
+# Historically it lived ONLY in the optimization-phase constraint files
+# (optim_constraints.txt / optim2_constraints.txt), so the storage-plan, planner,
+# and base-implementation stages - which actually design and build the in-memory
+# layout - never saw it, and some even encouraged the opposite (pre-aggregates in
+# gen_storage_plan.txt, "compute anything arg-independent at build time" in
+# base_impl_query.txt). That let the model bake forbidden pre-aggregations into the
+# Database before the rule was ever shown. Inject it into every stage that makes
+# layout/build decisions so the model is bound by it while deciding.
+#
+# Policy: indexes, zone maps, and query-agnostic statistics ARE allowed (they
+# accelerate access to the base data without embedding a query's answer). Only
+# materialized views / pre-aggregation (storing a query's aggregate RESULT),
+# query-result caching, and query-specific lookup tables are forbidden. This
+# wording is kept in sync with optim_constraints.txt / optim2_constraints.txt.
+_ANTI_CHEAT_CONSTRAINTS = """# Hard constraints - do not precompute query results at ingestion
+The build/ingestion phase loads the base columns and organizes them for fast query execution. You MAY precompute query-agnostic acceleration structures at build time: lossless encodings (narrow exact types, dictionary / RLE / bit-packing), column ordering / partitioning, indexes, zone maps, and per-column statistics - these accelerate access to the base data without embedding the answer to any query.
+The following are FORBIDDEN, even when they do not depend on the query's arguments, and even when they would be correct and faster:
+- materialized views and pre-aggregation - storing any GROUP BY / aggregate / DISTINCT / COUNT / SUM / top-k RESULT, whole or partial, in the Database;
+- query-result caching;
+- query-specific lookup tables or precomputed maps/arrays keyed to particular values drawn from the query set (a general index on a column is fine; a table of "the rows where col = <the literal value this query filters on>" is not).
+Every filter, join, grouping, and aggregate must be computed at query time from the base columns; indexes, zone maps, and statistics may guide that computation but must not replace it. Maintain ONE storage layout shared by all queries, and load all data from Parquet during ingestion.
+These constraints override any conflicting suggestion in the storage plan, the todo list, or an example: if any of them calls for a forbidden structure, do NOT build it."""
+
+
 def _load_txt(path: Path) -> str:
     with open(path, "r") as f:
         return f.read()
@@ -93,6 +119,10 @@ def gen_storage_plan_prompt(
         # What query_data may read - the cheap sample, the full dataset, or both. Empty when the
         # caller has no workload on hand (the tool is then absent from the conversation anyway).
         data_subsets=data_subsets_note,
+        # Only the in-memory template references this; the SSD template omits the placeholder
+        # (its own "# Hard constraints" section governs the bytes-read-bound regime) and
+        # Template.substitute ignores the extra key.
+        anti_cheat_constraints=_ANTI_CHEAT_CONSTRAINTS,
     )
 
 
@@ -215,6 +245,8 @@ def base_planner_prompt(
         schema_hint=schema_hint,
         num_threads=num_threads,
         storage_plan_path=storage_plan_path,
+        # In-memory template only; SSD template omits the placeholder (extra key ignored).
+        anti_cheat_constraints=_ANTI_CHEAT_CONSTRAINTS,
     )
 
 
@@ -259,6 +291,8 @@ def base_impl_storage(
         storage_plan_filename=storage_plan_filename,
         storage_plan_note=storage_plan_note,
         storage_plan_file_list_item=storage_plan_file_list_item,
+        # In-memory template only; SSD template omits the placeholder (extra key ignored).
+        anti_cheat_constraints=_ANTI_CHEAT_CONSTRAINTS,
     )
 
 
@@ -518,6 +552,8 @@ def base_impl_query_prompt(
         base_impl_todo_filename=base_impl_todo_filename,
         storage_plan_check=storage_plan_check,
         storage_plan_file_list_item=storage_plan_file_list_item,
+        # In-memory template only; SSD template omits the placeholder (extra key ignored).
+        anti_cheat_constraints=_ANTI_CHEAT_CONSTRAINTS,
     )
 
 

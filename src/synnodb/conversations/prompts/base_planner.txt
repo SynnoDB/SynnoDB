@@ -17,6 +17,8 @@ The output of each query should be written to `result<RUN_NR>.csv` (where `<RUN_
 
 ${schema_hint}
 
+${anti_cheat_constraints}
+
 # Your Task
 Create a TODO plan for implementing this database engine. Write your plan to `${base_impl_todo_file}`. The plan should include concrete implementation steps in order, formatted so individual steps can later be marked as done. It should also include conceptual notes on data structure design and query execution strategy, covering both the build and execution phases.
 
