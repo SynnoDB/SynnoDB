@@ -15,7 +15,6 @@ import pytest
 
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider_olap import (
-    OLAPWorkload,
     OLAPWorkloadProvider,
     _get_all_query_ids,
     _resolve_query_subset,
@@ -26,7 +25,7 @@ def _provider(query_ids):
     # __init__ touches no filesystem (schema/sql/tables are in-process), so a dummy
     # parquet dir is fine for testing scope resolution.
     return OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH,
+        benchmark="tpch",
         base_parquet_dir=Path("/tmp/does_not_matter"),
         db_storage=DBStorage.IN_MEMORY,
         query_ids=query_ids,

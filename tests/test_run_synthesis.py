@@ -50,7 +50,8 @@ def _trivial_plan(**overrides) -> ConversationPlan:
 def _db(tmp_path, monkeypatch) -> SynnoDB:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "ws").mkdir(exist_ok=True)
-    return SynnoDB(workspace="ws")
+    # The core is workload-agnostic (no default workload); name one the conftest registered.
+    return SynnoDB(workspace="ws", workload="tpch")
 
 
 # ------------------------------ plan validation -------------------------------

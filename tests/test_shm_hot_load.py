@@ -21,7 +21,7 @@ from synnodb.router import RouterMode, RouterPolicy
 from synnodb.router.adapt import results_equal
 from synnodb.router.manifest import EngineManifest
 from synnodb.workloads.query_params import substitute
-from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 from synnodb.utils.utils import DBStorage
 
 Q1Q6BYO = Path("/home/teckmann/SynnoDB/q1q6byo")
@@ -67,7 +67,7 @@ def tpch_db(tmp_path_factory):
 
 def _queries(dbfile):
     prov = OLAPWorkloadProvider(
-        benchmark=OLAPWorkload.TPCH,
+        benchmark="tpch",
         base_parquet_dir=dbfile.parent,
         db_storage=DBStorage.IN_MEMORY,
         bespoke_ssd_storage_dir=None,

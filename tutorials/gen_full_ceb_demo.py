@@ -10,7 +10,7 @@ demo opens an ``imdb.duckdb`` you point it at rather than materializing one. The
 likewise not a declarative parameter space: their placeholders are filled from the real IMDB value
 distributions, so ``ceb_queries.json`` (next to this script) ships one concrete, runnable query per
 CEB id - the exact static bring-your-own shape ``sync_from_duckdb`` consumes. Regenerate it with
-``tutorials/assemble_tutorial/_gen_ceb_queries.py``.
+``tutorials/workloads/ceb/_gen_ceb_queries.py``.
 
 Prerequisites: pip install "synnodb[factory]"
 """
@@ -62,7 +62,9 @@ MODEL = os.environ.get(
     "SYNNO_MODEL", "anthropic/claude-sonnet-5"
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
-QUERIES_JSON = Path(__file__).with_name("ceb_queries.json")  # lives next to this script
+QUERIES_JSON = (
+    Path(__file__).parent / "workloads" / "ceb" / "ceb_queries.json"
+)
 
 print("Data root   :", DATA_ROOT)
 print("Generated engines dir :", GENERATED_ENGINES_DIR)

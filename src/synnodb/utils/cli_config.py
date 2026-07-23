@@ -7,7 +7,6 @@ from typing import Any
 
 from synnodb.utils.utils import DBStorage
 from synnodb.workloads.workload_provider import Workload
-from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
 
 class Usecase(enum.Enum):
@@ -88,7 +87,6 @@ class RunConfig:
 def add_common_args(
     parser: argparse.ArgumentParser,
     *,
-    benchmark_class: type = OLAPWorkload,
     include_model: bool = False,
     include_benchmark: bool = False,
     include_replay: bool = False,
@@ -163,19 +161,19 @@ def add_common_args(
     if include_benchmark:
 
         def _benchmark_type(value):
-            # built-in enum member, or any registered (bring-your-own) workload name
-            try:
-                return benchmark_class(value)
-            except ValueError:
-                from synnodb.workloads.workload_spec import resolve_workload
+            # Resolve any registered workload name to its identity. The core ships no
+            # built-in workloads; register the one you want first (register_workload(...)
+            # or a bring-your-own builder) so its name resolves here.
+            from synnodb.workloads.workload_spec import resolve_workload
 
-                return resolve_workload(value)
+            return resolve_workload(value)
 
         parser.add_argument(
             "--benchmark",
             type=_benchmark_type,
-            default=benchmark_class.TPCH,
-            help="Benchmark/workload: a built-in (tpch/ceb) or any registered workload name.",
+            required=True,
+            help="Workload to run: the name of any registered workload (e.g. one registered "
+            "via register_workload(...) or a bring-your-own builder).",
         )
     if include_replay:
         parser.add_argument(

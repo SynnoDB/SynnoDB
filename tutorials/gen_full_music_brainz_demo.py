@@ -1,8 +1,22 @@
-"""SynnoDB: From DuckDB to Bespoke in One Import - generation part.
+"""SynnoDB: From DuckDB to Bespoke in One Import - generation part (MusicBrainz).
 
-Exported from gen_tpch_demo.ipynb. Covers only the engine-generation flow:
-  Setup -> build TPC-H DuckDB -> register workload -> storage plan -> base impl.
-The benchmark / drop-in steps from the notebook are not included here.
+The bring-your-own sibling of ``gen_full_tpch_demo.py``, ``gen_full_ceb_demo.py`` and
+``gen_full_stack_demo.py``, run against the MusicBrainz workload over the MusicBrainz core
+catalog. Covers only the engine-generation flow:
+  Setup -> open MusicBrainz DuckDB -> register workload -> storage plan -> base impl -> optimization.
+The benchmark / drop-in steps are not included here.
+
+Like IMDB and Stack, and unlike TPC-H, there is no ``dbgen`` to synthesize MusicBrainz - it is real
+data (the public MusicBrainz data dump), so this demo opens a ``musicbrainz.duckdb`` you point it at
+rather than materializing one. Build it once with
+``tutorials/workloads/music_brainz/load_musicbrainz.py`` (download + load the dump into DuckDB).
+
+The 10 MusicBrainz queries share one template per class and differ only in their filter literals, so
+``musicbrainz_queries.json`` (under ``tutorials/workloads/music_brainz/``) ships each class as a
+fixed template whose placeholders are bound - as a ``tuples`` parameter group - to pre-generated
+correlated literal rows: at run time SynnoDB samples a whole binding per execution, the templated
+bring-your-own shape ``sync_from_duckdb`` consumes. Regenerate it with
+``tutorials/workloads/music_brainz/_gen_musicbrainz_queries.py``.
 
 Prerequisites: pip install "synnodb[factory]"
 """
@@ -14,27 +28,40 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from synnodb.observability.logging.logger import setup_logging
 from synnodb.utils.path_utils import repo_root
+from synnodb.observability.logging.logger import setup_logging
 
 setup_logging(logging.INFO)
 load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come from a .env
 
-# The data root holds everything: the source DuckDB, engines, workspace. Honor SYNNO_DATA_DIR if
-# set, else default to a project-local .synno_data/. It need not exist yet - the next step builds
-# the TPC-H DuckDB into it.
+# The data root holds everything: engines and workspace. Honor SYNNO_DATA_DIR if set, else default
+# to a project-local .synno_data/. It need not exist yet. Unlike the TPC-H demo it does not hold the
+# source database - MusicBrainz is real data you bring (SYNNO_MUSICBRAINZ_DUCKDB below), not
+# something generated.
 DATA_ROOT = Path(os.environ.get("SYNNO_DATA_DIR") or repo_root() / ".synno_data")
 GENERATED_ENGINES_DIR = DATA_ROOT / "engines"
 
+# The MusicBrainz tables the workload touches. The full dump loads many more; these are the ones the
+# 10 query classes reference. SynnoDB reads the actual schema from the live connection below - this
+# list is documentation only.
 TABLES = [
-    "customer",
-    "lineitem",
-    "nation",
-    "orders",
-    "part",
-    "partsupp",
-    "region",
-    "supplier",
+    "recording",
+    "artist",
+    "artist_type",
+    "artist_credit_name",
+    "tag",
+    "release",
+    "release_group",
+    "release_group_meta",
+    "release_group_tag",
+    "release_group_primary_type",
+    "release_country",
+    "release_label",
+    "label",
+    "label_type",
+    "medium",
+    "medium_format",
+    "area",
 ]
 
 MODEL = os.environ.get(
@@ -42,7 +69,7 @@ MODEL = os.environ.get(
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
 QUERIES_JSON = (
-    Path(__file__).parent / "workloads" / "tpch" / "tpch_queries.json"
+    Path(__file__).parent / "workloads" / "music_brainz" / "musicbrainz_queries.json"
 )
 
 print("Data root   :", DATA_ROOT)
@@ -50,36 +77,37 @@ print("Generated engines dir :", GENERATED_ENGINES_DIR)
 print("Model       :", MODEL)
 
 
-# --- Your DuckDB database (for the demo: TPC-H) --------------------------------------------
-# SynnoDB works off a DuckDB database you already have. For this demo only we assemble a TPC-H
-# database with DuckDB's built-in dbgen; in your own project this is simply the duckdb.connect(...)
-# you already hold. SF5 is a couple of GB and takes a little while to build.
-import sys
-
+# --- Your DuckDB database (for the demo: MusicBrainz) --------------------------------------
+# SynnoDB works off a DuckDB database you already have. TPC-H can be synthesized with DuckDB's
+# built-in dbgen; MusicBrainz cannot - it is real data - so this demo simply opens a
+# ``musicbrainz.duckdb`` you already hold (built by
+# ``tutorials/workloads/music_brainz/load_musicbrainz.py``). In your own project this is just the
+# duckdb.connect(...) you already have. Point SYNNO_MUSICBRAINZ_DUCKDB at your file.
 import duckdb
 
-# The TPC-H data generator lives in the tutorials package (real projects bring their own data, so
-# it is a demo helper, not part of synnodb). Put the repo root on sys.path so ``tutorials.*``
-# resolves whether this file is run directly (python tutorials/gen_full_tpch_demo.py) or as a
-# module, since running a script only puts its own directory on the path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tutorials.workloads.tpch.gen_tpc_h_data import generate_tpch_duckdb
-
-TPCH_DB = DATA_ROOT / "tpch.duckdb"  # the single source of truth - one live DuckDB
-
-# --- Demo only: materialize a TPC-H database. Swap this line for your own dataset. ---
-generate_tpch_duckdb(TPCH_DB, 50)
+MUSICBRAINZ_DB = Path(
+    os.environ.get(
+        "SYNNO_MUSICBRAINZ_DUCKDB",
+        "/mnt/labstore/learned_db/synno_data/workloads/musicbrainz/musicbrainz.duckdb",
+    )
+)  # the single source of truth - one live DuckDB
+if not MUSICBRAINZ_DB.exists():
+    raise SystemExit(
+        f"MusicBrainz DuckDB not found: {MUSICBRAINZ_DB}\n"
+        "Set SYNNO_MUSICBRAINZ_DUCKDB to your musicbrainz.duckdb (build it with "
+        "tutorials/workloads/music_brainz/load_musicbrainz.py)."
+    )
 
 # Your live working database. Open it read-only: a read-write connection takes an exclusive OS lock
 # on the file, which would block SynnoDB's own read-only access below. Read-only openers coexist.
-duckdb_con = duckdb.connect(str(TPCH_DB), read_only=True)
+duckdb_con = duckdb.connect(str(MUSICBRAINZ_DB), read_only=True)
 print("Source tables:", [r[0] for r in duckdb_con.execute("SHOW TABLES").fetchall()])
 
 
 # --- Step 1: Workload Registration ---------------------------------------------------------
 # Describe the workload once (its queries) and hand SynnoDB the live DuckDB. From that one
-# connection it reads the schema, benchmarks Q1-Q5 at full scale, and derives the cheap correctness
-# rungs by FK-preserving downscaling (no pre-scaled data subsets).
+# connection it reads the schema, benchmarks the first queries at full scale, and derives the cheap
+# correctness rungs by FK-preserving downscaling (no pre-scaled data subsets).
 from synnodb import SynnoDB
 
 # Degree of parallelism the engine is generated, validated, AND served at (the DuckDB-style
@@ -93,7 +121,7 @@ db = SynnoDB(
     model=MODEL,
     model_extra_body=MODEL_EXTRA_BODY,
     db_storage="in_memory",
-    queries="1-22",
+    queries="1-10",
     data_dir=DATA_ROOT,
     threads=NUM_THREADS,
 )
@@ -103,9 +131,9 @@ db = SynnoDB(
 # a few downscaled versions of the dataset from that snapshot. Your database is only ever read.
 spec = db.sync_from_duckdb(
     duckdb_con,  # your live duckdb.DuckDBPyConnection (a ".duckdb" path also works)
-    name="tpch_byo",
+    name="musicbrainz_byo",
     queries_json=QUERIES_JSON,
-    schema_example_table="lineitem",
+    schema_example_table="recording",
 )
 
 duckdb_con.execute("PRAGMA threads=%d" % NUM_THREADS)  # match SynnoDB's thread count

@@ -12,7 +12,7 @@ from tqdm import tqdm
 from synnodb.utils.drop_caches import drop_os_caches, is_memory_backed
 from synnodb.utils.utils import DBStorage, create_dir_and_set_permissions
 from synnodb.workloads.workload_provider import Workload
-from synnodb.workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +69,12 @@ class UmbraRunner:
         self._container_image = container_image
         self._scale_factors = scale_factors
 
-        # accept a built-in OLAPWorkload or a registered (bring-your-own) WorkloadId
+        # accept any registered workload identity (a WorkloadId, the norm, or a workload-package
+        # enum member); both expose `.value`, which is all the downstream consumers use
         from synnodb.workloads.workload_provider import WorkloadId
 
-        assert isinstance(benchmark, (OLAPWorkload, WorkloadId)), (
-            f"benchmark must be an OLAPWorkload or registered WorkloadId, got {type(benchmark)}"
+        assert isinstance(benchmark, (Workload, WorkloadId)), (
+            f"benchmark must be a Workload or registered WorkloadId, got {type(benchmark)}"
         )
         self.dataset_tables = OLAPWorkloadProvider._dataset_tables(benchmark)
         self.dataset_schema = OLAPWorkloadProvider._get_dataset_schema(benchmark)

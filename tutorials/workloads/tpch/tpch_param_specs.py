@@ -17,7 +17,7 @@ source of truth (see plan).
 
 from __future__ import annotations
 
-from synnodb.workloads.dataset.tpch.gen_tpch_query import (
+from tutorials.workloads.tpch.gen_tpch_query import (
     COLORS,
     CONTAINERS,
     COUNTRY_CODES,

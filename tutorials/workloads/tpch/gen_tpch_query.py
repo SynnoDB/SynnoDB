@@ -3,7 +3,7 @@ import logging
 import random
 from typing import Dict, Optional, Tuple
 
-from synnodb.workloads.dataset.tpch.tpch_queries import tpc_h
+from tutorials.workloads.tpch.tpch_queries import tpc_h
 
 logger = logging.getLogger(__name__)
 

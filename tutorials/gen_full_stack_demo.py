@@ -14,7 +14,7 @@ classes as a fixed, filter-literal-only template whose placeholders are bound - 
 parameter group - to the real StackExchange literal rows recorded from the workload: at run time
 SynnoDB samples a whole correlated ``(site, tag, threshold, ...)`` binding per execution, the
 templated bring-your-own shape ``sync_from_duckdb`` consumes. Regenerate it with
-``tutorials/assemble_tutorial/_gen_stack_queries.py``.
+``tutorials/workloads/stack/_gen_stack_queries.py``.
 
 Prerequisites: pip install "synnodb[factory]"
 """
@@ -57,7 +57,9 @@ MODEL = os.environ.get(
     "SYNNO_MODEL", "anthropic/claude-sonnet-5"
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
-QUERIES_JSON = Path(__file__).with_name("stack_queries.json")  # lives next to this script
+QUERIES_JSON = (
+    Path(__file__).parent / "workloads" / "stack" / "stack_queries.json"
+)
 
 print("Data root   :", DATA_ROOT)
 print("Generated engines dir :", GENERATED_ENGINES_DIR)

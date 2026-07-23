@@ -102,6 +102,11 @@ ignore = [
 # which resolves the router's own environment (no synnodb installed), so they only run
 # under that sub-project's own setup, not the package CI.
 testpaths = ["tests"]
+# Put the repo root on sys.path so tests can import the concrete workloads that live
+# outside the installed package, under `tutorials/workloads/*` (the core `synnodb`
+# package is workload-agnostic and never imports them). Only `synnodb` is installed
+# (packages.find where=["src"]); `tutorials` is a source-tree-only package.
+pythonpath = ["."]
 
 [build-system]
 requires = ["setuptools>=77.0"]

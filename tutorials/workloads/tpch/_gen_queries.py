@@ -12,9 +12,9 @@ sliders / dropdowns / date-pickers.
 import json
 from pathlib import Path
 
-from synnodb.workloads.dataset.tpch.tpch_param_specs import TPCH_PARAM_SPECS
+from tutorials.workloads.tpch.tpch_param_specs import TPCH_PARAM_SPECS
 
-from tutorials.datasets.tpch.tpch_queries import tpc_h
+from tutorials.workloads.tpch.tpch_queries import tpc_h
 
 TUTORIAL_DIR = Path(
     __file__

@@ -29,19 +29,18 @@ log = logging.getLogger("synnodb.optimize")
 DATA_PLANES = ("auto", "parquet", "shm")
 
 
-def _resolve_benchmark(benchmark: Any, workload_enum: Any) -> Any:
-    """Resolve a benchmark name (``"tpch"``) or enum to the workload enum, with a clear error."""
-    if isinstance(benchmark, workload_enum):
+def _resolve_benchmark(benchmark: Any) -> Any:
+    """Resolve a registered workload name (``"tpch"``) to its identity, with a clear error.
+
+    The core ships no built-in workloads, so *benchmark* must name a workload registered from
+    the outside (register_workload(...) or a bring-your-own builder). A already-resolved
+    Workload/WorkloadId passes through unchanged."""
+    from .workloads.workload_provider import Workload, WorkloadId
+    from .workloads.workload_spec import resolve_workload
+
+    if isinstance(benchmark, (Workload, WorkloadId)):
         return benchmark
-    try:
-        return workload_enum(benchmark)  # by value, e.g. "tpch"
-    except ValueError:
-        pass
-    try:
-        return workload_enum[str(benchmark).upper()]  # by name, e.g. "TPCH"
-    except KeyError:
-        valid = ", ".join(m.value for m in workload_enum)
-        raise ValueError(f"unknown benchmark {benchmark!r}; expected one of: {valid}")
+    return resolve_workload(str(benchmark))
 
 
 def _validate_engine_against_source(
@@ -179,7 +178,7 @@ def optimize_database(
     query_ids: Sequence[str],
     *,
     engine_workspace: "str | Path",
-    benchmark: str = "tpch",
+    benchmark: str,
     engines_dir: "str | Path | None" = None,
     name: Optional[str] = None,
     data_plane: str = "auto",
@@ -213,7 +212,7 @@ def optimize_database(
         _lookup_template,
         publish_from_provider,
     )
-    from .workloads.workload_provider_olap import OLAPWorkload, OLAPWorkloadProvider
+    from .workloads.workload_provider_olap import OLAPWorkloadProvider
 
     if data_plane not in DATA_PLANES:
         raise ValueError(f"data_plane must be one of {DATA_PLANES}, got {data_plane!r}")
@@ -248,7 +247,7 @@ def optimize_database(
                 ],
                 engine_id=name,
             )
-    bench = _resolve_benchmark(benchmark, OLAPWorkload)
+    bench = _resolve_benchmark(benchmark)
 
     inner = _duckdb.connect(":memory:")
     bundle: Optional[Path] = None
@@ -382,10 +381,12 @@ def cli(argv: Optional[List[str]] = None) -> None:
     ap.add_argument(
         "--name", default=None, help="published name (default: synno-<dbname>)"
     )
-    from .workloads.workload_provider_olap import OLAPWorkload
-
     ap.add_argument(
-        "--benchmark", default="tpch", choices=[m.value for m in OLAPWorkload]
+        "--benchmark",
+        required=True,
+        help="Name of a registered workload whose query templates the engine serves. The core "
+        "ships no built-in workloads; register the one you want first (register_workload(...) "
+        "or a bring-your-own builder).",
     )
     ap.add_argument("--data-plane", default="auto", choices=DATA_PLANES)
     ap.add_argument("--scale-factor", type=float, default=None)

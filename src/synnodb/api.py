@@ -1,9 +1,17 @@
 """Importable, typed entry point to the SynnoDB agent pipeline.
 
+    import duckdb, synnodb
     from synnodb import SynnoDB
-    db = SynnoDB.in_memory(workload="tpch")
+
+    db = SynnoDB.in_memory()
+    db.sync_from_duckdb(duckdb.connect("my.duckdb"),  # bring your own workload
+                        name="my_workload", queries_json="queries.json")
     plan = db.createStoragePlan(queries="1")        # -> StoragePlan; plan.text is the doc
     impl = db.createBaseImpl(storage_plan=plan.text) # -> BaseImplementation; impl.files
+
+The core package is workload-agnostic and ships no built-in workload: a workload is
+always supplied from the outside - via ``sync_from_duckdb`` / a bring-your-own builder,
+or by registering a ``WorkloadSpec`` and passing its name as ``workload=``.
 
 ``run_synthesis`` is the single entry point for executing a conversation: it
 takes a complete :class:`~synnodb.plan.ConversationPlan` (predefined or
@@ -39,7 +47,6 @@ from synnodb.results import (
 from synnodb.utils.cli_config import DEFAULT_MODEL, RunConfig, Usecase
 from synnodb.utils.utils import DBStorage, ServeFrom
 from synnodb.workloads.workload_provider import Workload, WorkloadId
-from synnodb.workloads.workload_provider_olap import OLAPWorkload
 
 if TYPE_CHECKING:
     from synnodb.plan import ConversationPlan
@@ -48,10 +55,12 @@ __all__ = ["SynnoDB", "SynnoConfig"]
 
 
 # ----------------------------- coercion helpers -----------------------------
-def _as_workload(v: Workload | str) -> Workload | WorkloadId:
-    if isinstance(v, (Workload, WorkloadId)):
+def _as_workload(v: Workload | str | None) -> Workload | WorkloadId | None:
+    # None => no workload chosen yet (set later via sync_from_duckdb / workload=<name>);
+    # resolution is deferred until the workload is actually needed.
+    if v is None or isinstance(v, (Workload, WorkloadId)):
         return v
-    # built-in name -> enum; any registered (bring-your-own) name -> WorkloadId
+    # Any registered workload name resolves to its WorkloadId identity.
     from synnodb.workloads.workload_spec import resolve_workload
 
     return resolve_workload(str(v))
@@ -104,7 +113,10 @@ class SynnoConfig:
     """Immutable, enum-typed run settings shared across stages."""
 
     model: str = DEFAULT_MODEL
-    workload: Workload | WorkloadId = OLAPWorkload.TPCH
+    # No built-in default: the core is workload-agnostic. Supply a workload explicitly
+    # (workload=<registered name>) or register one via sync_from_duckdb / a BYO builder
+    # before running a stage. None until then.
+    workload: Workload | WorkloadId | None = None
     db_storage: DBStorage = DBStorage.IN_MEMORY
     usecase: Usecase = Usecase.OLAP
     queries: str = "1"
@@ -156,6 +168,12 @@ class SynnoConfig:
 def _base_run_config(cfg: SynnoConfig) -> dict[str, Any]:
     """Map the typed ``SynnoConfig`` onto the RunConfig kwargs every run shares.
     Settings the API does not model take ``RunConfig``'s own field defaults."""
+    if cfg.workload is None:
+        raise ValueError(
+            "No workload set. Pass workload=<registered workload name>, or register a "
+            "workload first via sync_from_duckdb(...) / a bring-your-own builder, before "
+            "running a stage."
+        )
     return dict(
         model=cfg.model,
         benchmark=cfg.workload,
@@ -444,14 +462,6 @@ class SynnoDB:
     def on_ssd(cls, **overrides: Any) -> "SynnoDB":
         return cls(db_storage=DBStorage.SSD, **overrides)
 
-    @classmethod
-    def for_tpch(cls, **overrides: Any) -> "SynnoDB":
-        return cls(workload=OLAPWorkload.TPCH, **overrides)
-
-    @classmethod
-    def for_ceb(cls, **overrides: Any) -> "SynnoDB":
-        return cls(workload=OLAPWorkload.CEB, **overrides)
-
     def with_(self, **overrides: Any) -> "SynnoDB":
         """A new driver with a derived config (immutable; e.g. per-call SF/storage)."""
         return SynnoDB(dataclasses.replace(self.config, **overrides))
@@ -466,6 +476,11 @@ class SynnoDB:
         that fraction. ``check_ram_for_sf(1.0)`` always works."""
         from synnodb.workloads.workload_spec import find_sf_dir, get_workload_spec
 
+        if self.config.workload is None:
+            raise ValueError(
+                "No workload set. Register one via sync_from_duckdb(...) / a bring-your-own "
+                "builder, or pass workload=<registered name>, before checking RAM."
+            )
         spec = get_workload_spec(self.config.workload.value)
         root = spec.parquet_root()
         sf_dir = find_sf_dir(root, sf)

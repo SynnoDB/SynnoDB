@@ -13,7 +13,7 @@ actually occurred with its predicates correlated exactly as logged.
 import json
 from pathlib import Path
 
-from tutorials.datasets.stack.gen_stack_query import build_stack_queries_json
+from tutorials.workloads.stack.gen_stack_query import build_stack_queries_json
 
 TUTORIAL_DIR = Path(
     __file__

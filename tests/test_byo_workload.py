@@ -426,14 +426,17 @@ def test_dir_sidecar_params(tmp_path):
 
 
 def test_resolve_workload(myshop):
-    """The CLI/entry-point resolution primitive: enum for builtins, WorkloadId for BYO."""
+    """The CLI/entry-point resolution primitive: every registered workload -> a WorkloadId.
+
+    The core ships no built-in workloads, so the demo "tpch"/"ceb" (registered from
+    tutorials by the conftest fixture) and a bring-your-own workload resolve the same way."""
     from synnodb.workloads.workload_provider import WorkloadId
-    from synnodb.workloads.workload_provider_olap import OLAPWorkload
     from synnodb.workloads.workload_spec import resolve_workload
 
-    # builtins keep their enum identity (preserves cache keys)
-    assert resolve_workload("tpch") is OLAPWorkload.TPCH
-    assert resolve_workload("ceb") is OLAPWorkload.CEB
+    # the demo workloads registered from the outside resolve to their WorkloadId identity
+    tpch = resolve_workload("tpch")
+    assert isinstance(tpch, WorkloadId) and tpch.value == "tpch"
+    assert resolve_workload("ceb").value == "ceb"
     # a registered BYO workload resolves to a WorkloadId (no enum member needed)
     r = resolve_workload("myshop")
     assert isinstance(r, WorkloadId) and r.value == "myshop"

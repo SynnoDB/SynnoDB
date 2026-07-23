@@ -491,7 +491,11 @@ def test_optimize_refuses_name_collision_with_different_db(tmp_path):
     # optimize_database for a DIFFERENT tpch.db (same stem -> same default name) must refuse.
     with pytest.raises(SynnoUnsupportedQuery) as ei:
         optimize_database(
-            "/data/beta/tpch.db", ["1"], engine_workspace=ws, engines_dir=str(engines)
+            "/data/beta/tpch.db",
+            ["1"],
+            engine_workspace=ws,
+            engines_dir=str(engines),
+            benchmark="tpch",
         )
     assert "different database" in str(ei.value)
 
