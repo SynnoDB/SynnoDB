@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # short, because the judge has to read a full storage plan. At 200 the reasoning alone exhausted
 # the budget, the model emitted no message content at all, and the empty verdict crashed the run.
 # Sized to leave room for that thinking; the judge runs once per stage, so the cost is negligible.
-JUDGE_MAX_TOKENS = 4000
+JUDGE_MAX_TOKENS = 8000
 
 
 async def _judge_storage_plan(

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import functools
 import re
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 _DIALECT = "duckdb"
 
@@ -276,6 +276,70 @@ def order_by_key_indices(sql: str, output_names: Sequence[str]) -> Optional[List
                 continue
         return None
     return indices or None
+
+
+def top_level_limit_offset(sql: str) -> Tuple[Optional[int], int]:
+    """The statement's top-level ``LIMIT`` / ``OFFSET`` row counts as ``(limit, offset)``.
+
+    Only the top-level clause bounds the result set, so a ``LIMIT`` inside a subquery or CTE is
+    ignored. ``limit`` is ``None`` when the result is not truncated - no top-level ``LIMIT``, a
+    count that is not a plain integer literal, or a parse failure. That default is the safe one: it
+    makes the caller compare the full result strictly, which can only over-reject.
+    """
+    tree = _parse_cached(sql)
+    if tree is None:
+        return None, 0
+    from sqlglot import expressions as exp
+
+    if isinstance(tree, exp.With):
+        tree = tree.this
+    if not isinstance(tree, exp.Select):
+        return None, 0
+
+    def _count(node: Any) -> Optional[int]:
+        if node is None:
+            return None
+        value = node.expression if isinstance(node, (exp.Limit, exp.Offset)) else node
+        if not isinstance(value, exp.Literal) or value.is_string:
+            return None
+        try:
+            return int(value.this)
+        except (TypeError, ValueError):
+            return None
+
+    return _count(tree.args.get("limit")), _count(tree.args.get("offset")) or 0
+
+
+def widened_query(sql: str, limit: int) -> Optional[str]:
+    """*sql* re-aimed at the first *limit* rows of its ranking, or ``None`` if it cannot be
+    rewritten.
+
+    The top-level ``LIMIT`` becomes *limit* and any top-level ``OFFSET`` is dropped, so the result
+    starts at rank 1 and - once *limit* is large enough - is a superset of every row the original
+    window could legitimately have contained. Everything else (the ORDER BY, the predicates, any
+    nested clause) is untouched, so the widened query ranks rows exactly as the original does.
+
+    This is how :func:`adapt.candidate_superset` turns an ambiguous ``ORDER BY k LIMIT n`` into
+    something checkable: the engine's rows must be members of this superset rather than a
+    reproduction of the arbitrary pick DuckDB made at the cut.
+    """
+    tree = _parse_cached(sql)
+    if tree is None:
+        return None
+    from sqlglot import expressions as exp
+
+    # _parse_cached hands back a shared cached tree; mutating it in place would corrupt every
+    # later use of that SQL.
+    tree = tree.copy()
+    target = tree.this if isinstance(tree, exp.With) else tree
+    if not isinstance(target, exp.Select) or target.args.get("limit") is None:
+        return None
+    try:
+        target.set("limit", exp.Limit(expression=exp.Literal.number(limit)))
+        target.set("offset", None)
+        return tree.sql(dialect=_DIALECT)
+    except Exception:
+        return None
 
 
 def tables_in(sql: str) -> List[str]:

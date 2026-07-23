@@ -2,6 +2,8 @@ Finish all todos from previous interaction outlined in `${base_impl_todo_file}`.
 Focus on the build logic to convert ArrowTable into an efficient in-memory data structure.
 Implement the build logic in `${builder_path}`.
 
+${anti_cheat_constraints}
+
 Before editing, plan your approach and implementation steps.
 
 IMPORTANT - populate the in-memory columns using the framework helpers in `column_ingest.hpp`. A copy of `column_ingest.hpp` is in your workspace (and it is also on the include path), so READ it to see exactly what each helper does. This helper header is the sanctioned extension point for generic ingest behavior: if a flat scalar column needs handling the current helpers do not cover, extend `column_ingest.hpp` once while preserving Arrow safe-cast, null-mask, scale, and range-check semantics, then call the helper from `${builder_path}`. Add `#include "column_ingest.hpp"`. Do NOT hand-roll Arrow decoding in `db_loader.cpp` - no `chunk->type_id()` switch, no `static_cast` to `ArrowNumericArray<T>`, no `raw_values()`/`GetValue`/manual decimal/endianness/scale handling.
