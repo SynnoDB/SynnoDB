@@ -99,6 +99,7 @@ def test_optimize_publishes_synno_named_engine(tpch_db):
             tpch_db,
             ["1", "6"],
             engine_workspace=Q1Q6BYO,
+            benchmark="tpch",
             engines_dir=str(Path(tmp) / "engines"),
             data_plane="auto",
         )
@@ -117,6 +118,7 @@ def test_data_plane_variants(tpch_db):
             tpch_db,
             ["1"],
             engine_workspace=Q1Q6BYO,
+            benchmark="tpch",
             engines_dir=str(Path(tmp) / "shm"),
             data_plane="shm",
         )
@@ -128,6 +130,7 @@ def test_data_plane_variants(tpch_db):
             tpch_db,
             ["1"],
             engine_workspace=Q1Q6BYO,
+            benchmark="tpch",
             engines_dir=str(Path(tmp) / "pq"),
             data_plane="parquet",
         )
@@ -144,6 +147,7 @@ def test_shm_hot_load_plane(tpch_db):
             tpch_db,
             ["1", "6"],
             engine_workspace=Q1Q6BYO,
+            benchmark="tpch",
             engines_dir=str(engines),
             data_plane="auto",
         )
@@ -173,6 +177,7 @@ def test_parquet_synthesized_plane(tpch_db):
             tpch_db,
             ["1", "6"],
             engine_workspace=Q1Q6BYO,
+            benchmark="tpch",
             engines_dir=str(engines),
             data_plane="auto",
         )
@@ -207,6 +212,7 @@ def test_near_miss_falls_back(tpch_db):
             tpch_db,
             ["1"],
             engine_workspace=Q1Q6BYO,
+            benchmark="tpch",
             engines_dir=str(engines),
             data_plane="auto",
         )
@@ -231,6 +237,7 @@ def test_shm_segments_cleaned_up_on_close(tpch_db):
             tpch_db,
             ["1"],
             engine_workspace=Q1Q6BYO,
+            benchmark="tpch",
             engines_dir=str(engines),
             data_plane="shm",
         )
@@ -256,6 +263,7 @@ def test_shm_only_engine_needs_live_data(tpch_db):
             tpch_db,
             ["1"],
             engine_workspace=Q1Q6BYO,
+            benchmark="tpch",
             engines_dir=str(engines),
             data_plane="shm",
         )

@@ -16,9 +16,9 @@ from tutorials.workloads.tpch.tpch_param_specs import TPCH_PARAM_SPECS
 
 from tutorials.workloads.tpch.tpch_queries import tpc_h
 
-TUTORIAL_DIR = Path(
+WORKLOAD_DIR = Path(
     __file__
-).parent.parent  # tutorials/, where the notebook reads tpch_queries.json
+).parent  # tutorials/workloads/tpch/, where the notebook reads tpch_queries.json
 
 
 def build() -> dict:
@@ -37,6 +37,6 @@ def build() -> dict:
 
 if __name__ == "__main__":
     data = build()
-    out = TUTORIAL_DIR / "tpch_queries.json"
+    out = WORKLOAD_DIR / "tpch_queries.json"
     out.write_text(json.dumps(data, indent=2))
     print(f"Written: {out} ({len(data)} queries)")
