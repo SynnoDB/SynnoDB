@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import build_ceb_query_set
+from tutorials.datasets.ceb.gen_ceb_query import build_ceb_query_set
 
 TUTORIAL_DIR = Path(
     __file__

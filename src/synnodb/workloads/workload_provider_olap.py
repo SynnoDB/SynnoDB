@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from synnodb import settings
+from synnodb.ram_check import RamCheck
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils import utils
 from synnodb.utils.gen_common import _parse_ceb_fuzzy_range
@@ -18,8 +19,6 @@ from synnodb.utils.utils import (
     is_persistent_storage,
 )
 from synnodb.workloads.system_factory import System
-from synnodb.workloads.dataset.gen_ceb.ceb_queries import ceb_templates
-from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
 from synnodb.workloads.workload_provider import (
     DEFAULT_NUM_INSTANTIATIONS,
     ExecSettings,
@@ -31,13 +30,14 @@ from synnodb.workloads.workload_provider import (
     WorkloadProvider,
     format_args_element,
 )
-from synnodb.ram_check import RamCheck
 from synnodb.workloads.workload_spec import (
     WorkloadSpec,
     find_sf_dir,
     get_workload_spec,
     register_workload,
 )
+from tutorials.datasets.ceb.ceb_queries import ceb_templates
+from tutorials.datasets.tpch.tpch_queries import tpc_h
 
 logger = logging.getLogger(__name__)
 
@@ -563,13 +563,13 @@ class PlaceholdersCacheType:
 
 
 def _tpch_schema() -> str:
-    from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h_schema
+    from tutorials.datasets.tpch.tpch_queries import tpc_h_schema
 
     return tpc_h_schema
 
 
 def _tpch_query_gen_factory(provider: "OLAPWorkloadProvider"):
-    from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
+    from synnodb.workloads.dataset.tpch.gen_tpch_query import gen_query
 
     return gen_query
 
@@ -577,7 +577,7 @@ def _tpch_query_gen_factory(provider: "OLAPWorkloadProvider"):
 def _tpch_placeholders_factory(
     provider: "OLAPWorkloadProvider", do_not_cache: bool = False
 ):
-    from synnodb.workloads.dataset.gen_tpch.gen_tpch_query import gen_query
+    from synnodb.workloads.dataset.tpch.gen_tpch_query import gen_query
 
     def gen_placeholder_tpch(**kwargs):
         # we only need the placeholders dict
@@ -592,7 +592,7 @@ def _tpch_param_space_factory(provider: "OLAPWorkloadProvider | None"):
     Used for live-UI widget metadata (slider/dropdown/date-picker). The run-time sampler
     stays ``gen_query`` (see ``_tpch_query_gen_factory``), so TPC-H run behavior is unchanged.
     """
-    from synnodb.workloads.dataset.gen_tpch.tpch_param_specs import TPCH_PARAM_SPECS
+    from synnodb.workloads.dataset.tpch.tpch_param_specs import TPCH_PARAM_SPECS
     from synnodb.workloads.query_params import parse_param_space
 
     def get(query_name: str):
@@ -608,13 +608,13 @@ def _tpch_param_space_factory(provider: "OLAPWorkloadProvider | None"):
 
 
 def _ceb_schema() -> str:
-    from synnodb.workloads.dataset.gen_ceb.imdb_schema import imdb_schema
+    from tutorials.datasets.ceb.imdb_schema import imdb_schema
 
     return imdb_schema
 
 
 def _ceb_query_gen_factory(provider: "OLAPWorkloadProvider"):
-    from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
+    from tutorials.datasets.ceb.gen_ceb_query import gen_query_single_only
 
     return functools.partial(gen_query_single_only, ceb_dir=_ceb_query_dir())
 
@@ -622,7 +622,7 @@ def _ceb_query_gen_factory(provider: "OLAPWorkloadProvider"):
 def _ceb_placeholders_factory(
     provider: "OLAPWorkloadProvider", do_not_cache: bool = False
 ):
-    from synnodb.workloads.dataset.gen_ceb.gen_ceb_query import gen_query_single_only
+    from tutorials.datasets.ceb.gen_ceb_query import gen_query_single_only
 
     def gen_placeholder_ceb(**kwargs):
         # placeholders are loaded from disk; cache them per query to avoid re-reading

@@ -250,7 +250,7 @@ _IMDB_SIZES = {
 
 
 def _populate_imdb(con: "duckdb.DuckDBPyConnection") -> None:
-    from synnodb.workloads.dataset.gen_ceb.imdb_schema import imdb_schema
+    from tutorials.datasets.ceb.imdb_schema import imdb_schema
 
     con.execute(imdb_schema)
     n = _IMDB_SIZES
@@ -308,7 +308,7 @@ def _populate_imdb(con: "duckdb.DuckDBPyConnection") -> None:
 def imdb():
     """A synthetic IMDB database (real DDL + FK-consistent rows) and a downscaler driven by two
     representative CEB templates (Q1a: title/cast/info; Q2a: adds the keyword bridge)."""
-    from synnodb.workloads.dataset.gen_ceb.ceb_queries import ceb_templates
+    from tutorials.datasets.ceb.ceb_queries import ceb_templates
 
     con = duckdb.connect()
     _populate_imdb(con)

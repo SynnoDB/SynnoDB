@@ -14,8 +14,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from synnodb.utils.path_utils import repo_root
 from synnodb.observability.logging.logger import setup_logging
+from synnodb.utils.path_utils import repo_root
 
 setup_logging(logging.INFO)
 load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come from a .env
@@ -41,7 +41,9 @@ MODEL = os.environ.get(
     "SYNNO_MODEL", "anthropic/claude-sonnet-5"
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
-QUERIES_JSON = Path(__file__).with_name("tpch_queries.json")  # lives next to this script
+QUERIES_JSON = Path(__file__).with_name(
+    "tpch_queries.json"
+)  # lives next to this script
 
 print("Data root   :", DATA_ROOT)
 print("Generated engines dir :", GENERATED_ENGINES_DIR)
@@ -53,7 +55,8 @@ print("Model       :", MODEL)
 # database with DuckDB's built-in dbgen; in your own project this is simply the duckdb.connect(...)
 # you already hold. SF5 is a couple of GB and takes a little while to build.
 import duckdb
-from synnodb.workloads.dataset.gen_tpc_h_data import generate_tpch_duckdb
+
+from synnodb.workloads.dataset.tpch.gen_tpc_h_data import generate_tpch_duckdb
 
 TPCH_DB = DATA_ROOT / "tpch.duckdb"  # the single source of truth - one live DuckDB
 
