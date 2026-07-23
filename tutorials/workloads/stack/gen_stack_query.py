@@ -27,13 +27,7 @@ correlated exactly as recorded rather than recombined across queries.
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
-
-# The full extraction emitted by ``extract_templates.py``: per class ``{"template", "parameters",
-# "column_name_parameters", "operator_parameters", "queries": [{"file", "parameters",
-# "column_name_parameters", "operator_parameters"}]}``. The column/operator groups are the ones we
-# bake to a fixed choice here so only filter literals remain parameterized.
-TEMPLATES_JSON = Path(__file__).with_name("stack_templates.json")
+from typing import Dict, List, Optional, Tuple, Union
 
 # Canonical Stack query ids, in benchmark order.
 STACK_QUERY_IDS: Tuple[str, ...] = tuple(f"q{i}" for i in range(1, 17))
@@ -113,9 +107,30 @@ def _build_entry(entry: dict) -> QueryEntry:
     }
 
 
+def _extract_templates_module():
+    """Import the sibling ``extract_templates`` regardless of how this package was imported.
+
+    The relative import works whether the package is reached as ``workloads.stack`` (the demo,
+    with ``tutorials/`` on ``sys.path``) or ``tutorials.workloads.stack``; the by-path fallback
+    covers running ``gen_stack_query.py`` as a bare top-level script (no package context).
+    """
+    try:
+        from . import extract_templates
+    except ImportError:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "stack_extract_templates", Path(__file__).with_name("extract_templates.py")
+        )
+        extract_templates = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(extract_templates)
+    return extract_templates
+
+
 def build_stack_queries_json(
-    templates_json: Path = TEMPLATES_JSON,
     query_ids: Tuple[str, ...] = STACK_QUERY_IDS,
+    *,
+    templates: Optional[Dict[str, dict]] = None,
 ) -> Dict[str, QueryEntry]:
     """Build the templated bring-your-own ``queries.json`` mapping for the Stack workload.
 
@@ -125,12 +140,15 @@ def build_stack_queries_json(
     SynnoDB samples a whole correlated binding per execution.
 
     Args:
-        templates_json: the full extraction from ``extract_templates.py``.
         query_ids: the Stack query ids to emit (default: the full ``q1`` .. ``q16`` set).
+        templates: the per-class extraction (the ``stack_templates.json`` shape). When ``None``
+            (default) it is derived on demand from the raw ``so_queries/`` log, which
+            :func:`extract_templates.build_templates` downloads + caches on first use.
 
     Returns an insertion-ordered ``{query_id: entry}`` mapping.
     """
-    templates = json.loads(Path(templates_json).read_text())
+    if templates is None:
+        templates = _extract_templates_module().build_templates()
     return {qid: _build_entry(templates[qid]) for qid in query_ids}
 
 

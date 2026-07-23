@@ -264,6 +264,9 @@ synthesized_engines/
 # On-demand-built MusicBrainz tutorial queries (see gen_full_music_brainz_demo.py)
 tutorials/workloads/music_brainz/musicbrainz_queries.json
 
-# On-demand-built Stack tutorial queries (see gen_full_stack_demo.py)
+# On-demand Stack tutorial workload (see gen_full_stack_demo.py): the raw so_queries/ log is
+# downloaded + cached, templates are distilled from it, and the queries are reshaped - none checked in.
+tutorials/workloads/stack/so_queries/
+tutorials/workloads/stack/stack_templates.json
 tutorials/workloads/stack/queries.json
 tutorials/workloads/stack/stack_queries.json

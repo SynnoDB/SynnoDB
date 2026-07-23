@@ -18,17 +18,32 @@ For every class this script:
      ordered list of parameter names, and - for every concrete query - the
      dictionary mapping each placeholder name to the value it takes.
 
-The result is written as JSON.
+The raw ``so_queries/`` log (6191 tiny ``.sql`` files) is not checked in; it is
+downloaded + cached on first use from :data:`SO_QUERIES_URL` (see
+:func:`ensure_so_queries`). :func:`build_templates` returns the per-class
+extraction as an in-memory dict; running this file as a script also writes it to
+``stack_templates.json`` for inspection.
 """
 
+import io
 import json
 import re
+import shutil
+import tarfile
+import tempfile
+import urllib.request
 from collections import Counter
 from pathlib import Path
+
+import zstandard
 
 ROOT = Path(__file__).resolve().parent
 QUERY_DIR = ROOT / "so_queries"
 OUTPUT = ROOT / "stack_templates.json"
+
+# The raw workload log, published as a ~540 KB ``.tar.zst`` whose sole top-level entry is a
+# ``so_queries/`` directory of ``q1`` .. ``q16`` subfolders. Not checked in - fetched on demand.
+SO_QUERIES_URL = "https://rmarcus.info/so_queries.tar.zst"
 
 # A quoted string, an IN (...) list, a number, an identifier/keyword, a
 # comparison operator, or a single structural punctuation character.
@@ -86,7 +101,6 @@ def classify(tokens, pos: int) -> str:
 def parameter_name(tokens, pos: int, used: Counter) -> str:
     """Derive a stable, unique placeholder name for a varying token position."""
     texts = [t[0] for t in tokens]
-    tok = texts[pos]
     kind = classify(tokens, pos)
 
     if kind == "operator":
@@ -179,14 +193,53 @@ def substitute(template: str, params: dict) -> str:
     return out
 
 
-def main():
-    result = {}
+def ensure_so_queries(dest: Path = QUERY_DIR, url: str = SO_QUERIES_URL) -> Path:
+    """Return the raw ``so_queries/`` SQL log, downloading + caching it on first use.
+
+    The workload (6191 ``.sql`` files, ~540 KB compressed) is not checked in, so this fetches the
+    ``.tar.zst`` from ``url`` once and caches it at ``dest``; later calls reuse the cached copy.
+    The archive's own top-level ``so_queries/`` directory becomes ``dest``. Extraction is pure
+    Python (``zstandard`` + ``tarfile``), so no system ``tar``/``zstd`` is required.
+    """
+    if dest.is_dir() and any(dest.glob("q*/*.sql")):
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
+        staging = Path(tmp)
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            compressed = resp.read()
+        reader = zstandard.ZstdDecompressor().stream_reader(io.BytesIO(compressed))
+        with tarfile.open(fileobj=reader, mode="r|") as tf:
+            tf.extractall(staging, filter="data")  # filter="data" blocks path-traversal entries
+        extracted = staging / "so_queries"
+        if not extracted.is_dir():
+            raise RuntimeError(f"{url} did not contain a top-level 'so_queries/' directory")
+        if dest.exists():
+            shutil.rmtree(dest)
+        extracted.replace(dest)  # atomic move within dest.parent's filesystem
+    return dest
+
+
+def build_templates(query_dir: Path = QUERY_DIR, *, download: bool = True) -> dict:
+    """Build the per-class template extraction (the ``stack_templates.json`` mapping) in memory.
+
+    With ``download=True`` (default) the raw ``so_queries/`` log is fetched + cached if absent.
+    Deterministic: files are processed in sorted order and each class's template is taken from its
+    lexicographically smallest query, so the result is identical every run.
+    """
+    if download:
+        ensure_so_queries(query_dir)
+    result: dict = {}
     for c in range(1, 17):
         cls = f"q{c}"
-        files = sorted((QUERY_DIR / cls).glob("*.sql"))
-        if not files:
-            continue
-        result[cls] = build_class(files)
+        files = sorted((query_dir / cls).glob("*.sql"))
+        if files:
+            result[cls] = build_class(files)
+    return result
+
+
+def main():
+    result = build_templates()
 
     OUTPUT.write_text(json.dumps(result, indent=2))
 

@@ -123,44 +123,45 @@ Result: `stack_ce.duckdb` (~51 GB), 10 tables, ~248 M rows total:
 | `so_user` | 21,097,302 | | `tag` | 186,770 |
 | `account` | 13,872,153 | | `site` | 173 |
 
-## 3. Query workload → `queries.json`
+## 3. Query workload → queries (built on demand)
 
 `so_queries/` holds the workload: 16 classes (`q1` .. `q16`), 6191 concrete
 `.sql` files. Within a class every query shares one join skeleton and differs
 only in its filter predicates (string/number literals, `IN (...)` lists, and in
 some classes the filtered column or the comparison operator).
 
-Two steps turn that raw workload into a bring-your-own `queries.json` - the
-templated shape [`byo_workload`](../../byo_workload.py) / `sync_from_duckdb`
-consumes. Run them in order from the repo root (they read/write JSON next to
-themselves):
+**Nothing here is checked in.** The raw log is large, so it is downloaded and
+cached on first use, and the templates/queries are derived from it in memory. The
+demo ([`tutorials/gen_full_stack_demo.py`](../../gen_full_stack_demo.py)) just
+calls `build_stack_queries_json()`; the two stages below run automatically. Both
+are deterministic - identical output every run for a given `so_queries/` download.
 
-### `extract_templates.py` → `stack_templates.json`
+### `extract_templates.py` — `so_queries/` → template extraction
+
+`ensure_so_queries()` downloads `so_queries.tar.zst` (~540 KB) from
+<https://rmarcus.info/so_queries.tar.zst> and caches it under
+`so_queries/` (git-ignored; pure-Python `zstandard` + `tarfile`, no system
+`tar`/`zstd` needed). `build_templates()` then, for each class, tokenizes every
+query so the join skeletons line up position for position, finds the token
+positions whose value varies across the class, and turns those into `[NAME]`
+placeholders - everything else becomes fixed template text. Per class it emits the
+template string, the parameter names split by kind (`parameters` = filter
+literals, `column_name_parameters`, `operator_parameters`), and for every concrete
+query the placeholder→value dicts. Running the file as a script also writes
+`stack_templates.json` (git-ignored) for inspection and round-trips every query
+(all 6191 reproduce exactly).
+
+### `gen_stack_query.py` — templates → queries
 
 ```bash
-python3 extract_templates.py        # needs the raw so_queries/ log
+python3 -m tutorials.workloads.stack.gen_stack_query   # writes queries.json (git-ignored) for inspection
 ```
 
-For each class it tokenizes every query so the join skeletons line up position
-for position, finds the token positions whose value varies across the class, and
-turns those into `[NAME]` placeholders - everything else becomes fixed template
-text. Per class it emits the template string, the parameter names split by kind
-(`parameters` = filter literals, `column_name_parameters`, `operator_parameters`),
-and for every concrete query the placeholder→value dicts. It then round-trips
-every query (template + params re-instantiated, compared whitespace-normalized)
-and reports how many reproduced exactly (all 6191 do). `stack_templates.json` is
-the committed output, so regenerating the workload does not need the raw log.
-
-### `gen_stack_query.py` → `queries.json`
-
-```bash
-python3 -m synnodb.workloads.dataset.gen_stack.gen_stack_query
-```
-
-Turns `stack_templates.json` into the bring-your-own `queries.json`, keeping the
-template structure fixed so **only filter literals vary**. Some classes (`q2`,
-`q3`, `q8`, `q11`-`q16`) parameterized the filtered *column* and/or the
-*operator*, not just literals; the generator automatically picks each such
+`build_stack_queries_json()` turns the template extraction into the bring-your-own
+shape [`byo_workload`](../../byo_workload.py) / `sync_from_duckdb` consumes,
+keeping the template structure fixed so **only filter literals vary**. Some
+classes (`q2`, `q3`, `q8`, `q11`-`q16`) parameterized the filtered *column* and/or
+the *operator*, not just literals; the generator automatically picks each such
 class's dominant column+operator instantiation, bakes it into the template text,
 and keeps only the queries that used it - collapsing every class to a single
 filter-literal-only skeleton. The surviving queries' literal bindings become one
@@ -180,7 +181,3 @@ exactly as recorded, not recombined across queries):
   }
 }
 ```
-
-`queries.json` is the final, filter-literal-only workload configuration. The
-tutorial regenerates its own copy next to the demo via
-[`tutorials/assemble_tutorial/_gen_stack_queries.py`](../../../../../../tutorials/assemble_tutorial/_gen_stack_queries.py).

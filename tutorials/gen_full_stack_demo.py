@@ -9,14 +9,15 @@ The benchmark / drop-in steps are not included here.
 Like IMDB and unlike TPC-H there is no ``dbgen`` to synthesize Stack - it is real data (~170
 StackExchange sites unioned by ``site_id``), so this demo opens a ``stack_ce.duckdb`` you point it
 at rather than materializing one. The Stack queries share one join skeleton per class and differ
-only in their filter literals. Rather than ship a checked-in ``queries.json``, this demo builds that
-mapping on demand (deterministically) from ``tutorials/workloads/stack/stack_templates.json``: each
-of the 16 classes becomes a fixed, filter-literal-only template whose placeholders are bound - as a
-``tuples`` parameter group - to the real StackExchange literal rows recorded from the workload, so at
-run time SynnoDB samples a whole correlated ``(site, tag, threshold, ...)`` binding per execution,
-the templated bring-your-own shape ``sync_from_duckdb`` consumes. The builder lives in
-``tutorials/workloads/stack/gen_stack_query.py`` (its ``main()`` can still write the JSON out to disk
-if you want to inspect it).
+only in their filter literals. Nothing about the workload is checked in: this demo builds the queries
+mapping on demand (deterministically). On first use it downloads + caches the raw ``so_queries/`` log
+(6191 tiny ``.sql`` files, ~540 KB compressed) from ``https://rmarcus.info/so_queries.tar.zst``,
+distills one template per class from it, and turns each of the 16 classes into a fixed,
+filter-literal-only template whose placeholders are bound - as a ``tuples`` parameter group - to the
+real StackExchange literal rows recorded from the workload, so at run time SynnoDB samples a whole
+correlated ``(site, tag, threshold, ...)`` binding per execution, the templated bring-your-own shape
+``sync_from_duckdb`` consumes. The builders live in ``tutorials/workloads/stack/`` (``extract_templates.py``
+does the download + template distillation; ``gen_stack_query.py`` turns templates into queries).
 
 Prerequisites: pip install "synnodb[factory]"
 """
@@ -47,12 +48,10 @@ MODEL = os.environ.get(
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
 MODEL_EXTRA_BODY = json.loads(os.environ.get("SYNNO_MODEL_EXTRA_BODY", "null"))
 
-# The queries mapping is built on demand (not checked in): construct the ``{qid: entry}`` dict
-# deterministically from ``stack_templates.json`` (a pure reshape of the recorded templates, so the
-# result is identical every run).
-QUERIES = build_stack_queries_json(
-    templates_json=Path(__file__).parent / "workloads" / "stack" / "stack_templates.json",
-)
+# The queries mapping is built on demand (nothing checked in): the raw so_queries/ log is downloaded
+# + cached on first use, one template per class is distilled from it, and each is reshaped into a
+# filter-literal-only entry. Deterministic - identical every run for a given so_queries/ download.
+QUERIES = build_stack_queries_json()
 
 print("Data root   :", DATA_ROOT)
 print("Generated engines dir :", GENERATED_ENGINES_DIR)

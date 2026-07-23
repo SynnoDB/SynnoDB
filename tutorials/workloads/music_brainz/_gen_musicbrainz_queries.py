@@ -13,7 +13,7 @@ specs:
 So rather than declaring value spaces, this script pre-generates concrete instances (drawing each
 placeholder with the template's own rules) and binds all of a template's holes jointly as one
 ``tuples`` group - the exact shape ``sync_from_duckdb`` consumes, and the same bring-your-own shape
-the Stack workload uses (see ``../stack/_gen_stack_queries.py``). Every sampled instantiation is
+the Stack workload uses (see ``../stack/gen_stack_query.py``). Every sampled instantiation is
 then a real, correlated binding: SynnoDB picks one recorded row per execution.
 
 Regenerate ``musicbrainz_queries.json`` with::
