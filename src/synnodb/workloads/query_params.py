@@ -76,7 +76,12 @@ BYO_DEBUG = configure_byo_debug()
 # ``country_code`` values are genuinely ``'[cz]'`` / ``'[pa]'``, which would otherwise read as
 # placeholders inside a static bring-your-own query. Legitimate placeholders may still sit inside a
 # quoted string (TPC-H Q2's ``'%[TYPE]'``), so quote-awareness alone would not disambiguate.
-_PLACEHOLDER_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)\]")
+# The single source of truth for the placeholder-name grammar. ``_PLACEHOLDER_RE`` matches a
+# bracketed hole in the SQL; ``_PLACEHOLDER_NAME_RE`` matches a bare declared name - both share this
+# pattern so the two never drift apart.
+_PLACEHOLDER_NAME = r"[A-Z][A-Z0-9_]*"
+_PLACEHOLDER_RE = re.compile(rf"\[({_PLACEHOLDER_NAME})\]")
+_PLACEHOLDER_NAME_RE = re.compile(rf"{_PLACEHOLDER_NAME}\Z")
 
 
 def find_placeholders(sql: str) -> list[str]:
@@ -85,6 +90,15 @@ def find_placeholders(sql: str) -> list[str]:
     for m in _PLACEHOLDER_RE.finditer(sql):
         seen.setdefault(m.group(1), None)
     return list(seen)
+
+
+def is_placeholder_name(name: str) -> bool:
+    """Whether ``name`` follows the UPPERCASE placeholder convention (see :data:`_PLACEHOLDER_RE`).
+
+    Detection in :func:`find_placeholders` is case-sensitive, so a declared parameter must use this
+    same grammar or its ``[name]`` hole in the SQL is never recognised - a lowercase bracketed token
+    reads as literal data instead (e.g. IMDB's ``'[cz]'``)."""
+    return bool(_PLACEHOLDER_NAME_RE.match(name))
 
 
 def _render_in_list(values) -> str:
