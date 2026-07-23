@@ -193,11 +193,15 @@ def _build_param_spaces(
 
 
 def _natural_sort(ids: list[str]) -> list[str]:
-    """Order query ids numerically when all-digit, else lexically, so the catalog order
-    does not depend on filesystem listing order."""
-    if all(q.isdigit() for q in ids):
-        return sorted(ids, key=int)
-    return sorted(ids)
+    """Order query ids in natural (human) order so the catalog does not depend on filesystem
+    listing order and a range like ``1a-11b`` spans the ids one expects.
+
+    Digit runs compare as numbers, so ``1a < 2a < 10a < 11a < 11b`` (not the lexical ``10a <
+    1a``) and pure-numeric ids keep TPC-H's ``1..22`` order."""
+    return sorted(
+        ids,
+        key=lambda s: [int(t) if t.isdigit() else t for t in re.findall(r"\d+|\D+", s)],
+    )
 
 
 def _sf_dir(parquet_dir: Path, sf: float) -> Path:

@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -530,6 +530,57 @@ def gen_query(
         bindings_list.append(selected_bindings)
 
     return template_str, sql_queries, bindings_list
+
+
+# Canonical CEB / JOB (Cardinality Estimation Benchmark) query ids, in benchmark order. Mirrors
+# ``workload_provider_olap.CEB_SPEC.all_query_ids``.
+CEB_QUERY_IDS: Tuple[str, ...] = (
+    "1a",
+    "2a",
+    "2b",
+    "2c",
+    "3a",
+    "3b",
+    "4a",
+    "5a",
+    "6a",
+    "7a",
+    "8a",
+    "9a",
+    "9b",
+    "10a",
+    "11a",
+    "11b",
+)
+
+
+def build_ceb_query_set(
+    ceb_dir: Path,
+    query_ids: Iterable[str] = CEB_QUERY_IDS,
+    *,
+    seed: int = 42,
+) -> Dict[str, str]:
+    """Instantiate one concrete, runnable SQL query per CEB query id from the recorded bindings.
+
+    Each CEB template (:data:`ceb_queries.ceb_templates`) carries placeholders (``IN ID1``,
+    ``<= YEAR1``, ``ILIKE NAME`` ...) whose value spaces are the real IMDB distributions captured
+    under ``ceb_dir/<id>/*.pkl``. This draws a single deterministic binding per id and returns the
+    fully substituted SQL - the shape a bring-your-own ``queries.json`` consumes as static queries.
+
+    Args:
+        ceb_dir: directory with one ``<query-id>/`` subfolder of recorded bindings per query.
+        query_ids: the CEB query ids to instantiate (default: the full benchmark set).
+        seed: base RNG seed; each id is drawn with ``seed`` offset by its position, so the set is
+            reproducible yet not all keyed to the same binding index.
+
+    Returns an insertion-ordered ``{query_id: sql}`` mapping.
+    """
+    queries: Dict[str, str] = {}
+    for offset, qid in enumerate(query_ids):
+        rnd = random.Random(seed + offset)
+        _, sql, _ = gen_query_single_only(ceb_dir=ceb_dir, query_name=qid, rnd=rnd)
+        queries[qid] = sql
+    return queries
 
 
 if __name__ == "__main__":
