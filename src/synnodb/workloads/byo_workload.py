@@ -30,6 +30,7 @@ from synnodb.utils.utils import ServeFrom
 from synnodb.workloads.query_params import (
     ParamSpace,
     find_placeholders,
+    is_placeholder_name,
     parse_param_space,
     substitute,
 )
@@ -154,6 +155,25 @@ def _normalize_params(raw: dict, source: str) -> dict[str, dict]:
     return out
 
 
+def _declared_param_names(section: dict | None) -> list[str]:
+    """Placeholder names a parameter section declares - scalar ``params`` keys plus each
+    ``param_groups`` entry's ``placeholders``. Collected up front so the uppercase-naming
+    convention can be enforced before templating decides which sections apply (a lowercase name
+    would otherwise silently fail to match its ``[name]`` hole)."""
+    if not isinstance(section, dict):
+        return []
+    names: list[str] = []
+    params = section.get("params")
+    if isinstance(params, dict):
+        names.extend(params)
+    groups = section.get("param_groups")
+    if isinstance(groups, list):
+        for g in groups:
+            if isinstance(g, dict) and isinstance(g.get("placeholders"), list):
+                names.extend(p for p in g["placeholders"] if isinstance(p, str))
+    return names
+
+
 def _build_param_spaces(
     sql_by_id: dict[str, str],
     params_by_id: dict[str, dict],
@@ -165,6 +185,17 @@ def _build_param_spaces(
     and/or ``param_groups``); one that does not is an error (we do not invent values). Static
     queries are skipped (no entry).
     """
+    for qid, section in params_by_id.items():
+        bad = sorted(
+            n for n in _declared_param_names(section) if not is_placeholder_name(n)
+        )
+        if bad:
+            raise ValueError(
+                f"Q{qid}: {params_source} parameter name(s) {bad} must be UPPERCASE. Placeholders "
+                f"are matched case-sensitively (e.g. [TYPE], [NATION1]), so a lowercase name like "
+                f"{bad[0]!r} leaves its [{bad[0]}] hole unrecognised in the SQL and treated as "
+                f"literal data rather than a template hole."
+            )
     templated = {qid: sql for qid, sql in sql_by_id.items() if find_placeholders(sql)}
     unknown = set(params_by_id) - set(templated)
     if unknown:

@@ -282,6 +282,41 @@ def test_templated_inline_params(tmp_path):
     assert params["MINAMT"] in {"10", "20", "30"}
 
 
+def test_lowercase_scalar_param_name_raises(tmp_path):
+    """A lowercase parameter name is rejected: placeholders are matched case-sensitively, so it
+    would silently fail to fill its ``[minamt]`` hole (treated as literal data instead)."""
+    with pytest.raises(ValueError, match="must be UPPERCASE"):
+        _register(
+            tmp_path,
+            {
+                "1": {
+                    "sql": "SELECT * FROM orders WHERE o_amt > [minamt]",
+                    "params": {"minamt": {"type": "int", "min": 10, "max": 30}},
+                },
+            },
+        )
+
+
+def test_lowercase_group_placeholder_name_raises(tmp_path):
+    """The uppercase rule also covers placeholder names declared inside a param_groups entry."""
+    with pytest.raises(ValueError, match="must be UPPERCASE"):
+        _register(
+            tmp_path,
+            {
+                "7": {
+                    "sql": "SELECT * FROM orders WHERE o_seg = '[a]' OR o_seg = '[b]'",
+                    "param_groups": [
+                        {
+                            "type": "tuples",
+                            "placeholders": ["a", "b"],
+                            "values": [["BUILDING", "MACHINERY"]],
+                        }
+                    ],
+                },
+            },
+        )
+
+
 def test_templated_correlated_group_stays_aligned(tmp_path):
     """A joint 'tuples' group keeps a correlated pair aligned (never crossed)."""
     spec = _register(
