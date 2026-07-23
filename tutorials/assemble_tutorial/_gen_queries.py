@@ -1,4 +1,4 @@
-"""One-shot script to (re)write the tutorial's self-describing queries.json.
+"""One-shot script to (re)write the tutorial's self-describing tpch_queries.json.
 
 Each entry is ``{"sql": <template>, "params": {PLACEHOLDER: <spec>}, "param_groups": [...]}``.
 The specs are the authentic TPC-H parameter value spaces, taken verbatim from the declarative
@@ -17,7 +17,7 @@ from synnodb.workloads.dataset.gen_tpch.tpch_queries import tpc_h
 
 TUTORIAL_DIR = Path(
     __file__
-).parent.parent  # tutorials/, where the notebook reads queries.json
+).parent.parent  # tutorials/, where the notebook reads tpch_queries.json
 
 
 def build() -> dict:
@@ -36,6 +36,6 @@ def build() -> dict:
 
 if __name__ == "__main__":
     data = build()
-    out = TUTORIAL_DIR / "queries.json"
+    out = TUTORIAL_DIR / "tpch_queries.json"
     out.write_text(json.dumps(data, indent=2))
     print(f"Written: {out} ({len(data)} queries)")

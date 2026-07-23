@@ -26,6 +26,7 @@ code_v*/
 .synno_data/
 src/synnodb/observability/analysis_model_behaviour/llm_cache
 src/synnodb/observability/analysis_model_behaviour/analysis
+src/synnodb/workloads/dataset/gen_music_brainz/mb_queries
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

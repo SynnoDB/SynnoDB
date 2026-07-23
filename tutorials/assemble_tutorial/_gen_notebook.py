@@ -214,7 +214,7 @@ cells.append(
 import random
 from synnodb.workloads.byo_workload import register_workload_from_json
 
-QUERIES_JSON = Path("queries.json")  # lives next to this notebook
+QUERIES_JSON = Path("tpch_queries.json")  # lives next to this notebook
 
 spec = register_workload_from_json(
     name="tpch_byo",

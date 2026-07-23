@@ -4,7 +4,7 @@
 same guarantees against the two schemas the downscaler is actually meant for:
 
 * **TPC-H** - generated with the real ``dbgen`` extension and driven by the real
-  ``tutorials/queries.json`` join graph. A classic single-fact star.
+  ``tutorials/tpch_queries.json`` join graph. A classic single-fact star.
 * **CEB / IMDB** - the production ``imdb_schema`` DDL (21 tables, declared PKs, a reserved-word
   ``name`` table) populated with FK-consistent synthetic rows, driven by the real CEB query
   templates. A snowflake whose largest table is a *bridge* (``cast_info``), so the anchor is not
@@ -104,11 +104,11 @@ _TPCH_WHOLE_THRESHOLD = 10_000
 def tpch():
     """A dbgen TPC-H database + a downscaler wired to the real workload queries.
 
-    Skips cleanly where the tpch extension or the bundled queries.json is unavailable.
+    Skips cleanly where the tpch extension or the bundled tpch_queries.json is unavailable.
     """
-    queries_path = repo_root() / "tutorials" / "queries.json"
+    queries_path = repo_root() / "tutorials" / "tpch_queries.json"
     if not queries_path.exists():
-        pytest.skip("tutorials/queries.json not present")
+        pytest.skip("tutorials/tpch_queries.json not present")
     raw = json.loads(queries_path.read_text())
     sql_by_id = {k: (v["sql"] if isinstance(v, dict) else v) for k, v in raw.items()}
 

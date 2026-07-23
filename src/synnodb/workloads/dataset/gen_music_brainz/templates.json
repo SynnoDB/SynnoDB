@@ -1,0 +1,104 @@
+{
+  "q1": {
+    "description": "Scalar subquery threshold: recordings longer than a multiple of the global average length.",
+    "template": "select count(*) from recording rec where rec.length > (select [FACTOR] * avg(length) from recording where length is not null)",
+    "parameters": ["FACTOR"],
+    "generation_rules": {
+      "FACTOR": {"kind": "float_uniform", "low": 1.5, "high": 6.0, "decimals": 2}
+    }
+  },
+  "q2": {
+    "description": "CASE bucketing: recordings classified into duration classes with per-class counts and average minutes.",
+    "template": "select case when rec.length < [SHORT_MS] then 'short' when rec.length < [LONG_MS] then 'medium' else 'long' end as duration_class, count(*) as n, round(avg(rec.length) / 60000, 2) as avg_minutes from recording rec where rec.length is not null group by duration_class order by n desc",
+    "parameters": ["SHORT_MS", "LONG_MS"],
+    "generation_rules": {
+      "SHORT_MS": {"kind": "int_uniform", "low": 90000, "high": 200000},
+      "LONG_MS": {"kind": "int_offset", "base": "SHORT_MS", "low_offset": 100000, "high_offset": 400000}
+    }
+  },
+  "q3": {
+    "description": "LIKE pattern plus EXISTS: credited artists whose name matches a word and who began after a year.",
+    "template": "select count(*) from artist a where lower(a.col_2) like [NAME_PATTERN] and cast(a.col_4 as integer) >= [BEGIN_YEAR] and exists (select 1 from artist_credit_name acn where acn.artist = cast(a.col_0 as integer))",
+    "parameters": ["NAME_PATTERN", "BEGIN_YEAR"],
+    "generation_rules": {
+      "NAME_PATTERN": {"kind": "choice", "quote": true, "values": ["%love%", "%night%", "%dream%", "%star%", "%moon%", "%fire%", "%rain%", "%blue%", "%black%", "%king%", "%rock%", "%sun%", "%heart%", "%gold%", "%wolf%", "%ghost%", "%dead%", "%light%"]},
+      "BEGIN_YEAR": {"kind": "int_uniform", "low": 1900, "high": 2015}
+    }
+  },
+  "q4": {
+    "description": "IN-list plus HAVING: how many release groups carry each of a set of tags, keeping only well-used tags.",
+    "template": "select tag.name, count(*) as tagged_groups from tag, release_group_tag rgt where tag.name in [TAG_LIST] and rgt.tag = tag.id and rgt.count >= [MIN_COUNT] group by tag.name having count(*) >= [MIN_TAGGED] order by tagged_groups desc",
+    "parameters": ["TAG_LIST", "MIN_COUNT", "MIN_TAGGED"],
+    "generation_rules": {
+      "TAG_LIST": {"kind": "choice_list", "quote": true, "n_min": 3, "n_max": 8, "values": ["rock", "pop", "electronic", "jazz", "punk", "metal", "hip hop", "folk", "classical", "blues", "country", "soul", "ambient", "techno", "house", "indie rock", "hard rock", "experimental", "alternative rock", "heavy metal", "synth-pop", "progressive rock", "psychedelic rock", "singer-songwriter", "dance", "funk", "reggae", "disco", "black metal", "death metal", "indie pop", "new wave", "soundtrack", "instrumental", "hardcore", "gospel", "ska"]},
+      "MIN_COUNT": {"kind": "int_uniform", "low": 1, "high": 5},
+      "MIN_TAGGED": {"kind": "int_uniform", "low": 10, "high": 100}
+    }
+  },
+  "q5": {
+    "description": "NOT EXISTS anti-join: artists of a type and era that never appear on any artist credit.",
+    "template": "select count(*) from artist a, artist_type t where t.name = [ARTIST_TYPE] and cast(a.col_10 as integer) = t.id and cast(a.col_4 as integer) between [START_YEAR] and [END_YEAR] and not exists (select 1 from artist_credit_name acn where acn.artist = cast(a.col_0 as integer))",
+    "parameters": ["ARTIST_TYPE", "START_YEAR", "END_YEAR"],
+    "generation_rules": {
+      "ARTIST_TYPE": {"kind": "choice", "quote": true, "values": ["Person", "Group", "Orchestra", "Choir", "Character", "Other"]},
+      "START_YEAR": {"kind": "int_uniform", "low": 1900, "high": 2010},
+      "END_YEAR": {"kind": "int_offset", "base": "START_YEAR", "low_offset": 0, "high_offset": 30}
+    }
+  },
+  "q6": {
+    "description": "Aggregate FILTER clause: top release countries in a year range, with a recent-releases sub-count per country.",
+    "template": "select ar.col_2 as country, count(*) as releases, count(*) filter (where rc.date_year >= [RECENT_YEAR]) as recent_releases from release_country rc, area ar where rc.country = cast(ar.col_0 as integer) and rc.date_year between [START_YEAR] and [END_YEAR] group by ar.col_2 order by releases desc limit [TOP_K]",
+    "parameters": ["START_YEAR", "END_YEAR", "RECENT_YEAR", "TOP_K"],
+    "generation_rules": {
+      "START_YEAR": {"kind": "int_uniform", "low": 1950, "high": 2005},
+      "END_YEAR": {"kind": "int_offset", "base": "START_YEAR", "low_offset": 10, "high_offset": 40},
+      "RECENT_YEAR": {"kind": "int_offset", "base": "START_YEAR", "low_offset": 5, "high_offset": 10},
+      "TOP_K": {"kind": "int_uniform", "low": 5, "high": 30}
+    }
+  },
+  "q7": {
+    "description": "QUALIFY over a windowed aggregate: the top release countries within every single year of a range.",
+    "template": "select rc.date_year as year, rc.country, count(*) as n from release_country rc where rc.date_year between [START_YEAR] and [END_YEAR] group by rc.date_year, rc.country qualify row_number() over (partition by rc.date_year order by count(*) desc) <= [TOP_PER_YEAR] order by year, n desc",
+    "parameters": ["START_YEAR", "END_YEAR", "TOP_PER_YEAR"],
+    "generation_rules": {
+      "START_YEAR": {"kind": "int_uniform", "low": 1950, "high": 2010},
+      "END_YEAR": {"kind": "int_offset", "base": "START_YEAR", "low_offset": 2, "high_offset": 15},
+      "TOP_PER_YEAR": {"kind": "int_uniform", "low": 2, "high": 8}
+    }
+  },
+  "q8": {
+    "description": "HAVING BETWEEN on a summed measure: releases of a medium format whose total track count falls in a band.",
+    "template": "select r.name, sum(m.track_count) as total_tracks from release r, medium m, medium_format mf where mf.name = [FORMAT] and m.format = mf.id and r.id = m.release group by r.name having sum(m.track_count) between [MIN_TRACKS] and [MAX_TRACKS] order by total_tracks desc, r.name limit [TOP_K]",
+    "parameters": ["FORMAT", "MIN_TRACKS", "MAX_TRACKS", "TOP_K"],
+    "generation_rules": {
+      "FORMAT": {"kind": "choice", "quote": true, "values": ["CD", "Digital Media", "Cassette", "12\" Vinyl", "7\" Vinyl", "10\" Vinyl", "DVD-Video", "Vinyl", "CD-R", "SACD"]},
+      "MIN_TRACKS": {"kind": "int_uniform", "low": 10, "high": 40},
+      "MAX_TRACKS": {"kind": "int_offset", "base": "MIN_TRACKS", "low_offset": 10, "high_offset": 60},
+      "TOP_K": {"kind": "int_uniform", "low": 5, "high": 50}
+    }
+  },
+  "q9": {
+    "description": "Six-table join with count(distinct): label activity per country for a label type, countries given as an IN list.",
+    "template": "select ar.col_2 as country, count(distinct rl.label) as labels, count(*) as releases from label l, label_type lt, release_label rl, release r, release_country rc, area ar where lt.name = [LABEL_TYPE] and cast(l.col_10 as integer) = lt.id and rl.label = cast(l.col_0 as integer) and r.id = rl.release and rc.release = r.id and rc.country = cast(ar.col_0 as integer) and ar.col_2 in [COUNTRY_LIST] and rc.date_year between [START_YEAR] and [END_YEAR] group by ar.col_2 order by releases desc",
+    "parameters": ["LABEL_TYPE", "COUNTRY_LIST", "START_YEAR", "END_YEAR"],
+    "generation_rules": {
+      "LABEL_TYPE": {"kind": "choice", "quote": true, "values": ["Original Production", "Imprint", "Production", "Distributor", "Publisher", "Reissue Production", "Bootleg Production", "Holding", "Rights Society", "Manufacturer"]},
+      "COUNTRY_LIST": {"kind": "choice_list", "quote": true, "n_min": 2, "n_max": 6, "values": ["United States", "United Kingdom", "Germany", "France", "Japan", "Canada", "Australia", "Netherlands", "Sweden", "Italy", "Spain", "Finland", "Norway", "Brazil", "Russia", "Poland", "Belgium", "Denmark", "Austria", "Switzerland", "Portugal", "Greece", "Mexico", "Argentina", "Ireland"]},
+      "START_YEAR": {"kind": "int_uniform", "low": 1960, "high": 2010},
+      "END_YEAR": {"kind": "int_offset", "base": "START_YEAR", "low_offset": 0, "high_offset": 20}
+    }
+  },
+  "q10": {
+    "description": "CTE plus lag() window: year-over-year rating trend for well-rated release groups of a tag and primary type.",
+    "template": "with rated as (select rgm.first_release_date_year as year, count(*) as n, avg(rgm.rating) as avg_rating from tag, release_group_tag rgt, release_group rg, release_group_primary_type pt, release_group_meta rgm where tag.name = [TAG_NAME] and rgt.tag = tag.id and rg.id = rgt.release_group and pt.name = [PRIMARY_TYPE] and rg.type = pt.id and rgm.id = rg.id and rgm.rating >= [MIN_RATING] and rgm.rating_count >= [MIN_RATING_COUNT] and rgm.first_release_date_year between [START_YEAR] and [END_YEAR] group by rgm.first_release_date_year) select year, n, round(avg_rating, 1) as avg_rating, round(avg_rating - lag(avg_rating) over (order by year), 1) as rating_delta from rated order by year",
+    "parameters": ["TAG_NAME", "PRIMARY_TYPE", "MIN_RATING", "MIN_RATING_COUNT", "START_YEAR", "END_YEAR"],
+    "generation_rules": {
+      "TAG_NAME": {"kind": "choice", "quote": true, "values": ["rock", "pop", "electronic", "jazz", "punk", "metal", "hip hop", "folk", "classical", "blues", "country", "soul", "ambient", "techno", "house", "indie rock", "hard rock", "experimental", "alternative rock", "heavy metal", "progressive rock", "psychedelic rock", "singer-songwriter", "new wave", "soundtrack"]},
+      "PRIMARY_TYPE": {"kind": "choice", "quote": true, "values": ["Album", "Single", "EP", "Broadcast", "Other"]},
+      "MIN_RATING": {"kind": "int_uniform", "low": 40, "high": 90},
+      "MIN_RATING_COUNT": {"kind": "int_uniform", "low": 1, "high": 5},
+      "START_YEAR": {"kind": "int_uniform", "low": 1970, "high": 2010},
+      "END_YEAR": {"kind": "int_offset", "base": "START_YEAR", "low_offset": 5, "high_offset": 25}
+    }
+  }
+}

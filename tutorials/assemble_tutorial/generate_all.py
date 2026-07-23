@@ -78,7 +78,7 @@ THREADS = 64
 MAX_TURNS = 500
 
 HERE = Path(__file__).parent
-QUERIES_JSON = HERE.parent / "queries.json"  # tutorials/queries.json
+QUERIES_JSON = HERE.parent / "tpch_queries.json"  # tutorials/tpch_queries.json
 
 
 def log(msg: str) -> None:
