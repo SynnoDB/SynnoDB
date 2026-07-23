@@ -128,7 +128,7 @@ SYNTHETIC TRACING DATA (fixed for golden test)
 
 This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
 - Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
-- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Aggregation strategy (group-by key choice, partial per-thread/per-morsel aggregation then merge, sort order). Aggregate at query time only - do not precompute/store aggregate results at build time.
 - Filter ordering and selectivity-driven predicate evaluation.
 - Storage access pattern alignment (which columns to scan, in what order, with what zone-map pruning).
 Choose algorithms that will parallelize cleanly later (prefer sort-merge or partitioned hash over shared-mutable-hash designs; prefer per-row-range processing that can be split across threads).
@@ -209,7 +209,7 @@ SYNTHETIC TRACING DATA (fixed for golden test)
 
 This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
 - Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
-- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Aggregation strategy (group-by key choice, partial per-thread/per-morsel aggregation then merge, sort order). Aggregate at query time only - do not precompute/store aggregate results at build time.
 - Filter ordering and selectivity-driven predicate evaluation.
 - Storage access pattern alignment (which columns to scan, in what order, with what zone-map pruning).
 Choose algorithms that will parallelize cleanly later (prefer sort-merge or partitioned hash over shared-mutable-hash designs; prefer per-row-range processing that can be split across threads).

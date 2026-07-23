@@ -124,7 +124,7 @@ Study the query plan to understand join order, cardinalities, operator choices, 
 
 This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
 - Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
-- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Aggregation strategy (group-by key choice, partial per-thread/per-morsel aggregation then merge, sort order). Aggregate at query time only - do not precompute/store aggregate results at build time.
 - Filter ordering and selectivity-driven predicate evaluation.
 
 
@@ -155,7 +155,7 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Do not cheat by shifting query results from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays. Indexes, zone maps, and query-agnostic statistics ARE allowed (they accelerate access to the base columns without storing a query's answer); every filter, grouping, and aggregate must still be computed at query time.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
@@ -225,7 +225,7 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Do not cheat by shifting query results from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays. Indexes, zone maps, and query-agnostic statistics ARE allowed (they accelerate access to the base columns without storing a query's answer); every filter, grouping, and aggregate must still be computed at query time.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
@@ -363,7 +363,7 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Do not cheat by shifting query results from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays. Indexes, zone maps, and query-agnostic statistics ARE allowed (they accelerate access to the base columns without storing a query's answer); every filter, grouping, and aggregate must still be computed at query time.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
@@ -423,7 +423,7 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Do not cheat by shifting query results from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays. Indexes, zone maps, and query-agnostic statistics ARE allowed (they accelerate access to the base columns without storing a query's answer); every filter, grouping, and aggregate must still be computed at query time.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
@@ -459,7 +459,7 @@ Study the query plan to understand join order, cardinalities, operator choices, 
 
 This is the **algorithmic stage** of optimization. Focus on *structural* decisions:
 - Join algorithm and order (sort-merge vs hash; build/probe sides; filter pushdown).
-- Aggregation strategy (group-by key choice, pre-aggregation, sort order).
+- Aggregation strategy (group-by key choice, partial per-thread/per-morsel aggregation then merge, sort order). Aggregate at query time only - do not precompute/store aggregate results at build time.
 - Filter ordering and selectivity-driven predicate evaluation.
 
 
@@ -490,7 +490,7 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Do not cheat by shifting query results from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays. Indexes, zone maps, and query-agnostic statistics ARE allowed (they accelerate access to the base columns without storing a query's answer); every filter, grouping, and aggregate must still be computed at query time.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
@@ -560,7 +560,7 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Do not cheat by shifting query results from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays. Indexes, zone maps, and query-agnostic statistics ARE allowed (they accelerate access to the base columns without storing a query's answer); every filter, grouping, and aggregate must still be computed at query time.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
@@ -698,7 +698,7 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Do not cheat by shifting query results from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays. Indexes, zone maps, and query-agnostic statistics ARE allowed (they accelerate access to the base columns without storing a query's answer); every filter, grouping, and aggregate must still be computed at query time.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
@@ -758,7 +758,7 @@ The run tool's modes are not all sized the same: a quick-iteration mode processe
 
 Hard constraints (must obey):
 - Leave the input/output interface unchanged.
-- Do not cheat by shifting work from execution to ingestion: No indexes, no materialized views, no pre-aggregation, no statistics collection used by execution, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays.
+- Do not cheat by shifting query results from execution to ingestion: No materialized views, no pre-aggregation, no query-result caching, no query-specific lookup tables or query-specific precomputed maps/arrays. Indexes, zone maps, and query-agnostic statistics ARE allowed (they accelerate access to the base columns without storing a query's answer); every filter, grouping, and aggregate must still be computed at query time.
 - Maintain ONE storage layout for all queries (no multiple copies of the same logical data).
 - Storage layout must remain general enough that in theory arbitrary SQL could be executed.
 - Always load all data from Parquet during ingestion (do not skip rows or columns).
