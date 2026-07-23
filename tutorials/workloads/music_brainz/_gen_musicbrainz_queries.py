@@ -67,10 +67,8 @@ def build_musicbrainz_queries_json(
         params = spec["parameters"]
         instances = gi.generate_class(cls, spec, rng, num_instances)
         rows = [[inst[p] for p in params] for inst in instances]
-        # ``generate_class`` renders quoted values as SQL-ready literals (``'Person'``) filling
-        # bare template holes. Convert to the framework convention - quotes in the template,
-        # bare values - so the engine args line does not leak single quotes into the generated
-        # C++ parser's string fields. Substituted SQL is unchanged.
+        # ``generate_class`` renders quoted values as SQL-ready literals; move the quotes
+        # into the template (see hoist_literal_quotes).
         sql, rows = hoist_literal_quotes(spec["template"], params, rows)
         out[cls] = {
             "sql": sql,

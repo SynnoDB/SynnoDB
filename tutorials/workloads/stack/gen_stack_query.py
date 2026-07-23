@@ -23,10 +23,9 @@ run samples a whole real ``(site, tag, threshold, ...)`` binding at once (drawn 
 seeded RNG): every instantiation is a query that actually occurred, with its predicates
 correlated exactly as recorded rather than recombined across queries.
 
-The extracted bindings are SQL-ready literals (string values include their single quotes), but
-the framework's engine wire expects the inverse - quotes in the template, bare values - so each
-entry is finally passed through :func:`~synnodb.workloads.query_params.hoist_literal_quotes`,
-which rewrites ``name=[NAME]`` + ``'scifi'`` into ``name='[NAME]'`` + ``scifi``.
+The extracted bindings are SQL-ready literals (string values include their single quotes);
+each entry is finally converted to the framework convention - quotes in the template, bare
+values - by :func:`~synnodb.workloads.query_params.hoist_literal_quotes`.
 """
 
 import json
@@ -34,7 +33,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-from synnodb.workloads.query_params import hoist_literal_quotes
+from synnodb.workloads.query_params import hoist_literal_quotes, substitute
 
 # Canonical Stack query ids, in benchmark order.
 STACK_QUERY_IDS: Tuple[str, ...] = tuple(f"q{i}" for i in range(1, 17))
@@ -42,18 +41,6 @@ STACK_QUERY_IDS: Tuple[str, ...] = tuple(f"q{i}" for i in range(1, 17))
 # A bring-your-own ``queries.json`` value: a templated entry, or a bare SQL string for a class
 # with no varying literals (a static query).
 QueryEntry = Union[str, dict]
-
-
-def _substitute(template: str, bindings: Dict[str, str]) -> str:
-    """Replace every ``[NAME]`` placeholder in ``template`` with its literal binding.
-
-    The recorded bindings already carry SQL-ready literals (quoted strings, ``IN (...)`` lists,
-    bare numbers), so substitution is a plain textual swap.
-    """
-    out = template
-    for name, value in bindings.items():
-        out = out.replace(f"[{name}]", value)
-    return out
 
 
 def _dominant_instantiation(entry: dict) -> Tuple[Dict[str, str], List[str]]:
@@ -85,7 +72,7 @@ def _filter_only(entry: dict) -> Tuple[str, List[str], List[List[str]]]:
     de-duplicated (first occurrence wins) so an over-represented binding is not weighted up.
     """
     fixed, keys = _dominant_instantiation(entry)
-    template = _substitute(entry["template"], fixed).strip()
+    template = substitute(entry["template"], fixed).strip()
     names = list(entry["parameters"])
 
     rows: List[List[str]] = []
@@ -108,10 +95,8 @@ def _build_entry(entry: dict) -> QueryEntry:
     if not names:
         # No varying literals: a static (parameterless) query - a bare SQL string.
         return template
-    # The extracted bindings are SQL-ready literals (string values carry their single quotes,
-    # filling bare template holes). Convert to the framework convention - quotes in the
-    # template, bare values - so the engine args line does not leak single quotes into the
-    # generated C++ parser's string fields. Substituted SQL is unchanged.
+    # Extracted string values carry their SQL quotes; move them into the template
+    # (see hoist_literal_quotes).
     template, rows = hoist_literal_quotes(template, names, rows)
     return {
         "sql": template,

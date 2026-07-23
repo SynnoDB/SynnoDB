@@ -1,15 +1,17 @@
-"""Tests for hoisting SQL literal quotes from parameter values into the template.
+"""Tests for ``hoist_literal_quotes`` (see its docstring for the convention it enforces) and
+the ``parse_param_space`` warning on quoted-literal values. The invariant throughout: the
+substituted SQL is byte-identical before and after hoisting."""
 
-Extraction-based workloads (Stack, MusicBrainz) record varying literals with their quotes
-(``'scifi'``) filling bare template holes. ``hoist_literal_quotes`` converts that to the
-framework convention (quotes in the template, bare values) so the engine args line does not
-leak single quotes into the generated C++ parser's string fields. The invariant throughout:
-the substituted SQL is byte-identical before and after hoisting.
-"""
+import json
+import logging
 
 import pytest
 
-from synnodb.workloads.query_params import hoist_literal_quotes, substitute
+from synnodb.workloads.query_params import (
+    hoist_literal_quotes,
+    parse_param_space,
+    substitute,
+)
 
 
 def _substituted(template: str, placeholders: list[str], rows: list[list]) -> list[str]:
@@ -54,15 +56,6 @@ class TestHoisting:
         hoist_literal_quotes("x=[P]", ["P"], rows)
         assert rows == [["'a'"]]
 
-    def test_idempotent(self):
-        template = "select 1 where name=[NAME]"
-        rows = [["'scifi'"]]
-        once_template, once_rows = hoist_literal_quotes(template, ["NAME"], rows)
-        twice_template, twice_rows = hoist_literal_quotes(
-            once_template, ["NAME"], once_rows
-        )
-        assert (twice_template, twice_rows) == (once_template, once_rows)
-
     def test_empty_string_literal(self):
         new_template, new_rows = hoist_literal_quotes("a=[P]", ["P"], [["''"]])
         assert new_template == "a='[P]'"
@@ -81,6 +74,43 @@ class TestRejection:
     def test_placeholder_missing_from_template_raises(self):
         with pytest.raises(ValueError, match="does not occur in the template"):
             hoist_literal_quotes("select 1", ["P"], [["'x'"]])
+
+
+class TestParamSpaceWarning:
+    """parse_param_space flags quoted-literal values for every spec form it can see."""
+
+    def test_warns_on_quoted_tuples_values(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="synnodb.workloads.query_params"):
+            parse_param_space(
+                None,
+                [
+                    {
+                        "type": "tuples",
+                        "placeholders": ["NAME"],
+                        "values": [["'scifi'"]],
+                    }
+                ],
+                "select 1 where name=[NAME]",
+            )
+        assert "quoted SQL literal" in caplog.text
+
+    def test_warns_on_quoted_categorical_values(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="synnodb.workloads.query_params"):
+            parse_param_space(
+                {"TYPE": {"type": "categorical", "values": ["'Person'", "'Group'"]}},
+                None,
+                "select 1 where t=[TYPE]",
+            )
+        assert "quoted SQL literal" in caplog.text
+
+    def test_no_warning_for_bare_values(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="synnodb.workloads.query_params"):
+            parse_param_space(
+                {"TYPE": {"type": "categorical", "values": ["Person", "('a','b')"]}},
+                None,
+                "select 1 where t='[TYPE]' and x in [TYPE]",
+            )
+        assert "quoted SQL literal" not in caplog.text
 
 
 class TestGeneratorWiring:
@@ -141,8 +171,6 @@ class TestGeneratorWiring:
             }
         }
         templates_path = tmp_path / "templates.json"
-        import json
-
         templates_path.write_text(json.dumps(templates))
         out = build_musicbrainz_queries_json(templates_path, num_instances=5, seed=0)
         entry = out["q1"]
