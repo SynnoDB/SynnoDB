@@ -5,8 +5,16 @@ import logging
 from synnodb.conversations.conv_context import ConvContext
 from synnodb.conversations.prompts_gen import gen_storage_plan_prompt
 from synnodb.conversations.stage_items import PromptStage, StageItem
+from synnodb.tools.data_inspect import subset_menu_for
 
 logger = logging.getLogger(__name__)
+
+# Output-token budget for the one-off judge. Its *answer* is a single line, but on a reasoning
+# model the reasoning tokens are drawn from this same budget - and the reasoning here is not
+# short, because the judge has to read a full storage plan. At 200 the reasoning alone exhausted
+# the budget, the model emitted no message content at all, and the empty verdict crashed the run.
+# Sized to leave room for that thinking; the judge runs once per stage, so the cost is negligible.
+JUDGE_MAX_TOKENS = 8000
 
 
 async def _judge_storage_plan(
@@ -48,24 +56,24 @@ async def _judge_storage_plan(
     )
 
     try:
-        raw_verdict = await ctx.agent_sdk_wrapper.run_one_off_completion(
-            judge_prompt, max_tokens=200
-        )
+        verdict = (
+            await ctx.agent_sdk_wrapper.run_one_off_completion(
+                judge_prompt, max_tokens=JUDGE_MAX_TOKENS
+            )
+        ).strip()
     except Exception as e:
         logger.warning(
             f"Storage plan validity judge call failed ({e}); skipping check."
         )
         return None
 
-    # The judge can come back with no text at all - a None final_output, or an
-    # empty/whitespace-only string when the model spent its max_tokens budget on
-    # reasoning. That is a failed judgment, not a verdict of "invalid": returning
-    # it as a reason would reprompt the LLM with an empty explanation, so treat it
-    # exactly like the call failure above and skip the check.
-    verdict = (raw_verdict or "").strip()
+    # An empty completion is a judge failure, not a verdict on the plan - same class as the
+    # exception above. Skip the check rather than blocking: treating "no answer" as INVALID would
+    # send the agent back to rewrite a plan nobody actually faulted, and could do so on every retry.
+    # This is the backstop for a reasoning model that still thinks past JUDGE_MAX_TOKENS.
     if not verdict:
         logger.warning(
-            "Storage plan validity judge returned no verdict; skipping check."
+            "Storage plan validity judge returned an empty response; skipping check."
         )
         return None
 
@@ -118,6 +126,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 storage_plan_filename=storage_plan_filename,
                 persistent_storage=ctx.persistent_storage,
                 num_threads=ctx.threads,
+                data_subsets_note=subset_menu_for(ctx.workload_provider),
             ),
             measure_performance_after_stage=False,
             auto_revert_on_regression=False,

@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 import math
 import mimetypes
@@ -102,7 +103,7 @@ def _local_file_payload(root: "Path | None", rel: str) -> "bytes | None":
 _SHARED_SERVER: "tuple[socketserver.TCPServer, int] | None" = None
 _SHARED_SERVER_LOCK = threading.Lock()
 _ACTIVE_SNAPSHOT: dict = {
-    "fn": lambda since=None: json.dumps(
+    "fn": lambda since=None, meta_rev=None: json.dumps(
         {"meta": {}, "steps": [], "data": {}, "latest": None, "count": 0}
     ),
     "workspace": lambda: None,
@@ -126,47 +127,128 @@ def _parse_since(raw: "str | None") -> "int | None":
         return None
 
 
-# Heavy per-step text fields. These dominate the /api/stats payload (a single
-# shell/llm turn can be tens of KB) yet are only ever read to fill the activity
-# log's expanded body view. They are stripped from every snapshot and served on
-# demand, one step at a time, via /api/step_body — so the browser parses and
-# holds only what it renders up front, and each poll delta stays small on a run
-# that is streaming output continuously.
-_BODY_FIELDS = (
+# Per-step fields stripped from /api/stats and served on demand, one step at a
+# time, via /api/step_body. Two kinds: heavy text only ever read when the user
+# opens something (activity-log bodies, the prompt/config modal), and debug
+# metadata the UI never renders up front but still shows in the expanded
+# key-dump of validate/other log rows. Together they dominate the payload — a
+# single shell/llm turn can be tens of KB, and the hash fields barely compress —
+# so keeping them out of the feed shrinks both the initial snapshot and every
+# poll delta of a run that is streaming output continuously.
+_LAZY_FIELDS = (
+    # Activity-log body text.
     "llm/output_text",
     "shell/outputs",
     "data_inspect/output",
     "apply_patch/string",
+    # Prompt/config modal text (per LLM turn, often tens of KB each).
+    "current_prompt",
+    "agent_config",
+    # Debug metadata: hex hashes compress ~1:1 and are never rendered up front.
+    "llm_hash",
+    "code/snapshot_hash",
+    "wallclock_time",
+    "validation/_parquet_dir",
+    "read_file/output",
 )
 
 
-def _strip_bodies(data: dict) -> dict:
-    """Return a copy of a ``{step: fields}`` map with _BODY_FIELDS removed.
+def _round_float(v):
+    """Trim full-precision doubles for the wire (non-finite → None), recursively.
+
+    Runtimes, costs, and token averages are logged as raw doubles whose 17-digit
+    JSON form is pure payload weight; six decimals (µs / µ$) exceeds anything
+    the UI displays or derives. Recursing into decoded JSON containers (DuckDB
+    rows can hold lists/dicts) also guards against a nested NaN/Infinity, which
+    json.dumps would emit as a bare literal the browser's JSON.parse rejects.
+    """
+    if isinstance(v, float):
+        return round(v, 6) if math.isfinite(v) else None
+    if isinstance(v, list):
+        return [_round_float(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _round_float(x) for k, x in v.items()}
+    return v
+
+
+def _slim_rows(data: dict) -> dict:
+    """Copy a ``{step: fields}`` map without _LAZY_FIELDS and with floats trimmed.
 
     The input is never mutated (a cached source dict must stay intact); each row
-    is shallow-copied without its body fields.
+    is shallow-copied.
     """
     return {
-        step: {k: v for k, v in row.items() if k not in _BODY_FIELDS}
+        step: {k: _round_float(v) for k, v in row.items() if k not in _LAZY_FIELDS}
         for step, row in data.items()
     }
 
 
-def _body_fields_payload(data: dict, step: "str | int") -> "bytes | None":
-    """JSON body for /api/step_body: the _BODY_FIELDS of one step (None → 404).
+def _lazy_fields_payload(data: dict, step: "str | int") -> "bytes | None":
+    """JSON body for /api/step_body: the _LAZY_FIELDS of one step (None → 404).
 
     ``data`` is the full (unstripped) ``{step: fields}`` store keyed by string
-    step id. Only the body fields actually present on that step are returned.
+    step id. Only the lazy fields actually present on that step are returned.
     """
     row = data.get(str(step))
     if row is None:
         return None
-    fields = {k: row[k] for k in _BODY_FIELDS if k in row}
+    fields = {k: row[k] for k in _LAZY_FIELDS if k in row}
     return json.dumps({"step": str(step), "fields": fields}).encode()
 
 
+def _latest_model(data: dict) -> "str | None":
+    """The model of the most recent step carrying an agent_config, or None.
+
+    Published as ``meta.model`` so the header chip does not need the (lazily
+    served) per-step agent_config blobs. Walks backwards and stops at the first
+    hit, so on a live run this touches only the last few rows.
+    """
+    for k in sorted(data, key=int, reverse=True):
+        model = _model_from_config(data[k].get("agent_config"))
+        if model is not None:
+            return model
+    return None
+
+
+def _model_from_config(config) -> "str | None":
+    """Extract the model name from an agent_config value (JSON string or dict)."""
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    if isinstance(config, dict):
+        model = config.get("model")
+        return model if isinstance(model, str) and model else None
+    return None
+
+
+def _apply_meta_rev(payload: dict, since: "int | None", meta_rev: "str | None") -> None:
+    """Stamp the meta block's revision and drop the block when the client has it.
+
+    ``meta`` dominates an idle poll (the planned-stage previews and stage list
+    far outweigh one boundary step) yet changes only when a stage begins, a
+    stage list is registered, or an error is reported. The client echoes the
+    revision of the meta it holds as ``?meta_rev=``; a delta whose meta hashes
+    to that same revision omits the block and the client keeps its copy. Full
+    snapshots always carry meta.
+    """
+    meta = payload.get("meta") or {}
+    rev = hashlib.md5(
+        json.dumps(meta, sort_keys=True, default=str).encode(),
+        usedforsecurity=False,
+    ).hexdigest()[:12]
+    payload["meta_rev"] = rev
+    if since is not None and meta_rev == rev:
+        del payload["meta"]
+
+
 def _finalize_snapshot(
-    payload: dict, since: "int | None", *, strip: bool = True
+    payload: dict,
+    since: "int | None",
+    *,
+    strip: bool = True,
+    meta_rev: "str | None" = None,
 ) -> str:
     """Attach the incremental-protocol fields to a full snapshot dict and serialize.
 
@@ -174,29 +256,46 @@ def _finalize_snapshot(
     store, so the client can detect when it has drifted out of sync (e.g. the run
     reset its timeline) and refetch. When ``since`` is given, only steps at or
     beyond it are kept and ``incremental`` is set; the untouched dict is never
-    mutated so a cached source dict stays intact.
+    mutated so a cached source dict stays intact. ``meta_rev`` is the client's
+    meta revision — see _apply_meta_rev.
 
-    ``strip`` removes the heavy body fields (served separately via
-    /api/step_body). It is turned off only for the remote proxy, which passes an
-    upstream dashboard's already-shaped payload through verbatim.
+    ``strip`` removes the lazy fields (served separately via /api/step_body) and
+    trims float precision. It is turned off only for the remote proxy, which
+    passes an upstream dashboard's already-slimmed payload through verbatim.
+
+    ``meta.model`` is filled from the newest agent_config in the data when the
+    source did not already provide it, so the header chip survives stripping.
     """
     data = payload.get("data", {})
+    meta = dict(payload.get("meta") or {})
+    if meta.get("model") is None:
+        model = _latest_model(data)
+        if model is not None:
+            meta["model"] = model
     ids = sorted(int(k) for k in data)
     latest = ids[-1] if ids else None
     count = len(ids)
-    prep = _strip_bodies if strip else (lambda d: d)
+    prep = _slim_rows if strip else (lambda d: d)
     if since is None:
-        out = {**payload, "data": prep(data), "latest": latest, "count": count}
+        out = {
+            **payload,
+            "meta": meta,
+            "data": prep(data),
+            "latest": latest,
+            "count": count,
+        }
     else:
         kept = {k: v for k, v in data.items() if int(k) >= since}
         out = {
             **payload,
+            "meta": meta,
             "data": prep(kept),
             "steps": sorted(int(k) for k in kept),
             "latest": latest,
             "count": count,
             "incremental": True,
         }
+    _apply_meta_rev(out, since, meta_rev)
     return json.dumps(out)
 
 
@@ -223,7 +322,7 @@ def _make_http_server(
     file_read_fn=None,
     body_fn=None,
 ) -> tuple[int, "socketserver.TCPServer"]:
-    """Bind an HTTP server that calls snapshot_fn() for /api/stats.
+    """Bind an HTTP server that calls snapshot_fn(since, meta_rev) for /api/stats.
 
     post_handlers maps path → callable(body: bytes) → bytes for POST endpoints.
     file_list_fn, if given, is a callable returning the JSON body (bytes) for
@@ -244,10 +343,10 @@ def _make_http_server(
         def do_GET(self):  # noqa: N802
             path = urlparse(self.path).path
             if path == "/api/stats":
-                since = _parse_since(
-                    (parse_qs(urlparse(self.path).query).get("since") or [None])[0]
-                )
-                self._reply(snapshot_fn(since).encode(), "application/json")
+                query = parse_qs(urlparse(self.path).query)
+                since = _parse_since((query.get("since") or [None])[0])
+                meta_rev = (query.get("meta_rev") or [None])[0]
+                self._reply(snapshot_fn(since, meta_rev).encode(), "application/json")
                 return
             if path == "/api/files":
                 body = (
@@ -315,6 +414,10 @@ def _make_http_server(
                 for key, value in headers:
                     self.send_header(key, value)
                 self.send_header("Content-Length", str(len(body)))
+                # Force revalidation so edited static assets (js/css/html) are
+                # never silently served from the browser's heuristic cache - the
+                # dashboard is a live dev tool and files change under it.
+                self.send_header("Cache-Control", "no-cache")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(body)
@@ -626,7 +729,7 @@ class StandaloneDashboard:
             return _remote_body_payload(api_url, step)
         if db_path is not None:
             data = json.loads(_duckdb_snapshot(db_path)).get("data", {})
-            return _body_fields_payload(data, step)
+            return _lazy_fields_payload(data, step)
         if wandb_run_id:
             if wandb_cache is None:
                 self._snapshot()  # populates _wandb_cache (unstripped history)
@@ -635,7 +738,7 @@ class StandaloneDashboard:
             if wandb_cache is None:
                 return None
             data = json.loads(wandb_cache).get("data", {})
-            return _body_fields_payload(data, step)
+            return _lazy_fields_payload(data, step)
         return None
 
     def serve_forever(self) -> None:
@@ -644,7 +747,9 @@ class StandaloneDashboard:
         while True:
             time.sleep(1)
 
-    def _snapshot(self, since: "int | None" = None) -> str:
+    def _snapshot(
+        self, since: "int | None" = None, meta_rev: "str | None" = None
+    ) -> str:
         with self._lock:
             if (
                 self._db_path is None
@@ -658,18 +763,22 @@ class StandaloneDashboard:
                         "data": {},
                     },
                     since,
+                    meta_rev=meta_rev,
                 )
             if self._db_path is not None:
                 raw = json.loads(_duckdb_snapshot(self._db_path))
                 raw["meta"]["_source_type"] = "db"
                 raw["meta"]["_source_ref"] = str(self._db_path)
-                return _finalize_snapshot(raw, since)
+                return _finalize_snapshot(raw, since, meta_rev=meta_rev)
             if self._api_url is not None:
                 # The upstream dashboard already stripped bodies (or, if it is an
                 # older build, inlined them); pass its payload through verbatim and
                 # proxy body fetches to it rather than re-shaping here.
                 return _finalize_snapshot(
-                    json.loads(_remote_api_snapshot(self._api_url)), since, strip=False
+                    json.loads(_remote_api_snapshot(self._api_url)),
+                    since,
+                    strip=False,
+                    meta_rev=meta_rev,
                 )
             if self._wandb_cache is None:
                 assert self._wandb_run_id is not None
@@ -683,7 +792,9 @@ class StandaloneDashboard:
                 raw["meta"]["_source_type"] = "wandb"
                 raw["meta"]["_source_ref"] = self._wandb_run_id
                 self._wandb_cache = json.dumps(raw)
-            return _finalize_snapshot(json.loads(self._wandb_cache), since)
+            return _finalize_snapshot(
+                json.loads(self._wandb_cache), since, meta_rev=meta_rev
+            )
 
     def _handle_reload(self, _body: bytes) -> bytes:
         with self._lock:
@@ -787,6 +898,10 @@ class LiveDashboardDrain(DataDrain):
             # The run's resolved serving thread count, lifted from the first metric
             # row that carries run/num_threads (see emit). None until then.
             "num_threads": None,
+            # The model driving the run, lifted from the newest agent_config seen
+            # by emit. Published here because the per-step agent_config blobs are
+            # lazily served (stripped from /api/stats).
+            "model": None,
             "stages": self._stages,
             # Previews of the currently-running conversation's scheduled stages,
             # populated by register_planned_stages; None until a conversation
@@ -913,6 +1028,7 @@ class LiveDashboardDrain(DataDrain):
             self._meta["run_name"] = None
             self._meta["wandb_run_id"] = None
             self._meta["num_threads"] = None
+            self._meta["model"] = None
             self._meta["start_time"] = datetime.now().isoformat(timespec="seconds")
             self._rev += 1
 
@@ -938,6 +1054,12 @@ class LiveDashboardDrain(DataDrain):
                 # as run metadata rather than leaving it buried in the metric rows.
                 if k == "run/num_threads":
                     self._meta["num_threads"] = coerced
+                # The driving model is surfaced as run metadata because the
+                # per-step agent_config is lazily served; the newest one wins.
+                if k == "agent_config":
+                    model = _model_from_config(coerced)
+                    if model is not None:
+                        self._meta["model"] = model
                 row[k] = coerced
             self._rev += 1
 
@@ -947,21 +1069,19 @@ class LiveDashboardDrain(DataDrain):
         """The generated-code workspace this run operates in (passed in by main)."""
         return self._workspace_dir
 
-    def _snapshot(self, since: "int | None" = None) -> str:
+    def _snapshot(
+        self, since: "int | None" = None, meta_rev: "str | None" = None
+    ) -> str:
         """Serialize the run state for /api/stats.
 
         ``since=None`` returns the full snapshot (cached until the next mutation,
         since serializing every step's bodies is the costly path). Otherwise only
         steps at or beyond ``since`` are returned as an incremental delta - tiny,
         so it is always built fresh. Both carry ``latest``/``count`` (the full
-        store's max step id and step count) so the client can detect drift.
+        store's max step id and step count) so the client can detect drift, plus
+        ``meta_rev``; a delta whose meta still hashes to the client's ``meta_rev``
+        omits the meta block entirely (see _apply_meta_rev).
         """
-
-        def _clean(v):
-            if isinstance(v, float) and not math.isfinite(v):
-                return None
-            return v
-
         with self._lock:
             if (
                 since is None
@@ -977,13 +1097,14 @@ class LiveDashboardDrain(DataDrain):
             meta["stages"] = [dict(s) for s in self._stages]
 
             kept = ids if since is None else [k for k in ids if k >= since]
-            # Body fields are stripped here (served via /api/step_body) so neither
-            # the cached full snapshot nor the per-poll delta carries them.
+            # Lazy fields are stripped here (served via /api/step_body) and float
+            # precision trimmed, so neither the cached full snapshot nor the
+            # per-poll delta carries them.
             data = {
                 str(k): {
-                    ck: _clean(cv)
+                    ck: _round_float(cv)
                     for ck, cv in self._data[k].items()
-                    if ck not in _BODY_FIELDS
+                    if ck not in _LAZY_FIELDS
                 }
                 for k in kept
             }
@@ -994,6 +1115,7 @@ class LiveDashboardDrain(DataDrain):
                 "latest": latest,
                 "count": count,
             }
+            _apply_meta_rev(payload, since, meta_rev)
             if since is None:
                 out = json.dumps(payload)
                 self._cache_full = out
@@ -1002,8 +1124,8 @@ class LiveDashboardDrain(DataDrain):
             payload["incremental"] = True
             return json.dumps(payload)
 
-    def _body_fields(self, step: str) -> "bytes | None":
-        """JSON body for /api/step_body: this step's stripped body fields (None → 404)."""
+    def _lazy_fields(self, step: str) -> "bytes | None":
+        """JSON body for /api/step_body: this step's stripped lazy fields (None → 404)."""
         try:
             gstep = int(step)
         except (TypeError, ValueError):
@@ -1012,7 +1134,7 @@ class LiveDashboardDrain(DataDrain):
             row = self._data.get(gstep)
             if row is None:
                 return None
-            fields = {k: row[k] for k in _BODY_FIELDS if k in row}
+            fields = {k: row[k] for k in _LAZY_FIELDS if k in row}
         return json.dumps({"step": str(gstep), "fields": fields}).encode()
 
     def _start_server(self, host: str, start_port: int) -> int:
@@ -1022,14 +1144,16 @@ class LiveDashboardDrain(DataDrain):
         global _SHARED_SERVER
         _ACTIVE_SNAPSHOT["fn"] = self._snapshot
         _ACTIVE_SNAPSHOT["workspace"] = self._workspace_root
-        _ACTIVE_SNAPSHOT["body"] = self._body_fields
+        _ACTIVE_SNAPSHOT["body"] = self._lazy_fields
         with _SHARED_SERVER_LOCK:
             if _SHARED_SERVER is not None:
                 return _SHARED_SERVER[1]
             port, server = _make_http_server(
                 host,
                 start_port,
-                lambda since=None: _ACTIVE_SNAPSHOT["fn"](since),
+                lambda since=None, meta_rev=None: _ACTIVE_SNAPSHOT["fn"](
+                    since, meta_rev
+                ),
                 file_list_fn=lambda: _local_files_payload(
                     _ACTIVE_SNAPSHOT["workspace"]()
                 ),

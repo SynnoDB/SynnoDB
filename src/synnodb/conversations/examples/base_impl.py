@@ -33,6 +33,7 @@ from synnodb.conversations.stage_items import (
     ValidateOn,
     ValidateStdoutOff,
 )
+from synnodb.tools.data_inspect import subset_menu_for
 from synnodb.tools.run import RunTool
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.workloads.workload_spec import get_workload_spec
@@ -170,6 +171,7 @@ def build(ctx: ConvContext) -> list[StageItem]:
                 num_threads=ctx.threads,
                 serve_from=spec.serve_from.value,
                 schema_ddl=spec.schema(),
+                data_subsets_note=subset_menu_for(ctx.workload_provider),
             ),
             measure_performance_after_stage=False,
             auto_revert_on_regression=False,

@@ -1,3 +1,4 @@
+import difflib
 import logging
 import re
 import time
@@ -63,14 +64,18 @@ class ApplyPatchCacheType:
 
 
 class RejectedApplyPatchCacheType:
-    """Cache entry for an apply_patch call rejected at argument-schema validation.
+    """Cache entry for an edit-tool call rejected at argument-schema validation.
 
-    Keyed on the raw tool arguments and looked up BEFORE the arguments are
-    re-validated, so the recorded verdict - not the current rules - decides the
-    outcome on replay. This keeps old runs replayable even if what counts as an
-    invalid apply_patch later changes. The rejection has no file side effects, so
-    the entry stores only what a faithful replay needs: the exact ``message``
-    returned to the model, plus ``path``/``reason`` for the live-ui stats."""
+    Keyed on the tool name plus the raw tool arguments and looked up BEFORE the
+    arguments are re-validated, so the recorded verdict - not the current rules -
+    decides the outcome on replay. This keeps old runs replayable even if what counts
+    as an invalid call later changes. The rejection has no file side effects, so the
+    entry stores only what a faithful replay needs: the exact ``message`` returned to
+    the model, plus ``path``/``reason`` for the live-ui stats.
+
+    The class name predates apply_patch's siblings (replace_in_file, write_file) being
+    folded into the same path; it is kept as-is because pickled cache entries are
+    unpickled by class name."""
 
     def __init__(self, args_json: str, path: str | None, reason: str, message: str):
         self.args_json = args_json
@@ -152,6 +157,62 @@ class WorkspaceEditor:
                 path, old_string, new_string, replace_all
             ),
         )
+
+    def write_file(self, path: str, content: str) -> ApplyPatchResult:
+        # Full-content create/overwrite primitive (sibling of apply_patch
+        # create_file/update_file). Takes raw file content directly instead of a
+        # V4A diff, so it sidesteps both the "+"-prefixed-whole-file format for
+        # create and the byte-exact context matching for update. Routed through
+        # the same cache/snapshot wrapper.
+        return self._run_cached(
+            op_type="write_file",
+            path=path,
+            cache_extra={"content": content},
+            run_impl=lambda: self._write_file_impl(path, content),
+        )
+
+    def read_file(
+        self, path: str, offset: int | None = None, limit: int | None = None
+    ) -> str:
+        # Read primitive (sibling of write_file/replace_in_file). Never mutates
+        # the workspace, so - unlike the ops above - it does not go through
+        # _run_cached: the underlying file content is already reproducible from
+        # the deterministic snapshot state, and routing reads through the cache
+        # would only bloat the cache dir for no benefit.
+        #
+        # Because it skips _run_cached, it also skips that wrapper's try/except,
+        # so it must convert a _resolve failure (e.g. a path outside the flat
+        # workspace root) into a graceful error string itself. A disallowed read
+        # is a recoverable tool failure the model should see, not an unhandled
+        # exception that crashes the whole run.
+        #
+        # Record the attempted path up front, before any early return:
+        # on_tool_start reset read_file_path to None and on_tool_end emits it, so
+        # a rejected read that returned before this ran would be logged with a
+        # null path and lose its diagnosability in the trace/live UI.
+        self._run_stats_collector.log_read_file_stats(path)
+        try:
+            target = self._resolve(path)
+        except RuntimeError as e:
+            self._record_activity_summary(f"read_file called: {path} (FAILED - {e})")
+            return f"Error: {e}"
+        relative = target.relative_to(self._root).as_posix()
+        if not target.exists():
+            return f"Error: file {relative} does not exist."
+        if target.is_dir():
+            return f"Error: {relative} is a directory, not a file."
+
+        try:
+            original = target.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError) as e:
+            # A non-UTF-8/binary file (or a transient OS read error) must also
+            # come back as a tool error, not crash the run: read_file skips the
+            # _run_cached try/except that shields the mutating ops.
+            self._record_activity_summary(f"read_file called: {path} (FAILED - {e})")
+            return f"Error: could not read {relative} as UTF-8 text: {e}"
+        rendered = _render_numbered_lines(original, offset, limit)
+        self._record_activity_summary(f"read_file called: {path}")
+        return rendered
 
     # ---------- cache wrapper ----------
 
@@ -288,53 +349,77 @@ class WorkspaceEditor:
         if entry is not None:
             self._run_stats_collector.add_to_activity_summary(entry)
 
-    def _rejected_patch_key(self, args_json: str) -> str:
+    def _rejected_call_key(self, tool_name: str, args_json: str) -> str:
+        # The tool name is part of the key: the edit tools overlap in argument shape (a
+        # bare {"path": ...} is an invalid call to both apply_patch and write_file), so
+        # keying on the arguments alone would let one tool replay the other's rejection
+        # message. For apply_patch this still hashes to "rejected_apply_patch", the key
+        # used before the other tools were folded in, so existing caches keep replaying.
+        assert tool_name, (
+            "A rejected call must be keyed by tool name; without it the edit tools - "
+            "which overlap in argument shape - would replay each other's verdicts."
+        )
         return utils.sha256(
             utils.stable_json(
-                {"op_type": "rejected_apply_patch", "args_json": args_json}
+                {"op_type": f"rejected_{tool_name}", "args_json": args_json}
             )
         )
 
-    def replay_rejected_patch(self, args_json: str) -> str | None:
-        """If these exact apply_patch arguments were recorded as a rejection, replay
-        that rejection from cache and return the original tool message; otherwise
-        return None (the caller then validates the arguments live).
+    def replay_rejected_call(self, tool_name: str, args_json: str) -> str | None:
+        """If these exact tool arguments were recorded as a rejection, replay that
+        rejection from cache and return the original tool message; otherwise return
+        None (the caller then validates the arguments live).
 
         This is looked up BEFORE argument validation, so the recorded verdict wins
-        over the current rules: a later change to what counts as an invalid
-        apply_patch cannot alter the outcome of an already-recorded run. The stored
-        message is returned verbatim so the model sees the identical tool result it
-        saw when the run was recorded."""
+        over the current rules: a later change to what counts as an invalid call
+        cannot alter the outcome of an already-recorded run. The stored message is
+        returned verbatim so the model sees the identical tool result it saw when the
+        run was recorded."""
         if self._cache_dir is None:
             return None
-        cache_path = self._cache_path_for(self._rejected_patch_key(args_json))
+        cache_path = self._cache_path_for(self._rejected_call_key(tool_name, args_json))
         if not cache_path.exists():
             return None
         entry = utils.load_pickle(cache_path, RejectedApplyPatchCacheType)
-        assert entry is not None, f"Corrupt rejected-apply_patch cache: {cache_path}"
+        assert entry is not None, f"Corrupt rejected-call cache: {cache_path}"
+        assert entry.message, (
+            f"Rejected-{tool_name} cache entry carries no message: {cache_path}. The "
+            "message IS the replay - an empty one hands the model an empty tool result "
+            "where the recorded run showed it an error."
+        )
         self._run_stats_collector.record_apply_patch_rejected(entry.path, entry.reason)
         self._run_stats_collector.record_apply_patch_cache_hit()
-        logger.debug("Rejected apply_patch replayed from cache")
+        logger.debug("Rejected %s replayed from cache", tool_name)
         return entry.message
 
-    def record_rejected_patch(
-        self, args_json: str, path: str | None, reason: str, message: str
+    def record_rejected_call(
+        self,
+        tool_name: str,
+        args_json: str,
+        path: str | None,
+        reason: str,
+        message: str,
     ) -> None:
-        """Persist a freshly-rejected apply_patch, keyed on its raw arguments, so
-        later replays reproduce this exact rejection via replay_rejected_patch, and
+        """Persist a freshly-rejected edit-tool call, keyed on its raw arguments, so
+        later replays reproduce this exact rejection via replay_rejected_call, and
         record the rejection stats for the live-ui. Called only after a live
-        validation failure (i.e. replay_rejected_patch found no entry).
+        validation failure (i.e. replay_rejected_call found no entry).
 
         The rejection has no file side effects, so - unlike a real edit - it needs
         no snapshot and no activity-summary line (an activity line would perturb the
         supervisor prompt and its cache key). Writing is skipped under
         only_from_cache to honour read-only replay."""
-        self._run_stats_collector.record_apply_patch_rejected(path, reason)
+        assert message, (
+            f"A rejected {tool_name} must be recorded with the message the model was "
+            "given: it is returned verbatim on replay, so an empty one silently becomes "
+            "an empty tool result."
+        )
+        self.record_rejected_operation(path, reason)
 
         if self._cache_dir is None or self._do_not_cache or self._only_from_cache:
             return
 
-        cache_path = self._cache_path_for(self._rejected_patch_key(args_json))
+        cache_path = self._cache_path_for(self._rejected_call_key(tool_name, args_json))
         if cache_path.exists():
             return  # idempotent: an identical rejection was already recorded
 
@@ -345,6 +430,28 @@ class WorkspaceEditor:
             ),
             do_not_cache=self._do_not_cache,
         )
+
+    def record_rejected_operation(self, path: str | None, reason: str) -> None:
+        """Record an edit-tool call rejected before it reached the editor, so the
+        live-ui renders it as the rejected call the model saw rather than a silent,
+        uncached +0/-0 no-op (on_tool_end emits an edit metric either way).
+
+        Unlike record_rejected_call this caches nothing: it is for rejections a replay
+        re-derives on its own - the tool's own deterministic checks on already-validated
+        arguments - where there is no verdict to pin."""
+        self._run_stats_collector.record_apply_patch_rejected(path, reason)
+
+    def record_attempted_read(self, path: str) -> None:
+        """Record the path a read_file call was aimed at when the call is rejected before
+        reaching read_file itself, which is otherwise the only thing that logs it. Without
+        this, on_tool_end emits the step with a null path (see the note in read_file)."""
+        # The path is scraped off arguments that FAILED validation, so it is only as good
+        # as the caller's own check that it found a real one. A None here would be
+        # indistinguishable from the null path this exists to prevent.
+        assert isinstance(path, str) and path, (
+            f"record_attempted_read needs the path the read was aimed at, got {path!r}"
+        )
+        self._run_stats_collector.log_read_file_stats(path)
 
     # ---------- raw operations ----------
 
@@ -669,6 +776,79 @@ class WorkspaceEditor:
                 f"replace_in_file called: {path}",
             )
 
+    def _write_file_impl(
+        self, path: str, content: str
+    ) -> tuple[ApplyPatchResult, str | None]:
+        with custom_span(
+            f"write file ({path})",
+            {"file": path, "content_len": len(content)},
+        ):
+            relative = self._relative_path(path)
+            target = self._resolve(path, ensure_parent=True)
+            logger.info(f"Writing: {target} ({len(content)} bytes)")
+
+            if target in self._readonly_files:
+                return self._write_failed(
+                    path,
+                    f"Error: Attempting to write read-only file: {relative}",
+                    summary="read-only",
+                )
+
+            existed = target.exists()
+            original = target.read_text(encoding="utf-8") if existed else ""
+
+            if existed and original == content:
+                return self._write_failed(
+                    path,
+                    f"Error: write produced no change in {relative}.",
+                    summary="no change",
+                )
+
+            diff = "\n".join(
+                difflib.unified_diff(
+                    original.splitlines(),
+                    content.splitlines(),
+                    lineterm="",
+                )
+            )
+            added, deleted = count_diff_operations(diff)
+
+            target.write_text(content, encoding="utf-8")
+
+            str_diff = f"=== WRITING: {target} ===\n{diff[:8000]}\n"
+            self._run_stats_collector.log_apply_patch_stats(
+                "write",
+                added_lines=added,
+                deleted_lines=deleted,
+                string_diff=str_diff,
+                file_touched=Path(path).name,
+            )
+
+            verb = "Overwrote" if existed else "Wrote"
+            return (
+                ApplyPatchResult(status="completed", output=f"{verb} {relative}"),
+                f"write_file called: {path}",
+            )
+
+    def _write_failed(
+        self,
+        path: str,
+        message: str,
+        summary: str,
+    ) -> tuple[ApplyPatchResult, str | None]:
+        self._run_stats_collector.log_apply_patch_stats(
+            "write",
+            added_lines=0,
+            deleted_lines=0,
+            string_diff="",
+            file_touched=Path(path).name,
+            failed=summary,
+        )
+        return (
+            ApplyPatchResult(status="failed", output=message),
+            f"write_file called: {path} (FAILED - {summary})",
+        )
+
     def _replace_failed(
         self,
         path: str,
@@ -704,15 +884,19 @@ class WorkspaceEditor:
         candidate = Path(relative)
         target = candidate if candidate.is_absolute() else (self._root / candidate)
         target = target.resolve()
-        # Only allow files directly in the root directory (no subdirectories)
-        if target.parent != self._root:
-            raise RuntimeError(
-                f"Operation outside allowed root dir (no subdirs): {relative}"
-            )
+        # Containment first: a path pointing outside the workspace entirely (e.g.
+        # an absolute path into the source tree) must be reported as such. The
+        # flat-dir guard below is stricter and also trips on out-of-workspace
+        # paths, so if it ran first it would mislabel them "no subdirs".
         try:
             target.relative_to(self._root)
         except ValueError:
             raise RuntimeError(f"Operation outside workspace: {relative}") from None
+        # Only allow files directly in the root directory (no subdirectories).
+        if target.parent != self._root:
+            raise RuntimeError(
+                f"Operation outside allowed root dir (no subdirs): {relative}"
+            )
         if ensure_parent:
             target.parent.mkdir(parents=True, exist_ok=True)
         return target
@@ -760,19 +944,49 @@ def _strip_trailing_whitespace(text: str) -> str:
     return re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
 
 
+_DEFAULT_READ_MAX_LINES = 2000
+
+
 def _current_content_block(relative: str, original: str) -> str:
     """Render the current file content (bounded) for a failed-edit response so the
     model can re-anchor without an extra round-trip."""
     lines = original.splitlines()
-    MAX_LINES = 2000
-    if len(lines) <= MAX_LINES:
+    if len(lines) <= _DEFAULT_READ_MAX_LINES:
         current = original
     else:
         current = (
-            "\n".join(lines[:MAX_LINES])
+            "\n".join(lines[:_DEFAULT_READ_MAX_LINES])
             + f"\n... (truncated, {len(lines)} lines total — cat the file for the full content)"
         )
     return f"=== CURRENT CONTENT OF {relative} ===\n{current}\n=== END ==="
+
+
+def _render_numbered_lines(content: str, offset: int | None, limit: int | None) -> str:
+    """Render file content `cat -n` style (1-based line numbers) for read_file.
+
+    `offset` is the 1-based line to start from (default 1). `limit` bounds how
+    many lines are returned (default _DEFAULT_READ_MAX_LINES). A trailing note
+    is appended when more lines remain past what was returned, mirroring
+    _current_content_block's truncation note.
+    """
+    lines = content.splitlines()
+    total = len(lines)
+    start = max(offset, 1) if offset is not None else 1
+    count = limit if limit is not None else _DEFAULT_READ_MAX_LINES
+    start_idx = start - 1
+    end_idx = min(start_idx + max(count, 0), total)
+
+    numbered = "\n".join(f"{i + 1:6d}\t{lines[i]}" for i in range(start_idx, end_idx))
+
+    if start_idx >= total:
+        return f"(file has {total} lines; offset {start} is past the end of the file)"
+
+    if end_idx < total:
+        numbered += (
+            f"\n... (truncated, showing lines {start}-{end_idx} of {total} "
+            "total — pass offset/limit to read more)"
+        )
+    return numbered
 
 
 # Unicode lookalikes the model tends to transcribe as ASCII (or vice versa) when

@@ -8,6 +8,8 @@
 const LOG_TYPE_META = {
   llm:        { label:'LLM',        cls:'lt-llm'      },
   apply_patch:{ label:'Patch',      cls:'lt-patch'     },
+  write_file: { label:'Write',      cls:'lt-write'     },
+  read_file:  { label:'Read',       cls:'lt-read'      },
   shell:      { label:'Shell',      cls:'lt-shell'     },
   compile:    { label:'Compile',    cls:'lt-compile'   },
   validate:   { label:'RUN',        cls:'lt-validate'  },
@@ -33,7 +35,11 @@ function logHasError(type, d) {
   if (type === 'validate') {
     return d['validation/compile_error'] === true || d['validation/correct'] === false;
   }
-  if (type === 'apply_patch') {
+  // write_file is a separate log type but carries the same apply_patch/* failure and
+  // rejection fields, so it fails on the same signals - omitting it here would render a
+  // rejected write as "⚠ invalid args (rejected)" (see logDesc) while the errors-only
+  // filter quietly dropped it.
+  if (type === 'apply_patch' || type === 'write_file') {
     const failed = parseJsonField(d['apply_patch/failed']);
     return (failed && failed.length > 0) || d['apply_patch/rejected'] === true;
   }
@@ -115,7 +121,8 @@ let _logBodyText = new Map();
 
 function logTruncated(type, d) {
   if (type === 'llm') return !!d['llm/output_truncated'];
-  if (type === 'apply_patch') return !!d['apply_patch/truncated'];
+  if (type === 'apply_patch' || type === 'write_file') return !!d['apply_patch/truncated'];
+  if (type === 'read_file') return !!d['read_file/truncated'];
   if (type === 'shell') return !!d['shell/truncated'];
   if (type === 'data_inspect') return !!d['data_inspect/truncated'];
   return false;
@@ -126,7 +133,7 @@ function logDesc(type, d) {
     const parts = [d['current_prompt_descriptor'], d['agent_name']].filter(Boolean);
     return parts.join(' · ') || 'LLM call';
   }
-  if (type === 'apply_patch') {
+  if (type === 'apply_patch' || type === 'write_file') {
     const files   = parseJsonField(d['apply_patch/files']);
     const added   = d['apply_patch/added_loc_count'];
     const deleted = d['apply_patch/deleted_loc_count'];
@@ -147,6 +154,10 @@ function logDesc(type, d) {
       ? ' (+' + (added||0) + '/-' + (deleted||0) + ')' : '';
     return who + delta + failedStr + cachedStr;
   }
+  if (type === 'read_file') {
+    const path = d['read_file/path'];
+    return path ? path.split('/').pop() : 'read file';
+  }
   if (type === 'shell') {
     const cmds = parseJsonField(d['shell/commands']);
     if (cmds && cmds.length) {
@@ -162,9 +173,13 @@ function logDesc(type, d) {
   if (type === 'data_inspect') {
     const status = d['data_inspect/status'] || (d['data_inspect/error'] ? 'error' : 'ok');
     const cached = d['data_inspect/cached'] ? ' · cached' : '';
+    // The agent picks sample-or-full per query, so which one it read is part of the story.
+    const sf = d['data_inspect/full_dataset'] != null
+      ? (d['data_inspect/full_dataset'] ? 'full dataset' : 'sample')
+      : (d['data_inspect/sf'] != null ? 'sf ' + d['data_inspect/sf'] : null);
     const sql = String(d['data_inspect/sql'] || '').replace(/\s+/g, ' ').trim();
     const q = sql.length > 48 ? sql.slice(0, 46) + '…' : sql;
-    return [status, q].filter(Boolean).join(' · ') + cached;
+    return [status, sf, q].filter(Boolean).join(' · ') + cached;
   }
   if (type === 'validate') {
     const mode = d['validation/run_mode'];
@@ -192,7 +207,7 @@ function logBody(type, d) {
     const out = d['llm/output_text'];
     return (out && out.trim()) ? out : '(no text output)';
   }
-  if (type === 'apply_patch') {
+  if (type === 'apply_patch' || type === 'write_file') {
     const parts = [];
     const failed = parseJsonField(d['apply_patch/failed']);
     if (failed && failed.length) parts.push('FAILED:\n' + failed.join('\n'));
@@ -203,6 +218,14 @@ function logBody(type, d) {
       if (files) parts.push(JSON.stringify(files, null, 2));
     }
     return parts.join('\n\n') || '(no diff)';
+  }
+  if (type === 'read_file') {
+    const path = d['read_file/path'];
+    const out  = d['read_file/output'];
+    const parts = [];
+    if (path) parts.push('$ read_file ' + path);
+    if (out && out.trim()) parts.push(out);
+    return parts.join('\n\n') || '(no output)';
   }
   if (type === 'shell') {
     const cmds = parseJsonField(d['shell/commands']);
@@ -356,16 +379,47 @@ function _logSummaryHtml(row) {
     </summary>`;
 }
 
-// Body text is stripped from /api/stats and fetched per step from /api/step_body
-// (see the backend). These are the log types whose body lives in a stripped
-// field, and the field each one carries. A snapshot that still inlines the body
-// (a source that does not strip) is used directly — no round-trip.
-const LOG_BODY_TYPES = new Set(['llm', 'shell', 'data_inspect', 'apply_patch']);
+// Heavy per-step fields (bodies, prompt/config text, debug metadata) are
+// stripped from /api/stats and fetched per step from /api/step_body (see the
+// backend's _LAZY_FIELDS). Deduped and cached so every consumer — an expanding
+// log row, its "view full" modal, the prompt modal — shares one request per
+// step. Cleared on source switch along with the rest of the log state.
+let _stepFieldsCache = new Map();  // step -> Promise<fields | null>
+
+function fetchStepFields(step) {
+  const key = String(step);
+  if (_stepFieldsCache.has(key)) return _stepFieldsCache.get(key);
+  const p = (async () => {
+    try {
+      const r = await fetch('/api/step_body?step=' + encodeURIComponent(key));
+      if (r.ok) return (await r.json()).fields || {};
+    } catch (_) { /* unavailable — callers fall back to the snapshot fields */ }
+    // Failure (404 on a non-stripping source, or a transient hiccup) is not
+    // memoized: evicting lets the next consumer retry instead of pinning the
+    // degraded fallback for the rest of the session.
+    _stepFieldsCache.delete(key);
+    return null;
+  })();
+  _stepFieldsCache.set(key, p);
+  return p;
+}
+
+// The log types whose body text lives in a lazily-served field, and the field
+// each one carries. A snapshot that still inlines the body (a source that does
+// not strip) is used directly — no round-trip. Every other type's expanded view
+// dumps the step's full field set, which includes lazily-served debug fields,
+// so it fetches /api/step_body on first expand too.
+const LOG_BODY_TYPES = new Set(['llm', 'shell', 'data_inspect', 'apply_patch', 'write_file', 'read_file']);
+
 const LOG_BODY_FIELD_BY_TYPE = {
   llm: 'llm/output_text',
   shell: 'shell/outputs',
   data_inspect: 'data_inspect/output',
   apply_patch: 'apply_patch/string',
+  // write_file reuses apply_patch/string for its synthesized diff, and the
+  // backend strips that field from the snapshot, so it must fetch the body too.
+  write_file: 'apply_patch/string',
+  read_file: 'read_file/output',
 };
 // step -> in-flight body fetch, so a row mounting and its modal opening share one
 // request. Fetched bodies land in _logBodyText (the render/modal cache).
@@ -377,14 +431,13 @@ function _hasInlineBody(type, d) {
 }
 
 // The body text for a step if it can be produced without a server round-trip —
-// a non-body type (built entirely from fields already in the snapshot) or a
-// snapshot that still inlines the body. Returns null when /api/step_body is
+// a snapshot that still inlines the body. Returns null when /api/step_body is
 // needed. Caches whatever it resolves.
 function _logResolveInlineBody(step) {
   if (_logBodyText.has(step)) return _logBodyText.get(step);
   const d = (_lastData && _lastData[step]) || {};
   const type = (d['type'] || 'other').toLowerCase();
-  if (!LOG_BODY_TYPES.has(type) || _hasInlineBody(type, d)) {
+  if (LOG_BODY_TYPES.has(type) && _hasInlineBody(type, d)) {
     const body = logBody(type, d);
     _logBodyText.set(step, body);
     return body;
@@ -392,7 +445,7 @@ function _logResolveInlineBody(step) {
   return null;
 }
 
-// Resolve a step's body text, fetching it from /api/step_body when it was
+// Resolve a step's body text, fetching its lazily-served fields when they were
 // stripped from the snapshot. Deduped and cached.
 function fetchLogBody(step) {
   const inline = _logResolveInlineBody(step);
@@ -400,17 +453,12 @@ function fetchLogBody(step) {
   if (_logBodyPending.has(step)) return _logBodyPending.get(step);
   const d = (_lastData && _lastData[step]) || {};
   const type = (d['type'] || 'other').toLowerCase();
-  const p = (async () => {
-    let fields = null;
-    try {
-      const r = await fetch('/api/step_body?step=' + encodeURIComponent(step));
-      if (r.ok) fields = (await r.json()).fields || {};
-    } catch (_) { /* fall back to the fields we already have */ }
+  const p = fetchStepFields(step).then(fields => {
     const body = logBody(type, fields ? Object.assign({}, d, fields) : d);
     _logBodyText.set(step, body);
     _logBodyPending.delete(step);
     return body;
-  })();
+  });
   _logBodyPending.set(step, p);
   return p;
 }
@@ -533,6 +581,7 @@ function _logReset() {
   _logHeights.clear();
   _logBodyText.clear();
   _logBodyPending.clear();
+  _stepFieldsCache.clear();
   for (const [, el] of _logMounted) el.remove();
   _logMounted.clear();
   _logOffsets = [];

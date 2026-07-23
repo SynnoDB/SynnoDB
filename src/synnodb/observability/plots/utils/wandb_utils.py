@@ -13,6 +13,12 @@ from synnodb.utils.utils import (
     stable_json,
 )
 
+# W&B history column carrying the scale factor of each validation row. Runs no
+# longer sweep a fixed per-benchmark scale factor; instead each validation logs
+# the scale factor it ran at under this key (correctness is checked across
+# several cheapest-first rungs, e.g. 0.02 / 0.1 / 1.0).
+SCALE_FACTOR_COL = "validation/_scale_factor"
+
 
 def _resolve_wandb_entity_project(
     entity: str | None, project: str | None
@@ -42,10 +48,10 @@ def get_wandb_snapshot_hash(summary: dict) -> str:
 
 
 def get_wandb_max_scale_factor(history: pd.DataFrame) -> Optional[int]:
-    if "validation/scale_factor" not in history.columns:
+    if SCALE_FACTOR_COL not in history.columns:
         return None
 
-    scale_factors = history["validation/scale_factor"].dropna()
+    scale_factors = history[SCALE_FACTOR_COL].dropna()
     if scale_factors.empty:
         return None
 

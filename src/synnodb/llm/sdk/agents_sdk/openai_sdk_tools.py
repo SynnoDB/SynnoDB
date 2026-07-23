@@ -1,4 +1,3 @@
-import json
 import logging
 from typing import Any, Dict
 
@@ -9,10 +8,17 @@ from agents import (
 )
 from agents.run_context import RunContextWrapper
 from agents.tool import FunctionTool
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
+from synnodb.llm.sdk.agents_sdk.guarded_tool import (
+    EditRejectionRecorder,
+    ReadRejectionRecorder,
+    make_guarded_function_tool,
+)
 from synnodb.tools.custom_apply_patch import CustomApplyPatchTool
+from synnodb.tools.custom_read_file import CustomReadFileTool
 from synnodb.tools.custom_replace_in_file import CustomReplaceInFileTool
+from synnodb.tools.custom_write_file import CustomWriteFileTool
 from synnodb.tools.shell_executor import ShellExecutor
 from synnodb.tools.workspace_editor import WorkspaceEditor
 
@@ -26,19 +32,18 @@ class CustomShellArgs(BaseModel):
     )
 
 
+def _shell_error(message: str) -> Dict[int, Dict[str, Any]]:
+    """Render a rejected shell call in the tool's own result shape - a command that
+    failed - so the model reads it the way it reads any other failed command."""
+    return {0: {"stdout": "", "stderr": message, "exit_code": 1}}
+
+
 def make_custom_openai_shell_tool(
-    # cwd: Path,
-    # cache_dir: Path,
-    # do_not_cache: bool,
-    # git_snapshotter: Optional[GitSnapshotter] = None,
-    # wandb_metrics_hook: WandbRunHook | None = None,
     shell_executor: ShellExecutor,
 ) -> FunctionTool:
-    async def on_invoke(
-        ctx: RunContextWrapper[Any], args_json: str
-    ) -> Dict[int, Dict[str, str]]:
-        args = CustomShellArgs.model_validate_json(args_json)
-
+    async def run(
+        ctx: RunContextWrapper[Any], args: CustomShellArgs
+    ) -> Dict[int, Dict[str, Any]]:
         # assemble ShellCommandRequest object
         request = ShellCommandRequest(
             ctx_wrapper=ctx,
@@ -54,7 +59,7 @@ def make_custom_openai_shell_tool(
         # run command
         shell_result = await shell_executor(request)
 
-        # # format shell result
+        # format shell result
         out_dict = {}
         for i, out in enumerate(shell_result.output):
             entry = {
@@ -65,33 +70,15 @@ def make_custom_openai_shell_tool(
             out_dict[i] = entry
         return out_dict
 
-        # out_list = []
-        # for out in shell_result.output:
-        #     assert out.exit_code is not None
-        #     out_list.append(
-        #         ResponseFunctionShellCallOutputContentParam(
-        #             outcome=OutcomeExit(
-        #                 exit_code=out.exit_code,
-        #                 type="exit",
-        #             ),
-        #             stdout=out.stdout,
-        #             stderr=out.stderr,
-        #         )
-        #     )
-
-        # out = ShellCallOutput(
-        #     call_id=None,
-        #     output=out_list,
-        #     type="shell_call_output",
-        # )
-
-        # return out
-
-    return FunctionTool(
+    return make_guarded_function_tool(
         name="shell",
         description="Runs a shell command locally",
-        params_json_schema=CustomShellArgs.model_json_schema(),
-        on_invoke_tool=on_invoke,
+        args_model=CustomShellArgs,
+        handler=run,
+        retry_hint=(
+            "Retry with command (str) and, if provided, an integer timeout_ms."
+        ),
+        render_error=_shell_error,
         defer_loading=False,  # always shown to the model
     )
 
@@ -135,81 +122,15 @@ _APPLY_PATCH_SCHEMA_SIMPLE = {
 }
 
 
-def _summarize_validation_error(e: ValidationError) -> str:
-    """Turn a pydantic ValidationError into a short, human-readable reason for the
-    live-ui (the full error is still returned to the model). Missing required
-    fields - by far the common case (an omitted ``type``) - are reported explicitly."""
-    missing = [
-        ".".join(str(p) for p in err["loc"])
-        for err in e.errors()
-        if err.get("type") == "missing"
-    ]
-    if missing:
-        return f"missing required field(s): {', '.join(missing)}"
-    return "; ".join(
-        f"{'.'.join(str(p) for p in err['loc'])}: {err.get('type', 'invalid')}"
-        for err in e.errors()
-    )
-
-
-def _extract_apply_patch_path(args_json: str) -> str | None:
-    """Best-effort read of the ``path`` from a rejected apply_patch call so the
-    live-ui can name the file it was aimed at. Returns None if the args are not a
-    JSON object or carry no string path."""
-    try:
-        data = json.loads(args_json)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    path = data.get("path") if isinstance(data, dict) else None
-    return path if isinstance(path, str) and path else None
-
-
 def make_custom_openai_apply_patch_tool(
     editor: WorkspaceEditor, use_simple_schema: bool = False
 ) -> FunctionTool:
     impl = CustomApplyPatchTool(editor=editor)
 
-    async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
-        # Replay a previously-recorded rejection BEFORE re-validating: if these exact
-        # arguments were rejected when the run was recorded, reproduce that verdict
-        # from cache. This keeps old runs replayable even if the rules for what
-        # counts as an invalid apply_patch later change - the recorded outcome wins.
-        replayed = editor.replay_rejected_patch(args_json)
-        if replayed is not None:
-            return replayed
-
-        try:
-            args = CustomApplyPatchArgs.model_validate_json(args_json)
-        except ValidationError as e:
-            # The JSON was well-formed but did not match the tool schema (e.g. the
-            # required `type` field was omitted). Return the error to the model as
-            # a tool result - matching this tool's convention of reporting failures
-            # via the return value - so it can retry with a corrected call instead
-            # of the ValidationError propagating and crashing the whole run.
-            reason = _summarize_validation_error(e)
-            logger.warning(
-                "apply_patch received arguments that failed schema validation: %s", e
-            )
-            message = (
-                "Error: apply_patch arguments failed validation. Retry with a valid "
-                f"call.\n{e}"
-            )
-            # Persist this rejection (keyed on the raw arguments) so future replays
-            # reproduce it via the pre-validation lookup above, and surface it as a
-            # rejected step in the live-ui instead of a bare, uncached +0/-0 step.
-            editor.record_rejected_patch(
-                args_json, _extract_apply_patch_path(args_json), reason, message
-            )
-            return message
+    async def run(ctx: RunContextWrapper[Any], args: CustomApplyPatchArgs) -> str:
         return await impl(args.type, args.path, args.diff)
 
-    schema = (
-        _APPLY_PATCH_SCHEMA_SIMPLE
-        if use_simple_schema
-        else CustomApplyPatchArgs.model_json_schema()
-    )
-
-    return FunctionTool(
+    return make_guarded_function_tool(
         name="apply_patch",
         description=(
             "Create, update, or delete a file with a V4A diff. For a small, localized "
@@ -228,8 +149,14 @@ def make_custom_openai_apply_patch_tool(
             "and retry. Read-only files that cannot be modified: parquet_reader.cpp, "
             "parquet_reader.hpp, query_impl.cpp, query_impl.hpp, args_parser.hpp."
         ),
-        params_json_schema=schema,
-        on_invoke_tool=on_invoke,
+        args_model=CustomApplyPatchArgs,
+        handler=run,
+        retry_hint=(
+            "Retry with type (create_file, update_file or delete_file), path (str) and, "
+            "for a create or update, the V4A diff (str)."
+        ),
+        params_json_schema=(_APPLY_PATCH_SCHEMA_SIMPLE if use_simple_schema else None),
+        rejection=EditRejectionRecorder(editor, path_field="path"),
         defer_loading=False,  # always shown to the model
     )
 
@@ -281,13 +208,12 @@ def make_custom_openai_replace_in_file_tool(
 ) -> FunctionTool:
     impl = CustomReplaceInFileTool(editor=editor)
 
-    async def on_invoke(ctx: RunContextWrapper[Any], args_json: str) -> str:
-        args = ReplaceInFileArgs.model_validate_json(args_json)
+    async def run(ctx: RunContextWrapper[Any], args: ReplaceInFileArgs) -> str:
         return await impl(
             args.file_path, args.old_string, args.new_string, args.replace_all
         )
 
-    return FunctionTool(
+    return make_guarded_function_tool(
         name="replace_in_file",
         description=(
             "Edits an existing file by replacing an exact string. The preferred way to modify "
@@ -298,7 +224,111 @@ def make_custom_openai_replace_in_file_tool(
             "be modified: parquet_reader.cpp, parquet_reader.hpp, query_impl.cpp, query_impl.hpp, "
             "args_parser.hpp."
         ),
+        args_model=ReplaceInFileArgs,
+        handler=run,
+        # The common miss is a model conflating this tool with apply_patch and sending
+        # {file_path, diff}. Name the fields it actually has to send, and where a diff
+        # belongs instead: a pydantic dump alone does not tell a model which of the two
+        # tools it wanted.
+        retry_hint=(
+            "It takes an exact-string edit, not a diff: retry with file_path (str), "
+            "old_string (str, the current text byte-for-byte) and new_string (str). To "
+            "apply a diff hunk instead, call apply_patch."
+        ),
         params_json_schema=_REPLACE_IN_FILE_SCHEMA,
-        on_invoke_tool=on_invoke,
+        rejection=EditRejectionRecorder(editor, path_field="file_path"),
+        defer_loading=False,  # always shown to the model
+    )
+
+
+class WriteFileArgs(BaseModel):
+    path: str = Field(..., description="Path relative to workspace root")
+    content: str = Field(..., description="The full content to write to the file")
+
+
+_WRITE_FILE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Path relative to workspace root",
+        },
+        "content": {
+            "type": "string",
+            "description": (
+                "The COMPLETE file content to write. Creates the file if it does "
+                "not exist, or overwrites it entirely if it does - this is not a "
+                "diff or a partial update, the previous content is fully replaced."
+            ),
+        },
+    },
+    "required": ["path", "content"],
+}
+
+
+def make_custom_openai_write_file_tool(
+    editor: WorkspaceEditor,
+) -> FunctionTool:
+    impl = CustomWriteFileTool(editor=editor)
+
+    async def run(ctx: RunContextWrapper[Any], args: WriteFileArgs) -> str:
+        return await impl(args.path, args.content)
+
+    return make_guarded_function_tool(
+        name="write_file",
+        description=(
+            "Creates a new file or overwrites an existing one with the given full "
+            "content. No diff/patch syntax needed - just the complete file text. "
+            "Use this instead of apply_patch's create_file/update_file when it's "
+            "simpler to (re)write the whole file in one shot. For a small, "
+            "localized change to an existing file, prefer `replace_in_file` - it "
+            "only touches the part that changed. Read-only files that cannot be "
+            "written: parquet_reader.cpp, parquet_reader.hpp, query_impl.cpp, "
+            "query_impl.hpp, args_parser.hpp."
+        ),
+        args_model=WriteFileArgs,
+        handler=run,
+        retry_hint=(
+            "It writes a whole file, not a diff: retry with path (str) and content "
+            "(str, the complete file text)."
+        ),
+        params_json_schema=_WRITE_FILE_SCHEMA,
+        rejection=EditRejectionRecorder(editor, path_field="path"),
+        defer_loading=False,  # always shown to the model
+    )
+
+
+class ReadFileArgs(BaseModel):
+    path: str = Field(..., description="Path relative to workspace root")
+    offset: int | None = Field(
+        None,
+        description="1-based line number to start reading from (optional, default 1)",
+    )
+    limit: int | None = Field(
+        None, description="Maximum number of lines to return (optional, default 2000)"
+    )
+
+
+def make_custom_openai_read_file_tool(
+    editor: WorkspaceEditor,
+) -> FunctionTool:
+    impl = CustomReadFileTool(editor=editor)
+
+    async def run(ctx: RunContextWrapper[Any], args: ReadFileArgs) -> str:
+        return await impl(args.path, args.offset, args.limit)
+
+    return make_guarded_function_tool(
+        name="read_file",
+        description=(
+            "Reads a file's contents with line numbers (like `cat -n`). Prefer "
+            "this over `shell cat` for viewing a file you plan to edit - the line "
+            "numbers make it easy to build a precise replace_in_file or "
+            "apply_patch edit. Returns up to 2000 lines by default; use "
+            "offset/limit to page through a larger file."
+        ),
+        args_model=ReadFileArgs,
+        handler=run,
+        retry_hint=("Retry with path (str) and, if provided, integer offset/limit."),
+        rejection=ReadRejectionRecorder(editor),
         defer_loading=False,  # always shown to the model
     )
