@@ -22,12 +22,19 @@ The surviving queries' literal bindings become one ``tuples`` parameter group pe
 run samples a whole real ``(site, tag, threshold, ...)`` binding at once (drawn with the run's
 seeded RNG): every instantiation is a query that actually occurred, with its predicates
 correlated exactly as recorded rather than recombined across queries.
+
+The extracted bindings are SQL-ready literals (string values include their single quotes), but
+the framework's engine wire expects the inverse - quotes in the template, bare values - so each
+entry is finally passed through :func:`~synnodb.workloads.query_params.hoist_literal_quotes`,
+which rewrites ``name=[NAME]`` + ``'scifi'`` into ``name='[NAME]'`` + ``scifi``.
 """
 
 import json
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
+
+from synnodb.workloads.query_params import hoist_literal_quotes
 
 # Canonical Stack query ids, in benchmark order.
 STACK_QUERY_IDS: Tuple[str, ...] = tuple(f"q{i}" for i in range(1, 17))
@@ -101,6 +108,11 @@ def _build_entry(entry: dict) -> QueryEntry:
     if not names:
         # No varying literals: a static (parameterless) query - a bare SQL string.
         return template
+    # The extracted bindings are SQL-ready literals (string values carry their single quotes,
+    # filling bare template holes). Convert to the framework convention - quotes in the
+    # template, bare values - so the engine args line does not leak single quotes into the
+    # generated C++ parser's string fields. Substituted SQL is unchanged.
+    template, rows = hoist_literal_quotes(template, names, rows)
     return {
         "sql": template,
         "param_groups": [

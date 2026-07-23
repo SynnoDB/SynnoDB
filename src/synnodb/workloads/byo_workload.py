@@ -127,6 +127,24 @@ def _preflight_workload(
                     f"the generated C++ parser reads std::quoted into a std::string field). "
                     f"Otherwise the engine fails with 'failed to parse {pname}'."
                 )
+            if (
+                not is_in_list
+                and len(pval) >= 2
+                and pval.startswith("'")
+                and pval.endswith("'")
+            ):
+                logger.warning(
+                    "%s placeholder '%s' sample value %r looks like a quoted SQL literal. "
+                    "The args line double-quotes it and the generated C++ parser strips only "
+                    "those wire quotes, so the single quotes reach the engine inside the "
+                    "string field and lookups will miss. Put the quotes in the template "
+                    "('[%s]') and supply bare values (see "
+                    "synnodb.workloads.query_params.hoist_literal_quotes).",
+                    qn,
+                    pname,
+                    pval,
+                    pname,
+                )
         inst_sql = " ".join(substitute(sql_dict[qn], sample).split())
         args_line = format_args_element(qid, sample)
         logger.debug("  %s: sample params=%s", qn, sample)

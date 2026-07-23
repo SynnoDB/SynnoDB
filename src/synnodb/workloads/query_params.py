@@ -149,6 +149,79 @@ def substitute(template: str, assignment: dict[str, object]) -> str:
     return sql
 
 
+# A simple single-quoted SQL string literal with no embedded quote. Literals with an escaped
+# quote (`'O''Reilly'`) are excluded on purpose: after hoisting, substitution would re-insert
+# the bare value into a quoted template hole without re-escaping, producing broken SQL.
+_SIMPLE_QUOTED_LITERAL_RE = re.compile(r"'[^']*'\Z")
+
+
+def hoist_literal_quotes(
+    template: str, placeholders: list[str], rows: list[list]
+) -> tuple[str, list[list]]:
+    """Move SQL string quoting from parameter values into the template.
+
+    Extraction-based workloads (Stack, MusicBrainz) record each varying literal exactly as it
+    appears in the SQL, quotes included: values like ``'scifi'`` fill bare template holes
+    (``site_name=[SITE_NAME]``). That is valid SQL after substitution, but it breaks the engine
+    wire convention: the args line double-quotes every scalar and the generated C++ parser
+    reads it with ``std::quoted``, which strips only the double quotes - the single quotes leak
+    into the ``std::string`` field and every catalog lookup misses. (IN-list values are fine:
+    ``parse_in_list`` strips their element quotes engine-side.)
+
+    The framework convention is the inverse: the template supplies the quotes (``'[NAME]'``)
+    and values travel bare. This helper converts a ``tuples`` group to that convention: for
+    every placeholder whose value in *each* row is a simple single-quoted literal, the quotes
+    are stripped from the values and the template hole is wrapped as ``'[NAME]'``. Substituted
+    SQL is unchanged; the engine now receives bare values. Numeric values and IN-list values
+    are left untouched.
+
+    Raises ValueError on a placeholder that mixes quoted and unquoted string values, or whose
+    literal contains an embedded (escaped) quote - both are unrepresentable in the hoisted
+    form and need manual handling rather than a silent half-conversion.
+    """
+    hoisted_rows = [list(row) for row in rows]
+    for col, name in enumerate(placeholders):
+        values = [row[col] for row in hoisted_rows]
+        embedded = [
+            v
+            for v in values
+            if isinstance(v, str)
+            and len(v) >= 2
+            and v.startswith("'")
+            and v.endswith("'")
+            and "'" in v[1:-1]
+        ]
+        if embedded:
+            raise ValueError(
+                f"placeholder '{name}': value {embedded[0]!r} contains an embedded quote; "
+                f"hoisting would substitute it unescaped into a quoted template hole. "
+                f"Handle this placeholder manually."
+            )
+        quoted = [
+            v
+            for v in values
+            if isinstance(v, str) and _SIMPLE_QUOTED_LITERAL_RE.fullmatch(v)
+        ]
+        if not quoted:
+            continue
+        if len(quoted) != len(values):
+            offenders = [v for v in values if v not in quoted][:3]
+            raise ValueError(
+                f"placeholder '{name}': cannot hoist quotes - values mix quoted literals "
+                f"with other shapes (e.g. {offenders!r}). A placeholder must be uniformly "
+                f"quoted (hoistable) or uniformly bare/IN-list."
+            )
+        if f"[{name}]" not in template:
+            raise ValueError(
+                f"placeholder '{name}' does not occur in the template; cannot hoist its "
+                f"quotes."
+            )
+        template = template.replace(f"[{name}]", f"'[{name}]'")
+        for row in hoisted_rows:
+            row[col] = row[col][1:-1]
+    return template, hoisted_rows
+
+
 # --- Typed parameter specs ---------------------------------------------------
 #
 # A scalar spec binds one placeholder; a group spec binds several jointly. Each spec knows

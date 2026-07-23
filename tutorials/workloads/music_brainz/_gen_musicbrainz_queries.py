@@ -31,6 +31,8 @@ import json
 import random
 from pathlib import Path
 
+from synnodb.workloads.query_params import hoist_literal_quotes
+
 ROOT = Path(__file__).resolve().parent
 
 
@@ -65,8 +67,13 @@ def build_musicbrainz_queries_json(
         params = spec["parameters"]
         instances = gi.generate_class(cls, spec, rng, num_instances)
         rows = [[inst[p] for p in params] for inst in instances]
+        # ``generate_class`` renders quoted values as SQL-ready literals (``'Person'``) filling
+        # bare template holes. Convert to the framework convention - quotes in the template,
+        # bare values - so the engine args line does not leak single quotes into the generated
+        # C++ parser's string fields. Substituted SQL is unchanged.
+        sql, rows = hoist_literal_quotes(spec["template"], params, rows)
         out[cls] = {
-            "sql": spec["template"],
+            "sql": sql,
             "param_groups": [
                 {"type": "tuples", "placeholders": params, "values": rows},
             ],
