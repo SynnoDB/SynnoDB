@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 from collections import Counter, defaultdict, deque
 from dataclasses import asdict, dataclass
@@ -9,11 +10,12 @@ import pyarrow as pa
 
 import wandb
 from synnodb.observability.logging.wandb_plots_gen import create_wandb_speedup_plot
-from synnodb.router.adapt import results_diff, results_equal
+from synnodb.router.adapt import candidate_superset, results_diff, results_equal
+from synnodb.router.normalize import top_level_limit_offset, widened_query
 from synnodb.utils.utils import prefix_dict
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
 from synnodb.workloads.system_factory import System
-from synnodb.workloads.workload_provider import ExecSettings, QueryBatch
+from synnodb.workloads.workload_provider import ExecSettings, QueryBatch, QueryEntry
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,46 @@ def assemble_exec(
         ),
         "validation/num_queries": num_queries_executed,
     }
+
+
+def _widened_reference_fetcher(
+    query_execution_cache: QueryExecutionCache,
+    query_batch: QueryBatch,
+    inst: QueryEntry,
+):
+    """A ``fetch_widened(limit)`` for :func:`candidate_superset`: runs *inst*'s query over the
+    first *limit* rows of its ranking on DuckDB and returns the Arrow result (``None`` if it
+    cannot be built, rewritten, or executed).
+
+    It goes through the ordinary query-execution cache, so each widened variant is executed once
+    and then read from disk on later runs. The variants are keyed on their own SQL, so they never
+    collide with the measured query's cache entry - and their runtimes are ignored, since these
+    are correctness queries, not benchmark ones.
+    """
+
+    def fetch(limit: int) -> Optional[pa.Table]:
+        sql = widened_query(inst.sql, limit)
+        if sql is None:
+            return None
+        entry = dataclasses.replace(
+            inst, sql=sql, query_args="", rep_index=0, num_reps=1
+        )
+        batch = dataclasses.replace(query_batch, query_list=[entry])
+        try:
+            results = query_execution_cache.lookup_or_execute_query_batch(
+                system=System.DUCKDB, batch=batch
+            )
+        except Exception as exc:
+            # A widened reference is an optimization, never a correctness requirement: without it
+            # the comparison stays strict. Most likely cause is a cache in only_from_cache mode.
+            logger.warning(
+                f"could not fetch a widened reference for query {inst.query_id} "
+                f"(LIMIT {limit}): {exc!r}"
+            )
+            return None
+        return results[0].result if results else None
+
+    return fetch
 
 
 @dataclass
@@ -260,18 +302,47 @@ def check_output_correctness(
                 )
                 order_keys = [ref_names.index(c) for c in sort_cols]
 
+            # A top-level LIMIT cutting through a tie group makes DuckDB's pick at the cut
+            # arbitrary - and not stable across runs of the identical query - so demanding the
+            # engine reproduce it rejects correct implementations. Re-run the query wide enough to
+            # hold the whole ranking the window was drawn from and check membership instead.
+            row_limit, row_offset = top_level_limit_offset(inst.sql)
+            candidates = None
+            if ordered and order_keys and row_limit is not None:
+                candidates = candidate_superset(
+                    reference_table,
+                    order_keys=order_keys,
+                    row_limit=row_limit,
+                    row_offset=row_offset,
+                    fetch_widened=_widened_reference_fetcher(
+                        query_execution_cache, query_batch, inst
+                    ),
+                    float_tol=1e-5,
+                )
+                if candidates is None and reference_table.num_rows == row_limit:
+                    logger.warning(
+                        f"Query {inst.query_id} was truncated by LIMIT {row_limit} but its tie "
+                        f"group at the cut could not be closed; comparing strictly, which may "
+                        f"reject a correct engine that broke the tie differently.\n"
+                        f"(SQL: {inst.sql})"
+                    )
+
             if not results_equal(
                 bespoke_aligned,
                 reference_table,
                 ordered=ordered,
                 order_keys=order_keys,
                 float_tol=1e-5,
+                row_limit=row_limit,
+                candidates=candidates,
             ):
                 diffs, total = results_diff(
                     bespoke_aligned,
                     reference_table,
                     ordered=ordered,
                     order_keys=order_keys,
+                    row_limit=row_limit,
+                    candidates=candidates,
                 )
                 diff_lines = "\n".join(
                     f"  row {r}, column '{c}': bespoke={a!r} duckdb={b!r}"

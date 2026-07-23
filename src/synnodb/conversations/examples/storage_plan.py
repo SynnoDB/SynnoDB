@@ -48,14 +48,24 @@ async def _judge_storage_plan(
     )
 
     try:
-        verdict = (
-            await ctx.agent_sdk_wrapper.run_one_off_completion(
-                judge_prompt, max_tokens=200
-            )
-        ).strip()
+        raw_verdict = await ctx.agent_sdk_wrapper.run_one_off_completion(
+            judge_prompt, max_tokens=200
+        )
     except Exception as e:
         logger.warning(
             f"Storage plan validity judge call failed ({e}); skipping check."
+        )
+        return None
+
+    # The judge can come back with no text at all - a None final_output, or an
+    # empty/whitespace-only string when the model spent its max_tokens budget on
+    # reasoning. That is a failed judgment, not a verdict of "invalid": returning
+    # it as a reason would reprompt the LLM with an empty explanation, so treat it
+    # exactly like the call failure above and skip the check.
+    verdict = (raw_verdict or "").strip()
+    if not verdict:
+        logger.warning(
+            "Storage plan validity judge returned no verdict; skipping check."
         )
         return None
 
