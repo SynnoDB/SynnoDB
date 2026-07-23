@@ -6,12 +6,14 @@
     db = SynnoDB.in_memory()
     db.sync_from_duckdb(duckdb.connect("my.duckdb"),  # bring your own workload
                         name="my_workload", queries_json="queries.json")
-    plan = db.createStoragePlan(queries="1")        # -> StoragePlan; plan.text is the doc
+    plan = db.createStoragePlan()                    # -> StoragePlan; plan.text is the doc
     impl = db.createBaseImpl(storage_plan=plan.text) # -> BaseImplementation; impl.files
 
 The core package is workload-agnostic and ships no built-in workload: a workload is
 always supplied from the outside - via ``sync_from_duckdb`` / a bring-your-own builder,
-or by registering a ``WorkloadSpec`` and passing its name as ``workload=``.
+or by registering a ``WorkloadSpec`` and passing its name as ``workload=``. Every stage
+runs on all of the workload's queries by default; ``query_subset=`` narrows the run to a
+single id ("6") or a catalog range ("1-22", "1a-3b").
 
 ``run_synthesis`` is the single entry point for executing a conversation: it
 takes a complete :class:`~synnodb.plan.ConversationPlan` (predefined or
@@ -119,7 +121,10 @@ class SynnoConfig:
     workload: Workload | WorkloadId | None = None
     db_storage: DBStorage = DBStorage.IN_MEMORY
     usecase: Usecase = Usecase.OLAP
-    queries: str = "1"
+    # Which of the workload's queries the stages run on: None (the default) means every
+    # query the registered workload declares; otherwise a single id ("6") or a range over
+    # the workload's query catalog ("1-22", "1a-3b").
+    query_subset: str | None = None
     # wandb is opt-in and has no separate on/off flag: it is enabled iff a
     # ``wandb_entity`` or ``wandb_project`` is set here OR via the
     # ``WANDB_ENTITY``/``WANDB_PROJECT`` env vars (or ``.env``). With none of
@@ -179,7 +184,7 @@ def _base_run_config(cfg: SynnoConfig) -> dict[str, Any]:
         benchmark=cfg.workload,
         db_storage=cfg.db_storage,
         usecase=cfg.usecase,
-        queries_str=cfg.queries,
+        query_subset=cfg.query_subset,
         notify=cfg.notify,
         disable_openai_tracing=cfg.disable_openai_tracing,
         auto_u=cfg.auto_confirm,
@@ -200,8 +205,11 @@ def _base_run_config(cfg: SynnoConfig) -> dict[str, Any]:
 def _parse_queries(cfg: SynnoConfig) -> list[str]:
     from synnodb.utils.gen_common import parse_query_ids
 
-    query_ids = parse_query_ids(cfg.queries, benchmark=cfg.workload)
-    assert query_ids is not None, f"Failed to parse query ids from {cfg.queries!r}"
+    assert cfg.workload is not None, "No workload set (checked by _base_run_config)"
+    query_ids = parse_query_ids(cfg.query_subset, benchmark=cfg.workload)
+    assert query_ids is not None, (
+        f"Failed to parse query ids from {cfg.query_subset!r}"
+    )
     return query_ids
 
 
@@ -212,15 +220,13 @@ def _memory_budget(cfg: SynnoConfig) -> int | None:
     return None
 
 
-def validate_snapshot(
-    snapshot_config, benchmark, queries_str, query_ids, db_storage, model
-):
+def validate_snapshot(snapshot_config, benchmark, query_ids, db_storage, model):
     """Validate that a previous run's logged config matches this run's settings."""
     from synnodb.utils.confirm_dialog import await_user_confirmation
     from synnodb.utils.gen_common import parse_query_ids
 
     snapshot_benchmark: str = snapshot_config["benchmark"]
-    snapshot_queries_str = snapshot_config["queries_str"]
+    snapshot_query_subset = snapshot_config["query_subset"]
     snapshot_model = snapshot_config["model"]
     snapshot_db_storage = snapshot_config["db_storage"]
 
@@ -228,12 +234,11 @@ def validate_snapshot(
     assert snapshot_benchmark.upper() == benchmark.value.upper(), (
         f"Expected benchmark {benchmark.value.upper()} in storage plan run, got {snapshot_benchmark}"
     )
-    if queries_str is not None:
-        assert snapshot_queries_str == queries_str, (
-            f"Expected queries str {queries_str} in storage plan run, got {snapshot_queries_str}"
-        )
-    assert query_ids == parse_query_ids(snapshot_queries_str, benchmark=benchmark), (
-        f"Expected query ids {query_ids} in storage plan run, got {parse_query_ids(snapshot_queries_str, benchmark=benchmark)}"
+    # Compare the resolved query-id lists, not the selector spellings: None (every
+    # registered query) and an explicit full range ("1-22") name the same set and
+    # must validate as equal.
+    assert query_ids == parse_query_ids(snapshot_query_subset, benchmark=benchmark), (
+        f"Expected query ids {query_ids} in storage plan run, got {parse_query_ids(snapshot_query_subset, benchmark=benchmark)}"
     )
 
     if db_storage is not None:
@@ -288,7 +293,6 @@ def resolve_source_snapshot(
     validate_snapshot(
         config,
         cfg.workload,
-        cfg.queries,
         _parse_queries(cfg),
         db_storage=cfg.db_storage,
         model=cfg.model,
@@ -530,7 +534,8 @@ class SynnoDB:
 
             import duckdb, synnodb
             conn = duckdb.connect("tpch.duckdb")
-            db = synnodb.SynnoDB.in_memory(queries="1-5")
+            db = synnodb.SynnoDB.in_memory()  # runs every query in queries.json;
+                                              # narrow with query_subset="1-5"
             db.sync_from_duckdb(conn, name="tpch_byo", queries_json="queries.json",
                                 downscale_fractions=(0.02, 0.1))
             # conn stays yours - keep querying/writing it while the run proceeds

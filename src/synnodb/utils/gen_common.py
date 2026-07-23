@@ -6,7 +6,16 @@ from synnodb.workloads.workload_provider import Workload
 from synnodb.workloads.workload_spec import get_workload_spec
 
 
-def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:
+def parse_query_ids(
+    short_name: str | None, benchmark: Workload | str
+) -> List[str] | None:
+    bench_value = benchmark.value if isinstance(benchmark, Workload) else str(benchmark)
+
+    # No subset configured (SynnoConfig.query_subset=None): the workload's entire
+    # query catalog.
+    if short_name is None:
+        return list(get_workload_spec(bench_value).all_query_ids)
+
     assert "v" not in short_name, (
         f"Unexpected 'v' in short name: {short_name}"
     )  # this was old logic to parse query ids from conversation name - we now pass the query short name directly as an argument, so this is no longer needed
@@ -16,7 +25,6 @@ def parse_query_ids(short_name: str, benchmark: Workload) -> List[str] | None:
         return [qnums[0]]
 
     start_q, end_q = qnums[0], qnums[1]
-    bench_value = benchmark.value if isinstance(benchmark, Workload) else str(benchmark)
     spec = get_workload_spec(bench_value)
     catalog = list(spec.all_query_ids)
 

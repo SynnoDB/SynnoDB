@@ -21,7 +21,9 @@ DEFAULT_MODEL = "gpt-5.4"
 class RunConfig:
     benchmark: Workload
     query_list: str
-    queries_str: str
+    # Human-facing query selector (conversation names, W&B config); None means every
+    # query the registered workload declares. query_list carries the resolved ids.
+    query_subset: str | None
     notify: bool
     verbose: bool = False  # stream DEBUG logs to the console (logfile is always DEBUG)
     start_snapshot: str | None = None
@@ -94,7 +96,7 @@ def add_common_args(
     include_log_to_wandb: bool = False,
     include_wandb_entity_project: bool = False,
     include_query_list: bool = False,
-    include_queries_str: bool = False,
+    include_query_subset: bool = False,
     include_continue_run: bool = False,
     include_no_preload: bool = False,
     include_notify: bool = False,
@@ -209,12 +211,11 @@ def add_common_args(
             default=None,
             help="W&B project to log to (default: 'SynnoDB' when wandb is enabled).",
         )
-    if include_queries_str:
+    if include_query_subset:
         parser.add_argument(
-            "--queries",
-            help="String of the queries e.g. 1-22",
-            required=True,
-            dest="queries_str",
+            "--query_subset",
+            help="String of the queries e.g. 1-22; omit to run every registered query.",
+            default=None,
         )
     if include_query_list:
         parser.add_argument(

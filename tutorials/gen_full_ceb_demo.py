@@ -34,30 +34,6 @@ load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come f
 DATA_ROOT = Path(os.environ.get("SYNNO_DATA_DIR") or repo_root() / ".synno_data")
 GENERATED_ENGINES_DIR = DATA_ROOT / "engines"
 
-TABLES = [
-    "aka_name",
-    "aka_title",
-    "cast_info",
-    "char_name",
-    "comp_cast_type",
-    "company_name",
-    "company_type",
-    "complete_cast",
-    "info_type",
-    "keyword",
-    "kind_type",
-    "link_type",
-    "movie_companies",
-    "movie_info",
-    "movie_info_idx",
-    "movie_keyword",
-    "movie_link",
-    "name",
-    "person_info",
-    "role_type",
-    "title",
-]
-
 MODEL = os.environ.get(
     "SYNNO_MODEL", "anthropic/claude-sonnet-5"
 )  # e.g. "anthropic/claude-sonnet-4-6", "gpt-5.4", "openrouter/z-ai/glm-5.2"
@@ -112,10 +88,9 @@ db = SynnoDB(
     model=MODEL,
     model_extra_body=MODEL_EXTRA_BODY,
     db_storage="in_memory",
-    queries="1a-11b",
     data_dir=DATA_ROOT,
     threads=NUM_THREADS,
-)
+)  # runs every query in queries.json; narrow with query_subset="1a-3b"
 
 # Hand your LIVE connection to SynnoDB and register the workload. It reads the schema + queries
 # through this connection once, freezing a consistent point-in-time snapshot it owns - then derives
