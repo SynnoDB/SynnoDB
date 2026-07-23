@@ -186,7 +186,9 @@ def _build_param_spaces(
     queries are skipped (no entry).
     """
     for qid, section in params_by_id.items():
-        bad = sorted(n for n in _declared_param_names(section) if not is_placeholder_name(n))
+        bad = sorted(
+            n for n in _declared_param_names(section) if not is_placeholder_name(n)
+        )
         if bad:
             raise ValueError(
                 f"Q{qid}: {params_source} parameter name(s) {bad} must be UPPERCASE. Placeholders "
