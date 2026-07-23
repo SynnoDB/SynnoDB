@@ -49,6 +49,15 @@ Default to the sample, and only set `full_dataset=true` when you need the number
 
 But it is a *sample*, so row counts, min/max and distinct counts do NOT transfer. Its min/max lie inside the true range (rare extremes are missing) and its distinct counts are understated, so a type width, encoding or allocation sized from them overflows or undersizes at full scale. Row counts also shrink unevenly per table - small dimension tables are often kept whole, so an unchanged count between sample and full dataset is expected; never scale a count by a ratio. Measure any number you bake into the design on the full dataset (`full_dataset=true`): `count(*)`, `min`/`max` and `approx_count_distinct` are single-pass and cheap even at full scale.
 
+# Hard constraints - do not precompute query results at ingestion
+The build/ingestion phase loads the base columns and organizes them for fast query execution. You MAY precompute query-agnostic acceleration structures at build time: lossless encodings (narrow exact types, dictionary / RLE / bit-packing), column ordering / partitioning, indexes, zone maps, and per-column statistics - these accelerate access to the base data without embedding the answer to any query.
+The following are FORBIDDEN, even when they do not depend on the query's arguments, and even when they would be correct and faster:
+- materialized views and pre-aggregation - storing any GROUP BY / aggregate / DISTINCT / COUNT / SUM / top-k RESULT, whole or partial, in the Database;
+- query-result caching;
+- query-specific lookup tables or precomputed maps/arrays keyed to particular values drawn from the query set (a general index on a column is fine; a table of "the rows where col = <the literal value this query filters on>" is not).
+Every filter, join, grouping, and aggregate must be computed at query time from the base columns; indexes, zone maps, and statistics may guide that computation but must not replace it. Maintain ONE storage layout shared by all queries, and load all data from Parquet during ingestion.
+These constraints override any conflicting suggestion in the storage plan, the todo list, or an example: if any of them calls for a forbidden structure, do NOT build it.
+
 # Your Task
 Create a TODO plan for implementing this database engine. Write your plan to `base_impl_todo.txt`. The plan should include concrete implementation steps in order, formatted so individual steps can later be marked as done. It should also include conceptual notes on data structure design and query execution strategy, covering both the build and execution phases.
 
@@ -75,6 +84,15 @@ prompt_source: get_prompt
 Finish all todos from previous interaction outlined in `base_impl_todo.txt`.
 Focus on the build logic to convert ArrowTable into an efficient in-memory data structure.
 Implement the build logic in `db_loader.hpp/db_loader.cpp`.
+
+# Hard constraints - do not precompute query results at ingestion
+The build/ingestion phase loads the base columns and organizes them for fast query execution. You MAY precompute query-agnostic acceleration structures at build time: lossless encodings (narrow exact types, dictionary / RLE / bit-packing), column ordering / partitioning, indexes, zone maps, and per-column statistics - these accelerate access to the base data without embedding the answer to any query.
+The following are FORBIDDEN, even when they do not depend on the query's arguments, and even when they would be correct and faster:
+- materialized views and pre-aggregation - storing any GROUP BY / aggregate / DISTINCT / COUNT / SUM / top-k RESULT, whole or partial, in the Database;
+- query-result caching;
+- query-specific lookup tables or precomputed maps/arrays keyed to particular values drawn from the query set (a general index on a column is fine; a table of "the rows where col = <the literal value this query filters on>" is not).
+Every filter, join, grouping, and aggregate must be computed at query time from the base columns; indexes, zone maps, and statistics may guide that computation but must not replace it. Maintain ONE storage layout shared by all queries, and load all data from Parquet during ingestion.
+These constraints override any conflicting suggestion in the storage plan, the todo list, or an example: if any of them calls for a forbidden structure, do NOT build it.
 
 Before editing, plan your approach and implementation steps.
 
@@ -178,9 +196,18 @@ Align with the existing storage layout and value-encoding implementation in `db_
 To generate speedups over DuckDB you need to leverage the storage plan implementation fully. Since we are a bespoke system we expect large speedups.
 You may use utmost optimizations like SIMD, later materialization etc.
 
+# Hard constraints - do not precompute query results at ingestion
+The build/ingestion phase loads the base columns and organizes them for fast query execution. You MAY precompute query-agnostic acceleration structures at build time: lossless encodings (narrow exact types, dictionary / RLE / bit-packing), column ordering / partitioning, indexes, zone maps, and per-column statistics - these accelerate access to the base data without embedding the answer to any query.
+The following are FORBIDDEN, even when they do not depend on the query's arguments, and even when they would be correct and faster:
+- materialized views and pre-aggregation - storing any GROUP BY / aggregate / DISTINCT / COUNT / SUM / top-k RESULT, whole or partial, in the Database;
+- query-result caching;
+- query-specific lookup tables or precomputed maps/arrays keyed to particular values drawn from the query set (a general index on a column is fine; a table of "the rows where col = <the literal value this query filters on>" is not).
+Every filter, join, grouping, and aggregate must be computed at query time from the base columns; indexes, zone maps, and statistics may guide that computation but must not replace it. Maintain ONE storage layout shared by all queries, and load all data from Parquet during ingestion.
+These constraints override any conflicting suggestion in the storage plan, the todo list, or an example: if any of them calls for a forbidden structure, do NOT build it.
+
 Before writing this query's execution logic, check `storage_plan.txt` and `base_impl_todo.txt` for every storage-layer structure this query depends on (dictionaries, zone maps, bitmaps, sort/skip indexes, range indexes, or any other precomputed structure the storage plan calls out for it). If `base_impl_todo.txt` shows such an item as unchecked or marked DEFERRED, and this query needs it, implement it now in `db_loader.hpp/db_loader.cpp` - add the field(s) to the storage struct and the build-time logic that populates them - then check off the corresponding todo item(s). Do not defer it again.
 
-The test for where a piece of logic belongs is whether it depends on this call's arguments, not how fast or how cleanly it is written: anything derived purely from the base columns - independent of this request's arguments - is build-time state and must be computed once in `db_loader.hpp/db_loader.cpp` and read from `Database`, never recomputed inside `run_q1`. This holds even if the recomputation itself is well-optimized (e.g. a clean `parallel_reduce` over the full table): an efficient full-table pass repeated on every call is still wasted work compared to doing it once at build time, and does not satisfy the storage plan. Only logic that genuinely varies per call (filtering/joining against this request's argument values) belongs in the query file. The storage layer must actually provide what the plan promised before this query counts as implemented.
+Where a piece of logic belongs: the build phase (`db_loader.hpp/db_loader.cpp`) provides only the query-agnostic storage layout and acceleration structures - the base columns loaded once, their lossless encodings, and any indexes / zone maps / statistics the storage plan calls for. ALL query logic - every filter, join, grouping, and aggregate - runs at query time inside `run_q1`, computed from those base columns. Do NOT move a query's aggregation or result into the build phase, even when it does not depend on this call's arguments: a precomputed GROUP BY / COUNT(DISTINCT) / SUM / top-k result stored in `Database` is a materialized view / pre-aggregation and is forbidden (see the hard constraints above), no matter how cleanly it is written or how much build-time work it saves. From `Database` read the base columns and their encodings/indexes/zone maps; recompute the aggregate itself on every call. Speed comes from the tight, parallel, SIMD-friendly scan over the compact layout (and from index/zone-map-guided access) - not from storing answers at build time. The storage layer must actually provide the base columns and acceleration structures the plan promised before this query counts as implemented.
 
 Limit file inspection to: `db_loader.hpp/db_loader.cpp`, `query_impl.cpp`, `storage_plan.txt`, `base_impl_todo.txt`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
 
@@ -294,9 +321,18 @@ Align with the existing storage layout and value-encoding implementation in `db_
 To generate speedups over DuckDB you need to leverage the storage plan implementation fully. Since we are a bespoke system we expect large speedups.
 You may use utmost optimizations like SIMD, later materialization etc.
 
+# Hard constraints - do not precompute query results at ingestion
+The build/ingestion phase loads the base columns and organizes them for fast query execution. You MAY precompute query-agnostic acceleration structures at build time: lossless encodings (narrow exact types, dictionary / RLE / bit-packing), column ordering / partitioning, indexes, zone maps, and per-column statistics - these accelerate access to the base data without embedding the answer to any query.
+The following are FORBIDDEN, even when they do not depend on the query's arguments, and even when they would be correct and faster:
+- materialized views and pre-aggregation - storing any GROUP BY / aggregate / DISTINCT / COUNT / SUM / top-k RESULT, whole or partial, in the Database;
+- query-result caching;
+- query-specific lookup tables or precomputed maps/arrays keyed to particular values drawn from the query set (a general index on a column is fine; a table of "the rows where col = <the literal value this query filters on>" is not).
+Every filter, join, grouping, and aggregate must be computed at query time from the base columns; indexes, zone maps, and statistics may guide that computation but must not replace it. Maintain ONE storage layout shared by all queries, and load all data from Parquet during ingestion.
+These constraints override any conflicting suggestion in the storage plan, the todo list, or an example: if any of them calls for a forbidden structure, do NOT build it.
+
 Before writing this query's execution logic, check `storage_plan.txt` and `base_impl_todo.txt` for every storage-layer structure this query depends on (dictionaries, zone maps, bitmaps, sort/skip indexes, range indexes, or any other precomputed structure the storage plan calls out for it). If `base_impl_todo.txt` shows such an item as unchecked or marked DEFERRED, and this query needs it, implement it now in `db_loader.hpp/db_loader.cpp` - add the field(s) to the storage struct and the build-time logic that populates them - then check off the corresponding todo item(s). Do not defer it again.
 
-The test for where a piece of logic belongs is whether it depends on this call's arguments, not how fast or how cleanly it is written: anything derived purely from the base columns - independent of this request's arguments - is build-time state and must be computed once in `db_loader.hpp/db_loader.cpp` and read from `Database`, never recomputed inside `run_q6`. This holds even if the recomputation itself is well-optimized (e.g. a clean `parallel_reduce` over the full table): an efficient full-table pass repeated on every call is still wasted work compared to doing it once at build time, and does not satisfy the storage plan. Only logic that genuinely varies per call (filtering/joining against this request's argument values) belongs in the query file. The storage layer must actually provide what the plan promised before this query counts as implemented.
+Where a piece of logic belongs: the build phase (`db_loader.hpp/db_loader.cpp`) provides only the query-agnostic storage layout and acceleration structures - the base columns loaded once, their lossless encodings, and any indexes / zone maps / statistics the storage plan calls for. ALL query logic - every filter, join, grouping, and aggregate - runs at query time inside `run_q6`, computed from those base columns. Do NOT move a query's aggregation or result into the build phase, even when it does not depend on this call's arguments: a precomputed GROUP BY / COUNT(DISTINCT) / SUM / top-k result stored in `Database` is a materialized view / pre-aggregation and is forbidden (see the hard constraints above), no matter how cleanly it is written or how much build-time work it saves. From `Database` read the base columns and their encodings/indexes/zone maps; recompute the aggregate itself on every call. Speed comes from the tight, parallel, SIMD-friendly scan over the compact layout (and from index/zone-map-guided access) - not from storing answers at build time. The storage layer must actually provide the base columns and acceleration structures the plan promised before this query counts as implemented.
 
 Limit file inspection to: `db_loader.hpp/db_loader.cpp`, `query_impl.cpp`, `storage_plan.txt`, `base_impl_todo.txt`, and at most 3 similar `query*.cpp` files. Do not inspect validator, compile, cache, or tool internals unless the error explicitly indicates an interface mismatch. Do not use broad `find`, repo-wide `grep`, or directory scans. If a needed file is missing, inspect at most one directory level around the named files.
 
