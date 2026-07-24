@@ -55,7 +55,7 @@ class LLMModelHelper:
 
     def load_llm_entry_from_cache(
         self, cache_path: Path
-    ) -> tuple[Optional[object], float, bool]:
+    ) -> tuple[Optional[object], float, bool, Optional[float]]:
         cached = load_pickle(cache_path, self.cache_type)
         if cached is not None:
             # logger.info(f'Found in cache: {cache_path}')
@@ -75,9 +75,11 @@ class LLMModelHelper:
             if self.runtime_tracker is not None:
                 self.runtime_tracker.add_skipped_time(cached.llm_time)
 
-            return resp, cost, True
+            # Return the original generation time so throughput (tokens/sec) is
+            # reported off the real LLM call even when it is served from cache.
+            return resp, cost, True, cached.llm_time
 
-        return None, 0, False
+        return None, 0, False, None
 
     def process_llm_response(
         self,

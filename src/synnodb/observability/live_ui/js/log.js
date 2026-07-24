@@ -274,12 +274,20 @@ function logDuration(steps, data, idx) {
 }
 
 function logExpandedMeta(type, d, steps, data, idx) {
-  const parts = ['Wall time ' + fmtTime(logDuration(steps, data, idx))];
+  // LLM rows report the measured generation time of the single API call
+  // (llm_time). Other rows have no such measurement, so they keep the turn wall
+  // time (the delta of total/runtime against the previous logged step).
   if (type === 'llm') {
-    parts.push('Cost ' + fmtCost(d['cost_usd']));
-    parts.push('Input tokens ' + fmtNum(d['input_tokens']));
+    return [
+      'LLM time ' + fmtSeconds(d['llm_time']),
+      'Cost ' + fmtCost(d['cost_usd']),
+      'Input tokens ' + fmtNum(d['input_tokens']),
+      'Output tokens ' + fmtNum(d['output_tokens']),
+      'Reasoning tokens ' + fmtNum(d['reasoning_tokens']),
+      'Throughput ' + fmtTps(d['tokens_per_second']),
+    ].join(' · ');
   }
-  return parts.join(' · ');
+  return 'Wall time ' + fmtTime(logDuration(steps, data, idx));
 }
 
 // ── Virtualized activity log ─────────────────────────────────────────────

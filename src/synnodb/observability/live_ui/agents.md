@@ -102,7 +102,10 @@ The frontend mirrors this: the "Generated code" header button is shown only for 
 | Key | Used for |
 |---|---|
 | `type` | Log entry badge (`llm`, `apply_patch`, `shell`, `compile`, `validate`, `compaction`) |
-| `input_tokens` | Timeline chart — Input Tokens series |
+| `input_tokens` | Timeline chart — Input Tokens series; activity-log LLM row expanded meta |
+| `output_tokens` / `reasoning_tokens` | Activity-log LLM row expanded meta (tokens the model produced; `output_tokens` excludes reasoning) |
+| `llm_time` | Activity-log LLM row expanded meta — measured generation time of the single API call (replaces turn wall time for LLM rows; carries the original duration on cache hits) |
+| `tokens_per_second` | Activity-log LLM row expanded meta — generation throughput `(output + reasoning) / llm_time` |
 | `code/loc` | Timeline chart — Code Size series |
 | `total/cost_usd` | Cost card and per-stage cost delta in sidebar |
 | `total/runtime` | Runtime card and per-stage time delta in sidebar |
