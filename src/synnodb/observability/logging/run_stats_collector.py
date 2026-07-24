@@ -163,6 +163,10 @@ class RunStatsCollector(RunHooks):
         # every LLM turn in on_llm_end. Read by the proactive-compaction trigger.
         self.last_context_window_usage: float = 0.0
         self._llm_answered_from_cache_by_response_id: dict[str, bool] = {}
+        # Wall-clock duration of each LLM call, keyed by response id and reported by
+        # the caching model wrapper. Consumed in on_llm_end to derive throughput
+        # (tokens/sec). Cache hits carry the original call's duration.
+        self._llm_time_by_response_id: dict[str, float] = {}
 
         # store metrics locally + also emit to external system in _emit_metrics (override in subclass)
         self.metrics_list = []
@@ -172,6 +176,7 @@ class RunStatsCollector(RunHooks):
         answered_from_cache: bool,
         response_id: str | None = None,
         request_hash: str | None = None,
+        llm_time: float | None = None,
     ) -> None:
         if request_hash is not None:
             self.last_llm_hash = request_hash
@@ -179,6 +184,8 @@ class RunStatsCollector(RunHooks):
             self._llm_answered_from_cache_by_response_id[response_id] = (
                 answered_from_cache
             )
+            if llm_time is not None:
+                self._llm_time_by_response_id[response_id] = llm_time
 
     def _consume_llm_cache_status(self, output: ModelResponse) -> bool:
         response_id = get_response_id(output)
@@ -189,6 +196,11 @@ class RunStatsCollector(RunHooks):
         if answered_from_cache is not None:
             return answered_from_cache
         return False
+
+    def _consume_llm_time(self, output: ModelResponse) -> float | None:
+        """Wall-clock duration of the LLM call behind ``output``, if recorded."""
+        response_id = get_response_id(output)
+        return self._llm_time_by_response_id.get(response_id)
 
     def _emit_metrics(self, metrics: dict, step: int) -> None:
         """Fan out metrics to all registered data drains."""
@@ -358,6 +370,14 @@ class RunStatsCollector(RunHooks):
         calculatorial_cost_usd = token_stats["cost"]
         answered_from_cache = self._consume_llm_cache_status(output)
         real_cost_usd = 0.0 if answered_from_cache else calculatorial_cost_usd
+
+        # Generation throughput: all tokens the model produced this turn (output +
+        # reasoning; token_stats["output_tokens"] already excludes reasoning) over
+        # the wall-clock duration of the LLM call.
+        llm_time = self._consume_llm_time(output)
+        generated_tokens = token_stats["output_tokens"] + token_stats["reasoning_tokens"]
+        tokens_per_second = compute_tokens_per_second(generated_tokens, llm_time)
+
         logger.info(
             f"LLM ended: Turn {self.last_turn} - Input tokens: {token_stats['input_tokens']}, Output tokens: {token_stats['output_tokens']}, Calculatorial cost: ${calculatorial_cost_usd:0.6f}, Real cost: ${real_cost_usd:0.6f}, Context window usage: {token_stats['context_window_usage'] * 100:.1f}%. Hash: {self.last_llm_hash}"
         )
@@ -374,6 +394,8 @@ class RunStatsCollector(RunHooks):
             "cached_tokens": token_stats["cached_tokens"],
             "output_tokens": token_stats["output_tokens"],
             "reasoning_tokens": token_stats["reasoning_tokens"],
+            "llm_time": llm_time,
+            "tokens_per_second": tokens_per_second,
             "context_window_usage": token_stats["context_window_usage"],
             "current_prompt": self.current_prompt,
             "current_prompt_descriptor": self.current_prompt_descriptor,
@@ -565,6 +587,21 @@ class RunStatsCollector(RunHooks):
             },
             step=self.last_turn,
         )
+
+
+def compute_tokens_per_second(
+    generated_tokens: int, llm_time: float | None
+) -> float | None:
+    """Generation throughput of a single LLM call.
+
+    ``generated_tokens`` is every token the model produced (output + reasoning).
+    Returns tokens per second of wall-clock generation time, or None when the
+    duration is missing or non-positive (so consumers can render "n/a" instead
+    of dividing by zero).
+    """
+    if llm_time is None or llm_time <= 0:
+        return None
+    return generated_tokens / llm_time
 
 
 def get_response_id(output: ModelResponse):
