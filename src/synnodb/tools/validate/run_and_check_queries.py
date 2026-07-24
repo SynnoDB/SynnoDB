@@ -12,6 +12,7 @@ import wandb
 from synnodb.observability.logging.wandb_plots_gen import create_wandb_speedup_plot
 from synnodb.router.adapt import candidate_superset, results_diff, results_equal
 from synnodb.router.normalize import top_level_limit_offset, widened_query
+from synnodb.router.process_engine import read_and_delete_result
 from synnodb.utils.utils import prefix_dict
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
 from synnodb.workloads.system_factory import System
@@ -228,9 +229,9 @@ def check_output_correctness(
             )
 
         try:
-            bespoke_table = pa.ipc.open_file(
-                pa.memory_map(str(res_path), "r")
-            ).read_all()
+            # Reads the result into memory and deletes it immediately, so nothing stale is left
+            # on disk for a later run to misvalidate (see read_and_delete_result).
+            bespoke_table = read_and_delete_result(res_path)
         except Exception as e:
             return ValidationOutput(
                 result_message=f"Error: failed to read result Arrow {filename}: {e}",
