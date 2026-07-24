@@ -604,7 +604,7 @@ def _register_static_workload(
 
 # The referential downscaler's version. Bumped when its algorithm changes so a stale materialized
 # subset (and any LLM/snapshot cache keyed on ``dataset_version``) is invalidated.
-_DOWNSCALER_VERSION = "1"
+_DOWNSCALER_VERSION = "2"
 
 
 def _duckdb_dataset_version(

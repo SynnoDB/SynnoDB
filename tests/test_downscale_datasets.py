@@ -72,17 +72,20 @@ def _assert_anchor_and_modes(
     ds: ReferentialDownscaler,
     plan,
     *,
-    anchor: str,
+    anchors: set[str],
     whole: set[str],
     sampled: set[str],
 ) -> None:
     modes = _modes(plan)
     counts = ds.schema.row_counts
 
-    assert ds.anchor() == anchor
-    a = modes[anchor]
-    assert a.mode == "anchor"
-    assert 0 < a.kept_rows < counts[anchor], "anchor must be strictly downscaled"
+    # The global largest table is one of the per-island anchors (the largest of them).
+    assert ds.anchor() in anchors
+    assert set(plan.anchors) == anchors
+    for anchor in anchors:
+        a = modes[anchor]
+        assert a.mode == "anchor", f"{anchor} should be an island anchor"
+        assert 0 < a.kept_rows < counts[anchor], f"{anchor} must be strictly downscaled"
 
     for t in whole:
         assert modes[t].mode == "whole", f"{t} should be kept whole"
@@ -135,7 +138,7 @@ def test_tpch_anchor_and_kept_whole(tpch):
     _assert_anchor_and_modes(
         ds,
         plan,
-        anchor="lineitem",
+        anchors={"lineitem"},  # TPC-H is a single connected island
         whole={"supplier", "nation", "region"},  # below the row threshold
         sampled={"orders", "customer", "part", "partsupp"},
     )
@@ -329,14 +332,16 @@ def test_imdb_anchor_is_bridge_table_and_modes(imdb):
     _assert_anchor_and_modes(
         ds,
         plan,
-        anchor="cast_info",  # the largest table is a bridge, not the hub
+        # cast_info anchors the main workload island (its largest table is a bridge, not the hub);
+        # movie_companies is a large table on its own island (no workload query joins it), so it
+        # anchors that island and is sampled independently rather than kept whole.
+        anchors={"cast_info", "movie_companies"},
         whole={
             "keyword",  # below threshold
             "kind_type",
             "role_type",
             "info_type",  # lookup dims
-            "movie_companies",  # above threshold but disconnected from the anchor's join graph
-            "company_name",
+            "company_name",  # below threshold, on its own (all-small) island
         },
         sampled={"title", "name", "movie_info", "movie_keyword"},
     )
