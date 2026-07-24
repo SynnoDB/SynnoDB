@@ -267,7 +267,7 @@ class CachedLitellmModel(LitellmModel):
         cache_path = self._cache_path_for(req_hash)
 
         if cache_path.exists():
-            resp, saved_cost, self.llm_was_cached = (
+            resp, saved_cost, self.llm_was_cached, cached_llm_time = (
                 self.llm_model_helper.load_llm_entry_from_cache(cache_path)
             )
             if resp is not None:
@@ -279,6 +279,7 @@ class CachedLitellmModel(LitellmModel):
                             answered_from_cache=True,
                             response_id=resp_id,
                             request_hash=req_hash,
+                            llm_time=cached_llm_time,
                         )
                 # store raw tool call arguments for error logging (same as non-cached path)
                 try:
@@ -449,6 +450,7 @@ class CachedLitellmModel(LitellmModel):
                     False,
                     response_id=resp_id,
                     request_hash=req_hash,
+                    llm_time=llm_time,
                 )
 
         self.llm_was_cached = False
