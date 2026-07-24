@@ -86,6 +86,7 @@ class RunStatsCollector(RunHooks):
     apply_patch_failed = []
     apply_patch_cached = False
     apply_patch_rejected = False
+    read_file_cached = False
 
     def __init__(
         self,
@@ -274,6 +275,13 @@ class RunStatsCollector(RunHooks):
     def log_read_file_stats(self, path: str) -> None:
         """Record the path read by the in-flight read_file call."""
         self.read_file_path = path
+
+    def record_read_file_cache_hit(self) -> None:
+        """Mark that the current read_file tool call was replayed from the
+        workspace-editor cache. Consumed by on_tool_end so the live-ui can
+        classify the step as served-from-cache. Reset per tool call in
+        on_tool_start."""
+        self.read_file_cached = True
 
     def log_apply_patch_stats(
         self,
@@ -481,6 +489,7 @@ class RunStatsCollector(RunHooks):
             self.apply_patch_rejected = False
         elif tool_name == "read_file":
             self.read_file_path = None
+            self.read_file_cached = False
 
     async def on_tool_end(
         self,
@@ -531,6 +540,7 @@ class RunStatsCollector(RunHooks):
                 {
                     "type": "read_file",
                     "read_file/path": self.read_file_path,
+                    "read_file/cached": self.read_file_cached,
                     "read_file/output": result[:20000],
                     "read_file/truncated": len(result) > 20000,
                 },

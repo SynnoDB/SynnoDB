@@ -131,7 +131,7 @@ print("Subsets  :", spec.exhaustive_sfs, "(benchmark:", spec.benchmark_sf, ")")
 # Storage plan.
 # Expected cost: ~$0.1
 # Expected time: ~2 mins / 6 turns (depending on model speed)
-plan = db.createStoragePlan(only_from_cache=True)
+plan = db.createStoragePlan()
 
 print(plan.text[:600], "...")
 
@@ -140,7 +140,9 @@ print(plan.text[:600], "...")
 # db.createBaseImpl(storage_plan_wandb_id=plan.run_id). Provide exactly one of the two.
 # Expected cost: ~$6
 # Expected time: ~1 hrs / 500 turns (depending on model speed)
-impl = db.createBaseImpl(storage_plan=plan.text, only_from_cache=True)
+impl = db.createBaseImpl(
+    storage_plan=plan.text,
+)
 
 print("Workspace :", impl.workspace)
 print("Files     :", sorted(impl.files))
