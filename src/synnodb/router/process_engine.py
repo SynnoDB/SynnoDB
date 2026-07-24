@@ -30,6 +30,31 @@ from .engine import TimedTable
 log = logging.getLogger("synnodb.router.process_engine")
 
 
+def read_result_table(path: Path) -> pa.Table:
+    """Read an Arrow-IPC result file into an owning in-process Table.
+
+    Reads through an OSFile (a copy into in-process buffers), NOT a memory_map: a result is
+    deleted the instant it is read (it has exactly one consumer), and a memory_map would alias
+    the live file so a later unlink/rewrite of the same req_id, or a close()/rmtree, could mutate
+    or shrink it under an already-returned Table. Results are small (aggregations), so the copy is
+    negligible next to that correctness risk.
+    """
+    with pa.OSFile(str(path), "r") as source:
+        return pa.ipc.open_file(source).read_all()
+
+
+def read_and_delete_result(path: Path) -> pa.Table:
+    """Read a result file into memory and delete it - a result has exactly one consumer, so it
+    must never outlive the read (deleted on a read failure too). The serving path and the
+    validation path both funnel through here so the read semantics and the delete stay in one
+    place - a future result reader inherits both instead of silently reopening the stale-file leak.
+    """
+    try:
+        return read_result_table(path)
+    finally:
+        path.unlink(missing_ok=True)
+
+
 class ProcessEngine:
     """Runs a compiled engine in ``workspace`` against ``parquet_dir`` via HotpatchProc."""
 
@@ -190,8 +215,9 @@ class ProcessEngine:
             )
         try:
             # Exact, typed: the engine built Arrow (decimal128 from its int128 accumulators),
-            # bit-identical to DuckDB.
-            table = self._read_arrow(arrow_path)
+            # bit-identical to DuckDB. read_and_delete_result deletes the file the instant it is
+            # read, so nothing is left on disk once it has been handed back to the caller.
+            table = read_and_delete_result(arrow_path)
         except Exception as exc:
             # A truncated/corrupt result (engine crashed mid-write) must surface the engine's own
             # diagnostics, not an opaque pyarrow/IO error from deep in the read.
@@ -246,13 +272,9 @@ class ProcessEngine:
         self._loaded_data = True
 
     def _read_arrow(self, path: Path) -> pa.Table:
-        # Own the result: read the IPC file through an OSFile (a copy into in-process buffers) and
-        # close it, so the returned Table is a true snapshot. A memory_map would instead alias the
-        # live file, and a later run() (which unlinks+rewrites the same req_id) or close()/rmtree
-        # could mutate or shrink it under an already-returned Table - reading corrupt/garbage data.
-        # Results are small (aggregations), so the copy is negligible next to that correctness risk.
-        with pa.OSFile(str(path), "r") as source:
-            return pa.ipc.open_file(source).read_all()
+        # Instance-method shim over the module-level owning read (kept for the adversarial
+        # snapshot tests); see read_result_table for why this must not memory_map.
+        return read_result_table(path)
 
     def close(self) -> None:
         self._closed = True
