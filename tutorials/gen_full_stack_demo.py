@@ -28,11 +28,10 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-from synnodb.utils.path_utils import repo_root
-from synnodb.observability.logging.logger import setup_logging
-
 from workloads.stack.gen_stack_query import build_stack_queries_json
+
+from synnodb.observability.logging.logger import setup_logging
+from synnodb.utils.path_utils import repo_root
 
 setup_logging(logging.INFO)
 load_dotenv()  # let SYNNO_DATA_DIR / SYNNO_ENGINES_DIR / SYNNO_WORKSPACE come from a .env
@@ -132,7 +131,7 @@ print("Subsets  :", spec.exhaustive_sfs, "(benchmark:", spec.benchmark_sf, ")")
 # Storage plan.
 # Expected cost: ~$0.1
 # Expected time: ~2 mins / 6 turns (depending on model speed)
-plan = db.createStoragePlan()
+plan = db.createStoragePlan(only_from_cache=True)
 
 print(plan.text[:600], "...")
 
@@ -141,7 +140,7 @@ print(plan.text[:600], "...")
 # db.createBaseImpl(storage_plan_wandb_id=plan.run_id). Provide exactly one of the two.
 # Expected cost: ~$6
 # Expected time: ~1 hrs / 500 turns (depending on model speed)
-impl = db.createBaseImpl(storage_plan=plan.text)
+impl = db.createBaseImpl(storage_plan=plan.text, only_from_cache=True)
 
 print("Workspace :", impl.workspace)
 print("Files     :", sorted(impl.files))
@@ -150,4 +149,4 @@ print(f"Engine published to: {GENERATED_ENGINES_DIR}")
 
 # Optimization Loop
 # Takes ~10hrs, $50
-impl = db.runOptimLoop(base_impl=impl)
+impl = db.runOptimLoop(base_impl=impl, only_from_cache=True)
