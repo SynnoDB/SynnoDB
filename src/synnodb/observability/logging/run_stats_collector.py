@@ -13,6 +13,7 @@ from openai.types.responses.response_function_shell_tool_call import (
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_output_message import ResponseOutputMessage
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 
 from synnodb.conversations.prompts_gen import parse_supervision_output
 from synnodb.llm.sdk.agents_sdk.openai_token_usage import (
@@ -571,13 +572,14 @@ def get_response_id(output: ModelResponse):
         o
         for o in output.output
         if isinstance(o, ResponseOutputMessage)
+        or isinstance(o, ResponseReasoningItem)
         or isinstance(o, ResponseFunctionShellToolCall)
         or isinstance(o, ResponseApplyPatchToolCall)
         or isinstance(o, ResponseFunctionToolCall)
     ]
     if len(msgs) == 0:
         logger.warning(
-            "No ResponseOutputMessage in output (reasoning-only response). Skipping cache status."
+            "No response item with a usable response ID in output. Skipping cache status."
         )
         return None
 
