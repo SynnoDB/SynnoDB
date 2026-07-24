@@ -129,8 +129,6 @@ print("Subsets  :", spec.exhaustive_sfs, "(benchmark:", spec.benchmark_sf, ")")
 #    auto-publish the binary into GENERATED_ENGINES_DIR.
 
 # Storage plan.
-# Expected cost: ~$0.1
-# Expected time: ~2 mins / 6 turns (depending on model speed)
 plan = db.createStoragePlan()
 
 print(plan.text[:600], "...")
@@ -138,8 +136,6 @@ print(plan.text[:600], "...")
 # Base implementation. We feed the plan content straight in via storage_plan=plan.text, so this
 # step needs no W&B. If you instead chain off a logged storage-plan run, pass its run id with
 # db.createBaseImpl(storage_plan_wandb_id=plan.run_id). Provide exactly one of the two.
-# Expected cost: ~$6
-# Expected time: ~1 hrs / 500 turns (depending on model speed)
 impl = db.createBaseImpl(
     storage_plan=plan.text,
 )
@@ -150,5 +146,4 @@ print()
 print(f"Engine published to: {GENERATED_ENGINES_DIR}")
 
 # Optimization Loop
-# Takes ~10hrs, $50
-impl = db.runOptimLoop(base_impl=impl, only_from_cache=True)
+impl = db.runOptimLoop(base_impl=impl)
