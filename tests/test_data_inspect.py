@@ -332,6 +332,74 @@ def test_only_from_cache_raises_on_miss(tmp_path):
         tool("SELECT count(*) AS n FROM orders")
 
 
+@pytest.mark.parametrize("sql", ["SELECT 1", ""])
+def test_only_from_cache_without_cache_dir_never_falls_back_live(tmp_path, sql):
+    """Replay without cache machinery is a configuration error, including for a gate rejection.
+
+    In particular, a missing cache_path must not bypass the miss check and execute a valid query
+    against the dataset."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        only_from_cache=True,
+    )
+    with pytest.raises(ValueError, match="no cache_dir"):
+        tool(sql)
+    assert tool._cons == {}, "cache-only configuration errors must not open the dataset"
+
+
+def test_only_from_cache_gate_miss_does_not_create_or_write_cache(tmp_path):
+    """The legacy gate fallback is pure: it may reproduce an old uncached rejection, but replay
+    must not create the cache directory or backfill the missing entry."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    cache_dir = tmp_path / "missing_cache"
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        only_from_cache=True,
+    )
+
+    assert not cache_dir.exists(), "constructing a replay must not create cache state"
+    assert tool("").startswith("Error: empty SQL query")
+    assert tool("SUMMARIZE nation; SUMMARIZE orders").startswith(
+        "Error: query_data runs one statement per call"
+    )
+    assert tool("DROP TABLE nation").startswith(
+        "Error: query_data is strictly read-only"
+    )
+    assert not cache_dir.exists(), "gate fallbacks must not backfill the replay cache"
+
+
+def test_only_from_cache_does_not_chmod_read_only_cache(tmp_path):
+    """Opening a replay leaves existing cache-directory metadata untouched."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_dir.chmod(0o555)
+    try:
+        tool = DataInspectTool(
+            workload_provider=_provider(base, ServeFrom.DUCKDB),
+            cache_dir=cache_dir,
+            only_from_cache=True,
+        )
+        assert cache_dir.stat().st_mode & 0o777 == 0o555
+        assert tool("").startswith("Error: empty SQL query")
+        assert not list(cache_dir.glob("*.pkl"))
+        assert cache_dir.stat().st_mode & 0o777 == 0o555
+    finally:
+        cache_dir.chmod(0o755)
+
+
 def test_row_cap_is_part_of_cache_key(tmp_path):
     """The row cap participates in the key, so the same SQL at a different cap is not served the
     wrong cached rendering."""

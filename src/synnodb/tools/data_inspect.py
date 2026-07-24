@@ -183,7 +183,8 @@ class DataInspectTool:
 
         # Disk cache, keyed by query + row cap + subset identity. Disabled (None) when no cache
         # dir is supplied, so the tool still works standalone. do_not_cache runs live but never
-        # writes; only_from_cache refuses to run anything not already cached (deterministic replay).
+        # writes; only_from_cache reads an existing cache without creating/chmodding it and refuses
+        # any live data access (deterministic replay).
         self.cache_dir = cache_dir
         self.do_not_cache = do_not_cache
         self.only_from_cache = only_from_cache
@@ -191,8 +192,20 @@ class DataInspectTool:
         # Report every inspection to the live dashboard / supervisor activity log, exactly like the
         # shell / compile / run tools. Optional so the tool still works standalone (e.g. in tests).
         self.run_stats_collector = run_stats_collector
-        if self.cache_dir is not None:
+        if self._cache_writes_enabled:
             utils.create_dir_and_set_permissions(self.cache_dir)
+
+    @property
+    def _cache_writes_enabled(self) -> bool:
+        """Whether this instance may create or add to the cache.
+
+        Keep directory setup and pickle writes behind the same predicate so replay cannot mutate
+        cache metadata during construction and then appear read-only at the call site."""
+        return (
+            self.cache_dir is not None
+            and not self.do_not_cache
+            and not self.only_from_cache
+        )
 
     @staticmethod
     def _default_inspect_sf(workload_provider: Any) -> float:
@@ -340,10 +353,19 @@ class DataInspectTool:
                 )
                 return cached.output, status, True
 
+        # Strict replay without a configured cache cannot be honoured. In particular, do not let
+        # the missing cache_path bypass the miss check below and turn only_from_cache into a live
+        # inspection mode.
+        if self.only_from_cache and cache_path is None:
+            raise ValueError(
+                "query_data cannot honor only_from_cache because no cache_dir is configured."
+            )
+
         # The gates: outcomes decided from the SQL text alone, never touching the data. Cached
         # like every other decided outcome (at zero runtime), and kept ahead of the
         # only_from_cache miss-check so a recording made before rejections were cached still
-        # replays - the gate then re-derives the text live instead of raising.
+        # replays - the gate then re-derives the text live instead of raising. _finish keeps that
+        # compatibility fallback read-only, so it cannot backfill or alter the recorded cache.
         if not sql:
             return self._finish(
                 "Error: empty SQL query.", "empty", 0.0, cache_path, hash_payload
@@ -423,7 +445,7 @@ class DataInspectTool:
         """Cache one live outcome - a result set, a SQL error, a timeout, or a gate rejection
         alike - and hand it back. The status is stored next to the text, so a replay reports the
         recorded verdict as-is."""
-        if cache_path is not None and not self.do_not_cache:
+        if cache_path is not None and self._cache_writes_enabled:
             utils.dump_pickle(
                 cache_path,
                 DataInspectCacheType(
