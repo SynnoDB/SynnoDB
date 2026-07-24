@@ -124,7 +124,6 @@ order by
             ],
         )
 
-
     def test_inner_window_order_by_ignored(self):
         # The ORDER BY inside the window function must not be picked up; only the
         # top-level ORDER BY year, n desc determines the result row order.
@@ -189,9 +188,7 @@ class TestExtractOrderByColumnsExpressions(unittest.TestCase):
     def test_positional_references(self):
         # ORDER BY 1, 2 references select-list positions; they survive as literals.
         sql = "select a, b from t order by 1, 2 desc"
-        self.assertEqual(
-            extract_order_by_columns(sql), [("1", "ASC"), ("2", "DESC")]
-        )
+        self.assertEqual(extract_order_by_columns(sql), [("1", "ASC"), ("2", "DESC")])
 
     def test_qualified_column(self):
         sql = "select t.a from t order by t.a desc"
@@ -243,9 +240,7 @@ class TestExtractOrderByColumnsExpressions(unittest.TestCase):
 
     def test_desc_then_asc_same_column(self):
         sql = "select a from t order by a desc, a asc"
-        self.assertEqual(
-            extract_order_by_columns(sql), [("a", "DESC"), ("a", "ASC")]
-        )
+        self.assertEqual(extract_order_by_columns(sql), [("a", "DESC"), ("a", "ASC")])
 
 
 class TestExtractOrderByColumnsStructure(unittest.TestCase):
@@ -285,9 +280,7 @@ class TestExtractOrderByColumnsStructure(unittest.TestCase):
 
     def test_distinct_on(self):
         sql = "select distinct on (a) a, b from t order by a, b desc"
-        self.assertEqual(
-            extract_order_by_columns(sql), [("a", "ASC"), ("b", "DESC")]
-        )
+        self.assertEqual(extract_order_by_columns(sql), [("a", "ASC"), ("b", "DESC")])
 
     def test_scalar_subquery_alias_in_order_by(self):
         sql = "select (select max(x) from u) as m from t order by m"
