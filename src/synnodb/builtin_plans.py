@@ -45,6 +45,7 @@ def base_impl_plan(storage_plan_text: str | None = None) -> ConversationPlan:
         prepare=PrepareFeatures.base(storage_plan_text=storage_plan_text),
         stages=_base_impl_builder.build,
         supervision=SupervisionPolicy.STRICT,
+        publishes_engine=True,
         result=build_base_impl,
     )
 
@@ -57,6 +58,7 @@ def optim_plan(plan_source: str = "duckdb") -> ConversationPlan:
         supervision=SupervisionPolicy.RELAXED,
         finish_interactive=True,
         offer_trace_option=True,  # collect fine-grained perf traces
+        publishes_engine=True,
         result=build_optimized,
     )
 
@@ -69,6 +71,7 @@ def mt_plan() -> ConversationPlan:
         supervision=SupervisionPolicy.RELAXED,
         finish_interactive=True,
         offer_trace_option=True,
+        publishes_engine=True,
         result=build_multithreaded,
     )
 

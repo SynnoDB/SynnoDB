@@ -670,6 +670,7 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
         workload_spec,
         getattr(args, "wandb_run_id", None),
         run_tool=run_tool,
+        publishes_engine=plan.publishes_engine,
         threads=getattr(args, "target_threads", None),
     )
 
@@ -796,13 +797,23 @@ def _publish_generated_engine(
     workload_spec,
     run_id,
     run_tool,
+    publishes_engine,
     threads=None,
 ):
     """Publish the engine produced by this run for the drop-in router to auto-discover.
 
-    Best-effort: only base/optimized runs leave a ``db`` binary, an engines directory must be
-    configured, and the parquet the engine serves must exist. Any failure is logged and
-    swallowed so it never fails a generation run.
+    Best-effort: the plan must declare an engine-producing run (``publishes_engine``), an
+    engines directory must be configured, and the parquet the engine serves must exist. Any
+    failure is logged and swallowed so it never fails a generation run.
+
+    Whether this function runs its gate must not depend on live-vs-replay state: the
+    conversation's final snapshot is whatever the last snapshot-restoring step left behind,
+    and the gate's validations restore snapshots when they replay from cache. That is why
+    the decision comes from the plan (``publishes_engine``) instead of probing for the
+    ``db`` binary - a cache replay compiles nothing, so a binary probe would skip the gate
+    on replay only, ending the run on a different snapshot than the live run and missing
+    every downstream snapshot-keyed cache. The binary is probed only after the gate, to
+    decide whether there is anything on disk to actually ship.
 
     The publish is gated on a cache-bypassed live re-validation of the queries being published:
     *run_tool* re-compiles and re-runs them with the validation cache disabled, producing a
@@ -819,7 +830,7 @@ def _publish_generated_engine(
     shm-capable there is no parquet fallback, so it is not published at all.
     """
     try:
-        if not (workspace_path / "db").exists():
+        if not publishes_engine:
             return  # not an engine-producing run (e.g. storage plan)
         from synnodb.duckdb_compat.discovery import resolve_engines_dir
         from synnodb.workloads.engine_publish import publish_from_provider
@@ -852,6 +863,17 @@ def _publish_generated_engine(
                 "publish: final live validation did not pass (verdict=%s); NOT publishing the "
                 "engine in %s",
                 receipt.verdict,
+                workspace_path,
+            )
+            return
+
+        if not (workspace_path / "db").exists():
+            # The gate above replayed entirely from cache, so no binary was ever
+            # compiled to disk. The engine was published by the live run that
+            # populated those cache entries; there is nothing new to ship.
+            logger.info(
+                "publish: no compiled 'db' binary in %s (fully cache-replayed run); "
+                "skipping the file publish",
                 workspace_path,
             )
             return

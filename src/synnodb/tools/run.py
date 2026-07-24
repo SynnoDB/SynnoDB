@@ -15,6 +15,7 @@ from synnodb.cpp_runner.hotpatch.hotpatch_proc import (
 from synnodb.cpp_runner.hotpatch.pool import HotpatchPool
 from synnodb.cpp_runner.runtime_reset import warm_runtime_in_use
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.synth_framework.git_snapshotter import RESULT_FILE_PATTERNS
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.tools.validate.query_validator_class import (
     ExecCallbackResult,
@@ -801,9 +802,7 @@ def delete_result_files(workspace_path: Path):
     # are stable across iterations, so an uncleaned file from a crashed run would otherwise be
     # silently validated as the current run's output.
     result_files = [
-        p
-        for pattern in ("result*.arrow", "result*.csv")
-        for p in workspace_path.rglob(pattern)
+        p for pattern in RESULT_FILE_PATTERNS for p in workspace_path.rglob(pattern)
     ]
     if result_files:
         logger.info(f"Deleting existing result files ({len(result_files)} files).")

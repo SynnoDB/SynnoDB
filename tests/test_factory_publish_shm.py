@@ -40,8 +40,10 @@ class _FakeRunTool:
         self._scale_factor = scale_factor
         self._verdict = verdict
         self._planes = planes
+        self.gate_calls = 0
 
     def validate_for_publish(self, query_ids, **_):
+        self.gate_calls += 1
         return ValidationReceipt(
             snapshot_id="fake-snapshot",
             build_ids=engine_build_ids(self._workspace),
@@ -69,6 +71,31 @@ def _tpch_available() -> bool:
 needs_tpch = pytest.mark.skipif(
     not _tpch_available(), reason="DuckDB tpch extension unavailable"
 )
+
+
+def _tpch_parquet_provider(tmp_path):
+    """A tpch workload provider over a freshly generated sf0.01 parquet subset
+    under ``tmp_path/data`` - the standard fixture for publish-path tests.
+    Returns ``(provider, data_dir)``."""
+    from synnodb.utils.utils import DBStorage
+    from synnodb.workloads.workload_provider_olap import OLAPWorkloadProvider
+
+    data = tmp_path / "data"
+    sf_dir = data / "sf0.01"
+    sf_dir.mkdir(parents=True)
+    con = duckdb.connect()
+    con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
+    prov = OLAPWorkloadProvider(
+        benchmark="tpch",
+        base_parquet_dir=data,
+        db_storage=DBStorage.IN_MEMORY,
+        bespoke_ssd_storage_dir=None,
+        query_ids=["1"],
+    )
+    for t in prov.dataset_tables:
+        con.execute(f"COPY {t} TO '{sf_dir / (t + '.parquet')}' (FORMAT parquet)")
+    con.close()
+    return prov, data
 
 
 # ── the shm-capability probe (reads the compiled loader) ───────────────────
@@ -152,26 +179,7 @@ def test_factory_publish_downgrades_shm_to_parquet_only(tmp_path, monkeypatch):
     """A shm-capable loader is still published parquet-only when the receipt only proves the
     parquet plane - generation does not validate shm, so the shm plane is withheld (not shipped
     unverified). The engine publishes and serves; it just does not advertise the shm hot-load."""
-    from synnodb.utils.utils import DBStorage
-    from synnodb.workloads.workload_provider_olap import (
-        OLAPWorkloadProvider,
-    )
-
-    data = tmp_path / "data"
-    sf_dir = data / "sf0.01"
-    sf_dir.mkdir(parents=True)
-    con = duckdb.connect()
-    con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
-    prov = OLAPWorkloadProvider(
-        benchmark="tpch",
-        base_parquet_dir=data,
-        db_storage=DBStorage.IN_MEMORY,
-        bespoke_ssd_storage_dir=None,
-        query_ids=["1"],
-    )
-    for t in prov.dataset_tables:
-        con.execute(f"COPY {t} TO '{sf_dir / (t + '.parquet')}' (FORMAT parquet)")
-    con.close()
+    prov, data = _tpch_parquet_provider(tmp_path)
 
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -191,6 +199,7 @@ def test_factory_publish_downgrades_shm_to_parquet_only(tmp_path, monkeypatch):
         types.SimpleNamespace(benchmark_sf=0.01),
         "run-x",
         run_tool=_FakeRunTool(ws, 0.01),
+        publishes_engine=True,
         threads=4,
     )
 
@@ -201,29 +210,11 @@ def test_factory_publish_downgrades_shm_to_parquet_only(tmp_path, monkeypatch):
     assert {q.query_id for q in man.queries} == {"1"}
 
 
+@needs_tpch
 def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
     """The whole point of the gate: a final validation that does not pass means the engine is not
     published, even though everything else (db binary, parquet, engines dir) is in place."""
-    from synnodb.utils.utils import DBStorage
-    from synnodb.workloads.workload_provider_olap import (
-        OLAPWorkloadProvider,
-    )
-
-    data = tmp_path / "data"
-    sf_dir = data / "sf0.01"
-    sf_dir.mkdir(parents=True)
-    con = duckdb.connect()
-    con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
-    prov = OLAPWorkloadProvider(
-        benchmark="tpch",
-        base_parquet_dir=data,
-        db_storage=DBStorage.IN_MEMORY,
-        bespoke_ssd_storage_dir=None,
-        query_ids=["1"],
-    )
-    for t in prov.dataset_tables:
-        con.execute(f"COPY {t} TO '{sf_dir / (t + '.parquet')}' (FORMAT parquet)")
-    con.close()
+    prov, data = _tpch_parquet_provider(tmp_path)
 
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -243,33 +234,60 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
         types.SimpleNamespace(benchmark_sf=0.01),
         "run-x",
         run_tool=_FakeRunTool(ws, 0.01, verdict="fail"),
+        publishes_engine=True,
     )
 
     assert not engines.exists() or not list(engines.glob("*/manifest.json"))
 
 
-@needs_tpch
-def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch):
-    from synnodb.utils.utils import DBStorage
-    from synnodb.workloads.workload_provider_olap import (
-        OLAPWorkloadProvider,
+def test_factory_publish_runs_gate_but_skips_file_publish_without_binary(
+    tmp_path, monkeypatch
+):
+    """A fully cache-replayed run compiles no ``db`` binary: the gate must still run
+    (see ``_publish_generated_engine``); only the file publish itself is skipped."""
+    data = tmp_path / "data"
+    (data / "sf0.01").mkdir(parents=True)  # subset dir only; nothing reads parquet
+    ws = tmp_path / "ws"
+    ws.mkdir()  # no db binary: the replay case
+
+    engines = tmp_path / "engines"
+    monkeypatch.setenv("SYNNO_ENGINES_DIR", str(engines))
+
+    run_tool = _FakeRunTool(ws, 0.01)
+    _publish_generated_engine(
+        ws,
+        None,
+        ["1"],
+        data,
+        types.SimpleNamespace(benchmark_sf=0.01),
+        "run-x",
+        run_tool=run_tool,
+        publishes_engine=True,
     )
 
-    data = tmp_path / "data"
-    sf_dir = data / "sf0.01"
-    sf_dir.mkdir(parents=True)
-    con = duckdb.connect()
-    con.execute("INSTALL tpch; LOAD tpch; CALL dbgen(sf=0.01)")
-    prov = OLAPWorkloadProvider(
-        benchmark="tpch",
-        base_parquet_dir=data,
-        db_storage=DBStorage.IN_MEMORY,
-        bespoke_ssd_storage_dir=None,
-        query_ids=["1"],
+    assert run_tool.gate_calls == 1  # the gate ran (and would restore snapshots)
+    assert not engines.exists() or not list(engines.glob("*/manifest.json"))
+
+
+def test_factory_publish_skips_gate_for_non_engine_plans(tmp_path):
+    """A plan that declares no engine (e.g. createStoragePlan) never runs the gate."""
+    run_tool = _FakeRunTool(tmp_path, 0.01)
+    _publish_generated_engine(
+        tmp_path,
+        None,
+        ["1"],
+        tmp_path,
+        types.SimpleNamespace(benchmark_sf=0.01),
+        "run-x",
+        run_tool=run_tool,
+        publishes_engine=False,
     )
-    for t in prov.dataset_tables:
-        con.execute(f"COPY {t} TO '{sf_dir / (t + '.parquet')}' (FORMAT parquet)")
-    con.close()
+    assert run_tool.gate_calls == 0
+
+
+@needs_tpch
+def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch):
+    prov, data = _tpch_parquet_provider(tmp_path)
 
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -288,6 +306,7 @@ def test_factory_publish_skips_shm_for_a_disk_only_loader(tmp_path, monkeypatch)
         types.SimpleNamespace(benchmark_sf=0.01),
         "run-x",
         run_tool=_FakeRunTool(ws, 0.01),
+        publishes_engine=True,
     )
 
     man = EngineManifest.read(next(engines.glob("*/manifest.json")))
@@ -351,6 +370,7 @@ def test_factory_publish_native_ships_shm_only(tmp_path, monkeypatch):
         get_workload_spec("native_pub"),
         "run-native",
         run_tool=_FakeRunTool(ws, 1.0, planes=(PLANE_SHM,)),
+        publishes_engine=True,
     )
 
     man = EngineManifest.read(next(engines.glob("*/manifest.json")))

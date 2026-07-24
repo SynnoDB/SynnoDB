@@ -832,7 +832,10 @@ class SynnoDB:
             source_kind="optimized implementation",
         )
         return self.run_synthesis(  # type: ignore[return-value]
-            mt_plan(), start=commit_hash, verbose=verbose, only_from_cache=only_from_cache
+            mt_plan(),
+            start=commit_hash,
+            verbose=verbose,
+            only_from_cache=only_from_cache,
         )
 
     def checkSfCorrectness(

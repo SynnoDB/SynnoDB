@@ -76,11 +76,15 @@ class CachedCompiler(Compiler):
         of (output, from_cache).
         """
 
+        # skip_cache overwrite self.only_from_cache if set. This is useful for testing, where we want to force a rebuild even if the cache is available.
+
         is_cached, cached_compile, cache_path, compile_key_hash, hash_payload = (
             self._check_answer_from_cache(current_git_snapshot)
         )
         if is_cached and not skip_cache:
-            # restore compiled binary from binary cache
+            # Serve the recorded compiler verdict. The binary itself is not
+            # cached: callers that need one on disk must trigger a live build
+            # (see recompile_if_necessary in the run tool).
             assert cached_compile is not None
 
             if self.runtime_tracker is not None:
@@ -112,7 +116,7 @@ class CachedCompiler(Compiler):
             )
 
             logger.debug(
-                f"Saved compile result to cache: {cache_path} (including binary= {output is None})"
+                f"Saved compile result to cache: {cache_path} (succeeded={output is None})"
             )
 
         return output, False, compile_key_hash
