@@ -76,7 +76,11 @@ class CachedCompiler(Compiler):
         of (output, from_cache).
         """
 
-        # skip_cache overwrite self.only_from_cache if set. This is useful for testing, where we want to force a rebuild even if the cache is available.
+        # skip_cache overrides self.only_from_cache: a caller passing skip_cache=True
+        # explicitly needs a live build (the cache stores only the compiler verdict,
+        # never the binary), so it must compile even in an only-from-cache replay.
+        # The publish gate depends on this: a fully cache-replayed run has no `db`
+        # binary on disk, and its forced rebuild is what produces the engine to ship.
 
         is_cached, cached_compile, cache_path, compile_key_hash, hash_payload = (
             self._check_answer_from_cache(current_git_snapshot)
@@ -93,7 +97,7 @@ class CachedCompiler(Compiler):
             assert cached_compile is not None
             return cached_compile.outputs, True, compile_key_hash
 
-        if self.only_from_cache:
+        if self.only_from_cache and not skip_cache:
             raise Exception(
                 f"Result not found in cache for key {compile_key_hash} and only_from_cache is set. Cache path: {cache_path}"
             )
@@ -102,8 +106,15 @@ class CachedCompiler(Compiler):
         compile_start_time = time.perf_counter()
         output = super().build()
 
-        # store output in cache
-        if cache_path is not None and write_cache and not self.do_not_cache:
+        # Store the output in the cache. An only-from-cache replay never writes: its
+        # forced rebuilds (publish gate) must not overwrite the recorded chain with a
+        # possibly non-deterministic fresh compile output.
+        if (
+            cache_path is not None
+            and write_cache
+            and not self.do_not_cache
+            and not self.only_from_cache
+        ):
             utils.dump_pickle(
                 cache_path,
                 CompileCacheType(

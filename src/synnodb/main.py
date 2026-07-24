@@ -812,8 +812,10 @@ def _publish_generated_engine(
     the decision comes from the plan (``publishes_engine``) instead of probing for the
     ``db`` binary - a cache replay compiles nothing, so a binary probe would skip the gate
     on replay only, ending the run on a different snapshot than the live run and missing
-    every downstream snapshot-keyed cache. The binary is probed only after the gate, to
-    decide whether there is anything on disk to actually ship.
+    every downstream snapshot-keyed cache. The gate itself then produces the binary: its
+    ``force_compile`` rebuild is always executed live (even in an only-from-cache replay,
+    where the conversation compiled nothing to disk), so a passing receipt implies the
+    freshly built ``db`` is present to ship and its build-ids match the receipt.
 
     The publish is gated on a cache-bypassed live re-validation of the queries being published:
     *run_tool* re-compiles and re-runs them with the validation cache disabled, producing a
@@ -863,17 +865,6 @@ def _publish_generated_engine(
                 "publish: final live validation did not pass (verdict=%s); NOT publishing the "
                 "engine in %s",
                 receipt.verdict,
-                workspace_path,
-            )
-            return
-
-        if not (workspace_path / "db").exists():
-            # The gate above replayed entirely from cache, so no binary was ever
-            # compiled to disk. The engine was published by the live run that
-            # populated those cache entries; there is nothing new to ship.
-            logger.info(
-                "publish: no compiled 'db' binary in %s (fully cache-replayed run); "
-                "skipping the file publish",
                 workspace_path,
             )
             return

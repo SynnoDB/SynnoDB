@@ -240,15 +240,16 @@ def test_factory_publish_refuses_on_failed_validation(tmp_path, monkeypatch):
     assert not engines.exists() or not list(engines.glob("*/manifest.json"))
 
 
-def test_factory_publish_runs_gate_but_skips_file_publish_without_binary(
-    tmp_path, monkeypatch
-):
-    """A fully cache-replayed run compiles no ``db`` binary: the gate must still run
-    (see ``_publish_generated_engine``); only the file publish itself is skipped."""
+def test_factory_publish_runs_gate_and_refuses_without_binary(tmp_path, monkeypatch):
+    """The real gate's forced live compile always leaves a ``db`` binary, even on a fully
+    cache-replayed run. A gate that minted a pass receipt WITHOUT producing one (this fake)
+    is therefore an inconsistent state: the gate must still run (see
+    ``_publish_generated_engine``), and the receipt identity check then refuses the publish
+    (no build-id on disk) instead of shipping an unidentifiable engine."""
     data = tmp_path / "data"
     (data / "sf0.01").mkdir(parents=True)  # subset dir only; nothing reads parquet
     ws = tmp_path / "ws"
-    ws.mkdir()  # no db binary: the replay case
+    ws.mkdir()  # no db binary despite a pass receipt
 
     engines = tmp_path / "engines"
     monkeypatch.setenv("SYNNO_ENGINES_DIR", str(engines))

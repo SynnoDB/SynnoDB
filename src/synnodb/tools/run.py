@@ -425,7 +425,10 @@ class RunTool:
         validated, the scale factors covered, and a pass/fail verdict.
 
         ``force_compile=True`` rebuilds the binary that publish then ships (so the recorded
-        build-ids match what is copied). ``force_live`` is disabled: ideally it would skip the
+        build-ids match what is copied). The rebuild is always live - the compile cache stores
+        verdicts, never binaries, and skip_cache overrides only_from_cache - so even a fully
+        cache-replayed run (including an only-from-cache replay) leaves a fresh ``db`` binary
+        on disk here. ``force_live`` is disabled: ideally it would skip the
         validation cache so a since-broken engine could not be blessed by an earlier cached
         success, but forcing a live re-execution re-snapshots an already-captured build and trips
         the snapshot-name uniqueness assert. Re-enable once snapshot() tolerates re-snapshotting
