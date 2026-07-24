@@ -6,7 +6,6 @@ immediately. This holds on both consumption paths: verification (compare to Duck
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
