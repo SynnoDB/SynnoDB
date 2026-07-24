@@ -12,20 +12,27 @@ matches, so joins collapse to near-empty and the correctness check becomes vacuo
 DuckDB both return nothing, so a broken join still "matches"). The sample has to follow the
 join graph.
 
-The algorithm (largest-table anchor + parent-ward propagation)
---------------------------------------------------------------
+The algorithm (per-island anchor + parent-ward propagation)
+-----------------------------------------------------------
 Stated over an arbitrary schema - a set of tables with row counts and a join graph ``G`` of
-undirected equi-join edges ``Ti.col <-> Tj.col``:
+undirected equi-join edges ``Ti.col <-> Tj.col``. ``G`` splits into connected components
+("islands"); tables that no workload query joins are singleton islands of their own. Each
+island is downscaled independently - there are by definition no edges between islands, so
+sampling them separately can never break a join:
 
-1. ``ANCHOR`` = the largest table. Sample a deterministic fraction ``f`` of it by hashing its
-   key columns: ``hash(key) % K < round(f*K)``. Deterministic (no RNG) so a subset is
-   reproducible and cache-keyable.
-2. Tables at or below a small-row threshold, and tables with no join path to the anchor, are
-   kept **whole** - cheap to keep, and dropping their rows would only lose join coverage.
-   Keeping a dimension whole is also what makes ``fact <-> dim`` joins resolve for every kept
-   fact row.
-3. Every other table is **propagated to** in a deterministic processing order (the anchor
-   first, then the rest by ``(distance-from-anchor, name)``). A table's kept set is the rows
+1. ``ANCHOR`` = per island, its largest table (**above** the whole-table threshold). Sample a
+   deterministic fraction ``f`` of each anchor by hashing its key columns:
+   ``hash(key) % K < round(f*K)``. Deterministic (no RNG) so a subset is reproducible and
+   cache-keyable. A single global anchor is wrong: it leaves every *other* island whole, so the
+   overall size barely shrinks when the largest table happens to sit in its own island (a huge
+   fact table no query touches). Anchoring each island is what makes the whole database shrink.
+2. Tables at or below a small-row threshold are kept **whole** - cheap to keep, and dropping
+   their rows would only lose join coverage. Keeping a dimension whole is also what makes
+   ``fact <-> dim`` joins resolve for every kept fact row. An island whose *largest* table is
+   still at or below the threshold has no anchor at all and is kept whole in full.
+3. Every other table is **propagated to** in a deterministic processing order (each island's
+   anchor first, then the rest by ``(distance-from-nearest-anchor, name)``). A table's kept set
+   is the rows
    joinable to a neighbour that is *already processed* (nearer the anchor, or an equal-distance
    sibling sorted earlier):
 
@@ -450,7 +457,7 @@ class SubsetTable:
 @dataclass
 class SubsetResult:
     fraction: float
-    anchor: str
+    anchors: list[str]  # one hash-sampled anchor per island (empty for the full subset)
     tables: list[SubsetTable] = field(default_factory=list)
 
 
@@ -516,12 +523,48 @@ class ReferentialDownscaler:
                 )
 
     def anchor(self) -> str:
-        """The largest table (ties broken by name for determinism)."""
+        """The largest table overall (ties broken by name for determinism). The global anchor is
+        one of the per-island anchors :meth:`plan_subset` samples - the largest of them."""
         return max(sorted(self.schema.tables), key=lambda t: self.schema.row_counts[t])
 
-    def _bfs_depth(self, anchor: str) -> dict[str, int]:
-        depth = {anchor: 0}
-        q: deque[str] = deque([anchor])
+    def _connected_components(self) -> list[set[str]]:
+        """The join graph's connected components over *every* table. A table with no join edge is
+        a singleton component of its own, so each is downscaled as its own island."""
+        seen: set[str] = set()
+        components: list[set[str]] = []
+        for start in self.schema.tables:
+            if start in seen:
+                continue
+            comp: set[str] = set()
+            stack = [start]
+            seen.add(start)
+            while stack:
+                u = stack.pop()
+                comp.add(u)
+                for _, v, _ in self.adjacency[u]:
+                    if v not in seen:
+                        seen.add(v)
+                        stack.append(v)
+            components.append(comp)
+        return components
+
+    def _island_anchors(self) -> set[str]:
+        """Each island's anchor: the largest table in a connected component, kept only when it
+        clears the whole-table threshold (an island of all-small tables has no anchor and stays
+        whole). Ties broken by name for determinism."""
+        counts = self.schema.row_counts
+        anchors: set[str] = set()
+        for comp in self._connected_components():
+            largest = max(sorted(comp), key=lambda t: counts[t])
+            if counts[largest] > self.whole_table_threshold:
+                anchors.add(largest)
+        return anchors
+
+    def _bfs_depth(self, anchors: Iterable[str]) -> dict[str, int]:
+        """Distance from each table to the nearest anchor (multi-source BFS). Every island has at
+        most one anchor, so within an island this is just the distance to that island's anchor."""
+        depth: dict[str, int] = {a: 0 for a in anchors}
+        q: deque[str] = deque(sorted(depth))
         while q:
             u = q.popleft()
             for _, v, _ in self.adjacency[u]:
@@ -555,25 +598,29 @@ class ReferentialDownscaler:
         if not (0.0 < fraction <= 1.0):
             raise ValueError(f"fraction must be in (0, 1], got {fraction}")
 
-        anchor = self.anchor()
         counts = self.schema.row_counts
-        depth = self._bfs_depth(anchor)
-        whole = {
-            t
-            for t in self.schema.tables
-            if t != anchor and counts[t] <= self.whole_table_threshold
-        }
 
-        result = SubsetResult(fraction=fraction, anchor=anchor)
         if fraction >= 1.0:
             # Benchmark subset: the full dataset, every table as-is.
+            result = SubsetResult(fraction=fraction, anchors=[])
             for t in self.schema.tables:
                 result.tables.append(
                     SubsetTable(t, "whole", f"SELECT * FROM {_quote_ident(t)}")
                 )
             return result
 
-        # anchor: deterministic hash sample
+        # One anchor per island (the largest table above the threshold in each component).
+        anchors = self._island_anchors()
+        depth = self._bfs_depth(anchors)
+        whole = {
+            t
+            for t in self.schema.tables
+            if t not in anchors and counts[t] <= self.whole_table_threshold
+        }
+
+        result = SubsetResult(fraction=fraction, anchors=sorted(anchors))
+
+        # Each anchor: deterministic hash sample at the same fraction.
         keep_cut = round(fraction * _HASH_MODULUS)
         if keep_cut <= 0:
             raise ValueError(
@@ -581,23 +628,26 @@ class ReferentialDownscaler:
                 f"{1.0 / _HASH_MODULUS:g} (hash resolution {_HASH_MODULUS}); the anchor sample "
                 "would be empty. Use a larger fraction."
             )
-        result.tables.append(
-            SubsetTable(
-                anchor,
-                "anchor",
-                f"SELECT * FROM {_quote_ident(anchor)} "
-                f"WHERE hash({self._sample_key(anchor)}) % {_HASH_MODULUS} < {keep_cut}",
+        for anchor in sorted(anchors):
+            result.tables.append(
+                SubsetTable(
+                    anchor,
+                    "anchor",
+                    f"SELECT * FROM {_quote_ident(anchor)} "
+                    f"WHERE hash({self._sample_key(anchor)}) % {_HASH_MODULUS} < {keep_cut}",
+                )
             )
-        )
 
-        # Deterministic processing order: anchor first, then by (distance-from-anchor, name). A
-        # table is restricted only by neighbours *earlier* in this order, so equal-distance
-        # siblings still restrict each other (the later-sorted one follows the edge).
+        # Deterministic processing order: every anchor first (depth 0), then the rest by
+        # (distance-from-nearest-anchor, name). A table is restricted only by neighbours *earlier*
+        # in this order, so equal-distance siblings still restrict each other (the later-sorted one
+        # follows the edge). Cross-island edges do not exist, so an island's propagation only ever
+        # references its own anchor's keep-set.
         ordered = sorted(
-            (t for t in self.schema.tables if t != anchor),
+            (t for t in self.schema.tables if t not in anchors),
             key=lambda t: (depth.get(t, 1 << 30), t),
         )
-        order_index = {t: i for i, t in enumerate([anchor, *ordered])}
+        order_index = {t: i for i, t in enumerate([*sorted(anchors), *ordered])}
 
         def semi_join_predicate(table: str) -> str | None:
             """OR-across-relationships semi-join predicate over already-processed, sampled
@@ -780,9 +830,10 @@ class ReferentialDownscaler:
     def _log_subset(self, plan: SubsetResult) -> None:
         total = sum(t.kept_rows or 0 for t in plan.tables)
         logger.info(
-            "Downscaled subset fraction=%s (anchor=%s): %d rows across %d tables",
+            "Downscaled subset fraction=%s (%d island anchor(s): %s): %d rows across %d tables",
             plan.fraction,
-            plan.anchor,
+            len(plan.anchors),
+            ", ".join(plan.anchors) or "-",
             total,
             len(plan.tables),
         )
