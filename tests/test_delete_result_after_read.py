@@ -130,7 +130,10 @@ def _run_check(out_path: Path, req_id: str, reference: pa.Table):
         out_path=out_path,
         cmd=None,
         stop_on_first_error=True,
-        all_query_ids=["1", "2"],  # > executed set: skip the all-queries wandb plot branch
+        all_query_ids=[
+            "1",
+            "2",
+        ],  # > executed set: skip the all-queries wandb plot branch
         stdout=None,
         stderr=None,
         trace_mode=False,
