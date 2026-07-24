@@ -326,6 +326,38 @@ def test_invalid_fraction_rejected(downscaler):
         downscaler.plan_subset(1.5)
 
 
+def test_sub_granularity_fraction_rejected_with_anchor(downscaler):
+    """A fraction below the hash granularity would sample an anchor to zero rows, so it is
+    rejected during planning - but only because there is an anchor to sample."""
+    with pytest.raises(ValueError, match="below the sampling granularity"):
+        downscaler.plan_subset(0.0001)
+
+
+def test_all_small_database_ignores_sub_granularity_fraction():
+    """When every connected component is at or below the whole-table threshold there is no anchor
+    to hash-sample, so the fraction is never used. A fraction below the hash granularity must still
+    produce the intended all-whole subset instead of being rejected during planning."""
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE dim AS SELECT i AS id FROM range(5) t(i)")
+        con.execute(
+            "CREATE TABLE fact AS SELECT i AS id, (i % 5) AS dim_id FROM range(8) t(i)"
+        )
+        queries = {"1": "SELECT * FROM fact f JOIN dim d ON f.dim_id = d.id"}
+        # threshold 10 -> both tables (5 and 8 rows) are below it, so the island has no anchor
+        ds = ReferentialDownscaler(con, sql_by_id=queries, whole_table_threshold=10)
+
+        plan = ds.plan_subset(0.0001)  # far below the 0.1% hash granularity
+        assert plan.anchors == []
+        assert all(t.mode == "whole" for t in plan.tables)
+
+        kept = {t.table: t.kept_rows for t in ds.materialize_temp_subset(0.0001).tables}
+        assert kept == {"dim": 5, "fact": 8}  # every table kept whole
+        ds.drop()
+    finally:
+        con.close()
+
+
 def test_self_referential_edge_rejected(synthetic_con):
     with pytest.raises(ValueError, match="[Ss]elf-referential"):
         ReferentialDownscaler(

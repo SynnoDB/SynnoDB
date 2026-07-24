@@ -618,25 +618,29 @@ class ReferentialDownscaler:
             if t not in anchors and counts[t] <= self.whole_table_threshold
         }
 
-        result = SubsetResult(fraction=fraction, anchors=sorted(anchors))
+        anchors_sorted = sorted(anchors)
+        result = SubsetResult(fraction=fraction, anchors=anchors_sorted)
 
-        # Each anchor: deterministic hash sample at the same fraction.
-        keep_cut = round(fraction * _HASH_MODULUS)
-        if keep_cut <= 0:
-            raise ValueError(
-                f"fraction {fraction} is below the sampling granularity "
-                f"{1.0 / _HASH_MODULUS:g} (hash resolution {_HASH_MODULUS}); the anchor sample "
-                "would be empty. Use a larger fraction."
-            )
-        for anchor in sorted(anchors):
-            result.tables.append(
-                SubsetTable(
-                    anchor,
-                    "anchor",
-                    f"SELECT * FROM {_quote_ident(anchor)} "
-                    f"WHERE hash({self._sample_key(anchor)}) % {_HASH_MODULUS} < {keep_cut}",
+        # Each anchor: deterministic hash sample at the same fraction. With no anchors every
+        # island is all-small and stays whole, so the fraction is never sampled - the granularity
+        # floor only applies when there is an anchor whose sample would otherwise be empty.
+        if anchors_sorted:
+            keep_cut = round(fraction * _HASH_MODULUS)
+            if keep_cut <= 0:
+                raise ValueError(
+                    f"fraction {fraction} is below the sampling granularity "
+                    f"{1.0 / _HASH_MODULUS:g} (hash resolution {_HASH_MODULUS}); the anchor sample "
+                    "would be empty. Use a larger fraction."
                 )
-            )
+            for anchor in anchors_sorted:
+                result.tables.append(
+                    SubsetTable(
+                        anchor,
+                        "anchor",
+                        f"SELECT * FROM {_quote_ident(anchor)} "
+                        f"WHERE hash({self._sample_key(anchor)}) % {_HASH_MODULUS} < {keep_cut}",
+                    )
+                )
 
         # Deterministic processing order: every anchor first (depth 0), then the rest by
         # (distance-from-nearest-anchor, name). A table is restricted only by neighbours *earlier*
