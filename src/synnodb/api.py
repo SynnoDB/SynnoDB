@@ -141,6 +141,11 @@ class SynnoConfig:
     disable_repo_sync: bool = False
     notify: bool = False
     do_not_cache: bool = False
+    # Replay mode: answer every effectful operation (LLM turn, shell command,
+    # apply_patch, compile, query run, data inspection) from the content-hashed
+    # cache and never call the LLM or touch the data. Raises on any cache miss.
+    # Orthogonal to do_not_cache (which still runs everything but writes no cache).
+    only_from_cache: bool = False
     verbose: bool = False  # stream DEBUG logs to the console (logfile is always DEBUG)
     workspace: str | None = None  # run output dir; None -> local ./output
     # DuckDB-style engine config options, with defaults. `threads` is the target degree
@@ -194,6 +199,7 @@ def _base_run_config(cfg: SynnoConfig) -> dict[str, Any]:
         wandb_project=cfg.wandb_project,
         disable_repo_sync=cfg.disable_repo_sync,
         do_not_cache=cfg.do_not_cache,
+        only_from_cache=cfg.only_from_cache,
         workspace_dir=cfg.workspace,
         verbose=cfg.verbose,
         threads=cfg.threads,
@@ -636,6 +642,7 @@ class SynnoDB:
         start: StageArtifact | str | None = None,
         storage_plan_snapshot: str | None = None,
         verbose: bool | None = None,
+        only_from_cache: bool | None = None,
     ) -> StageArtifact:
         """Execute a :class:`~synnodb.plan.ConversationPlan` to completion.
 
@@ -648,7 +655,9 @@ class SynnoDB:
         ``createBaseImpl``'s W&B path: the storage-plan text is recovered from
         that snapshot inside the run and injected into the workspace.
         ``verbose`` streams DEBUG logs to the console for this call (a logging
-        toggle, not a run-semantic override).
+        toggle, not a run-semantic override). ``only_from_cache`` replays this
+        call entirely from the cache (raising on any cache miss); both override
+        the driver defaults baked in from the config.
 
         Returns the plan's typed artifact, stamped with the workspace's prepare
         record (``prepare_features`` / ``parallelism``) so the run chains into
@@ -679,6 +688,10 @@ class SynnoDB:
         # always DEBUG regardless).
         if verbose is not None:
             run_config = dataclasses.replace(run_config, verbose=verbose)
+        if only_from_cache is not None:
+            run_config = dataclasses.replace(
+                run_config, only_from_cache=only_from_cache
+            )
         if cfg.extra_config:
             run_config = dataclasses.replace(run_config, **cfg.extra_config)
 
@@ -698,10 +711,14 @@ class SynnoDB:
         return dataclasses.replace(artifact, prepare_features=features)
 
     # ---- ergonomic named methods (thin wrappers over run_synthesis) -------
-    def createStoragePlan(self, *, verbose: bool | None = None) -> StoragePlan:
+    def createStoragePlan(
+        self, *, verbose: bool | None = None, only_from_cache: bool | None = None
+    ) -> StoragePlan:
         from synnodb.builtin_plans import storage_plan_plan
 
-        return self.run_synthesis(storage_plan_plan(), verbose=verbose)  # type: ignore[return-value]
+        return self.run_synthesis(  # type: ignore[return-value]
+            storage_plan_plan(), verbose=verbose, only_from_cache=only_from_cache
+        )
 
     def createBaseImpl(
         self,
@@ -709,6 +726,7 @@ class SynnoDB:
         *,
         storage_plan_wandb_id: Any = None,
         verbose: bool | None = None,
+        only_from_cache: bool | None = None,
     ) -> BaseImplementation:
         """Build a base implementation from a storage plan.
 
@@ -753,6 +771,7 @@ class SynnoDB:
             base_impl_plan(storage_plan_text=text),
             storage_plan_snapshot=storage_plan_snapshot,
             verbose=verbose,
+            only_from_cache=only_from_cache,
         )
 
     def runOptimLoop(
@@ -762,6 +781,7 @@ class SynnoDB:
         base_impl_wandb_id: Any = None,
         plan_source: str = "duckdb",
         verbose: bool | None = None,
+        only_from_cache: bool | None = None,
     ) -> OptimizedImplementation:
         """Optimize a base implementation. Provide exactly one of:
         - ``base_impl``: a ``BaseImplementation`` artifact (or raw git snapshot
@@ -785,7 +805,10 @@ class SynnoDB:
             source_kind="base implementation",
         )
         return self.run_synthesis(  # type: ignore[return-value]
-            optim_plan(plan_source=plan_source), start=commit_hash, verbose=verbose
+            optim_plan(plan_source=plan_source),
+            start=commit_hash,
+            verbose=verbose,
+            only_from_cache=only_from_cache,
         )
 
     def addMultiThreading(
@@ -794,6 +817,7 @@ class SynnoDB:
         *,
         optimized_wandb_id: Any = None,
         verbose: bool | None = None,
+        only_from_cache: bool | None = None,
     ) -> MultiThreadedImplementation:
         """Add multi-threading to an optimized implementation. Provide exactly one
         of ``optimized`` (an ``OptimizedImplementation`` artifact / raw snapshot
@@ -808,7 +832,10 @@ class SynnoDB:
             source_kind="optimized implementation",
         )
         return self.run_synthesis(  # type: ignore[return-value]
-            mt_plan(), start=commit_hash, verbose=verbose
+            mt_plan(),
+            start=commit_hash,
+            verbose=verbose,
+            only_from_cache=only_from_cache,
         )
 
     def checkSfCorrectness(
@@ -818,6 +845,7 @@ class SynnoDB:
         target_sf: float,
         source_wandb_id: Any = None,
         verbose: bool | None = None,
+        only_from_cache: bool | None = None,
     ) -> CorrectnessReport:
         """Validate an engine at a larger scale factor. Provide exactly one of
         ``source`` (any engine artifact / raw snapshot hash, W&B-free) or
@@ -839,5 +867,8 @@ class SynnoDB:
         if float(target_sf).is_integer():
             target_sf = int(target_sf)
         return self.run_synthesis(  # type: ignore[return-value]
-            check_sf_plan(target_sf), start=commit_hash, verbose=verbose
+            check_sf_plan(target_sf),
+            start=commit_hash,
+            verbose=verbose,
+            only_from_cache=only_from_cache,
         )

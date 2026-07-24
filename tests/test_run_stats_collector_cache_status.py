@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agents import ModelResponse
 from agents.usage import Usage
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
 
@@ -39,6 +40,21 @@ class TestRunStatsCollectorCacheStatus(unittest.TestCase):
         # No response id and no recorded status: conservatively treated as a real (uncached)
         # call, so cost accounting never under-counts an unidentifiable turn.
         self.assertFalse(collector._consume_llm_cache_status(_model_response(None)))
+
+    def test_reasoning_only_response_preserves_cached_status(self):
+        collector = _collector_for_cache_status_tests()
+        collector.record_llm_cache_status(
+            True,
+            response_id="reasoning-response",
+            request_hash="reasoning-request",
+        )
+        reasoning = ResponseReasoningItem.model_construct(
+            provider_data={"response_id": "reasoning-response"}
+        )
+        response = ModelResponse(output=[reasoning], usage=Usage(), response_id=None)
+
+        self.assertTrue(collector._consume_llm_cache_status(response))
+        self.assertEqual(collector.last_llm_hash, "reasoning-request")
 
     def test_record_apply_patch_rejected_marks_step_and_keeps_reason(self):
         collector = object.__new__(RunStatsCollector)

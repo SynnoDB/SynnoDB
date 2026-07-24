@@ -9,6 +9,7 @@ reasoning-only branch already does.
 from agents import ModelResponse
 from agents.usage import Usage
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 
 from synnodb.observability.logging.run_stats_collector import get_response_id
 
@@ -25,3 +26,12 @@ def test_returns_none_when_last_item_is_a_tool_call_without_provider_data():
 def test_returns_none_on_empty_output():
     resp = ModelResponse(output=[], usage=Usage(), response_id=None)
     assert get_response_id(resp) is None
+
+
+def test_returns_response_id_from_reasoning_only_output():
+    reasoning = ResponseReasoningItem.model_construct(
+        provider_data={"response_id": "reasoning-response"}
+    )
+    resp = ModelResponse(output=[reasoning], usage=Usage(), response_id=None)
+
+    assert get_response_id(resp) == "reasoning-response"
