@@ -145,7 +145,6 @@ class RunTool:
             int
         ] = 10000,  # restrict output to 10000 chars ~ 2.5 Thousand tokens
         num_threads: int = 1,  # run-wide DEFAULT degree of parallelism (a resolved core count, e.g. from resolve_target_cores(ctx.threads)); a per-stage override raises/lowers it via set_active_num_threads
-        delete_result_csv_before_execution: bool = True,  # this is important to make sure that we do not read old results from previous runs
         memory_budget_mb: (
             int | None
         ) = None,  # total RAM budget for the child engine; drives RLIMIT_AS and the generated frame-pool size. Only needed for disk-based storage runs.
@@ -168,7 +167,6 @@ class RunTool:
         # (LLM ``run`` calls, post-stage validation, benchmark) and clears afterwards.
         self.default_num_threads = num_threads
         self._active_num_threads: int | None = None
-        self.delete_result_csv_before_execution = delete_result_csv_before_execution
         self.memory_budget_mb = memory_budget_mb
         self.db_storage = db_storage
         self.include_mem_budget_for_in_mem_in_hashes = (
@@ -308,9 +306,9 @@ class RunTool:
 
         # Delete any result files written by a previous run so we never
         # accidentally read stale results if the child crashes before writing
-        # fresh ones.
-        if self.delete_result_csv_before_execution:
-            delete_result_files(self.cwd)
+        # fresh ones. This start-of-run sweep is the authoritative stale-guard: it is
+        # the one that survives this process being killed mid-run.
+        delete_result_files(self.cwd)
 
         #################
         # COMPILATION
@@ -386,29 +384,35 @@ class RunTool:
 
         # Guard the warm runtime against a concurrent resync for this whole run (see runtime_reset).
         result_list = []
-        with warm_runtime_in_use():
-            for batch in query_batches:
-                result = self.run_query_batch(
-                    batch,
-                    echo_output=echo_output,
-                    compile_used_cache=compile_used_cache,
-                    current_git_snapshot=current_git_snapshot,
-                    optimize=optimize,
-                    trace_mode=trace_mode,
-                    compile_key_hash=compile_key_hash,
-                    general_extra_env=extra_env,
-                    external_call=external_call,
-                    current_parallelism=current_parallelism,
-                    current_core_ids=current_core_ids,
-                    current_num_threads=current_num_threads,
-                    run_tool_mode=mode,
-                    force_live=force_live,
-                )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
-                result_list.append(result)
+        try:
+            with warm_runtime_in_use():
+                for batch in query_batches:
+                    result = self.run_query_batch(
+                        batch,
+                        echo_output=echo_output,
+                        compile_used_cache=compile_used_cache,
+                        current_git_snapshot=current_git_snapshot,
+                        optimize=optimize,
+                        trace_mode=trace_mode,
+                        compile_key_hash=compile_key_hash,
+                        general_extra_env=extra_env,
+                        external_call=external_call,
+                        current_parallelism=current_parallelism,
+                        current_core_ids=current_core_ids,
+                        current_num_threads=current_num_threads,
+                        run_tool_mode=mode,
+                        force_live=force_live,
+                    )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
+                    result_list.append(result)
 
-                if not result.success:
-                    # early return
-                    break
+                    if not result.success:
+                        # early return
+                        break
+        finally:
+            # Sweep any stragglers the per-read deletes cannot reach: an early break
+            # (stop_on_first_error) leaves the batch's unread results behind, and a skip_validate
+            # run never reads them at all. Keeps the workspace clean between runs.
+            delete_result_files(self.cwd)
 
         return result_list[-1]
 
@@ -799,11 +803,9 @@ def delete_result_files(workspace_path: Path):
     # Delete every prior result file - the exact Arrow result the engine writes now
     # (result_<req_id>.arrow) and the legacy CSV. Result names are keyed by request id and so
     # are stable across iterations, so an uncleaned file from a crashed run would otherwise be
-    # silently validated as the current run's output.
+    # silently validated as the current run's output. One recursive walk, filtered by suffix.
     result_files = [
-        p
-        for pattern in ("result*.arrow", "result*.csv")
-        for p in workspace_path.rglob(pattern)
+        p for p in workspace_path.rglob("result*") if p.suffix in (".arrow", ".csv")
     ]
     if result_files:
         logger.info(f"Deleting existing result files ({len(result_files)} files).")
