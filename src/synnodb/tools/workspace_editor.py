@@ -63,6 +63,28 @@ class ApplyPatchCacheType:
         self.activity_summary_entry = activity_summary_entry
 
 
+class ReadFileCacheType:
+    """Cache entry for a read_file call, keyed on the workspace snapshot state plus
+    the read arguments. Reads never mutate the workspace, so - unlike
+    ApplyPatchCacheType/ShellCacheType - the entry carries no post-op snapshot to
+    restore; it stores only what a faithful replay needs: the exact rendered result
+    the model saw and the verbatim activity-summary line (which feeds the
+    supervisor prompt and thus its LLM cache key). ``activity_summary_entry`` is
+    None for the read outcomes that never recorded one (missing file, directory)."""
+
+    def __init__(
+        self,
+        result: str,
+        hash_payload: str,
+        runtime_seconds: float,
+        activity_summary_entry: str | None,
+    ):
+        self.result = result
+        self.hash_payload = hash_payload
+        self.runtime_seconds = runtime_seconds
+        self.activity_summary_entry = activity_summary_entry
+
+
 class RejectedApplyPatchCacheType:
     """Cache entry for an edit-tool call rejected at argument-schema validation.
 
@@ -174,33 +196,99 @@ class WorkspaceEditor:
     def read_file(
         self, path: str, offset: int | None = None, limit: int | None = None
     ) -> str:
-        # Read primitive (sibling of write_file/replace_in_file). Never mutates
-        # the workspace, so - unlike the ops above - it does not go through
-        # _run_cached: the underlying file content is already reproducible from
-        # the deterministic snapshot state, and routing reads through the cache
-        # would only bloat the cache dir for no benefit.
+        # Read primitive (sibling of write_file/replace_in_file). Cached like the
+        # shell tool: keyed on the current snapshot hash plus the read arguments,
+        # a hit replays the exact rendered result (and activity-summary line) the
+        # model saw when the run was recorded, and a miss under only_from_cache
+        # fails loudly - it means the snapshot chain diverged from the recorded
+        # run. Unlike the mutating ops, a read creates no snapshot and a hit
+        # restores none: the workspace is unchanged either way, and leaving
+        # current_hash untouched keeps the cache keys of subsequent shell/edit
+        # ops identical to runs recorded before reads were cached.
         #
-        # Because it skips _run_cached, it also skips that wrapper's try/except,
-        # so it must convert a _resolve failure (e.g. a path outside the flat
-        # workspace root) into a graceful error string itself. A disallowed read
-        # is a recoverable tool failure the model should see, not an unhandled
-        # exception that crashes the whole run.
-        #
-        # Record the attempted path up front, before any early return:
-        # on_tool_start reset read_file_path to None and on_tool_end emits it, so
-        # a rejected read that returned before this ran would be logged with a
-        # null path and lose its diagnosability in the trace/live UI.
+        # Record the attempted path up front, before any early return or cache
+        # lookup: on_tool_start reset read_file_path to None and on_tool_end
+        # emits it, so a rejected read that returned before this ran would be
+        # logged with a null path and lose its diagnosability in the trace/live
+        # UI.
         self._run_stats_collector.log_read_file_stats(path)
+
+        if not self._cache_enabled():
+            # Strict replay must never silently fall back to a live read: without
+            # the cache machinery there is nothing to replay from, so honoring
+            # only_from_cache here means failing loudly, exactly like a miss.
+            if self._only_from_cache:
+                raise ValueError(
+                    "read_file cannot honor only_from_cache: the workspace-editor "
+                    "cache is disabled (missing snapshotter/cache_dir or "
+                    "do_not_cache is set)."
+                )
+            result, activity_summary_entry = self._read_file_impl(path, offset, limit)
+            self._record_activity_summary(activity_summary_entry)
+            return result
+
+        assert self._snapshotter is not None
+        payload = {
+            "snapshotter_hash": self._snapshotter.current_hash,
+            "op_type": "read_file",
+            "path": path,
+            "offset": offset,
+            "limit": limit,
+            "untracked_cpp_runner_content": self._untracked_cpp_runner_content,
+        }
+        hash_payload = utils.stable_json(payload)
+        cache_path = self._cache_path_for(utils.sha256(hash_payload))
+
+        if cache_path.exists():
+            cached = utils.load_pickle(cache_path, ReadFileCacheType)
+            assert cached is not None
+            if self._runtime_tracker is not None:
+                self._runtime_tracker.add_skipped_time(cached.runtime_seconds)
+            self._record_activity_summary(cached.activity_summary_entry)
+            self._run_stats_collector.record_read_file_cache_hit()
+            logger.debug(f"read_file ({path}) replayed from cache")
+            return cached.result
+
+        if self._only_from_cache:
+            raise ValueError(
+                f"read_file result not found in cache for {path} and only_from_cache "
+                f"is enabled. Cache path: {cache_path}\nPayload: {hash_payload}"
+            )
+
+        start = time.perf_counter()
+        result, activity_summary_entry = self._read_file_impl(path, offset, limit)
+        runtime_seconds = time.perf_counter() - start
+        self._record_activity_summary(activity_summary_entry)
+
+        utils.dump_pickle(
+            cache_path,
+            ReadFileCacheType(
+                result=result,
+                hash_payload=hash_payload,
+                runtime_seconds=runtime_seconds,
+                activity_summary_entry=activity_summary_entry,
+            ),
+            do_not_cache=self._do_not_cache,
+        )
+        return result
+
+    def _read_file_impl(
+        self, path: str, offset: int | None, limit: int | None
+    ) -> tuple[str, str | None]:
+        # Raw read: returns (rendered result, activity-summary line). Runs outside
+        # _run_cached's try/except, so it must convert a _resolve failure (e.g. a
+        # path outside the flat workspace root) into a graceful error string
+        # itself. A disallowed read is a recoverable tool failure the model
+        # should see, not an unhandled exception that crashes the whole run.
         try:
             target = self._resolve(path)
         except RuntimeError as e:
-            self._record_activity_summary(f"read_file called: {path} (FAILED - {e})")
-            return f"Error: {e}"
+            return f"Error: {e}", f"read_file called: {path} (FAILED - {e})"
         relative = target.relative_to(self._root).as_posix()
         if not target.exists():
-            return f"Error: file {relative} does not exist."
+            return f"Error: file {relative} does not exist.", None
         if target.is_dir():
-            return f"Error: {relative} is a directory, not a file."
+            return f"Error: {relative} is a directory, not a file.", None
 
         try:
             original = target.read_text(encoding="utf-8")
@@ -208,11 +296,12 @@ class WorkspaceEditor:
             # A non-UTF-8/binary file (or a transient OS read error) must also
             # come back as a tool error, not crash the run: read_file skips the
             # _run_cached try/except that shields the mutating ops.
-            self._record_activity_summary(f"read_file called: {path} (FAILED - {e})")
-            return f"Error: could not read {relative} as UTF-8 text: {e}"
+            return (
+                f"Error: could not read {relative} as UTF-8 text: {e}",
+                f"read_file called: {path} (FAILED - {e})",
+            )
         rendered = _render_numbered_lines(original, offset, limit)
-        self._record_activity_summary(f"read_file called: {path}")
-        return rendered
+        return rendered, f"read_file called: {path}"
 
     # ---------- cache wrapper ----------
 

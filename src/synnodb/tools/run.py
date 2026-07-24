@@ -15,6 +15,7 @@ from synnodb.cpp_runner.hotpatch.hotpatch_proc import (
 from synnodb.cpp_runner.hotpatch.pool import HotpatchPool
 from synnodb.cpp_runner.runtime_reset import warm_runtime_in_use
 from synnodb.observability.logging.run_stats_collector import RunStatsCollector
+from synnodb.synth_framework.git_snapshotter import RESULT_FILE_PATTERNS
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.tools.validate.query_validator_class import (
     ExecCallbackResult,
@@ -403,6 +404,7 @@ class RunTool:
                     current_num_threads=current_num_threads,
                     run_tool_mode=mode,
                     force_live=force_live,
+                    force_compile=force_compile,
                 )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
                 result_list.append(result)
 
@@ -424,7 +426,10 @@ class RunTool:
         validated, the scale factors covered, and a pass/fail verdict.
 
         ``force_compile=True`` rebuilds the binary that publish then ships (so the recorded
-        build-ids match what is copied). ``force_live`` is disabled: ideally it would skip the
+        build-ids match what is copied). The rebuild is always live - the compile cache stores
+        verdicts, never binaries, and skip_cache overrides only_from_cache - so even a fully
+        cache-replayed run (including an only-from-cache replay) leaves a fresh ``db`` binary
+        on disk here. ``force_live`` is disabled: ideally it would skip the
         validation cache so a since-broken engine could not be blessed by an earlier cached
         success, but forcing a live re-execution re-snapshots an already-captured build and trips
         the snapshot-name uniqueness assert. Re-enable once snapshot() tolerates re-snapshotting
@@ -526,6 +531,7 @@ class RunTool:
         current_core_ids: list[int] | None,
         current_num_threads: int,
         force_live: bool = False,
+        force_compile: bool = False,
     ) -> RunWorkerResult:
         # assemble call cmd
         cmd = f"./db {batch.cli_call_args}"
@@ -660,7 +666,10 @@ class RunTool:
             # assert compile_used_cache == val_result.replayed_from_cache, (
             #     "Inconsistent cache usage between compile and execute. This should always be chained! If this happens, potentially a change in the wrapper code/... happened. Please delete both cache entries (compile & exec), check your changes and re-run."
             # )
-            if val_result.replayed_from_cache:
+            # A forced rebuild (force_compile, e.g. the publish gate) bypasses the compile
+            # cache lookup entirely, so compile_used_cache=False carries no chain signal
+            # there: the validation replay is still keyed to the same compile_key_hash.
+            if val_result.replayed_from_cache and not force_compile:
                 assert compile_used_cache, (
                     "Inconsistent cache usage between compile and execute: if exec was cached then compile also needs to be cached. This should always be chained! If this happens, potentially a change in the wrapper code/... happened. Please delete the corresponding cache entry (validate cache), check your changes and re-run."
                 )
@@ -801,9 +810,7 @@ def delete_result_files(workspace_path: Path):
     # are stable across iterations, so an uncleaned file from a crashed run would otherwise be
     # silently validated as the current run's output.
     result_files = [
-        p
-        for pattern in ("result*.arrow", "result*.csv")
-        for p in workspace_path.rglob(pattern)
+        p for pattern in RESULT_FILE_PATTERNS for p in workspace_path.rglob(pattern)
     ]
     if result_files:
         logger.info(f"Deleting existing result files ({len(result_files)} files).")

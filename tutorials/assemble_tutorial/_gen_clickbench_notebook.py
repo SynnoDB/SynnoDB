@@ -620,6 +620,7 @@ tuning_plan = ConversationPlan(
     name="myTuningPass",                    # run identity: naming, logging, caching
     prepare=PrepareFeatures(tracing=True),  # the workspace needs tracing instrumentation
     stages=my_stages,
+    publishes_engine=True,                  # tuned engine is re-published for the router
 )
 
 # Uncomment to run the custom pass on top of the base implementation:

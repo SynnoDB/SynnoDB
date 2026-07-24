@@ -148,7 +148,14 @@ def test_builtin_methods_resolve_to_run_synthesis(tmp_path, monkeypatch):
     db = _db(tmp_path, monkeypatch)
     seen: list[dict] = []
 
-    def _spy(plan, *, start=None, storage_plan_snapshot=None, verbose=None):
+    def _spy(
+        plan,
+        *,
+        start=None,
+        storage_plan_snapshot=None,
+        verbose=None,
+        only_from_cache=None,
+    ):
         seen.append(
             dict(plan=plan, start=start, storage_plan_snapshot=storage_plan_snapshot)
         )

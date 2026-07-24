@@ -32,6 +32,19 @@ def _make_workspace(root: Path, name: str, files: dict[str, str]) -> Path:
     return ws
 
 
+def _plain_status(ws: Path) -> str:
+    """``git status --porcelain`` as a user would run it by hand in the
+    workspace: no snapshotter env, so no core.excludesFile - what it ignores,
+    it ignores via the shared info/exclude."""
+    return subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
 def test_repo_is_shared_bare_and_workspace_holds_only_a_gitfile(tmp_path):
     ws = _make_workspace(tmp_path, "ws", {"a.txt": "hello"})
     snap = GitSnapshotter(working_dir=ws)
@@ -109,16 +122,38 @@ def test_debug_logs_are_auto_excluded_from_snapshots(tmp_path):
     dirty, _ = snap.is_dirty()
     assert not dirty
 
-    # A plain `git status` a user runs by hand (no snapshotter env, so no
-    # core.excludesFile) must still ignore debug_logs/, via the shared info/exclude.
-    plain = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=ws,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "debug_logs" not in plain.stdout
+    # A hand-run `git status` must still ignore debug_logs/ (via info/exclude).
+    assert "debug_logs" not in _plain_status(ws)
+
+
+def test_result_files_are_auto_excluded_from_snapshots(tmp_path):
+    # result*.arrow / result*.csv are per-execution engine outputs; see the
+    # RESULT_FILE_PATTERNS rationale in git_snapshotter.py.
+    ws = _make_workspace(tmp_path, "ws", {"a.txt": "keep"})
+    results = ws / "results"
+    results.mkdir()
+    (results / "result_req_1_abc123.arrow").write_text("binary-ish")
+    (ws / "result_req_2_def456.csv").write_text("1,2,3")
+
+    snap = GitSnapshotter(working_dir=ws)
+
+    _, commit = snap.snapshot("state")
+    assert commit is not None
+    files = _git(snap.git_dir, "ls-tree", "-r", "--name-only", commit).split()
+    assert files == ["a.txt"]  # result files absent from the snapshot tree
+
+    dirty, _ = snap.is_dirty()
+    assert not dirty  # ignored result files do not register as dirty
+
+    # An execution that only produced new result files must not mint a new
+    # snapshot: the tree is unchanged, so the parent commit is reused and
+    # live runs converge with cache replays on the same hash.
+    (results / "result_req_1_zzz999.arrow").write_text("other run")
+    parent, again = snap.snapshot("after-rerun")
+    assert (parent, again) == (commit, commit)
+
+    # A hand-run `git status` must also ignore them (via info/exclude).
+    assert "result_req" not in _plain_status(ws)
 
 
 def test_recreated_workspace_resumes_its_own_snapshot_line(tmp_path):

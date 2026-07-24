@@ -332,6 +332,74 @@ def test_only_from_cache_raises_on_miss(tmp_path):
         tool("SELECT count(*) AS n FROM orders")
 
 
+@pytest.mark.parametrize("sql", ["SELECT 1", ""])
+def test_only_from_cache_without_cache_dir_never_falls_back_live(tmp_path, sql):
+    """Replay without cache machinery is a configuration error, including for a gate rejection.
+
+    In particular, a missing cache_path must not bypass the miss check and execute a valid query
+    against the dataset."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        only_from_cache=True,
+    )
+    with pytest.raises(ValueError, match="no cache_dir"):
+        tool(sql)
+    assert tool._cons == {}, "cache-only configuration errors must not open the dataset"
+
+
+def test_only_from_cache_gate_miss_does_not_create_or_write_cache(tmp_path):
+    """The legacy gate fallback is pure: it may reproduce an old uncached rejection, but replay
+    must not create the cache directory or backfill the missing entry."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    cache_dir = tmp_path / "missing_cache"
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        only_from_cache=True,
+    )
+
+    assert not cache_dir.exists(), "constructing a replay must not create cache state"
+    assert tool("").startswith("Error: empty SQL query")
+    assert tool("SUMMARIZE nation; SUMMARIZE orders").startswith(
+        "Error: query_data runs one statement per call"
+    )
+    assert tool("DROP TABLE nation").startswith(
+        "Error: query_data is strictly read-only"
+    )
+    assert not cache_dir.exists(), "gate fallbacks must not backfill the replay cache"
+
+
+def test_only_from_cache_does_not_chmod_read_only_cache(tmp_path):
+    """Opening a replay leaves existing cache-directory metadata untouched."""
+    from synnodb.tools.data_inspect import DataInspectTool
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_dir.chmod(0o555)
+    try:
+        tool = DataInspectTool(
+            workload_provider=_provider(base, ServeFrom.DUCKDB),
+            cache_dir=cache_dir,
+            only_from_cache=True,
+        )
+        assert cache_dir.stat().st_mode & 0o777 == 0o555
+        assert tool("").startswith("Error: empty SQL query")
+        assert not list(cache_dir.glob("*.pkl"))
+        assert cache_dir.stat().st_mode & 0o777 == 0o555
+    finally:
+        cache_dir.chmod(0o755)
+
+
 def test_row_cap_is_part_of_cache_key(tmp_path):
     """The row cap participates in the key, so the same SQL at a different cap is not served the
     wrong cached rendering."""
@@ -366,6 +434,8 @@ def test_do_not_cache_never_writes(tmp_path):
         do_not_cache=True,
     )
     assert "200" in tool("SELECT count(*) AS n FROM orders")
+    # Gate rejections are cached outcomes too, so do_not_cache must suppress them as well.
+    tool("SUMMARIZE nation; SUMMARIZE orders")
     assert not list(cache_dir.glob("*.pkl"))
 
 
@@ -840,6 +910,116 @@ def test_batch_hiding_a_write_is_still_refused_as_a_write(tool):
     out = tool("SELECT 1; DROP TABLE nation")
     assert out.startswith("Error: query_data is strictly read-only")
     assert "5" in tool("SELECT count(*) AS n FROM nation")
+
+
+def test_gate_rejections_are_cached_and_replay(tmp_path):
+    """Gate rejections - a multi-statement batch, a write attempt, empty SQL - are cached like
+    every other decided outcome, so a replay reproduces them from cache alone, with the data
+    gone."""
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )
+    recorded = {
+        sql: tool(sql)
+        for sql in ("SUMMARIZE nation; SUMMARIZE orders", "DROP TABLE nation", "")
+    }
+    assert len(list(cache_dir.glob("*.pkl"))) == 3, "one entry per rejection"
+
+    import shutil
+
+    shutil.rmtree(base)
+    replay = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        only_from_cache=True,
+    )
+    for sql, out in recorded.items():
+        assert replay(sql) == out
+
+
+def test_cached_rejection_wins_over_changed_gate_code(tmp_path, monkeypatch):
+    """The point of caching rejections: the recorded verdict outranks the current gate logic, so a
+    later code change cannot rewrite what a recorded conversation saw. With the batch gate
+    monkeypatched away, a cache miss would fall through to the read-only gate and produce a
+    different message - the recorded one must still replay."""
+    import synnodb.tools.data_inspect as di
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    sql = "SUMMARIZE nation; SUMMARIZE orders"
+    recorded = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )(sql)
+    assert recorded.startswith("Error: query_data runs one statement per call")
+
+    monkeypatch.setattr(di, "_is_read_only_batch", lambda _sql: False)
+    fresh = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )
+    assert fresh(sql) == recorded
+
+
+def test_cached_rejection_replays_with_its_status(tmp_path):
+    """A cached rejection replays with its recorded status (``multi_statement``, not ``ok``),
+    recovered purely from the rendered text - mirroring the cached-timeout replay."""
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    sql = "SUMMARIZE nation; SUMMARIZE orders"
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )(sql)
+
+    collector = _FakeCollector()
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        run_stats_collector=collector,
+    )(sql)
+    row = collector.metrics[0]
+    assert row["data_inspect/status"] == "multi_statement"
+    assert row["data_inspect/error"] is True
+    assert row["data_inspect/cached"] is True
+
+
+def test_legacy_cache_entry_without_status_still_classifies(tmp_path):
+    """Entries written before the status field existed carry only the rendered text; a hit on one
+    falls back to classifying that text, so old caches keep replaying with the right label."""
+    from synnodb.tools.data_inspect import DataInspectCacheType
+    from synnodb.utils import utils
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    sql = "SELECT * FROM does_not_exist"
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )(sql)
+
+    # Rewrite the entry in the pre-status shape: same pickle, status attribute stripped.
+    [pkl] = cache_dir.glob("*.pkl")
+    entry = utils.load_pickle(pkl, DataInspectCacheType)
+    del entry.status
+    pkl.unlink()
+    utils.dump_pickle(pkl, entry, do_not_cache=False)
+
+    collector = _FakeCollector()
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        run_stats_collector=collector,
+    )(sql)
+    row = collector.metrics[0]
+    assert row["data_inspect/status"] == "sql_error"
+    assert row["data_inspect/cached"] is True
 
 
 def test_semicolon_inside_a_string_literal_is_not_a_batch(tool):

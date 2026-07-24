@@ -76,11 +76,19 @@ class CachedCompiler(Compiler):
         of (output, from_cache).
         """
 
+        # skip_cache overrides self.only_from_cache: a caller passing skip_cache=True
+        # explicitly needs a live build (the cache stores only the compiler verdict,
+        # never the binary), so it must compile even in an only-from-cache replay.
+        # The publish gate depends on this: a fully cache-replayed run has no `db`
+        # binary on disk, and its forced rebuild is what produces the engine to ship.
+
         is_cached, cached_compile, cache_path, compile_key_hash, hash_payload = (
             self._check_answer_from_cache(current_git_snapshot)
         )
         if is_cached and not skip_cache:
-            # restore compiled binary from binary cache
+            # Serve the recorded compiler verdict. The binary itself is not
+            # cached: callers that need one on disk must trigger a live build
+            # (see recompile_if_necessary in the run tool).
             assert cached_compile is not None
 
             if self.runtime_tracker is not None:
@@ -89,7 +97,7 @@ class CachedCompiler(Compiler):
             assert cached_compile is not None
             return cached_compile.outputs, True, compile_key_hash
 
-        if self.only_from_cache:
+        if self.only_from_cache and not skip_cache:
             raise Exception(
                 f"Result not found in cache for key {compile_key_hash} and only_from_cache is set. Cache path: {cache_path}"
             )
@@ -98,8 +106,21 @@ class CachedCompiler(Compiler):
         compile_start_time = time.perf_counter()
         output = super().build()
 
-        # store output in cache
-        if cache_path is not None and write_cache and not self.do_not_cache:
+        # Store the output in the cache. An only-from-cache replay never writes: its
+        # forced rebuilds (publish gate) must not overwrite the recorded chain with a
+        # possibly non-deterministic fresh compile output. A forced (skip_cache)
+        # rebuild over an existing entry likewise skips the write: the recorded
+        # verdict stays authoritative, the rebuild only exists to produce the binary.
+        # That is the ONLY tolerated case - on every other path an entry existing at
+        # write time indicates a serious bug (or hash collision), and dump_pickle's
+        # already-exists guard raises.
+        if (
+            cache_path is not None
+            and write_cache
+            and not (skip_cache and is_cached)
+            and not self.do_not_cache
+            and not self.only_from_cache
+        ):
             utils.dump_pickle(
                 cache_path,
                 CompileCacheType(
@@ -112,7 +133,7 @@ class CachedCompiler(Compiler):
             )
 
             logger.debug(
-                f"Saved compile result to cache: {cache_path} (including binary= {output is None})"
+                f"Saved compile result to cache: {cache_path} (succeeded={output is None})"
             )
 
         return output, False, compile_key_hash

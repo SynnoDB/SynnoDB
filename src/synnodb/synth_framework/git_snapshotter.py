@@ -18,10 +18,12 @@ logger = logging.getLogger(__name__)
 SNAPSHOT_REF_PREFIX = "refs/snapshots"
 SNAPSHOT_REF_GLOB = f"{SNAPSHOT_REF_PREFIX}/*"
 
-# Workspace subdirectories the framework writes but must never be part of a
-# snapshot (e.g. debug_logs/ populated by DebugLogger). Ignored automatically
+RESULT_FILE_PATTERNS: tuple[str, ...] = ("result*.arrow", "result*.csv")
+
+# Workspace files the framework writes but must never be part of a snapshot
+# (debug_logs/ from DebugLogger, engine result files). Ignored automatically
 # for every workspace, in addition to any caller-supplied `extra_gitignore`.
-ALWAYS_IGNORED: tuple[str, ...] = ("/debug_logs/",)
+ALWAYS_IGNORED: tuple[str, ...] = ("/debug_logs/", *RESULT_FILE_PATTERNS)
 
 
 def resolve_snapshot_repo_dir() -> Path | None:
