@@ -84,6 +84,7 @@ const LOG_FILTERS = {
         || d['validation/replayed_from_cache'] === true             // validate
         || d['compile/cached'] === true                             // compile
         || d['apply_patch/cached'] === true                         // apply_patch
+        || d['read_file/cached'] === true                           // read_file
         || d['compaction/cached'] === true;                         // compaction
       return state === 'yes' ? fromCache : !fromCache;
     },
@@ -156,7 +157,8 @@ function logDesc(type, d) {
   }
   if (type === 'read_file') {
     const path = d['read_file/path'];
-    return path ? path.split('/').pop() : 'read file';
+    const cachedStr = d['read_file/cached'] ? ' · cached' : '';
+    return (path ? path.split('/').pop() : 'read file') + cachedStr;
   }
   if (type === 'shell') {
     const cmds = parseJsonField(d['shell/commands']);

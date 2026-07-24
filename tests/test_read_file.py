@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from synnodb.tools.workspace_editor import WorkspaceEditor
 
 
@@ -9,6 +11,7 @@ class FakeRunStatsCollector:
         self.model = "test-model"
         self.last_turn = 0
         self.read_file_paths: list[str] = []
+        self.cache_hits = 0
 
     def add_to_activity_summary(self, entry: str) -> None:
         self.activity_summary.append(entry)
@@ -18,6 +21,9 @@ class FakeRunStatsCollector:
 
     def log_read_file_stats(self, path: str) -> None:
         self.read_file_paths.append(path)
+
+    def record_read_file_cache_hit(self) -> None:
+        self.cache_hits += 1
 
 
 class FakeSnapshotter:
@@ -34,13 +40,13 @@ class FakeSnapshotter:
         return None, self.current_hash
 
 
-def _make_editor(tmp_path: Path):
+def _make_editor(tmp_path: Path, **editor_kwargs):
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir(exist_ok=True)
     stats = FakeRunStatsCollector()
-    snap = FakeSnapshotter()
+    snap = editor_kwargs.pop("snapshotter", FakeSnapshotter())
     editor = WorkspaceEditor(
         root=workspace,
         run_stats_collector=stats,  # type: ignore[arg-type]
@@ -48,6 +54,7 @@ def _make_editor(tmp_path: Path):
         untracked_cpp_runner_content="",
         snapshotter=snap,  # type: ignore[arg-type]
         cache_dir=cache_dir,
+        **editor_kwargs,
     )
     return editor, workspace, stats
 
@@ -138,6 +145,111 @@ def test_subdirectory_read_returns_error(tmp_path):
     assert result.startswith("Error:")
     assert "no subdirs" in result
     assert "outside workspace" not in result
+
+
+def test_read_is_replayed_from_cache(tmp_path):
+    # A second read with identical arguments at the same snapshot hash replays
+    # the recorded result verbatim - even if the file changed on disk behind the
+    # snapshotter's back - along with the exact activity-summary line, and is
+    # counted as a cache hit. This is the same replay guarantee the shell tool
+    # gives: at a given snapshot hash, the workspace state is fixed by contract.
+    editor, ws, stats = _make_editor(tmp_path)
+    (ws / "a.cpp").write_text("int x = 1;\n")
+
+    first = editor.read_file("a.cpp")
+    assert stats.cache_hits == 0
+
+    (ws / "a.cpp").write_text("int x = 999;\n")
+    second = editor.read_file("a.cpp")
+
+    assert second == first == "     1\tint x = 1;"
+    assert stats.cache_hits == 1
+    assert stats.activity_summary == ["read_file called: a.cpp"] * 2
+
+
+def test_cache_is_keyed_on_arguments_and_snapshot_hash(tmp_path):
+    # Different offset/limit or a different snapshot hash is a different cache
+    # key: the read runs live and sees the current file content.
+    snap = FakeSnapshotter()
+    editor, ws, stats = _make_editor(tmp_path, snapshotter=snap)
+    (ws / "a.cpp").write_text("int x = 1;\nint y = 2;\n")
+
+    whole = editor.read_file("a.cpp")
+    windowed = editor.read_file("a.cpp", offset=2, limit=1)
+    assert windowed != whole
+    assert stats.cache_hits == 0
+
+    (ws / "a.cpp").write_text("int x = 999;\n")
+    snap.current_hash = "after-edit"
+    assert editor.read_file("a.cpp") == "     1\tint x = 999;"
+    assert stats.cache_hits == 0
+
+
+def test_failed_read_is_replayed_from_cache(tmp_path):
+    # Error outcomes are recorded and replayed like successful ones: a missing
+    # file yields the same error string on replay. It never wrote an
+    # activity-summary line when recorded, so the replay writes none either.
+    editor, ws, stats = _make_editor(tmp_path)
+
+    first = editor.read_file("ghost.cpp")
+    second = editor.read_file("ghost.cpp")
+
+    assert second == first
+    assert "does not exist" in second
+    assert stats.cache_hits == 1
+    assert stats.activity_summary == []
+
+
+def test_only_from_cache_replays_recorded_read(tmp_path):
+    # Strict replay: a read recorded by a normal run is served from cache
+    # without touching the file (which has since changed on disk).
+    recorder, ws, _ = _make_editor(tmp_path)
+    (ws / "a.cpp").write_text("int x = 1;\n")
+    recorded = recorder.read_file("a.cpp")
+
+    (ws / "a.cpp").write_text("int x = 999;\n")
+    replayer, _, stats = _make_editor(tmp_path, only_from_cache=True)
+
+    assert replayer.read_file("a.cpp") == recorded == "     1\tint x = 1;"
+    assert stats.cache_hits == 1
+    assert stats.activity_summary == ["read_file called: a.cpp"]
+
+
+def test_only_from_cache_miss_fails_loudly(tmp_path):
+    # Under only_from_cache there is no live fallback: an uncached read means
+    # the snapshot chain diverged from the recorded run and must not be papered
+    # over with a silent live read.
+    editor, ws, _ = _make_editor(tmp_path, only_from_cache=True)
+    (ws / "a.cpp").write_text("int x = 1;\n")
+
+    with pytest.raises(ValueError, match="only_from_cache"):
+        editor.read_file("a.cpp")
+
+
+def test_only_from_cache_with_cache_disabled_fails_loudly(tmp_path):
+    # only_from_cache combined with a disabled cache (here: do_not_cache) has
+    # nothing to replay from. Strict replay must not degrade into a silent live
+    # read - it fails loudly instead.
+    editor, ws, _ = _make_editor(tmp_path, only_from_cache=True, do_not_cache=True)
+    (ws / "a.cpp").write_text("int x = 1;\n")
+
+    with pytest.raises(ValueError, match="only_from_cache"):
+        editor.read_file("a.cpp")
+
+
+def test_do_not_cache_reads_live_without_writing_entries(tmp_path):
+    # With caching disabled the read still works, always reflects the current
+    # file content, and leaves the cache dir untouched.
+    editor, ws, stats = _make_editor(tmp_path, do_not_cache=True)
+    (ws / "a.cpp").write_text("int x = 1;\n")
+
+    assert editor.read_file("a.cpp") == "     1\tint x = 1;"
+    (ws / "a.cpp").write_text("int x = 999;\n")
+    assert editor.read_file("a.cpp") == "     1\tint x = 999;"
+
+    assert stats.cache_hits == 0
+    assert list((tmp_path / "cache").glob("*.pkl")) == []
+    assert stats.activity_summary == ["read_file called: a.cpp"] * 2
 
 
 def test_binary_file_returns_error(tmp_path):

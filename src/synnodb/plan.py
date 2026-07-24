@@ -62,6 +62,11 @@ class ConversationPlan:
     # Whether the run tool offers the trace_mode flag to the agent (used by
     # conversations whose prompts consume execution traces).
     offer_trace_option: bool = False
+    # Whether the finished run's engine is published for router auto-discovery
+    # (behind the publish gate's re-validation). Declared here, never inferred
+    # from workspace state, so live runs and cache replays gate identically
+    # (see main._publish_generated_engine for the full rationale).
+    publishes_engine: bool = False
     # Builds the typed domain artifact from the finished run's workspace.
     result: ResultBuilder = build_artifact
 

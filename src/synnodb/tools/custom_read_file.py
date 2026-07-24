@@ -10,9 +10,10 @@ class CustomReadFileTool:
 
     Renders content `cat -n` style so the model can build precise
     replace_in_file/apply_patch edits without an extra round-trip through the
-    shell tool. Backed by WorkspaceEditor.read_file, which is not routed
-    through the cache/snapshot machinery since reads never mutate the
-    workspace.
+    shell tool. Backed by WorkspaceEditor.read_file, which caches the rendered
+    result keyed on the current snapshot state (like the shell tool) so replays
+    are deterministic; reads never mutate the workspace, so no snapshot is
+    taken or restored.
     """
 
     def __init__(self, editor: WorkspaceEditor) -> None:
