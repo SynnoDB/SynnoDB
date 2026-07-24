@@ -75,9 +75,7 @@ class TestRunStatsCollectorCacheStatus(unittest.TestCase):
             False, response_id="resp-1", request_hash="req-1", llm_time=2.5
         )
 
-        self.assertEqual(
-            collector._consume_llm_time(_response_with_id("resp-1")), 2.5
-        )
+        self.assertEqual(collector._consume_llm_time(_response_with_id("resp-1")), 2.5)
 
     def test_llm_time_absent_returns_none(self):
         collector = _collector_for_cache_status_tests()

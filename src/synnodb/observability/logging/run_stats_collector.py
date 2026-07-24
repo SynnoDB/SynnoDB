@@ -375,7 +375,9 @@ class RunStatsCollector(RunHooks):
         # reasoning; token_stats["output_tokens"] already excludes reasoning) over
         # the wall-clock duration of the LLM call.
         llm_time = self._consume_llm_time(output)
-        generated_tokens = token_stats["output_tokens"] + token_stats["reasoning_tokens"]
+        generated_tokens = (
+            token_stats["output_tokens"] + token_stats["reasoning_tokens"]
+        )
         tokens_per_second = compute_tokens_per_second(generated_tokens, llm_time)
 
         logger.info(
