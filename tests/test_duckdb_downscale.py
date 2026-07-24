@@ -271,6 +271,38 @@ def test_small_dims_and_disconnected_kept_whole(synthetic_con, downscaler):
     downscaler.drop()
 
 
+def test_large_island_is_sampled_independently():
+    """A large table that no workload query joins is its own island: it must anchor that island
+    and be sampled to the fraction, not kept whole. A single global anchor would leave every other
+    island whole, so a huge fact table on its own island (e.g. MusicBrainz ``track``, which no
+    query touches) would barely shrink the database."""
+    con = duckdb.connect()
+    try:
+        # one connected pair fact->dim, plus a big disconnected table nobody joins
+        con.execute("CREATE TABLE dim AS SELECT i AS id FROM range(20) t(i)")
+        con.execute(
+            "CREATE TABLE fact AS SELECT i AS id, (i % 20) AS dim_id FROM range(500) t(i)"
+        )
+        con.execute("CREATE TABLE lonely AS SELECT i AS id FROM range(1000) t(i)")
+        queries = {"1": "SELECT * FROM fact f JOIN dim d ON f.dim_id = d.id"}
+        ds = ReferentialDownscaler(con, sql_by_id=queries, whole_table_threshold=50)
+
+        plan = ds.plan_subset(0.1)
+        modes = {t.table: t.mode for t in plan.tables}
+        # two islands (fact->dim, and lonely), each with its own anchor
+        assert set(plan.anchors) == {"fact", "lonely"}
+        assert modes["fact"] == "anchor"
+        assert modes["lonely"] == "anchor"  # sampled independently, NOT kept whole
+        assert modes["dim"] == "whole"  # below the threshold
+
+        kept = {t.table: t.kept_rows for t in ds.materialize_temp_subset(0.1).tables}
+        assert 0 < kept["lonely"] < 1000  # strictly downscaled, not the full 1000
+        assert kept["dim"] == 20  # small dim kept whole
+        ds.drop()
+    finally:
+        con.close()
+
+
 def test_determinism(synthetic_con, downscaler):
     first = {
         t.table: t.kept_rows for t in downscaler.materialize_temp_subset(0.2).tables
