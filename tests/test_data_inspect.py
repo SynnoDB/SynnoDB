@@ -366,6 +366,8 @@ def test_do_not_cache_never_writes(tmp_path):
         do_not_cache=True,
     )
     assert "200" in tool("SELECT count(*) AS n FROM orders")
+    # Gate rejections are cached outcomes too, so do_not_cache must suppress them as well.
+    tool("SUMMARIZE nation; SUMMARIZE orders")
     assert not list(cache_dir.glob("*.pkl"))
 
 
@@ -840,6 +842,116 @@ def test_batch_hiding_a_write_is_still_refused_as_a_write(tool):
     out = tool("SELECT 1; DROP TABLE nation")
     assert out.startswith("Error: query_data is strictly read-only")
     assert "5" in tool("SELECT count(*) AS n FROM nation")
+
+
+def test_gate_rejections_are_cached_and_replay(tmp_path):
+    """Gate rejections - a multi-statement batch, a write attempt, empty SQL - are cached like
+    every other decided outcome, so a replay reproduces them from cache alone, with the data
+    gone."""
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    tool = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )
+    recorded = {
+        sql: tool(sql)
+        for sql in ("SUMMARIZE nation; SUMMARIZE orders", "DROP TABLE nation", "")
+    }
+    assert len(list(cache_dir.glob("*.pkl"))) == 3, "one entry per rejection"
+
+    import shutil
+
+    shutil.rmtree(base)
+    replay = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        only_from_cache=True,
+    )
+    for sql, out in recorded.items():
+        assert replay(sql) == out
+
+
+def test_cached_rejection_wins_over_changed_gate_code(tmp_path, monkeypatch):
+    """The point of caching rejections: the recorded verdict outranks the current gate logic, so a
+    later code change cannot rewrite what a recorded conversation saw. With the batch gate
+    monkeypatched away, a cache miss would fall through to the read-only gate and produce a
+    different message - the recorded one must still replay."""
+    import synnodb.tools.data_inspect as di
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    sql = "SUMMARIZE nation; SUMMARIZE orders"
+    recorded = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )(sql)
+    assert recorded.startswith("Error: query_data runs one statement per call")
+
+    monkeypatch.setattr(di, "_is_read_only_batch", lambda _sql: False)
+    fresh = DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )
+    assert fresh(sql) == recorded
+
+
+def test_cached_rejection_replays_with_its_status(tmp_path):
+    """A cached rejection replays with its recorded status (``multi_statement``, not ``ok``),
+    recovered purely from the rendered text - mirroring the cached-timeout replay."""
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    sql = "SUMMARIZE nation; SUMMARIZE orders"
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )(sql)
+
+    collector = _FakeCollector()
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        run_stats_collector=collector,
+    )(sql)
+    row = collector.metrics[0]
+    assert row["data_inspect/status"] == "multi_statement"
+    assert row["data_inspect/error"] is True
+    assert row["data_inspect/cached"] is True
+
+
+def test_legacy_cache_entry_without_status_still_classifies(tmp_path):
+    """Entries written before the status field existed carry only the rendered text; a hit on one
+    falls back to classifying that text, so old caches keep replaying with the right label."""
+    from synnodb.tools.data_inspect import DataInspectCacheType
+    from synnodb.utils import utils
+
+    base = tmp_path / "parquet_root"
+    base.mkdir()
+    _make_duckdb_subset(base)
+    cache_dir = tmp_path / "cache"
+    sql = "SELECT * FROM does_not_exist"
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB), cache_dir=cache_dir
+    )(sql)
+
+    # Rewrite the entry in the pre-status shape: same pickle, status attribute stripped.
+    [pkl] = cache_dir.glob("*.pkl")
+    entry = utils.load_pickle(pkl, DataInspectCacheType)
+    del entry.status
+    pkl.unlink()
+    utils.dump_pickle(pkl, entry, do_not_cache=False)
+
+    collector = _FakeCollector()
+    DataInspectTool(
+        workload_provider=_provider(base, ServeFrom.DUCKDB),
+        cache_dir=cache_dir,
+        run_stats_collector=collector,
+    )(sql)
+    row = collector.metrics[0]
+    assert row["data_inspect/status"] == "sql_error"
+    assert row["data_inspect/cached"] is True
 
 
 def test_semicolon_inside_a_string_literal_is_not_a_batch(tool):

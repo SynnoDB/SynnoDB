@@ -28,9 +28,12 @@ Results are cached on disk keyed by the query, its row cap, and the identity of 
 subset (workload, scale factor, dataset version). The subset is read-only benchmark data that
 never changes within a run, so a repeated inspection replays instantly - and, under
 ``only_from_cache``, a whole run replays deterministically without re-touching the data. This
-mirrors the shell / compile / apply-patch tool caches. Every executed outcome is cached - a
-result set, a SQL error, or a timeout alike - so both successful and unsuccessful executions
-replay from disk and ``only_from_cache`` never misses on a query the recording run actually ran.
+mirrors the shell / compile / apply-patch tool caches. Every outcome the tool itself decides is
+cached - a result set, a SQL error, a timeout, and the gate rejections (empty SQL, a
+multi-statement batch, a write attempt) alike - so on replay the recorded verdict, not the
+current code, decides what the agent sees (the ordering note in ``_inspect`` explains why). Only
+outcomes tied to mutable disk state (an unmaterialized subset, a connection failure) stay
+uncached.
 """
 
 from __future__ import annotations
@@ -67,8 +70,9 @@ OUTPUT_CHAR_LIMIT = 10000
 QUERY_TIMEOUT_S = 15.0
 # Length cap for SQL echoed into log lines, so a pasted mega-query cannot bloat the logs.
 LOG_SQL_LIMIT = 300
-# Stable leading text of the timeout message. Shared by the message the agent sees and the
-# status classifier, so a cached timeout replays with the ``timeout`` status rather than ``ok``.
+# Leading text of the timeout message. Cache entries written before entries stored their status
+# are classified from their rendered text, and this prefix is how such an entry is recognized as
+# a timeout (see :func:`_status_from_output`).
 _TIMEOUT_ERROR_PREFIX = "Error: query exceeded the"
 
 
@@ -133,14 +137,19 @@ def _short_sql(sql: str) -> str:
 
 
 class DataInspectCacheType:
-    """One cached inspection: the rendered output text plus the payload it was keyed on (for
-    debugging cache hits) and the wall-clock it originally took (credited back to the runtime
-    tracker as skipped time on a cache hit, exactly like the shell tool)."""
+    """One cached inspection: the rendered output text, its status label (stored so a replay
+    reports the recorded verdict even if the wording or the gate logic changes later, like the
+    apply-patch cache's ``result_status``), the payload it was keyed on (for debugging cache hits)
+    and the wall-clock it originally took (credited back to the runtime tracker as skipped time on
+    a cache hit, exactly like the shell tool)."""
 
-    def __init__(self, output: str, hash_payload: str, runtime_seconds: float):
+    def __init__(
+        self, output: str, hash_payload: str, runtime_seconds: float, status: str
+    ):
         self.output = output
         self.hash_payload = hash_payload
         self.runtime_seconds = runtime_seconds
+        self.status = status
 
 
 class DataInspectTool:
@@ -305,40 +314,16 @@ class DataInspectTool:
         self, sql: str, row_limit: int, sf: float, full_dataset: bool
     ) -> tuple[str, str, bool]:
         """Resolve one inspection to ``(output_text, status, served_from_cache)``. ``status`` is a
-        short label (``ok`` / ``sql_error`` / ``timeout`` / ``rejected`` / ``bad_subset`` /
-        ``empty`` / ``prep_error``) that drives the dashboard row and activity-summary line; the
-        rendered text is what the agent sees. Every outcome returns here (no bare returns) so
-        ``__call__`` reports exactly once."""
-        if not sql:
-            return "Error: empty SQL query.", "empty", False
-        # A batch of read-only statements is refused for what it is - one statement per call - and
-        # not as a write. The read-only classifier only passes a multi-statement batch when every
-        # statement is a plain SELECT/WITH, so "SUMMARIZE a; SUMMARIZE b" would otherwise be
-        # rejected with "this statement would write or change state", which is simply untrue: an
-        # agent that trusts it goes looking for a write it never made. A batch containing an actual
-        # write still falls through to the read-only gate below and is reported as a write.
-        if _is_read_only_batch(sql):
-            logger.debug(
-                "query_data rejected a multi-statement batch: %s", _short_sql(sql)
-            )
-            return (
-                "Error: query_data runs one statement per call, and this is a batch of several. "
-                "Send them as separate query_data calls (the results come back one per call).",
-                "multi_statement",
-                False,
-            )
-        if not is_read_only_query(sql):
-            logger.debug("query_data rejected non-read-only SQL: %s", _short_sql(sql))
-            return (
-                "Error: query_data is strictly read-only. Only SELECT / WITH / EXPLAIN / SHOW / "
-                "DESCRIBE / SUMMARIZE / VALUES and read-only PRAGMA statements are allowed; this "
-                "statement would write or change state.",
-                "rejected",
-                False,
-            )
-
-        # Cache lookup deliberately precedes any disk check on the subset: an ``only_from_cache``
-        # replay runs with the data gone, so it must not depend on the subset still existing.
+        short label (``ok`` / ``sql_error`` / ``timeout`` / ``rejected`` / ``multi_statement`` /
+        ``bad_subset`` / ``empty`` / ``prep_error``) that drives the dashboard row and
+        activity-summary line; the rendered text is what the agent sees. Every outcome returns
+        here (no bare returns) so ``__call__`` reports exactly once."""
+        # The cache lookup comes first - before the gates and before any disk check. Before the
+        # disk check because an ``only_from_cache`` replay runs with the data gone, so it must not
+        # depend on the subset still existing; before the gates because a gate verdict, though a
+        # pure function of the SQL text, is a function of the *current* code - looked up second, a
+        # later change to the gate logic or its wording would rewrite what a recorded conversation
+        # saw when it is replayed.
         hash_payload, cache_path = "", None
         if self.cache_dir is not None:
             hash_payload, hash = self._cache_key(sql, row_limit, sf)
@@ -349,12 +334,55 @@ class DataInspectTool:
                 if self.runtime_tracker is not None:
                     self.runtime_tracker.add_skipped_time(cached.runtime_seconds)
                 logger.debug("query_data served from cache: %s", cache_path.name)
-                return cached.output, _status_from_output(cached.output), True
-            if self.only_from_cache:
-                raise ValueError(
-                    "query_data result not found in cache and only_from_cache is enabled. "
-                    f"Cache path: {cache_path}\nPayload: {hash_payload}"
+                # Entries written before the status field existed carry only the text.
+                status = getattr(cached, "status", None) or _status_from_output(
+                    cached.output
                 )
+                return cached.output, status, True
+
+        # The gates: outcomes decided from the SQL text alone, never touching the data. Cached
+        # like every other decided outcome (at zero runtime), and kept ahead of the
+        # only_from_cache miss-check so a recording made before rejections were cached still
+        # replays - the gate then re-derives the text live instead of raising.
+        if not sql:
+            return self._finish(
+                "Error: empty SQL query.", "empty", 0.0, cache_path, hash_payload
+            )
+        # A batch of read-only statements is refused for what it is - one statement per call - and
+        # not as a write. The read-only classifier only passes a multi-statement batch when every
+        # statement is a plain SELECT/WITH, so "SUMMARIZE a; SUMMARIZE b" would otherwise be
+        # rejected with "this statement would write or change state", which is simply untrue: an
+        # agent that trusts it goes looking for a write it never made. A batch containing an actual
+        # write still falls through to the read-only gate below and is reported as a write.
+        if _is_read_only_batch(sql):
+            logger.debug(
+                "query_data rejected a multi-statement batch: %s", _short_sql(sql)
+            )
+            return self._finish(
+                "Error: query_data runs one statement per call, and this is a batch of several. "
+                "Send them as separate query_data calls (the results come back one per call).",
+                "multi_statement",
+                0.0,
+                cache_path,
+                hash_payload,
+            )
+        if not is_read_only_query(sql):
+            logger.debug("query_data rejected non-read-only SQL: %s", _short_sql(sql))
+            return self._finish(
+                "Error: query_data is strictly read-only. Only SELECT / WITH / EXPLAIN / SHOW / "
+                "DESCRIBE / SUMMARIZE / VALUES and read-only PRAGMA statements are allowed; this "
+                "statement would write or change state.",
+                "rejected",
+                0.0,
+                cache_path,
+                hash_payload,
+            )
+
+        if cache_path is not None and self.only_from_cache:
+            raise ValueError(
+                "query_data result not found in cache and only_from_cache is enabled. "
+                f"Cache path: {cache_path}\nPayload: {hash_payload}"
+            )
 
         # About to actually run, so the subset must exist. Only now is it safe to touch the disk.
         # Neither dataset is guaranteed to be materialized (built-in sf<N> dirs come from an
@@ -379,20 +407,32 @@ class DataInspectTool:
             logger.warning("query_data could not prepare data (sf=%g): %s", sf, exc)
             return f"Error preparing data for inspection: {exc}", "prep_error", False
 
-        output, elapsed = self._run_and_render(con, sql, row_limit, full_dataset)
-        # Cache every executed outcome - a result set, a SQL error, or a timeout alike. Both
-        # successful and unsuccessful executions are keyed on the query and the read-only subset,
-        # so a repeated inspection replays from disk and ``only_from_cache`` never misses on a
-        # query the recording run actually ran.
+        output, status, elapsed = self._run_and_render(con, sql, row_limit, full_dataset)
+        return self._finish(output, status, elapsed, cache_path, hash_payload)
+
+    def _finish(
+        self,
+        output: str,
+        status: str,
+        elapsed: float,
+        cache_path: Path | None,
+        hash_payload: str,
+    ) -> tuple[str, str, bool]:
+        """Cache one live outcome - a result set, a SQL error, a timeout, or a gate rejection
+        alike - and hand it back. The status is stored next to the text, so a replay reports the
+        recorded verdict as-is."""
         if cache_path is not None and not self.do_not_cache:
             utils.dump_pickle(
                 cache_path,
                 DataInspectCacheType(
-                    output=output, hash_payload=hash_payload, runtime_seconds=elapsed
+                    output=output,
+                    hash_payload=hash_payload,
+                    runtime_seconds=elapsed,
+                    status=status,
                 ),
                 do_not_cache=self.do_not_cache,
             )
-        return output, _status_from_output(output), False
+        return output, status, False
 
     def _missing_dataset_message(
         self, full_dataset: bool, available: list[float]
@@ -455,14 +495,14 @@ class DataInspectTool:
         sql: str,
         row_limit: int,
         full_dataset: bool,
-    ) -> tuple[str, float]:
+    ) -> tuple[str, str, float]:
         """Execute *sql* on a throwaway cursor under the wall-clock budget and render the result.
 
-        Returns ``(output_text, elapsed_seconds)``. Interrupting the cursor (never the cached
-        connection) means a late interrupt that races query completion cannot poison a later
-        inspection; ``Timer.cancel()`` is a no-op once the timer has already fired. A result set,
-        a SQL error, and a timeout are all returned as rendered text and cached by the caller; the
-        outcome is recovered from that text by :func:`_status_from_output`."""
+        Returns ``(output_text, status, elapsed_seconds)``. Interrupting the cursor (never the
+        cached connection) means a late interrupt that races query completion cannot poison a
+        later inspection; ``Timer.cancel()`` is a no-op once the timer has already fired. A result
+        set, a SQL error, and a timeout are all returned as rendered text and cached by the
+        caller."""
         dataset = "the full dataset" if full_dataset else "the sample"
         cur = con.cursor()
         timer = threading.Timer(QUERY_TIMEOUT_S, cur.interrupt)
@@ -489,12 +529,13 @@ class DataInspectTool:
                 "with a WHERE filter, add LIMIT, aggregate fewer columns, or use "
                 "SUMMARIZE/DESCRIBE on a single table instead of scanning or joining large "
                 f"tables.{self._sample_retry_hint(full_dataset)}",
+                "timeout",
                 elapsed,
             )
         except Exception as exc:  # noqa: BLE001 - return DuckDB's message so the agent can fix it
             elapsed = time.perf_counter() - started
             logger.debug("query_data SQL error after %.2fs: %s", elapsed, exc)
-            return f"SQL error: {exc}", elapsed
+            return f"SQL error: {exc}", "sql_error", elapsed
         finally:
             timer.cancel()
         elapsed = time.perf_counter() - started
@@ -504,14 +545,14 @@ class DataInspectTool:
             len(rows),
             len(column_names),
         )
-        return _render_result(column_names, rows, row_limit), elapsed
+        return _render_result(column_names, rows, row_limit), "ok", elapsed
 
 
 def _status_from_output(output: str) -> str:
-    """Classify a rendered inspection result for reporting. A DuckDB error is echoed verbatim as
-    ``SQL error: ...``; a wall-clock timeout starts with :data:`_TIMEOUT_ERROR_PREFIX`; everything
-    else is a successful result set. Driven purely by the rendered text so a cached outcome - a
-    result set, a SQL error, or a timeout - classifies identically whether run live or replayed."""
+    """Classify a cache entry written before entries stored their status. Such an entry can only
+    hold an executed outcome - gate rejections were not cached back then - so recognizing DuckDB's
+    verbatim ``SQL error: ...`` echo and the timeout prefix is enough; everything else was a
+    result set. New entries carry their status and never come through here."""
     if output.startswith("SQL error:"):
         return "sql_error"
     if output.startswith(_TIMEOUT_ERROR_PREFIX):
