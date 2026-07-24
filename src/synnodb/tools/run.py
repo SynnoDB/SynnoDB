@@ -404,6 +404,7 @@ class RunTool:
                     current_num_threads=current_num_threads,
                     run_tool_mode=mode,
                     force_live=force_live,
+                    force_compile=force_compile,
                 )  # TODO: compile used cache does not update - e.g. in the first iteration it will compile, pass info to second iteration.
                 result_list.append(result)
 
@@ -530,6 +531,7 @@ class RunTool:
         current_core_ids: list[int] | None,
         current_num_threads: int,
         force_live: bool = False,
+        force_compile: bool = False,
     ) -> RunWorkerResult:
         # assemble call cmd
         cmd = f"./db {batch.cli_call_args}"
@@ -664,7 +666,10 @@ class RunTool:
             # assert compile_used_cache == val_result.replayed_from_cache, (
             #     "Inconsistent cache usage between compile and execute. This should always be chained! If this happens, potentially a change in the wrapper code/... happened. Please delete both cache entries (compile & exec), check your changes and re-run."
             # )
-            if val_result.replayed_from_cache:
+            # A forced rebuild (force_compile, e.g. the publish gate) bypasses the compile
+            # cache lookup entirely, so compile_used_cache=False carries no chain signal
+            # there: the validation replay is still keyed to the same compile_key_hash.
+            if val_result.replayed_from_cache and not force_compile:
                 assert compile_used_cache, (
                     "Inconsistent cache usage between compile and execute: if exec was cached then compile also needs to be cached. This should always be chained! If this happens, potentially a change in the wrapper code/... happened. Please delete the corresponding cache entry (validate cache), check your changes and re-run."
                 )
