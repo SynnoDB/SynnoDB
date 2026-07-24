@@ -29,7 +29,9 @@ class _ReplayValidator:
 
 
 def _make_run_tool(tmp_path) -> RunTool:
-    rt = object.__new__(RunTool)  # bypass __init__: run_query_batch needs only a few attrs
+    rt = object.__new__(
+        RunTool
+    )  # bypass __init__: run_query_batch needs only a few attrs
     rt.cwd = str(tmp_path)
     rt.query_validator = _ReplayValidator()
     rt.memory_budget_mb = 256
@@ -79,6 +81,8 @@ def test_forced_rebuild_with_replayed_validation_passes(tmp_path):
     """The publish gate's shape: force_compile=True makes compile_used_cache=False by
     construction while the validations legitimately replay from cache."""
     rt = _make_run_tool(tmp_path)
-    result = _run(rt, _make_batch("forced"), compile_used_cache=False, force_compile=True)
+    result = _run(
+        rt, _make_batch("forced"), compile_used_cache=False, force_compile=True
+    )
     assert result.success is True
     assert result.metrics["validation/replayed_from_cache"] is True

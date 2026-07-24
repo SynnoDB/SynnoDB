@@ -407,7 +407,9 @@ class DataInspectTool:
             logger.warning("query_data could not prepare data (sf=%g): %s", sf, exc)
             return f"Error preparing data for inspection: {exc}", "prep_error", False
 
-        output, status, elapsed = self._run_and_render(con, sql, row_limit, full_dataset)
+        output, status, elapsed = self._run_and_render(
+            con, sql, row_limit, full_dataset
+        )
         return self._finish(output, status, elapsed, cache_path, hash_payload)
 
     def _finish(

@@ -108,10 +108,16 @@ class CachedCompiler(Compiler):
 
         # Store the output in the cache. An only-from-cache replay never writes: its
         # forced rebuilds (publish gate) must not overwrite the recorded chain with a
-        # possibly non-deterministic fresh compile output.
+        # possibly non-deterministic fresh compile output. A forced (skip_cache)
+        # rebuild over an existing entry likewise skips the write: the recorded
+        # verdict stays authoritative, the rebuild only exists to produce the binary.
+        # That is the ONLY tolerated case - on every other path an entry existing at
+        # write time indicates a serious bug (or hash collision), and dump_pickle's
+        # already-exists guard raises.
         if (
             cache_path is not None
             and write_cache
+            and not (skip_cache and is_cached)
             and not self.do_not_cache
             and not self.only_from_cache
         ):

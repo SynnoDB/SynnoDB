@@ -72,3 +72,24 @@ def test_only_from_cache_forced_rebuild_never_writes_the_cache(tmp_path, monkeyp
     live = _make_compiler(tmp_path, monkeypatch, calls)
     live.build_cached(skip_cache=True, current_git_snapshot=SNAPSHOT)
     assert len(list((tmp_path / "cache").glob("*.pkl"))) == 1
+
+
+def test_forced_rebuild_over_existing_entry_keeps_it(tmp_path, monkeypatch):
+    """A rerun's publish gate (skip_cache=True with the entry already recorded) builds
+    live for the binary but leaves the recorded verdict untouched - it must not trip
+    dump_pickle's already-exists guard."""
+    calls: list[str] = []
+    _make_compiler(tmp_path, monkeypatch, calls).build_cached(
+        current_git_snapshot=SNAPSHOT
+    )
+    [entry] = (tmp_path / "cache").glob("*.pkl")
+    recorded = entry.read_bytes()
+
+    rerun = _make_compiler(tmp_path, monkeypatch, calls)
+    output, from_cache, _ = rerun.build_cached(
+        skip_cache=True, current_git_snapshot=SNAPSHOT
+    )
+    assert output is None and from_cache is False
+    assert calls == ["build", "build"]  # both runs compiled live
+    assert entry.read_bytes() == recorded  # entry neither rewritten nor duplicated
+    assert len(list((tmp_path / "cache").glob("*.pkl"))) == 1
