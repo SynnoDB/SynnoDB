@@ -1,31 +1,37 @@
-import re
-
-
 def extract_order_by_columns(sql_query: str) -> list[tuple[str, str]]:
-    """Extract columns used in ORDER BY clause of the SQL query.
+    """Extract columns used in the outermost ORDER BY clause of the SQL query.
+
+    Only the top-level ORDER BY is considered. An ORDER BY nested inside a window
+    function (``... OVER (ORDER BY ...)``) or a subquery is deliberately ignored,
+    since it does not determine the row order of the final result set.
 
     Returns:
-        List of tuples (column_name, ordering) where ordering is 'ASC' or 'DESC'.
-        Default ordering is 'ASC' if not specified.
+        List of tuples (column_expr, ordering) where ordering is 'ASC' or 'DESC'.
+        Default ordering is 'ASC' if not specified. Returns an empty list when the
+        query has no top-level ORDER BY (or cannot be parsed).
     """
-    order_by_pattern = re.compile(
-        r"ORDER BY\s+(.+?)(?:LIMIT|;|$)", re.IGNORECASE | re.DOTALL
-    )
-    match = order_by_pattern.search(sql_query)
-    if match:
-        columns_str = match.group(1).strip()
-        columns = []
-        for col in columns_str.split(","):
-            col = col.strip()
-            # Check for ASC or DESC
-            if re.search(r"\bDESC\b", col, re.IGNORECASE):
-                col_name = re.sub(r"\s+DESC\b", "", col, flags=re.IGNORECASE).strip()
-                columns.append((col_name, "DESC"))
-            elif re.search(r"\bASC\b", col, re.IGNORECASE):
-                col_name = re.sub(r"\s+ASC\b", "", col, flags=re.IGNORECASE).strip()
-                columns.append((col_name, "ASC"))
-            else:
-                # Default is ASC
-                columns.append((col, "ASC"))
-        return columns
-    return []
+    import sqlglot
+    from sqlglot import expressions as exp
+    from sqlglot.errors import ParseError
+
+    try:
+        tree = sqlglot.parse_one(sql_query, read="duckdb")
+    except ParseError:
+        return []
+
+    if tree is None:
+        return []
+
+    # The top-level ORDER BY attaches to the root node, whether that is a SELECT or
+    # a set operation (UNION/EXCEPT/INTERSECT). find_all would also reach nested
+    # ORDER BYs inside window functions and subqueries, so read the root's arg only.
+    order = tree.args.get("order")
+    if not isinstance(order, exp.Order):
+        return []
+
+    columns: list[tuple[str, str]] = []
+    for ordered in order.expressions:
+        col_expr = ordered.this.sql(dialect="duckdb")
+        ordering = "DESC" if ordered.args.get("desc") else "ASC"
+        columns.append((col_expr, ordering))
+    return columns
