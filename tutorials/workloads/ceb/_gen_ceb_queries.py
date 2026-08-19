@@ -12,13 +12,18 @@ substituted, runnable query per id - a static bring-your-own workload, the exact
 
 import json
 import os
+import sys
 from pathlib import Path
 
+# Put the repo root on sys.path so ``tutorials.*`` resolves whether this file is run directly
+# (python tutorials/workloads/ceb/_gen_ceb_queries.py) or as a module, since running a script
+# only puts its own directory on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tutorials.workloads.ceb.gen_ceb_query import build_ceb_query_set
 
-TUTORIAL_DIR = Path(
+WORKLOAD_DIR = Path(
     __file__
-).parent.parent  # tutorials/, where the demo reads ceb_queries.json
+).parent  # tutorials/workloads/ceb/, where the demo reads ceb_queries.json
 
 CEB_DIR = Path(
     os.environ.get("SYNNO_CEB_DIR", "/mnt/labstore/bespoke_olap/datasets/ceb/imdb")
@@ -39,6 +44,6 @@ if __name__ == "__main__":
             "Point SYNNO_CEB_DIR at a tree holding one <query-id>/ folder of recorded bindings."
         )
     data = build()
-    out = TUTORIAL_DIR / "ceb_queries.json"
+    out = WORKLOAD_DIR / "ceb_queries.json"
     out.write_text(json.dumps(data, indent=2))
     print(f"Written: {out} ({len(data)} queries)")

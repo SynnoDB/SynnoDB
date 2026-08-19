@@ -158,7 +158,7 @@ python3 -m tutorials.workloads.stack.gen_stack_query   # writes queries.json (gi
 ```
 
 `build_stack_queries_json()` turns the template extraction into the bring-your-own
-shape [`byo_workload`](../../byo_workload.py) / `sync_from_duckdb` consumes,
+shape [`byo_workload`](../../../src/synnodb/workloads/byo_workload.py) / `sync_from_duckdb` consumes,
 keeping the template structure fixed so **only filter literals vary**. Some
 classes (`q2`, `q3`, `q8`, `q11`-`q16`) parameterized the filtered *column* and/or
 the *operator*, not just literals; the generator automatically picks each such
