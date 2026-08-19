@@ -2,16 +2,21 @@
 
 Each entry is ``{"sql": <template>, "params": {PLACEHOLDER: <spec>}, "param_groups": [...]}``.
 The specs are the authentic TPC-H parameter value spaces, taken verbatim from the declarative
-``gen_tpch.tpch_param_specs.TPCH_PARAM_SPECS`` table (which mirrors the built-in generator's
-ranges/choices). Scalar placeholders use typed ``int``/``float``/``date``/``categorical``
-specs; correlated / distinct placeholders (Q7 nation pair, Q16/Q22 k-distinct, Q12 shipmodes)
-use a joint ``param_groups`` spec. This is exactly the shape a BI dashboard would render as
-sliders / dropdowns / date-pickers.
+``tutorials.workloads.tpch.tpch_param_specs.TPCH_PARAM_SPECS`` table (which mirrors the
+built-in generator's ranges/choices). Scalar placeholders use typed
+``int``/``float``/``date``/``categorical`` specs; correlated / distinct placeholders (Q7 nation
+pair, Q16/Q22 k-distinct, Q12 shipmodes) use a joint ``param_groups`` spec. This is exactly the
+shape a BI dashboard would render as sliders / dropdowns / date-pickers.
 """
 
 import json
+import sys
 from pathlib import Path
 
+# Put the repo root on sys.path so ``tutorials.*`` resolves whether this file is run directly
+# (python tutorials/workloads/tpch/_gen_queries.py) or as a module, since running a script
+# only puts its own directory on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tutorials.workloads.tpch.tpch_param_specs import TPCH_PARAM_SPECS
 
 from tutorials.workloads.tpch.tpch_queries import tpc_h

@@ -1,8 +1,9 @@
 """SynnoDB: From DuckDB to Bespoke in One Import - generation part.
 
 Exported from gen_tpch_demo.ipynb. Covers only the engine-generation flow:
-  Setup -> build TPC-H DuckDB -> register workload -> storage plan -> base impl.
-The benchmark / drop-in steps from the notebook are not included here.
+  Setup -> build TPC-H DuckDB -> register workload -> storage plan -> base impl -> optimization.
+The benchmark / drop-in steps from the notebook are not included here. Note that the final
+optimization loop runs unconditionally and dominates the budget (~10 hrs / ~$50).
 
 Prerequisites: pip install "synnodb[factory]"
 """
@@ -40,7 +41,7 @@ print("Model       :", MODEL)
 # --- Your DuckDB database (for the demo: TPC-H) --------------------------------------------
 # SynnoDB works off a DuckDB database you already have. For this demo only we assemble a TPC-H
 # database with DuckDB's built-in dbgen; in your own project this is simply the duckdb.connect(...)
-# you already hold. SF5 is a couple of GB and takes a little while to build.
+# you already hold. SF50 is ~50 GB (sf 1 is ~1 GB) and takes a while to build.
 import sys
 
 import duckdb
@@ -74,7 +75,6 @@ from synnodb import SynnoDB
 # the base-impl run ends with a per-query pass that runs each query at this thread count and fixes
 # any that are only correct single-threaded.
 NUM_THREADS = 8  # 8 for demo, for all cores: os.cpu_count()
-assert NUM_THREADS is not None, "os.cpu_count() returned None"
 
 db = SynnoDB(
     model=MODEL,

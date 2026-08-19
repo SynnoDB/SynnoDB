@@ -1,8 +1,9 @@
 """Parity guard: the declarative TPC-H value-space table (``TPCH_PARAM_SPECS``, which seeds
 the tutorial ``queries.json``) must mimic the authoritative imperative generator
-(``gen_tpch.gen_tpch_query.gen_query``) for non-date placeholders - same per-placeholder
-reachable values *and* the same joint distinctness/correlation. Date specs intentionally expose
-only an input constraint (closed ISO min/max range), not the generator's month/year snapping.
+(``tutorials.workloads.tpch.gen_tpch_query.gen_query``) for non-date placeholders - same
+per-placeholder reachable values *and* the same joint distinctness/correlation. Date specs
+intentionally expose only an input constraint (closed ISO min/max range), not the generator's
+month/year snapping.
 """
 
 from __future__ import annotations

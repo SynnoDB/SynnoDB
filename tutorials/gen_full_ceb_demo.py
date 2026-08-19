@@ -80,7 +80,6 @@ from synnodb import SynnoDB
 # the base-impl run ends with a per-query pass that runs each query at this thread count and fixes
 # any that are only correct single-threaded.
 NUM_THREADS = 8  # 8 for demo, for all cores: os.cpu_count()
-assert NUM_THREADS is not None, "os.cpu_count() returned None"
 
 db = SynnoDB(
     model=MODEL,

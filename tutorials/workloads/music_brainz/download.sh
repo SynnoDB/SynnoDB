@@ -11,7 +11,7 @@ STORAGE_DIR="${STORAGE_DIR:-/mnt/labstore/learned_db/synno_data/workloads/}"
 export STORAGE_DIR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 exec "${REPO_ROOT}/.venv/bin/python" "${SCRIPT_DIR}/load_musicbrainz.py" \
     --storage-dir "${STORAGE_DIR}" "$@"

@@ -25,10 +25,17 @@ Prerequisites: pip install "synnodb[factory]"
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from workloads.stack.gen_stack_query import build_stack_queries_json
+
+# The Stack query builders live in the tutorials package (real projects bring their own queries, so
+# they are demo helpers, not part of synnodb). Put the repo root on sys.path so ``tutorials.*``
+# resolves whether this file is run directly (python tutorials/gen_full_stack_demo.py) or as a
+# module, since running a script only puts its own directory on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tutorials.workloads.stack.gen_stack_query import build_stack_queries_json
 
 from synnodb.observability.logging.logger import setup_logging
 from synnodb.utils.path_utils import repo_root
@@ -61,7 +68,7 @@ print("Model       :", MODEL)
 # SynnoDB works off a DuckDB database you already have. TPC-H can be synthesized with DuckDB's
 # built-in dbgen; Stack cannot - it is real data - so this demo simply opens a ``stack_ce.duckdb``
 # you already hold (the StackExchange CE-benchmark import; see
-# ``src/synnodb/workloads/dataset/gen_stack/README.md``). In your own project this is just the
+# ``tutorials/workloads/stack/README.md``). In your own project this is just the
 # duckdb.connect(...) you already have. Point SYNNO_STACK_DUCKDB at your file.
 import duckdb
 
@@ -74,7 +81,8 @@ STACK_DB = Path(
 if not STACK_DB.exists():
     raise SystemExit(
         f"Stack DuckDB not found: {STACK_DB}\n"
-        "Set SYNNO_STACK_DUCKDB to your stack_ce.duckdb (the StackExchange CE import)."
+        "Set SYNNO_STACK_DUCKDB to your stack_ce.duckdb (the StackExchange CE import; "
+        "build it per tutorials/workloads/stack/README.md)."
     )
 
 # Your live working database. Open it read-only: a read-write connection takes an exclusive OS lock
@@ -94,7 +102,6 @@ from synnodb import SynnoDB
 # the base-impl run ends with a per-query pass that runs each query at this thread count and fixes
 # any that are only correct single-threaded.
 NUM_THREADS = 8  # 8 for demo, for all cores: os.cpu_count()
-assert NUM_THREADS is not None, "os.cpu_count() returned None"
 
 db = SynnoDB(
     model=MODEL,

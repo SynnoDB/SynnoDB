@@ -26,11 +26,18 @@ Prerequisites: pip install "synnodb[factory]"
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from workloads.music_brainz._gen_musicbrainz_queries import (
+# The MusicBrainz query builder lives in the tutorials package (real projects bring their own
+# queries, so it is a demo helper, not part of synnodb). Put the repo root on sys.path so
+# ``tutorials.*`` resolves whether this file is run directly
+# (python tutorials/gen_full_music_brainz_demo.py) or as a module, since running a script only
+# puts its own directory on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tutorials.workloads.music_brainz._gen_musicbrainz_queries import (
     build_musicbrainz_queries_json,
 )
 
@@ -106,7 +113,6 @@ from synnodb import SynnoDB
 # the base-impl run ends with a per-query pass that runs each query at this thread count and fixes
 # any that are only correct single-threaded.
 NUM_THREADS = 8  # 8 for demo, for all cores: os.cpu_count()
-assert NUM_THREADS is not None, "os.cpu_count() returned None"
 
 db = SynnoDB(
     model=MODEL,
