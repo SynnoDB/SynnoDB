@@ -1,10 +1,10 @@
 [project]
 name = "synnodb"
-version = "0.1.4"
+version = "0.1.5"
 description = "Synthesizing Databases for your Workload"
 readme = "README.md"
 requires-python = ">=3.13"
-license = "Apache-2.0"
+license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 authors = [
     { name = "Johannes Wehrstein", email = "johannes@synnodb.com" },
@@ -62,6 +62,7 @@ benchmark = ["clickhouse-connect>=0.14.0"]
 notebook = [
     "ipykernel>=7.2.0",
     "nbformat>=5.10.4",
+    "tqdm>=4.66",        # tutorial: progress bars over the baseline query reps
 ]
 
 [project.scripts]
@@ -71,8 +72,8 @@ pgrouter-analyze = "synnodb.misc.router.pgrouter.analyze:main"
 pgrouter-inspect = "synnodb.misc.router.pgrouter.inspect:main"
 
 [project.urls]
-Homepage = "https://github.com/JWehrstein/SynnoDB"
-Repository = "https://github.com/JWehrstein/SynnoDB"
+Homepage = "https://github.com/SynnoDB/SynnoDB"
+Repository = "https://github.com/SynnoDB/SynnoDB"
 
 [tool.ruff]
 target-version = "py313"

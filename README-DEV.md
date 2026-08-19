@@ -1,14 +1,14 @@
 # Developer guide
 
-Checks that run in CI ([.github/workflows/lint.yml](.github/workflows/lint.yml)). Run them locally
-before pushing.
+Checks that run in CI ([.github/workflows/lint.yml](.github/workflows/lint.yml) and
+[.github/workflows/tests.yml](.github/workflows/tests.yml)). Run them locally before pushing.
 
 **Strip tutorial notebooks** (no outputs/execution counts/non-sequential cell IDs - CI rejects
 otherwise). Do this before committing any `tutorials/*.ipynb` change:
 
 ```bash
 git ls-files 'tutorials/*.ipynb' | xargs uvx nbstripout==0.8.1            # strip
-git ls-files 'tutorials/*.ipynb' | xargs uvx nbstripout==0.8.1 --verify   # check only (CI command)
+git ls-files 'tutorials/*.ipynb' | xargs uvx nbstripout==0.8.1 --verify   # check only (CI runs it via pipx)
 ```
 
 **Lint / format** (Ruff, pinned `0.15.20`):
@@ -18,7 +18,7 @@ uvx ruff==0.15.20 check
 uvx ruff==0.15.20 format --check   # drop --check to apply
 ```
 
-**Tests** ([`tests/`](tests/)):
+**Tests** ([`tests/`](tests/); CI runs them as `uv run pytest` in tests.yml):
 
 ```bash
 .venv/bin/python -m pytest

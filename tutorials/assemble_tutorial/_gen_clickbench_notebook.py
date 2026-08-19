@@ -238,7 +238,7 @@ db = SynnoDB(
     model=MODEL,
     model_extra_body=MODEL_EXTRA_BODY,
     db_storage="in_memory",
-    queries="1-10",
+    query_subset="1-10",
     data_dir=DATA_ROOT,
     threads=NUM_THREADS,
     max_turns=450,  # double the default per-stage LLM turn budget (225) for the base implementation
@@ -355,6 +355,14 @@ print("Workspace :", impl.workspace)
 print("Files     :", sorted(impl.files))
 print()
 print(f"Engine published to: {DATA_ROOT / 'engines'}")
+""")
+)
+
+cells.append(
+    code("""
+# Optimization Loop
+# Takes ~10hrs, $50
+# impl = db.runOptimLoop(base_impl=impl)
 """)
 )
 
@@ -667,7 +675,7 @@ for i, cell in enumerate(cells):
 
 nb = new_notebook(cells=cells)
 nb.metadata["kernelspec"] = {
-    "display_name": "synnodb",
+    "display_name": "Python 3 (ipykernel)",
     "language": "python",
     "name": "python3",
 }
@@ -678,7 +686,7 @@ nb.metadata["language_info"] = {
     "name": "python",
     "nbconvert_exporter": "python",
     "pygments_lexer": "ipython3",
-    "version": "3.13.11",
+    "version": "3.13.14",
 }
 
 out = TUTORIAL_DIR / "gen_clickbench_demo.ipynb"

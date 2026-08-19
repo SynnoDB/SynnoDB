@@ -2,7 +2,7 @@
 
 This is the *authoritative declarative* encoding of each query's substitution-parameter space,
 mirroring the ranges/choices the imperative generator
-(:func:`synnodb.workloads.dataset.gen_tpch.gen_tpch_query.gen_query`) draws. Each entry is in
+(:func:`tutorials.workloads.tpch.gen_tpch_query.gen_query`) draws. Each entry is in
 the same typed-spec form a bring-your-own ``queries.json`` uses (see
 :mod:`synnodb.workloads.query_params`), so it both (a) seeds the self-describing tutorial
 ``queries.json`` and (b) drives live-UI input widgets for built-in TPC-H runs.

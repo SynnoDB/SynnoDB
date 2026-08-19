@@ -262,7 +262,7 @@ class TestGenCEBQuery(unittest.TestCase):
     #         self.assertEqual(len(bindings2), 3)
 
     def test_move_is_null_to_in_clause(self):
-        query = """SELECT COUNT(*)
+        query = r"""SELECT COUNT(*)
 FROM title as t,
 movie_info as mi1,
 kind_type as kt,
