@@ -37,16 +37,18 @@ from ..router.manifest import (
 )
 from ..router.normalize import bind_template, normalize_sql, scan_string_literals
 from ..router.registry import PlaceholderSpec
-from .query_params import render_value, substitute
+from .query_params import _PLACEHOLDER_NAME, _render_in_list, render_value, substitute
 
 log = logging.getLogger("synnodb.engine_publish")
 
 # A placeholder marker, with optional surrounding single quotes and an optional leading type
 # keyword, so `date '[DATE]'`, `'[DELTA]'` and a bare `[DISCOUNT]` all collapse to one marker.
+# The name follows the UPPERCASE placeholder grammar (query_params), which is what separates
+# a marker from bracketed *data* such as IMDB's country codes `'[cz]'`.
 _MARKER = re.compile(
-    r"(?:\b(?:date|timestamp|time)\b\s*)?'?\[([A-Za-z_]\w*)\]'?", re.IGNORECASE
+    rf"(?:\b(?i:date|timestamp|time)\b\s*)?'?\[({_PLACEHOLDER_NAME})\]'?"
 )
-_BRACKET = re.compile(r"\[([A-Za-z_]\w*)\]")
+_BRACKET = re.compile(rf"\[({_PLACEHOLDER_NAME})\]")
 
 # One embedded-parameter string literal: its ``(start, close)`` span in the source and the
 # ``names``/``consts`` its inner text splits into (``len(consts) == len(names) + 1``).
@@ -124,11 +126,45 @@ def _distinct_names(bracket_sql: str) -> List[str]:
     return list(seen)
 
 
+_POSTFIX_CAST = re.compile(r"\?\s*::\s*(\w+)")
+
+
+def _rewrite_postfix_casts(anon_sql: str) -> str:
+    """Rewrite a postfix-cast marker (``?::interval``, from ``'[DATE]'::interval``) to the
+    equivalent ``CAST(? AS interval)``. The postfix form is unparseable to sqlglot, so a
+    template carrying it could neither be keyed nor described. Quoted literals are copied
+    verbatim so a ``?::`` inside a string is never touched."""
+    if "?" not in anon_sql or "::" not in anon_sql:
+        return anon_sql
+    out: List[str] = []
+    last = 0
+    for start, close, _ in scan_string_literals(anon_sql):
+        out.append(_POSTFIX_CAST.sub(r"CAST(? AS \1)", anon_sql[last:start]))
+        out.append(anon_sql[start : close + 1])
+        last = close + 1
+    out.append(_POSTFIX_CAST.sub(r"CAST(? AS \1)", anon_sql[last:]))
+    return "".join(out)
+
+
 def _to_anon(bracket_sql: str, literals: Sequence[_Embedded]) -> str:
     """`date '[DATE]'` / `'[DELTA]'` / `[DISCOUNT]` -> `?`, and an affixed literal `'%[TYPE]'`
-    (or a multi-parameter one like `'%[W1]%[W2]%'`) -> a single `?` for the whole literal."""
+    (or a multi-parameter one like `'%[W1]%[W2]%'`) -> a single `?` for the whole literal.
+    A marker cast with the postfix syntax becomes `CAST(? AS ...)`."""
     s = _collapse_embedded(bracket_sql, literals)
-    return _MARKER.sub("?", s)
+    return _rewrite_postfix_casts(_MARKER.sub("?", s))
+
+
+def _no_list_spacing(rendered: str) -> str:
+    """A rendered IN list with the whitespace between elements removed (quoted element text
+    kept verbatim), so `('a', 'b')` and `('a','b')` compare equal."""
+    out: List[str] = []
+    last = 0
+    for start, close, _ in scan_string_literals(rendered):
+        out.append(re.sub(r"\s+", "", rendered[last:start]))
+        out.append(rendered[start : close + 1])
+        last = close + 1
+    out.append(re.sub(r"\s+", "", rendered[last:]))
+    return "".join(out)
 
 
 def _binds_match(bound: Mapping[str, object], assignment: Mapping[str, object]) -> bool:
@@ -136,8 +172,16 @@ def _binds_match(bound: Mapping[str, object], assignment: Mapping[str, object]) 
     for name, value in assignment.items():
         if name not in bound:
             return False
+        got = bound[name]
+        if isinstance(got, tuple):
+            # A whole-list IN parameter binds as a tuple of member values; the sampled value
+            # is the rendered list text (element spacing varies by source).
+            want = _no_list_spacing(render_value(value))
+            if _no_list_spacing(_render_in_list(got)) != want:
+                return False
+            continue
         want = render_value(value)
-        got = str(bound[name]).strip("'")
+        got = str(got).strip("'")
         if got != want and got != str(value):
             return False
     return True

@@ -375,6 +375,7 @@ cells.append(
 
 cells.append(
     code("""
+import os
 import tempfile
 from tqdm import tqdm
 
@@ -384,7 +385,11 @@ duck.execute("PRAGMA enable_profiling='json'")  # EXPLAIN ANALYZE returns its pr
 # enable_profiling also makes DuckDB dump a JSON profile to the console after *every* statement -
 # a wall of text in the notebook. Send those automatic dumps to a throwaway file; the EXPLAIN
 # ANALYZE result set still carries the profile analyze_ms() reads, so the timings are unaffected.
-duck.execute(f"PRAGMA profiling_output='{Path(tempfile.gettempdir()) / 'duckdb_profile.json'}'")
+# A per-run file, not a fixed name: /tmp is shared, and another user's leftover
+# duckdb_profile.json is not writable (sticky bit), which kills the PRAGMA.
+_profile_fd, _profile_path = tempfile.mkstemp(suffix="_duckdb_profile.json")
+os.close(_profile_fd)
+duck.execute(f"PRAGMA profiling_output='{_profile_path}'")
 # Materialize hits fully in memory (CREATE TABLE, not a VIEW) by copying it out of the local typed
 # DuckDB built above, so the measured query time is in-memory execution - not a fresh scan of the
 # on-disk file on every run.
