@@ -503,7 +503,12 @@ class SynnoConnection:
         return router.why(query, parameters, self)
 
     def schema_fingerprint(self, tables: Sequence[str]) -> str:
-        """Fingerprint of *tables* in the live DuckDB catalog (name+type per column).
+        """Fingerprint of *tables* in the live DuckDB catalog (name+type per column),
+        plus the session context that decides what an unqualified statement means:
+        current database, search_path, and the settings that change identical text's
+        semantics (null order, time zone, calendar). An engine's baked results are only
+        valid under the resolution context it was registered in - changing any of these
+        mid-session flips the fingerprint and every affected query falls back.
 
         Used by the schema-match guard. Deterministic and cheap; missing tables are
         encoded as such so a mismatch (engine expects a table that isn't there) fails
@@ -512,6 +517,15 @@ class SynnoConnection:
         import hashlib
 
         parts: List[str] = []
+        try:
+            ctx = self._inner.execute(
+                "SELECT current_database(), current_setting('search_path'), "
+                "current_setting('default_null_order'), "
+                "current_setting('TimeZone'), current_setting('Calendar')"
+            ).fetchone()
+            parts.append("session(" + ",".join(str(v) for v in ctx) + ")")
+        except Exception:
+            parts.append("session(<unavailable>)")
         for table in sorted(t.lower() for t in tables):
             try:
                 rows = self._inner.execute(

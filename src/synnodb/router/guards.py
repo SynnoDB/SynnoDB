@@ -15,7 +15,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
-from .normalize import binding_groups, extract_literals, has_param_markers, is_select
+from .normalize import (
+    binding_groups,
+    extract_literals,
+    has_param_markers,
+    is_select,
+    same_statement,
+)
 from .registry import EngineBinding, TemplateRegistry
 
 GuardOutcome = Tuple[bool, str]
@@ -65,6 +71,10 @@ def placeholder_arity_guard(ctx: GuardContext) -> GuardOutcome:
     passes; the literal count of an inline query has no fixed relation to the placeholder
     count (the template has constants too, and a placeholder may repeat). Only the
     explicit-parameter and concrete-example-template cases are checked here.
+
+    A template with no placeholders serves only its exact statement: its result is baked
+    in, and the structural key abstracts constants away, so a same-shaped query with
+    *different* constants matches the key too. ``same_statement`` separates the two.
     """
     expected = len(binding_groups(ctx.binding.placeholders))
     if ctx.parameters is not None:
@@ -75,9 +85,16 @@ def placeholder_arity_guard(ctx: GuardContext) -> GuardOutcome:
                 "named (dict) parameters bind by name, not position; not routable",
             )
         actual = len(params) if isinstance(params, (list, tuple)) else 1
-        if actual == expected:
+        if actual != expected:
+            return False, f"placeholder arity {actual} != expected {expected}"
+        if expected:
             return True, f"{actual} placeholders"
-        return False, f"placeholder arity {actual} != expected {expected}"
+    if not expected:
+        if ctx.binding.template_sql is None:
+            return False, "constant template with no template_sql to compare against"
+        if same_statement(ctx.sql, ctx.binding.template_sql):
+            return True, "constant template, exact statement match"
+        return False, "constant template serves only its exact statement"
     if ctx.binding.template_sql is not None and has_param_markers(
         ctx.binding.template_sql
     ):
@@ -108,7 +125,7 @@ def schema_match_guard(ctx: GuardContext) -> GuardOutcome:
         except Exception as exc:  # never raise out of a guard
             return False, f"schema introspection failed: {exc}"
         if current != ctx.binding.schema_fingerprint:
-            return False, "schema fingerprint mismatch vs engine build"
+            return False, "schema or session context changed since engine build"
         return True, "schema matches"
     return True, "schema check not enforced (no live fingerprint)"
 

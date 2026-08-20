@@ -220,6 +220,43 @@ def normalize_sql(sql: str) -> Optional[str]:
         return None
 
 
+def same_statement(sql_a: str, sql_b: str) -> bool:
+    """True when the two texts are the same statement - the exact-statement test for
+    routing a constant template. Formatting, comments, and keyword case are irrelevant;
+    every literal and identifier is significant. Compares parse trees AND the raw
+    string-literal tokens: the parser canonicalizes some string contents at parse time
+    (a bare JSON key ``'a.b'`` rewrites to the JSONPath ``'$.a.b'``, which DuckDB
+    executes differently), so tree equality alone would conflate them; the pre-parse
+    token texts pin those down. False when either side does not parse."""
+    a, b = _parse_cached(sql_a), _parse_cached(sql_b)
+    if a is None or b is None or a != b:
+        return False
+    tokens_a = _string_literal_tokens(sql_a)
+    return tokens_a is not None and tokens_a == _string_literal_tokens(sql_b)
+
+
+def _string_literal_tokens(sql: str) -> Optional[List[tuple]]:
+    """(token_type, raw text) of every string-literal token, in order; None if the
+    text does not tokenize. The type keeps ``e'..'``/``$$..$$`` forms distinct from
+    plain quotes even when their raw contents coincide."""
+    import sqlglot
+    from sqlglot.tokens import TokenType
+
+    kinds = {
+        TokenType.STRING,
+        TokenType.RAW_STRING,
+        TokenType.NATIONAL_STRING,
+        TokenType.BYTE_STRING,
+        TokenType.HEREDOC_STRING,
+        TokenType.UNICODE_STRING,
+    }
+    try:
+        tokens = sqlglot.tokenize(sql, read=_DIALECT)
+    except Exception:
+        return None
+    return [(t.token_type, t.text) for t in tokens if t.token_type in kinds]
+
+
 def has_order_by(sql: str) -> bool:
     """True if the statement's top-level result is explicitly ordered (``ORDER BY``).
 
