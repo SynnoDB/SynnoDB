@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from synnodb.ram_check import RamCheck
 from synnodb.tools.run_tool_mode import RunToolMode
 from synnodb.utils import utils
+from synnodb.workloads.query_params import _render_in_list
 
 
 # Base number of parameter instantiations generated per query for the correctness
@@ -209,9 +210,12 @@ def _gen_req_id(
 
 
 def _format_placeholder_values(placeholders: dict) -> str:
-    # Don't add double quotes to IN lists (they start with '(')
+    # Don't add double quotes to IN lists (they start with '('). The router binds a
+    # whole-list IN parameter as a tuple of member values; render it to that form first.
     formatted_values = []
     for value in placeholders.values():
+        if isinstance(value, (list, tuple)):
+            value = _render_in_list(value)
         if isinstance(value, str) and value.startswith("("):
             # IN list - don't add quotes
             formatted_values.append(value)

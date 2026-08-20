@@ -12,9 +12,12 @@ or a cross-check mismatch sidelines a template).
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Iterable, Mapping, Optional, Tuple
+
+log = logging.getLogger("synnodb.router.registry")
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,14 @@ class TemplateRegistry:
     # ---- population -----------------------------------------------------
     def register(self, binding: EngineBinding) -> None:
         with self._lock:
+            prior = self._by_norm.get(binding.normalized_sql)
+            if prior is not None and prior.template_id != binding.template_id:
+                log.warning(
+                    "template key collision: %s replaces %s; queries the replaced "
+                    "binding served now fall back to DuckDB",
+                    binding.template_id,
+                    prior.template_id,
+                )
             self._by_norm[binding.normalized_sql] = binding
 
     def unregister(self, normalized_sql: str) -> None:

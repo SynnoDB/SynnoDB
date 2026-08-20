@@ -193,6 +193,24 @@ def normalize_sql(sql: str) -> Optional[str]:
             node.this, (exp.Literal, exp.Boolean, exp.Null, exp.Placeholder)
         ):
             return exp.Placeholder()
+        # A negated literal (-1) is a constant; binary minus is exp.Sub and stays structural.
+        if isinstance(node, exp.Neg) and isinstance(
+            node.this, (exp.Literal, exp.Placeholder)
+        ):
+            return exp.Placeholder()
+        # An IN whose members are all constants collapses to a single-placeholder list, so
+        # the key is arity-free: `IN (1, 2, 3)`, a fixed `IN (?, ?, ?)` and a whole-list
+        # marker `IN ?` all render `IN (?)`. transform visits parents first, so members are
+        # tested via _placeholder itself, and the node is mutated rather than replaced
+        # (replacing would prune the walk from the untouched left-hand side). IN (subquery)
+        # and any non-constant member are left alone.
+        if isinstance(node, exp.In):
+            members = node.expressions
+            if (
+                members and all(_placeholder(m) is not m for m in members)
+            ) or isinstance(node.args.get("field"), exp.Placeholder):
+                node.set("field", None)
+                node.set("expressions", [exp.Placeholder()])
         return node
 
     try:
@@ -411,6 +429,22 @@ def _loose_eq(a: Any, b: Any) -> bool:
     return a == b or str(a) == str(b)
 
 
+def constant_in_arities(sql: str) -> Optional[Tuple[int, ...]]:
+    """Member count of every all-constant ``IN`` list, in tree order, or ``None`` if the
+    statement does not parse. The structural key is arity-free for these lists, so a
+    positional binder must check the arities itself before zipping literals."""
+    from sqlglot import expressions as exp
+
+    tree = _parse_cached(sql)
+    if tree is None:
+        return None
+    return tuple(
+        len(node.expressions)
+        for node in tree.find_all(exp.In)
+        if node.expressions and all(_is_constant(m) for m in node.expressions)
+    )
+
+
 def has_param_markers(template_sql: str) -> bool:
     """True if the template uses explicit ``?`` / ``$name`` placeholders (vs a concrete
     example query whose literals stand in for parameters). Selects the binding strategy:
@@ -466,6 +500,36 @@ def _record(name: str, value: Any, bound: dict) -> bool:
     return True
 
 
+def _bind_placeholder(
+    ph: Any, value: Any, names: Sequence[str], counter: List[int], bound: dict
+) -> bool:
+    """Bind one template placeholder to *value*: by its own name, or, for a bare ``?``,
+    by the next positional name."""
+    nm = ph.name
+    if nm and nm != "?":  # named placeholder ($DATE, or the synthetic :synpN)
+        return _record(nm, value, bound)
+    # anonymous ? - normally rewritten to a named one before we get here
+    if counter[0] >= len(names):
+        return False
+    name = names[counter[0]]
+    counter[0] += 1
+    return _record(name, value, bound)
+
+
+def _is_constant(node: Any) -> bool:
+    """A node that stands for one constant value: a literal, a signed literal, or a typed
+    literal like ``DATE 'x'`` - the shapes normalize_sql collapses to a placeholder."""
+    from sqlglot import expressions as exp
+
+    if isinstance(node, (exp.Literal, exp.Boolean, exp.Null)):
+        return True
+    if isinstance(node, exp.Neg):
+        return _is_constant(node.this)
+    if isinstance(node, exp.Cast):
+        return isinstance(node.this, (exp.Literal, exp.Boolean, exp.Null))
+    return False
+
+
 def _unify(
     t: Any, i: Any, names: Sequence[str], counter: List[int], bound: dict
 ) -> bool:
@@ -482,15 +546,7 @@ def _unify(
         i = i.this
 
     if isinstance(t, exp.Placeholder):
-        nm = t.name
-        if nm and nm != "?":  # named placeholder ($DATE, or the synthetic :synpN)
-            return _record(nm, _value_of(i), bound)
-        # anonymous ? — normally rewritten to a named one before we get here
-        if counter[0] >= len(names):
-            return False
-        name = names[counter[0]]
-        counter[0] += 1
-        return _record(name, _value_of(i), bound)
+        return _bind_placeholder(t, _value_of(i), names, counter, bound)
     if isinstance(t, exp.Parameter):  # some dialects represent $name as Parameter
         return _record(t.name, _value_of(i), bound)
     if type(t) is not type(i):
@@ -499,10 +555,33 @@ def _unify(
         # Constants must match EXACTLY, type-sensitive: `1` and `'1'` are both Literal but
         # render differently, so we never accelerate a query that only *looks* similar.
         return t.sql(dialect=_DIALECT) == i.sql(dialect=_DIALECT)
-    if set(t.args.keys()) != set(i.args.keys()):
+    # A whole-list IN marker (`IN ?`, parsed into the `field` arg: one placeholder standing
+    # for the member list) binds the incoming constants as a tuple, whatever their arity.
+    # A parenthesized list of placeholders (`IN (?, ?, ?)`) is fixed-arity and matches
+    # member-by-member through the generic path below.
+    if isinstance(t, exp.In):
+        field = t.args.get("field")
+        if (
+            isinstance(field, exp.Placeholder)
+            and i.expressions
+            and all(_is_constant(m) for m in i.expressions)
+            # NULL/boolean members would reach the engine args as Python reprs;
+            # refusing them here means DuckDB serves the query instead.
+            and not any(m.find(exp.Null) or m.find(exp.Boolean) for m in i.expressions)
+        ):
+            if not _unify(t.this, i.this, names, counter, bound):
+                return False
+            values = tuple(_value_of(m) for m in i.expressions)
+            return _bind_placeholder(field, values, names, counter, bound)
+    # Optional args parse as an explicit None on some paths but are omitted on others
+    # (CAST(x AS t) carries format/safe/action/default, x::t does not); to sqlglot an
+    # absent arg and a None arg are the same, so compare only the args that are present.
+    t_args = {k: v for k, v in t.args.items() if v is not None}
+    i_args = {k: v for k, v in i.args.items() if v is not None}
+    if set(t_args) != set(i_args):
         return False
-    for key in t.args:
-        if not _unify_arg(t.args[key], i.args[key], names, counter, bound):
+    for key in t_args:
+        if not _unify_arg(t_args[key], i_args[key], names, counter, bound):
             return False
     return True
 

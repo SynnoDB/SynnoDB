@@ -87,54 +87,87 @@ def _connection(conn: Any) -> Any:
 
 
 def _literalize(template_sql: str, placeholders: Sequence[PlaceholderSpec]) -> str:
-    """Replace ``?``/``$name`` parameters with typed ``CAST(NULL AS <type>)`` literals.
+    """Replace ``?``/``$name``/``:name`` parameters with typed ``CAST(NULL AS <type>)``.
 
     A parameterized template cannot be executed without values, but its *output
-    schema* is independent of the values — so we substitute typed NULLs (typed, so
-    expression type inference stays correct) and describe that. Returns the template
-    unchanged if it cannot be parsed or has no parameters.
+    schema* is independent of the values - so we substitute typed NULLs (typed, so
+    expression type inference stays correct) and describe that.
+
+    Substitution works on the tokenizer's character offsets, not on the parse tree:
+    the placeholder spec list is in *textual* order, and only the token stream shares
+    that order (an AST transform visits ``LIMIT ?`` before the WHERE clause, pairing
+    each ``?`` with the wrong spec). Each anonymous ``?`` token is matched, left to
+    right, with its binding group; named ``$name``/``:name`` tokens are looked up by
+    name. The typed NULLs are then spliced into the original text right to left, so
+    earlier offsets stay valid, and the spliced SQL is re-parsed both to validate it
+    and to render the canonical dialect form. Returns the template unchanged if it
+    cannot be tokenized, spliced, or re-parsed.
     """
     import sqlglot
     from sqlglot import expressions as exp
-
-    try:
-        tree = sqlglot.parse_one(template_sql, read="duckdb")
-    except Exception:
-        return template_sql
-    if tree is None:
-        return template_sql
+    from sqlglot.tokens import TokenType
 
     by_name = {p.name: p.type for p in placeholders}
     # Each anonymous ``?`` is one binding group, not one spec: several specs packed in one
     # string literal (Q13) share a single ``?``, whose bound value is that literal - a
     # VARCHAR pattern - regardless of the specs' own types.
     groups = binding_groups(placeholders)
-    counter = {"i": 0}
 
-    def _typed_null(type_str: str) -> "exp.Expression":
+    def _typed_null_sql(type_str: str) -> str:
         try:
             return exp.Cast(
                 this=exp.Null(), to=exp.DataType.build(type_str, dialect="duckdb")
-            )
+            ).sql(dialect="duckdb")
         except Exception:
-            return exp.Null()
+            return "NULL"
 
     def _group_type(group: Sequence[PlaceholderSpec]) -> str:
         whole_literal = len(group) == 1 and not group[0].prefix and not group[0].suffix
         return group[0].type if whole_literal else "VARCHAR"
 
-    def repl(node: "exp.Expression") -> "exp.Expression":
-        if isinstance(node, exp.Placeholder):  # anonymous ?
-            i = counter["i"]
-            counter["i"] += 1
-            type_str = _group_type(groups[i]) if i < len(groups) else "VARCHAR"
-            return _typed_null(type_str)
-        if isinstance(node, exp.Parameter):  # $name / :name
-            return _typed_null(by_name.get(node.name, "VARCHAR"))
-        return node
-
     try:
-        return tree.transform(repl).sql(dialect="duckdb")
+        toks = sqlglot.tokenize(template_sql, read="duckdb")
+
+        # Collect (start, end, type) splices in textual order. Token offsets are
+        # inclusive on both ends: token text is ``template_sql[start : end + 1]``.
+        splices: List[tuple[int, int, str]] = []
+        anon = 0
+        i = 0
+        while i < len(toks):
+            tok = toks[i]
+            nxt = toks[i + 1] if i + 1 < len(toks) else None
+            adjacent = nxt is not None and nxt.start == tok.end + 1
+            if tok.token_type is TokenType.PLACEHOLDER:  # anonymous ?
+                type_str = (
+                    _group_type(groups[anon]) if anon < len(groups) else "VARCHAR"
+                )
+                anon += 1
+                splices.append((tok.start, tok.end, type_str))
+            elif tok.token_type is TokenType.PARAMETER:
+                # ``$name`` / ``$1``: the tokenizer emits ``$`` and the name as two
+                # tokens; they form a parameter only when directly adjacent.
+                if adjacent and re.fullmatch(r"\w+", nxt.text):
+                    splices.append(
+                        (tok.start, nxt.end, by_name.get(nxt.text, "VARCHAR"))
+                    )
+                    i += 1
+            elif tok.token_type is TokenType.COLON:
+                # ``:name``: a colon also appears in struct literals and slices, so
+                # only an adjacent token naming a declared placeholder is a parameter.
+                if adjacent and nxt.text in by_name:
+                    splices.append((tok.start, nxt.end, by_name[nxt.text]))
+                    i += 1
+            i += 1
+
+        # Splice right to left so earlier offsets stay valid.
+        spliced = template_sql
+        for start, end, type_str in reversed(splices):
+            spliced = spliced[:start] + _typed_null_sql(type_str) + spliced[end + 1 :]
+
+        tree = sqlglot.parse_one(spliced, read="duckdb")
+        if tree is None:
+            return template_sql
+        return tree.sql(dialect="duckdb")
     except Exception:
         return template_sql
 
