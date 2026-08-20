@@ -26,6 +26,7 @@ from .guards import GuardContext, evaluate
 from .normalize import (
     bind_template,
     binding_groups,
+    constant_in_arities,
     extract_literals,
     has_order_by,
     has_param_markers,
@@ -183,6 +184,16 @@ class QueryRouter:
         # would hand the engine the raw pattern ('%y' instead of y), so refuse.
         if any(s.prefix or s.suffix or s.group >= 0 for s in specs):
             return None
+        # The structural key is arity-free for constant IN lists, but positional
+        # extraction is not: a query with compensating arities has the same key and
+        # literal count with the values in different positions. Zip only when the
+        # example template agrees on every IN arity.
+        arities = constant_in_arities(sql)
+        if arities:
+            if binding.template_sql is None:
+                return None
+            if constant_in_arities(binding.template_sql) != arities:
+                return None
         names = [spec.name for spec in specs]
         values = extract_literals(sql)
         return {

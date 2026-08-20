@@ -34,3 +34,17 @@ def test_format_args_element_preserves_in_lists() -> None:
     )
 
     assert args.endswith('(MAIL,SHIP) "67"')
+
+
+def test_format_args_element_renders_bound_tuples() -> None:
+    # The router binds a whole-list IN parameter as a tuple; it must reach the
+    # engine in the rendered (a, b, c) form, unquoted, like a pre-rendered list.
+    args = format_args_element(
+        "4",
+        {"TAG_LIST": ("premier-league", "olympics"), "SITE": "boardgames"},
+        request_disambiguator=0,
+    )
+
+    assert "('premier-league', 'olympics')" in args
+    assert '"(' not in args
+    assert '"boardgames"' in args
