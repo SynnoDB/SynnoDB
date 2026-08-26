@@ -527,15 +527,16 @@ class SynnoConnection:
         """
         import hashlib
 
+        # One definition of the session context, shared with the manifest that records it
+        # at build time, so the fingerprint and the engine's recorded baseline can never
+        # disagree about which settings matter.
+        from synnodb.router.manifest import SESSION_KEYS, read_session_context
+
         parts: List[str] = []
-        try:
-            ctx = self._inner.execute(
-                "SELECT current_database(), current_setting('search_path'), "
-                "current_setting('default_null_order'), "
-                "current_setting('TimeZone'), current_setting('Calendar')"
-            ).fetchone()
-            parts.append("session(" + ",".join(str(v) for v in ctx) + ")")
-        except Exception:
+        ctx = read_session_context(self._inner)
+        if ctx:
+            parts.append("session(" + ",".join(ctx[k] for k in SESSION_KEYS) + ")")
+        else:
             parts.append("session(<unavailable>)")
         for table in sorted(t.lower() for t in tables):
             try:

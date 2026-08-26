@@ -749,6 +749,29 @@ def _loader_is_shm_capable(workspace_path) -> bool:
         return False
 
 
+def _derive_session_context() -> dict:
+    """The session context this engine is being generated and validated under.
+
+    Read from a default DuckDB on the publishing host, which is what the validation
+    harness resolves to: the settings that decide what identical SQL text means (catalog,
+    search_path, null order, time zone, calendar). Recorded in the manifest so registration
+    can COMPARE it against the live connection instead of adopting whatever is set then.
+
+    Caveat worth knowing: this captures the host default, not a context a caller may have
+    SET inside the validation path. That covers the demonstrated hazard - a zone-sensitive
+    kernel built under the host zone and served under another - and nothing more is claimed.
+    """
+    import duckdb
+
+    from synnodb.router.manifest import read_session_context
+
+    con = duckdb.connect()
+    try:
+        return read_session_context(con)
+    finally:
+        con.close()
+
+
 def _derive_expected_tables(sf_dir, tables, serve_from):
     """The manifest's ``expected_tables`` (column name + DuckDB type) for the engine's tables,
     read the *same way* the serving compatibility gate reads the live schema
@@ -928,6 +951,7 @@ def _publish_generated_engine(
             expected_tables=expected_tables,
             source_db=source_db,
             threads=threads,
+            session_context=_derive_session_context(),
         )
         if dest is not None:
             logger.info(

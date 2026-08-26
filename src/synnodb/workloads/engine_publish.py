@@ -476,6 +476,7 @@ def publish_engine(
     bundle_parquet_dir: "str | Path | None" = None,
     source_db: Optional[str] = None,
     threads: Optional[int] = None,
+    session_context: Optional[Mapping[str, str]] = None,
 ) -> Optional[Path]:
     """Write a manifest for the engine in *workspace* and publish it for auto-discovery.
 
@@ -562,6 +563,7 @@ def publish_engine(
         shm_capable=shm_capable,
         source_db=source_db,
         threads=threads,
+        session_context=session_context,
         write=False,
     )
     dest = _atomic_publish(
@@ -628,6 +630,7 @@ def publish_from_provider(
     expected_tables: Optional[Mapping[str, Sequence]] = None,
     source_db: Optional[str] = None,
     threads: Optional[int] = None,
+    session_context: Optional[Mapping[str, str]] = None,
 ) -> Optional[Path]:
     """Publish the engine in *workspace*, taking query templates from *provider*'s workload.
 
@@ -669,4 +672,5 @@ def publish_from_provider(
         expected_tables=expected_tables,
         source_db=source_db,
         threads=threads,
+        session_context=session_context,
     )
