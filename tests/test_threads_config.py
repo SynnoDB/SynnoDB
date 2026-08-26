@@ -168,7 +168,7 @@ def test_manifest_round_trips_threads():
     )
     d = m.to_dict()
     assert d["threads"] == 4
-    assert d["schema_version"] == 5
+    assert d["schema_version"] == 6  # bumped when session_context was recorded
     assert EngineManifest.from_dict(d).threads == 4
 
 

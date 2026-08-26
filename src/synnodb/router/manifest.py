@@ -41,8 +41,50 @@ from .registry import ColumnSpec, PlaceholderSpec
 # database an optimize_database engine was built for). v5 adds ``threads`` (the degree of
 # parallelism the engine was built/validated for; the runtime serves it at this thread count).
 # Older manifests still load.
-SCHEMA_VERSION = 5
-_SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
+SCHEMA_VERSION = 6
+_SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4, 5, 6)
+
+
+# The session settings that change what identical SQL text MEANS: which catalog and
+# schemas an unqualified name resolves in, where NULLs sort, and how a timestamp is
+# bucketed into days. An engine's kernels are generated and validated under one set of
+# these; served under another, the same statement is a different question. One definition,
+# read the same way at build time (into the manifest) and at serve time (into the
+# fingerprint), so the two can never drift apart.
+SESSION_SETTINGS = (
+    "current_database()",
+    "current_setting('search_path')",
+    "current_setting('default_null_order')",
+    "current_setting('TimeZone')",
+    "current_setting('Calendar')",
+)
+SESSION_KEYS = ("database", "search_path", "null_order", "timezone", "calendar")
+
+
+def read_session_context(duck: Any) -> Dict[str, str]:
+    """The live values of :data:`SESSION_SETTINGS` on a DuckDB connection.
+
+    Returns an empty mapping if they cannot be read: callers must treat "unknown" as
+    unknown rather than as a match.
+    """
+    try:
+        row = duck.execute("SELECT " + ", ".join(SESSION_SETTINGS)).fetchone()
+    except Exception:
+        return {}
+    if row is None:
+        return {}
+    return {key: str(value) for key, value in zip(SESSION_KEYS, row)}
+
+
+def session_context_problems(
+    live: Mapping[str, str], built: Mapping[str, str]
+) -> List[str]:
+    """Human-readable differences between a live session context and an engine's."""
+    return [
+        f"session {key}: engine built under {built[key]!r}, connection is {live.get(key)!r}"
+        for key in SESSION_KEYS
+        if key in built and live.get(key) != built[key]
+    ]
 
 
 def content_engine_id(source_files: Mapping[str, str], *, prefix: str = "eng") -> str:
@@ -113,6 +155,13 @@ class EngineManifest:
     # Used to refuse silently clobbering the engine of a *different* database that happens to share
     # a friendly name (e.g. two ``tpch.db`` files in different directories -> both ``synno-tpch``).
     source_db: Optional[str] = None
+    # The session context the engine was generated and validated under (see
+    # SESSION_SETTINGS). Registration compares this against the live connection instead of
+    # adopting whatever happens to be set then: a zone-sensitive kernel built under one
+    # TimeZone answers a different question under another, and the schema-match guard alone
+    # only ever sees drift AFTER registration, never an initial mismatch. Empty for engines
+    # published before this was recorded.
+    session_context: Mapping[str, str] = field(default_factory=dict)
     # The degree of parallelism the engine was generated, validated, and is served at (the
     # DuckDB ``config={'threads': N}``). The runtime sets the engine's CORE_IDS from this so it
     # runs at the same thread count it was built for. None = unknown (older engines): the runtime
@@ -131,6 +180,7 @@ class EngineManifest:
             "shm_capable": self.shm_capable,
             "source_db": self.source_db,
             "threads": self.threads,
+            "session_context": dict(self.session_context),
             "expected_tables": {
                 table: [[c.name, c.type] for c in cols]
                 for table, cols in self.expected_tables.items()
@@ -156,6 +206,7 @@ class EngineManifest:
             shm_capable=bool(d.get("shm_capable", False)),
             source_db=d.get("source_db"),
             threads=d.get("threads"),
+            session_context=dict(d.get("session_context") or {}),
             expected_tables={
                 table: tuple(ColumnSpec(n, t) for n, t in cols)
                 for table, cols in d.get("expected_tables", {}).items()
@@ -204,6 +255,7 @@ def build_manifest_from_dir(
     shm_capable: bool = False,
     source_db: Optional[str] = None,
     threads: Optional[int] = None,
+    session_context: Optional[Mapping[str, str]] = None,
     write: bool = True,
 ) -> EngineManifest:
     """Assemble (and optionally write) an :class:`EngineManifest` for a generated engine.
@@ -225,6 +277,7 @@ def build_manifest_from_dir(
         shm_capable=shm_capable,
         source_db=source_db,
         threads=threads,
+        session_context=dict(session_context or {}),
         expected_tables={t: tuple(cols) for t, cols in (expected_tables or {}).items()},
     )
     if write:
@@ -271,6 +324,7 @@ def write_manifest_for_engine(
     parquet_dir: Optional[str] = None,
     shm_capable: bool = False,
     threads: Optional[int] = None,
+    session_context: Optional[Mapping[str, str]] = None,
     write: bool = True,
 ) -> EngineManifest:
     """The factory-side writer: build & write ``manifest.json`` for a generated engine.
@@ -306,6 +360,7 @@ def write_manifest_for_engine(
         parquet_dir=parquet_dir,
         shm_capable=shm_capable,
         threads=threads,
+        session_context=session_context,
         write=write,
     )
 
@@ -321,6 +376,16 @@ def check_compatibility(conn: Any, manifest: EngineManifest) -> List[str]:
 
     duck = getattr(conn, "duckdb", conn)
     problems: List[str] = []
+    # The engine was generated and validated under a specific session context. Compare it
+    # rather than adopting the registration-time one: otherwise a connection that has
+    # already SET a different TimeZone silently becomes the engine's baseline, and a
+    # zone-sensitive kernel serves build-context answers under the new context.
+    if manifest.session_context:
+        problems.extend(
+            session_context_problems(
+                read_session_context(duck), manifest.session_context
+            )
+        )
     for table, expected in manifest.expected_tables.items():
         try:
             rows = duck.execute(
@@ -358,6 +423,7 @@ def register_manifest(
     (the source of truth). With ``strict`` (default), refuses to register if the live
     schema is incompatible with the engine's ``expected_tables``.
     """
+    from .adapt import carries_timezone
     from .registration import make_binding  # local import: avoids cycle at import
 
     if strict and manifest.expected_tables:
@@ -383,6 +449,21 @@ def register_manifest(
             scale_factor=manifest.scale_factor,
             storage_mode=manifest.storage_mode,
         )
+        # An engine with no recorded build context has no baseline to compare against, so
+        # registration would silently adopt the live one. For a zone-bearing output that is
+        # exactly the unsafe case: the kernel buckets timestamps under the zone it was built
+        # in, and nothing here can tell whether that is the zone we are serving under. Refuse
+        # rather than adopt. (Engines published before zone-bearing egress existed cannot
+        # reach this: such a query was refused outright at build time.)
+        if not manifest.session_context and any(
+            carries_timezone(column.type) for column in binding.output_schema
+        ):
+            raise SynnoError(
+                f"engine {manifest.engine_id} query {query.query_id}: the result carries a "
+                "time zone but the engine records no build-time session context, so the zone "
+                "it was built under cannot be verified against this connection. Re-publish "
+                "the engine to record it."
+            )
         registry.register(binding)
         registry.clear_dirty(binding.tables)
         bindings.append(binding)
