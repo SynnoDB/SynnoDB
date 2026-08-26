@@ -502,6 +502,17 @@ class SynnoConnection:
         self._maybe_discover()
         return router.why(query, parameters, self)
 
+    def session_timezone(self) -> Optional[str]:
+        """The session's time zone, used to label zone-bearing engine output exactly as
+        DuckDB would. ``None`` when it cannot be read, which leaves the engine's columns
+        unlabelled rather than guessing a zone."""
+        try:
+            return self._inner.execute("SELECT current_setting('TimeZone')").fetchone()[
+                0
+            ]
+        except Exception:
+            return None
+
     def schema_fingerprint(self, tables: Sequence[str]) -> str:
         """Fingerprint of *tables* in the live DuckDB catalog (name+type per column),
         plus the session context that decides what an unqualified statement means:

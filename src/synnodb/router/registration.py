@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Iterable, List, Optional, Sequence
+from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..errors import SynnoUnsupportedQuery
 from .normalize import binding_groups, normalize_sql, tables_in
@@ -28,7 +28,7 @@ log = logging.getLogger("synnodb.router.registration")
 
 # Output types the exact-egress path (cpp_helpers/column_egress.hpp) cannot reproduce. Everything
 # else - signed integers/HUGEINT, unsigned integers through UBIGINT, decimal128/256, BOOLEAN,
-# DOUBLE/REAL, VARCHAR, DATE, naive TIMESTAMP -
+# DOUBLE/REAL, VARCHAR, DATE, TIMESTAMP (naive, and zone-bearing via adapt.stamp_timezones) -
 # is emitted exactly (or the engine fails loudly), so the guard is a deny-list, not an allow-list,
 # in keeping with the "delegate to arrow::compute::Cast, do not enumerate" design. A query
 # producing one of these is refused at bind time and served by DuckDB instead of failing later.
@@ -45,6 +45,7 @@ _UNSUPPORTED_OUTPUT_BASES = frozenset(
         "BIT",
         "UUID",
         "TIME",
+        "TIMETZ",
         "ENUM",
         "JSON",
         "UHUGEINT",
@@ -66,13 +67,6 @@ def _unsupported_output_reasons(output_schema: Sequence[ColumnSpec]) -> List[str
             reasons.append(
                 f"output column '{c.name}' has a nested/array type ({c.type}); exact egress emits "
                 "flat columns only"
-            )
-        # Time-zone-bearing timestamps: egress builds a tz-naive timestamp, so the zone is not
-        # reproduced - refuse rather than silently emit a tz-naive value DuckDB would qualify.
-        elif "TIME ZONE" in t or base in ("TIMESTAMPTZ", "TIMETZ"):
-            reasons.append(
-                f"output column '{c.name}' type {c.type} carries a time zone, which exact egress "
-                "does not reproduce"
             )
         elif base in _UNSUPPORTED_OUTPUT_BASES:
             reasons.append(
@@ -193,6 +187,34 @@ def schema_fingerprint(conn: Any, tables: Iterable[str]) -> str:
     from ..duckdb_compat.connection import SynnoConnection
 
     return SynnoConnection(conn).schema_fingerprint(list(tables))
+
+
+def unroutable_queries(conn: Any, queries: Mapping[str, str]) -> List[Tuple[str, str]]:
+    """Which of *queries* a bespoke engine could never serve, as ``(query_id, reason)``.
+
+    The exact-egress vocabulary is checked at registration, which is *after* an engine has
+    been generated, validated and published - hours of work for a query that will then
+    always fall back. This runs the same check up front against the live schema, from one
+    concrete instantiation per query (an output schema does not depend on parameter values).
+
+    Queries that cannot even be described (a syntax error, a missing table) are reported
+    too: whatever the cause, they will not route.
+    """
+    unroutable: List[Tuple[str, str]] = []
+    duck = _connection(conn)
+    for query_id, sql in queries.items():
+        try:
+            cursor = duck.execute(f"SELECT * FROM ({sql}) AS _synno_routable LIMIT 0")
+            schema = tuple(
+                ColumnSpec(name=c[0], type=str(c[1])) for c in cursor.description
+            )
+        except Exception as exc:
+            unroutable.append((query_id, f"DuckDB could not describe it: {exc}"))
+            continue
+        reasons = _unsupported_output_reasons(schema)
+        if reasons:
+            unroutable.append((query_id, reasons[0]))
+    return unroutable
 
 
 def make_binding(

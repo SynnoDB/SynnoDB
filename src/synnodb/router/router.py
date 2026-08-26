@@ -20,7 +20,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 from ..errors import EngineDivergedError
-from .adapt import results_diff, results_equal, to_synno_result
+from .adapt import (
+    results_diff,
+    results_equal,
+    stamp_timezones,
+    to_synno_result,
+)
 from .backend import DuckDBBackend
 from .guards import GuardContext, evaluate
 from .normalize import (
@@ -332,6 +337,15 @@ class QueryRouter:
             if server_ms is not None
             else (time.perf_counter() - start) * 1000.0
         )
+        # A zone-bearing column arrives as bare UTC microseconds; label it with the session
+        # zone so the result is indistinguishable from DuckDB's, here rather than after the
+        # cross-check so the comparison sees the same types the caller will.
+        stamped = stamp_timezones(table, binding.output_schema, conn)
+        if stamped is None:
+            return self._fallback(
+                trace, "zone-bearing output could not be labelled", matched=True
+            )
+        table = stamped
         trace.routed(binding.template_id)
         self._exec_counts[binding.template_id] = (
             self._exec_counts.get(binding.template_id, 0) + 1
