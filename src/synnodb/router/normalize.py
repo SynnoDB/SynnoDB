@@ -323,12 +323,24 @@ def order_by_key_indices(sql: str, output_names: Sequence[str]) -> Optional[List
                 continue
             return None
         # ORDER BY <column or output alias>. Resolve only an unambiguous, unqualified name that
-        # is exactly one output column; anything qualified, ambiguous, or not projected -> strict.
+        # is exactly one output column.
         if isinstance(key, exp.Column) and not key.table:
             nm = key.name.lower()
             if lower.count(nm) == 1:
                 indices.append(lower.index(nm))
                 continue
+        # ORDER BY <expression> that is itself one of the projections (`ORDER BY COUNT(*)`
+        # over `SELECT ..., COUNT(*)`, or a qualified `ORDER BY cn.name`). Resolve by
+        # structural equality against the unaliased select items; anything ambiguous or
+        # not projected -> strict.
+        matches = [
+            i
+            for i, item in enumerate(tree.expressions)
+            if (item.this if isinstance(item, exp.Alias) else item) == key
+        ]
+        if len(matches) == 1 and matches[0] < len(output_names):
+            indices.append(matches[0])
+            continue
         return None
     return indices or None
 

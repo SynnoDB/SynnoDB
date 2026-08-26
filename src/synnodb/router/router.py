@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..errors import EngineDivergedError
 from .adapt import (
+    candidate_superset,
     results_diff,
     results_equal,
     stamp_timezones,
@@ -39,6 +40,8 @@ from .normalize import (
     merge_split,
     normalize_sql,
     order_by_key_indices,
+    top_level_limit_offset,
+    widened_query,
 )
 from .observe import RouteTrace, emit, logger
 from .policy import RouterMode, RouterPolicy
@@ -127,6 +130,28 @@ class QueryRouter:
     def stats(self) -> Dict[str, Any]:
         """A snapshot of the session routing counters plus the fallback-reason breakdown."""
         return {**self.counters, "fallback_reasons": dict(self._fallback_reasons)}
+
+    @staticmethod
+    def _widened_fetcher(backend: Any, sql: str, parameters: Any):
+        """A ``fetch_widened(limit)`` for :func:`adapt.candidate_superset`.
+
+        Runs the same query over the first *limit* rows of its own ranking (the top-level
+        LIMIT replaced, any OFFSET dropped) and returns the Arrow result. A widened
+        reference is an optimization, never a correctness requirement: on any failure this
+        returns ``None`` and the comparison stays strict, which can only over-reject.
+        """
+
+        def fetch(limit: int):
+            widened = widened_query(sql, limit)
+            if widened is None:
+                return None
+            try:
+                return backend.execute_arrow(widened, parameters)
+            except Exception as exc:
+                logger.debug("widened reference failed at limit=%s: %s", limit, exc)
+                return None
+
+        return fetch
 
     def _fallback(
         self, trace: RouteTrace, reason: str, *, matched: bool = False
@@ -394,9 +419,30 @@ class QueryRouter:
             order_keys = (
                 order_by_key_indices(sql, reference.column_names) if ordered else None
             )
+            # A top-level LIMIT cutting through a tie group makes DuckDB's pick at the cut
+            # arbitrary - and not stable across runs of the identical query - so demanding
+            # the engine reproduce it quarantines a CORRECT engine. Re-run the query wide
+            # enough to hold the whole ranking the window was drawn from and check
+            # membership instead. Same reading of ORDER BY ... LIMIT as the generation-time
+            # cross-check in tools/validate/run_and_check_queries.py.
+            row_limit, row_offset = top_level_limit_offset(sql)
+            candidates = None
+            if ordered and order_keys and row_limit is not None:
+                candidates = candidate_superset(
+                    reference,
+                    order_keys=order_keys,
+                    row_limit=row_limit,
+                    row_offset=row_offset,
+                    fetch_widened=self._widened_fetcher(backend, sql, parameters),
+                )
             try:
                 match = results_equal(
-                    table, reference, ordered=ordered, order_keys=order_keys
+                    table,
+                    reference,
+                    ordered=ordered,
+                    order_keys=order_keys,
+                    row_limit=row_limit,
+                    candidates=candidates,
                 )
             except Exception as exc:
                 # The reference is in hand but the comparison itself failed. Serve the VERIFIED
@@ -421,7 +467,12 @@ class QueryRouter:
                 # silent quarantine hides a correctness bug from the operator), quarantine the
                 # template, and serve the trusted DuckDB result.
                 diffs, total = results_diff(
-                    table, reference, ordered=ordered, order_keys=order_keys
+                    table,
+                    reference,
+                    ordered=ordered,
+                    order_keys=order_keys,
+                    row_limit=row_limit,
+                    candidates=candidates,
                 )
                 diverged = EngineDivergedError(
                     diffs,
