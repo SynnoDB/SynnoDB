@@ -15,7 +15,7 @@ import pyarrow as pa
 
 import synnodb
 from synnodb.router.adapt import results_equal
-from synnodb.router.normalize import order_by_key_indices
+from synnodb.router.normalize import has_order_by, order_by_key_indices
 from synnodb.router import (
     LocalCallableEngine,
     RouterMode,
@@ -301,3 +301,41 @@ def test_limit_engine_returning_a_row_outside_the_ranking_is_quarantined():
         assert con.router_stats()["session"]["cross_check_mismatch"] == 1
     finally:
         con.close()
+
+
+# ---- set operations: the root is not a SELECT --------------------------------
+def test_set_operation_ordering_is_not_lost():
+    """A top-level ORDER BY attaches to the root, and for UNION/EXCEPT/INTERSECT that root
+    is a set operation, not a SELECT.
+
+    Reading only SELECT roots reported these as unordered, and an unordered comparison is a
+    multiset one - so an engine returning the right rows in the WRONG order passed. The
+    ordering signal must survive the root type.
+    """
+    for sql in (
+        "SELECT a FROM t UNION SELECT a FROM u ORDER BY a",
+        "SELECT a FROM t EXCEPT SELECT a FROM u ORDER BY a DESC",
+        "SELECT a FROM t INTERSECT SELECT a FROM u ORDER BY 1",
+    ):
+        assert has_order_by(sql), sql
+    assert not has_order_by("SELECT a FROM t UNION SELECT a FROM u")
+
+
+def test_set_operation_keys_resolve_by_name_and_ordinal():
+    assert order_by_key_indices(
+        "SELECT a, b FROM t UNION SELECT a, b FROM u ORDER BY b", ["a", "b"]
+    ) == [1]
+    assert order_by_key_indices(
+        "SELECT a, b FROM t EXCEPT SELECT a, b FROM u ORDER BY 1", ["a", "b"]
+    ) == [0]
+
+
+def test_set_operation_expression_key_falls_back_to_strict():
+    """A set operation has no select list of its own to match an expression against, so an
+    expression key resolves to None - strict comparison, which can only over-reject."""
+    assert (
+        order_by_key_indices(
+            "SELECT a FROM t UNION SELECT a FROM u ORDER BY lower(a)", ["a"]
+        )
+        is None
+    )

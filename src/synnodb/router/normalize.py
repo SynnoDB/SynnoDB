@@ -262,6 +262,12 @@ def has_order_by(sql: str) -> bool:
 
     Only a top-level ORDER BY makes the row order meaningful for comparison; an
     ORDER BY inside a subquery does not. Best-effort (``False`` on parse failure).
+
+    A top-level ORDER BY attaches to the root, and that root is a SELECT *or* a set
+    operation (``UNION`` / ``EXCEPT`` / ``INTERSECT``). Accepting only SELECT here would
+    silently report an ordered set operation as unordered, and the caller would then
+    compare it as a multiset - passing an engine that returns the right rows in the wrong
+    order.
     """
     try:
         import sqlglot
@@ -276,7 +282,9 @@ def has_order_by(sql: str) -> bool:
         return False
     if isinstance(tree, exp.With):
         tree = tree.this
-    return bool(isinstance(tree, exp.Select) and tree.args.get("order"))
+    return bool(
+        isinstance(tree, (exp.Select, exp.SetOperation)) and tree.args.get("order")
+    )
 
 
 def order_by_key_indices(sql: str, output_names: Sequence[str]) -> Optional[List[int]]:
@@ -303,11 +311,16 @@ def order_by_key_indices(sql: str, output_names: Sequence[str]) -> Optional[List
 
     if isinstance(tree, exp.With):
         tree = tree.this
-    if not isinstance(tree, exp.Select):
+    if not isinstance(tree, (exp.Select, exp.SetOperation)):
         return None
     order = tree.args.get("order")
     if not order:
         return None
+    # A set operation has no select list of its own to match expressions against - its
+    # output columns come from its branches - so only the forms that resolve against the
+    # output names alone (an ordinal, or an unqualified name) are answered here. Anything
+    # else returns None, and the caller compares strictly, which can only over-reject.
+    projections = tree.expressions if isinstance(tree, exp.Select) else []
     lower = [n.lower() for n in output_names]
     indices: List[int] = []
     for ordered in order.expressions:
@@ -335,7 +348,7 @@ def order_by_key_indices(sql: str, output_names: Sequence[str]) -> Optional[List
         # not projected -> strict.
         matches = [
             i
-            for i, item in enumerate(tree.expressions)
+            for i, item in enumerate(projections)
             if (item.this if isinstance(item, exp.Alias) else item) == key
         ]
         if len(matches) == 1 and matches[0] < len(output_names):
