@@ -108,3 +108,49 @@ def test_a_fully_servable_workload_is_left_alone(con, tmp_path):
 
     spec = _spec_with(tmp_path, {"1": "SELECT id FROM t", "2": "SELECT ts FROM t"})
     assert _prune_unroutable(con, spec) is spec
+
+
+# ---- the customary trailing semicolon ---------------------------------------
+def test_a_terminated_statement_is_still_routable():
+    """A ``queries.json`` SQL string commonly ends with ``;``.
+
+    The preflight used to embed the string raw as ``SELECT * FROM ({sql})``, which puts
+    the terminator inside the subquery and makes DuckDB reject a perfectly valid query.
+    Every such query was then reported unservable and pruned - and a catalog where every
+    entry is terminated left nothing servable at all, failing the sync outright.
+    """
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t AS SELECT 1 AS a, 'x' AS b")
+    for sql in (
+        "SELECT a, b FROM t;",
+        "SELECT a, b FROM t;\n",
+        "SELECT a, b FROM t ;   ",
+        "SELECT ';' AS s FROM t;",  # a semicolon inside a literal, then a terminator
+    ):
+        assert unroutable_queries(con, {"q": sql}) == [], sql
+    con.close()
+
+
+def test_termination_does_not_hide_a_genuine_refusal():
+    """Soundness: normalizing the terminator must not turn a real refusal into a pass."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE j AS SELECT '{}'::JSON AS doc")
+    refused = dict(unroutable_queries(con, {"json": "SELECT doc FROM j;"}))
+    assert "JSON" in refused["json"]
+    broken = dict(unroutable_queries(con, {"nope": "SELECT x FROM missing;"}))
+    assert "could not describe" in broken["nope"]
+    con.close()
+
+
+def test_a_fully_terminated_catalog_still_syncs():
+    """The user-visible symptom: with every query terminated, nothing was servable and
+    the sync raised instead of registering a perfectly good workload."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t AS SELECT 1 AS a, 'x' AS b")
+    queries = {
+        "1": "SELECT a FROM t;",
+        "2": "SELECT b FROM t;",
+        "3": "SELECT a, b FROM t;",
+    }
+    assert unroutable_queries(con, queries) == []
+    con.close()
