@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..errors import SynnoError
 from .registry import ColumnSpec, PlaceholderSpec
+
+log = logging.getLogger(__name__)
 
 # v2 adds the optional ``parquet_dir`` (the data the engine ingested), so the runtime can
 # bring up the engine with no extra inputs. v3 adds ``shm_capable`` (the binary can ingest
@@ -474,18 +477,25 @@ def register_manifest(
         # An engine with no recorded build context has no baseline to compare against, so
         # registration would silently adopt the live one. For a zone-bearing output that is
         # exactly the unsafe case: the kernel buckets timestamps under the zone it was built
-        # in, and nothing here can tell whether that is the zone we are serving under. Refuse
-        # rather than adopt. (Engines published before zone-bearing egress existed cannot
-        # reach this: such a query was refused outright at build time.)
+        # in, and nothing here can tell whether that is the zone we are serving under.
+        #
+        # Skip that query rather than refusing the whole engine. Engines published between
+        # zone-bearing egress becoming servable and the build context being recorded are
+        # real and hold a mix of both kinds of query; killing all of them over one
+        # unverifiable result would be a far worse answer than letting that one fall back to
+        # DuckDB, which is what an unroutable query does everywhere else.
         if not manifest.session_context and any(
             carries_timezone(column.type) for column in binding.output_schema
         ):
-            raise SynnoError(
-                f"engine {manifest.engine_id} query {query.query_id}: the result carries a "
-                "time zone but the engine records no build-time session context, so the zone "
-                "it was built under cannot be verified against this connection. Re-publish "
-                "the engine to record it."
+            log.warning(
+                "engine %s query %s: the result carries a time zone but the engine records "
+                "no build-time session context, so the zone it was built under cannot be "
+                "verified against this connection. This query stays on DuckDB; re-publish "
+                "the engine to record its context and serve it.",
+                manifest.engine_id,
+                query.query_id,
             )
+            continue
         registry.register(binding)
         registry.clear_dirty(binding.tables)
         bindings.append(binding)

@@ -17,7 +17,6 @@ import json
 import duckdb
 import pytest
 
-from synnodb.errors import SynnoError
 from synnodb.router.manifest import (
     PORTABLE_SESSION_KEYS,
     SCHEMA_VERSION,
@@ -139,9 +138,15 @@ def test_registration_gate_accepts_the_zone_it_was_built_in():
         con.close()
 
 
-def test_zone_bearing_output_is_refused_when_the_build_context_is_unknown():
-    """Fail closed: with no recorded baseline there is nothing to compare, so a
-    zone-bearing result cannot be shown to have been built under this zone."""
+def test_zone_bearing_output_falls_back_when_the_build_context_is_unknown():
+    """Fail closed, but per query.
+
+    With no recorded baseline a zone-bearing result cannot be shown to have been built
+    under this zone, so it stays on DuckDB. The engine's OTHER queries must keep serving:
+    engines published between zone-bearing egress becoming servable and the context being
+    recorded are real and hold a mix of both kinds, and refusing all of them over one
+    unverifiable result would be a worse answer than one fallback.
+    """
     import synnodb
     from synnodb.router import LocalCallableEngine
     from synnodb.router.manifest import register_manifest
@@ -151,17 +156,23 @@ def test_zone_bearing_output_is_refused_when_the_build_context_is_unknown():
         con.duckdb.execute(
             "CREATE TABLE t AS SELECT TIMESTAMPTZ '2024-01-01 00:00:00' AS ts"
         )
+        con.duckdb.execute("CREATE TABLE plain AS SELECT 1 AS n")
         manifest = EngineManifest(
             engine_id="eng-nocontext",
-            queries=(QueryTemplate("1", "SELECT ts FROM t"),),
+            queries=(
+                QueryTemplate("1", "SELECT ts FROM t"),  # zone-bearing: unverifiable
+                QueryTemplate("2", "SELECT n FROM plain"),  # unaffected
+            ),
             session_context={},  # an engine that never recorded one
         )
-        with pytest.raises(SynnoError, match="records no build-time session context"):
-            register_manifest(
-                con,
-                manifest,
-                LocalCallableEngine("eng-nocontext", {"1": lambda ph: None}),
-            )
+        bindings = register_manifest(
+            con,
+            manifest,
+            LocalCallableEngine(
+                "eng-nocontext", {"1": lambda ph: None, "2": lambda ph: None}
+            ),
+        )
+        assert [b.query_id for b in bindings] == ["2"]
     finally:
         con.close()
 
