@@ -27,7 +27,9 @@ pipeline.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -310,6 +312,66 @@ def resolve_source_snapshot(
 
 
 # --------------------------------- facade -----------------------------------
+def _prune_unroutable(conn: Any, spec: Any) -> Any:
+    """Drop the queries a bespoke engine could never serve, before generation pays for them.
+
+    The exact-egress check otherwise fires at registration - after an engine has been
+    generated, validated and published - so a query with, say, a JSON output column would
+    cost a full generation and then always fall back to DuckDB. One concrete instantiation
+    per query is enough to decide: an output schema does not depend on parameter values.
+
+    Pruning is loud, never silent: every dropped query is logged with its reason, and the
+    returned spec (re-registered under the same name, so the whole pipeline sees it) is the
+    narrowed one. A workload where *nothing* is servable raises instead - an engine that
+    could serve none of its queries is not worth generating.
+
+    Failing to run the check is never fatal: it must not be the reason a sync fails.
+    """
+    from synnodb.errors import SynnoUnsupportedQuery
+    from synnodb.router.registration import unroutable_queries
+    from synnodb.workloads.workload_spec import register_workload
+
+    log = logging.getLogger(__name__)
+    try:
+        gen = spec.query_gen_factory(None)
+        rnd = random.Random(0)
+        concrete = {}
+        for query_id in spec.all_query_ids:
+            try:
+                concrete[str(query_id)] = gen(query_name=f"Q{query_id}", rnd=rnd)[1]
+            except (
+                Exception
+            ):  # a query the generator cannot instantiate is its own problem
+                continue
+        unroutable = unroutable_queries(conn, concrete)
+    except Exception as exc:
+        log.debug("routability preflight skipped: %s", exc)
+        return spec
+    if not unroutable:
+        return spec
+
+    dropped = {query_id for query_id, _ in unroutable}
+    kept = tuple(q for q in spec.all_query_ids if str(q) not in dropped)
+    if not kept:
+        raise SynnoUnsupportedQuery(
+            [f"Q{query_id}: {reason}" for query_id, reason in unroutable],
+            engine_id=spec.name,
+        )
+    log.warning(
+        "workload %r: %d of %d queries cannot be bespoke-served, so they are excluded "
+        "from the run - generating an engine for them costs time and buys nothing. "
+        "DuckDB serves them unchanged.",
+        spec.name,
+        len(dropped),
+        len(spec.all_query_ids),
+    )
+    for query_id, reason in unroutable:
+        log.warning("  excluded Q%s: %s", query_id, reason)
+    pruned = dataclasses.replace(spec, all_query_ids=kept)
+    register_workload(pruned)
+    return pruned
+
+
 class SynnoDB:
     """Programmatic pipeline driver. Each call runs one conversation to completion."""
 
@@ -626,6 +688,7 @@ class SynnoDB:
                 source_is_static=source_is_static,
                 always_resample=always_resample,
             )
+            spec = _prune_unroutable(connection, spec)
         finally:
             if opened is not None:
                 opened.close()

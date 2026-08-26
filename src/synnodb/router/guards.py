@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
+from .adapt import carries_timezone
 from .normalize import (
     binding_groups,
     extract_literals,
@@ -105,6 +106,22 @@ def placeholder_arity_guard(ctx: GuardContext) -> GuardOutcome:
     return False, f"placeholder arity {actual} != expected {expected}"
 
 
+def timezone_guard(ctx: GuardContext) -> GuardOutcome:
+    """A zone-bearing output column can only be served if the session's zone is readable.
+
+    The engine emits such a column as bare UTC microseconds and the router labels it with
+    the session zone (:func:`adapt.stamp_timezones`). With no zone to label it, serving
+    would hand back a tz-naive value under a zone-bearing description - so refuse here,
+    before the engine runs, rather than emit something DuckDB would have qualified.
+    """
+    if not any(carries_timezone(c.type) for c in ctx.binding.output_schema):
+        return True, "no zone-bearing output"
+    zone = getattr(ctx.conn, "session_timezone", None)
+    if callable(zone) and zone():
+        return True, "session time zone readable"
+    return False, "session time zone unavailable for a zone-bearing output column"
+
+
 def dirty_table_guard(ctx: GuardContext) -> GuardOutcome:
     if ctx.registry.is_dirty(ctx.binding):
         return False, "a bound table was modified since ingest"
@@ -136,6 +153,7 @@ DEFAULT_GUARDS: Tuple[Guard, ...] = (
     select_only_guard,
     dirty_table_guard,
     schema_match_guard,
+    timezone_guard,
     placeholder_arity_guard,
 )
 

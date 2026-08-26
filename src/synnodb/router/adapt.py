@@ -21,6 +21,82 @@ from .registry import ColumnSpec
 Row = Tuple[Any, ...]
 
 
+def carries_timezone(duckdb_type: Any) -> bool:
+    """Whether a DuckDB output type is a zone-bearing timestamp, in either spelling."""
+    t = str(duckdb_type).upper().strip()
+    return t.startswith("TIMESTAMPTZ") or ("TIMESTAMP" in t and "TIME ZONE" in t)
+
+
+def _apply_zones(table: pa.Table, zones: Sequence[Optional[str]]) -> pa.Table:
+    """Attach *zones[i]* to column i where it is a naive timestamp. Metadata only: an Arrow
+    timestamp's int64 is UTC-relative either way, so no value moves."""
+    for i, zone in enumerate(zones):
+        if not zone or i >= table.num_columns:
+            continue
+        field = table.schema.field(i)
+        if not pa.types.is_timestamp(field.type) or field.type.tz is not None:
+            continue
+        target = pa.timestamp(field.type.unit, tz=zone)
+        table = table.set_column(
+            i, field.with_type(target), table.column(i).cast(target)
+        )
+    return table
+
+
+def align_timezones(table: pa.Table, reference: pa.Table) -> pa.Table:
+    """Label *table*'s naive timestamp columns with the zones the *reference* carries.
+
+    The comparison path's counterpart to :func:`stamp_timezones`: an engine emits a
+    zone-bearing column as bare UTC microseconds, and Python compares a naive datetime
+    unequal to an aware one, so an unlabelled result would read as a divergence from a
+    reference it in fact matches exactly.
+    """
+    zones = [
+        f.type.tz if pa.types.is_timestamp(f.type) else None for f in reference.schema
+    ]
+    return _apply_zones(table, zones)
+
+
+def stamp_timezones(
+    table: pa.Table, output_schema: Sequence[Any], conn: Any
+) -> Optional[pa.Table]:
+    """Label the engine's zone-bearing output columns with the session's time zone.
+
+    A DuckDB ``TIMESTAMP WITH TIME ZONE`` is a UTC instant plus a session-level display
+    zone: the int64 microseconds an engine emits are already exactly DuckDB's, and only
+    the Arrow field's zone metadata is missing. Attaching it here (never shifting the
+    value) makes the engine's Arrow type, and the Python datetimes it fetches to, identical
+    to DuckDB's own - so the cross-check compares like with like and the caller cannot tell
+    the two apart.
+
+    Which zone is *not* a free choice: a query over a zone-bearing column computes different
+    answers under different session zones (``date_trunc('day', ...)`` can land on a different
+    day), so an engine is only valid under the zone it was built for. The schema fingerprint
+    pins that - a session that changes zone stops routing - which is what makes reading the
+    live zone here equivalent to reading the build zone.
+
+    Costs nothing for the common case: a schema with no zone-bearing column never touches
+    the connection. Returns ``None`` when a zone-bearing column cannot be labelled, which
+    the caller must treat as "do not serve this".
+    """
+    zone_columns = [
+        i for i, spec in enumerate(output_schema) if carries_timezone(spec.type)
+    ]
+    if not zone_columns:
+        return table
+    getter = getattr(conn, "session_timezone", None)
+    zone = getter() if callable(getter) else None
+    if not zone:
+        # Without the zone the column can only be emitted unlabelled - a tz-naive value
+        # served under a zone-bearing description, which is the very thing refusing this
+        # type used to prevent. Fail closed and let DuckDB answer.
+        return None
+    zones: List[Optional[str]] = [None] * table.num_columns
+    for i in zone_columns:
+        zones[i] = zone
+    return _apply_zones(table, zones)
+
+
 def to_synno_result(table: pa.Table, output_schema: Sequence[ColumnSpec] = ()) -> Any:
     """Wrap an Arrow table as a ``SynnoResult`` (lazy import avoids an import cycle)."""
     from synnodb.duckdb_compat.result import SynnoResult

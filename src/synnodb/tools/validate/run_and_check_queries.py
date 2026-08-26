@@ -10,7 +10,12 @@ import pyarrow as pa
 
 import wandb
 from synnodb.observability.logging.wandb_plots_gen import create_wandb_speedup_plot
-from synnodb.router.adapt import candidate_superset, results_diff, results_equal
+from synnodb.router.adapt import (
+    align_timezones,
+    candidate_superset,
+    results_diff,
+    results_equal,
+)
 from synnodb.router.normalize import top_level_limit_offset, widened_query
 from synnodb.router.process_engine import read_and_delete_result
 from synnodb.utils.utils import prefix_dict
@@ -287,6 +292,10 @@ def check_output_correctness(
                 bes_indices_by_name[col_name].popleft() for col_name in ref_names
             ]
             bespoke_aligned = bespoke_table.select(align_indices)
+            # The engine writes a zone-bearing column as bare UTC microseconds, which Python
+            # compares unequal to DuckDB's aware datetimes; label it from the reference so a
+            # correct engine is not reported as diverging for the whole run.
+            bespoke_aligned = align_timezones(bespoke_aligned, reference_table)
 
             # A top-level ORDER BY makes row order meaningful: resolve its key columns to output
             # indices for a tie-aware comparison; otherwise compare with set/multiset semantics.

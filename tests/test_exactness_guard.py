@@ -89,14 +89,21 @@ def test_reason_helper_handles_time_vs_timestamp_and_decimals():
 
 
 def test_reason_helper_closes_grammar_holes():
-    # Array spelled with a size, a time-zone-bearing timestamp, and JSON were all wrongly ALLOWED
-    # by a leading-token-only deny-list; the guard must catch DuckDB's full type grammar.
+    # Array spelled with a size and JSON were both wrongly ALLOWED by a leading-token-only
+    # deny-list; the guard must catch DuckDB's full type grammar.
     assert _unsupported_output_reasons(
         [ColumnSpec("x", "INTEGER[3]")]
     )  # fixed-size array
-    assert _unsupported_output_reasons([ColumnSpec("x", "TIMESTAMP WITH TIME ZONE")])
-    assert _unsupported_output_reasons([ColumnSpec("x", "TIMESTAMPTZ")])
     assert _unsupported_output_reasons([ColumnSpec("x", "JSON")])
-    # ...but the naive, exactly-reproducible forms remain allowed.
+    # TIME carries no date to anchor its zone, so both spellings stay refused.
+    assert _unsupported_output_reasons([ColumnSpec("x", "TIME")])
+    assert _unsupported_output_reasons([ColumnSpec("x", "TIME WITH TIME ZONE")])
+    assert _unsupported_output_reasons([ColumnSpec("x", "TIMETZ")])
+    # Timestamps are exactly reproducible in both spellings: a zone-bearing one is a UTC
+    # instant the engine emits verbatim, labelled by adapt.stamp_timezones.
     assert _unsupported_output_reasons([ColumnSpec("x", "TIMESTAMP")]) == []
+    assert (
+        _unsupported_output_reasons([ColumnSpec("x", "TIMESTAMP WITH TIME ZONE")]) == []
+    )
+    assert _unsupported_output_reasons([ColumnSpec("x", "TIMESTAMPTZ")]) == []
     assert _unsupported_output_reasons([ColumnSpec("x", "VARCHAR")]) == []
