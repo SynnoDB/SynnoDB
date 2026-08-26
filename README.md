@@ -36,8 +36,13 @@ pip install "synnodb[factory]"   # also generate engines (adds the LLM + sandbox
 ```
 
 New here? [`tutorials/gen_tpch_demo.ipynb`](tutorials/gen_tpch_demo.ipynb) runs the whole loop end
-to end - generate TPC-H data, build an engine, and drop it in against DuckDB. See
-[Installation](#installation) for the system libraries the generated engines compile against.
+to end - generate TPC-H data, build an engine, and drop it in against DuckDB. It needs nothing
+downloaded. Two notebooks do the same against a real benchmark on your own data:
+[`gen_clickbench_demo.ipynb`](tutorials/gen_clickbench_demo.ipynb) and
+[`gen_rtabench_demo.ipynb`](tutorials/gen_rtabench_demo.ipynb), the latter parameterizing
+RTABench's inline filter values so the generated kernels are falsifiable rather than
+memorizable. See [Installation](#installation) for the system libraries the generated engines
+compile against.
 
 `SYNNO_DATA_DIR` points at the data root (parquet, caches, logs); set it in the
 environment or `.env` (checked on first use of the data root, not at import).
@@ -69,7 +74,10 @@ opt = db.runOptimLoop(base_impl=impl)        # -> OptimizedImplementation
 ```
 
 The core ships no built-in workloads: `sync_from_duckdb` registers yours from the
-connection before the first stage runs. Each stage returns a domain object
+connection before the first stage runs. It also checks each query against the live schema
+and drops the ones a bespoke engine could never reproduce exactly (a JSON output column,
+say), logging each by name - so the returned spec can be narrower than the catalog you
+passed, and generation never pays for a query that would only ever fall back to DuckDB. Each stage returns a domain object
 (`StoragePlan`, `BaseImplementation`, `OptimizedImplementation`,
 `MultiThreadedImplementation`, `CorrectnessReport`)
 that carries the produced artifact and chains into the next stage.
