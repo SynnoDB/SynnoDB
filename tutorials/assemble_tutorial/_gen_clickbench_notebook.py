@@ -694,6 +694,12 @@ nb.metadata["language_info"] = {
     "version": "3.13.14",
 }
 
+# Canonical, stable cell ids. nbformat mints a random id per cell, so every
+# regeneration would churn the whole file and fail the nbstripout gate that keeps
+# tutorial notebooks diffable.
+for index, cell in enumerate(nb.cells):
+    cell.id = str(index)
+
 out = TUTORIAL_DIR / "gen_clickbench_demo.ipynb"
 with open(out, "w", encoding="utf-8") as f:
     nbformat.write(nb, f)

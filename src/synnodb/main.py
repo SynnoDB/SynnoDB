@@ -241,10 +241,25 @@ async def main(args: argparse.Namespace, plan: ConversationPlan) -> str | None:
 
     is_dirty, git_status_output = snapshotter.is_dirty()
     if is_dirty:
-        # ask the use how to proceed
-        if await_user_confirmation(
-            f"The working directory ({workspace_path}) has uncommitted changes. Git status output:\n{git_status_output}\n\nWe will remove all uncommited changes now. Is this ok?"
-        ):
+        question = (
+            f"The working directory ({workspace_path}) has uncommitted changes. Git status "
+            f"output:\n{git_status_output}\n\nWe will remove all uncommited changes now. "
+            f"Is this ok?"
+        )
+        # auto_u answers every other prompt in the pipeline; this one was asked
+        # unconditionally, so a notebook or any other unattended run - the ordinary way the
+        # Python API is driven - blocked forever on a second run over the same workspace.
+        # Discarding is what the flag means, so say plainly what is being discarded.
+        if args.auto_u:
+            logger.warning(
+                "auto-confirm: discarding uncommitted changes in the workspace %s:\n%s",
+                workspace_path,
+                git_status_output,
+            )
+            confirmed = True
+        else:
+            confirmed = await_user_confirmation(question)
+        if confirmed:
             # delete uncommited changes
             # clean untracked files
             snapshotter.clear_untracked()
