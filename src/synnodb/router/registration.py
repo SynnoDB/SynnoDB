@@ -201,13 +201,14 @@ def unroutable_queries(conn: Any, queries: Mapping[str, str]) -> List[Tuple[str,
     too: whatever the cause, they will not route.
     """
     unroutable: List[Tuple[str, str]] = []
-    duck = _connection(conn)
     for query_id, sql in queries.items():
         try:
-            cursor = duck.execute(f"SELECT * FROM ({sql}) AS _synno_routable LIMIT 0")
-            schema = tuple(
-                ColumnSpec(name=c[0], type=str(c[1])) for c in cursor.description
-            )
+            # describe_output, not a hand-rolled wrap: it is what registration itself will
+            # use, so the preflight cannot disagree with the gate it is predicting. It also
+            # re-parses and re-renders the statement, which is what makes the customary
+            # trailing ``;`` harmless - embedded raw, the terminator lands inside the
+            # subquery and DuckDB rejects a perfectly valid query as undescribable.
+            schema = describe_output(conn, sql)
         except Exception as exc:
             unroutable.append((query_id, f"DuckDB could not describe it: {exc}"))
             continue
