@@ -59,6 +59,19 @@ SESSION_SETTINGS = (
     "current_setting('Calendar')",
 )
 SESSION_KEYS = ("database", "search_path", "null_order", "timezone", "calendar")
+# Of those, the ones an engine's BUILD context can be compared against a SERVING context.
+# `database` and `search_path` name *which objects* a bare identifier resolves to, and an
+# engine is built over a subset (an in-memory or `subset.duckdb` catalog) and then served
+# against the user's own file-backed database - so they differ by design, and comparing
+# them would refuse every otherwise-compatible engine. What those two actually protect
+# against is a name resolving to a DIFFERENT table, and `expected_tables` verifies exactly
+# that: the tables the engine reads must have the same columns and types. They stay in the
+# live-vs-live schema fingerprint, where a mid-session `SET search_path` is real drift.
+#
+# The three below are different: they change what identical SQL COMPUTES over the same
+# data. A kernel that buckets timestamps under one time zone answers a different question
+# under another, and no schema check can see it.
+PORTABLE_SESSION_KEYS = ("null_order", "timezone", "calendar")
 
 
 def read_session_context(duck: Any) -> Dict[str, str]:
@@ -79,10 +92,14 @@ def read_session_context(duck: Any) -> Dict[str, str]:
 def session_context_problems(
     live: Mapping[str, str], built: Mapping[str, str]
 ) -> List[str]:
-    """Human-readable differences between a live session context and an engine's."""
+    """Differences between a live session context and an engine's build context.
+
+    Only :data:`PORTABLE_SESSION_KEYS` are compared - see the note there for why the
+    catalog-identity settings are recorded but not compared.
+    """
     return [
         f"session {key}: engine built under {built[key]!r}, connection is {live.get(key)!r}"
-        for key in SESSION_KEYS
+        for key in PORTABLE_SESSION_KEYS
         if key in built and live.get(key) != built[key]
     ]
 
@@ -426,7 +443,12 @@ def register_manifest(
     from .adapt import carries_timezone
     from .registration import make_binding  # local import: avoids cycle at import
 
-    if strict and manifest.expected_tables:
+    # Strict registration always runs the compatibility gate. It was previously entered only
+    # when `expected_tables` was non-empty, which is exactly the parquet-only publish path's
+    # blind spot: such an engine records a session context that was then never compared, and
+    # its binding would adopt whatever the live one happened to be. The gate itself skips the
+    # table comparison when there are no expected tables.
+    if strict:
         problems = check_compatibility(conn, manifest)
         if problems:
             # A typed error (not a bare ValueError) so discovery surfaces this at WARNING and stops

@@ -19,6 +19,7 @@ import pytest
 
 from synnodb.errors import SynnoError
 from synnodb.router.manifest import (
+    PORTABLE_SESSION_KEYS,
     SCHEMA_VERSION,
     SESSION_KEYS,
     EngineManifest,
@@ -61,11 +62,24 @@ def test_unreadable_context_is_unknown_not_a_match():
     assert session_context_problems({}, _ctx()) != []
 
 
-@pytest.mark.parametrize("key", sorted(_ctx()))
-def test_each_setting_is_compared(key):
+@pytest.mark.parametrize("key", sorted(PORTABLE_SESSION_KEYS))
+def test_every_setting_that_changes_the_answer_is_compared(key):
+    """Time zone, calendar and null order change what identical SQL computes over the
+    same data, so a build/serve difference in any of them must be caught."""
     problems = session_context_problems(_ctx(**{key: "other"}), _ctx())
     assert len(problems) == 1
     assert key in problems[0]
+
+
+@pytest.mark.parametrize("key", ["database", "search_path"])
+def test_catalog_identity_is_recorded_but_not_compared(key):
+    """An engine is built over a subset catalog and served against the user's own
+    database, so these differ by design; refusing on them would reject every compatible
+    engine. What they protect against - a bare name resolving to a different table - is
+    what ``expected_tables`` verifies, and they remain in the live-vs-live fingerprint
+    where a mid-session ``SET search_path`` is genuine drift."""
+    assert session_context_problems(_ctx(**{key: "other"}), _ctx()) == []
+    assert key in SESSION_KEYS  # still recorded, for diagnosis
 
 
 def test_matching_context_is_no_problem():
@@ -148,5 +162,42 @@ def test_zone_bearing_output_is_refused_when_the_build_context_is_unknown():
                 manifest,
                 LocalCallableEngine("eng-nocontext", {"1": lambda ph: None}),
             )
+    finally:
+        con.close()
+
+
+def test_context_is_compared_even_with_no_expected_tables():
+    """The parquet-only publish path records no ``expected_tables``.
+
+    Strict registration used to enter the compatibility gate only when that mapping was
+    non-empty, so exactly those engines recorded a build context that was then never
+    checked - and their binding adopted whatever the live context happened to be, which no
+    later guard can detect. The gate must run on the recorded context regardless.
+    """
+    con = duckdb.connect()
+    try:
+        con.execute("SET TimeZone='America/New_York'")
+        manifest = EngineManifest(
+            engine_id="eng-parquet-only",
+            queries=(QueryTemplate("1", "SELECT 1"),),
+            expected_tables={},  # the parquet-only publish path
+            session_context={**read_session_context(con), "timezone": "Europe/Berlin"},
+        )
+        problems = check_compatibility(con, manifest)
+        assert any("timezone" in p for p in problems), problems
+    finally:
+        con.close()
+
+
+def test_a_matching_context_with_no_expected_tables_still_registers():
+    con = duckdb.connect()
+    try:
+        manifest = EngineManifest(
+            engine_id="eng-ok",
+            queries=(QueryTemplate("1", "SELECT 1"),),
+            expected_tables={},
+            session_context=read_session_context(con),
+        )
+        assert check_compatibility(con, manifest) == []
     finally:
         con.close()
