@@ -1,4 +1,3 @@
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -9,6 +8,7 @@ import pandas as pd
 import pyarrow as pa
 from tqdm import tqdm
 
+from synnodb.router.backend import execute_profiled
 from synnodb.utils.drop_caches import drop_os_caches, is_memory_backed
 from synnodb.utils.utils import DBStorage, ServeFrom
 from synnodb.workloads.workload_provider import Workload
@@ -114,20 +114,16 @@ class DuckDBConnectionManager:
             os.sched_setaffinity(pid, {self.pin_core})
 
         try:
-            with tempfile.NamedTemporaryFile(suffix=".json", delete=True) as tmpfile:
-                profile_output_path = tmpfile.name
-                self.con.execute("PRAGMA enable_profiling = 'json'")
-                self.con.execute(f"PRAGMA profiling_output ='{profile_output_path}'")
-                # Keep the result as exact Arrow: DECIMAL stays decimal128 (a pandas round-trip
-                # coerces it to float64), so the correctness check can compare the bespoke engine's
-                # exact decimal result bit-for-bit. Timing is the profiler latency, independent of
-                # the fetch path.
-                result_table = self.con.execute(sql).to_arrow_table()
-
-                with open(profile_output_path, "r") as f:
-                    profile_data = json.load(f)
-
-                exec_time_ms = profile_data["latency"] * 1000.0
+            # Keep the result as exact Arrow: DECIMAL stays decimal128 (a pandas round-trip
+            # coerces it to float64), so the correctness check can compare the bespoke engine's
+            # exact decimal result bit-for-bit. Timing is the profiler latency, independent of
+            # the fetch path.
+            result_table, exec_time_ms, profile_data = execute_profiled(self.con, sql)
+            if profile_data is None:
+                # DuckDB answered from storage statistics without a profiled execution (e.g. a
+                # bare count(*) on a checkpointed table): no operator tree, and exec_time_ms is
+                # wall-clock. Return a minimal plan so callers that expect one keep working.
+                profile_data = {"latency": exec_time_ms / 1000.0, "children": []}
         finally:
             if orig_affinity is not None:
                 os.sched_setaffinity(pid, orig_affinity)

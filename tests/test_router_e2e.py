@@ -441,3 +441,149 @@ def test_bespoke_only_raises_on_guard_failure():
     con.router.registry.mark_tables_dirty(["t"])  # guard will fail
     with pytest.raises(RuntimeError, match="bespoke_only"):
         con.execute("SELECT count(*) AS c FROM t WHERE a >= 4")
+
+
+# --- Issue #98: queries DuckDB answers from storage statistics produce no profile -------------
+
+
+def _checkpointed_db(tmp_path, n=1000):
+    """An on-disk DuckDB file whose table t(a) has been checkpointed to storage - the setup in
+    which DuckDB answers a bare count(*) / min(a) from statistics without a profiled run."""
+    import duckdb
+
+    path = tmp_path / "stats.duckdb"
+    raw = duckdb.connect(str(path))
+    raw.execute(f"CREATE TABLE t AS SELECT range::INTEGER AS a FROM range({n})")
+    raw.close()  # closing checkpoints the table
+    return path
+
+
+def _profile_is_empty(con, sql):
+    """Whether DuckDB writes an empty profiling_output file for ``sql`` on ``con``."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
+        con.execute("PRAGMA enable_profiling = 'json'")
+        con.execute(f"PRAGMA profiling_output = '{tmp.name}'")
+        try:
+            con.execute(sql).fetchall()
+        finally:
+            con.execute("PRAGMA disable_profiling")
+        with open(tmp.name) as f:
+            return f.read() == ""
+
+
+def _profiling_disabled(con):
+    return con.execute("SELECT current_setting('enable_profiling')").fetchone()[
+        0
+    ] not in ("json", "true", True)
+
+
+@pytest.mark.parametrize("read_only", [True, False])
+@pytest.mark.parametrize(
+    "sql, expected",
+    [("SELECT count(*) AS c FROM t", 1000), ("SELECT min(a) AS c FROM t", 0)],
+)
+def test_duckdb_backend_execute_arrow_timed_statistics_only(
+    tmp_path, read_only, sql, expected
+):
+    # DuckDB writes an empty profile for these queries; that used to raise JSONDecodeError, which
+    # the router counted as a reference failure. Now the timing falls back to wall-clock.
+    import duckdb
+
+    from synnodb.router.backend import DuckDBBackend
+
+    raw = duckdb.connect(str(_checkpointed_db(tmp_path)), read_only=read_only)
+    # Guard: this setup must actually hit the empty-profile path, or the test proves nothing.
+    assert _profile_is_empty(raw, sql)
+
+    table, server_ms = DuckDBBackend(raw).execute_arrow_timed(sql)
+    assert table.column("c").to_pylist() == [expected]
+    assert isinstance(server_ms, float) and server_ms >= 0.0
+    assert _profiling_disabled(raw)
+
+
+def test_execute_profiled_uses_profiler_latency_when_present():
+    import duckdb
+
+    from synnodb.router.backend import execute_profiled
+
+    raw = duckdb.connect()
+    raw.execute("CREATE TABLE t AS SELECT range AS a FROM range(1000)")
+    table, ms, profile = execute_profiled(
+        raw, "SELECT sum(a) AS s FROM t WHERE a > ?", [10]
+    )
+    assert table.column("s").to_pylist() == [sum(range(11, 1000))]
+    assert profile is not None
+    assert ms == pytest.approx(float(profile["latency"]) * 1000.0)
+    assert _profiling_disabled(raw)
+
+
+@pytest.mark.parametrize(
+    "contents", ["", "{", '{"result": "error"}', '{"latency": null}', "[]"]
+)
+def test_execute_profiled_falls_back_to_wall_clock_on_unusable_profile(
+    monkeypatch, contents
+):
+    # Whatever DuckDB leaves in the profile file - empty, truncated, an error stub, no numeric
+    # latency - the query result is still returned, timed by wall clock.
+    import duckdb
+
+    from synnodb.router import backend
+
+    real_read = backend._read_profile
+
+    def fake_read(path):
+        with open(path, "w") as f:
+            f.write(contents)
+        return real_read(path)
+
+    monkeypatch.setattr(backend, "_read_profile", fake_read)
+    raw = duckdb.connect()
+    table, ms, profile = backend.execute_profiled(raw, "SELECT 42 AS x")
+    assert table.column("x").to_pylist() == [42]
+    assert profile is None
+    assert isinstance(ms, float) and ms >= 0.0
+    assert _profiling_disabled(raw)
+
+
+def test_execute_profiled_still_raises_on_real_query_error():
+    # Only an unusable *profile* is tolerated; a genuinely failing query must still raise, so the
+    # router's fail-closed cross-check fallback keeps working - and profiling is still disabled.
+    import duckdb
+
+    from synnodb.router.backend import execute_profiled
+
+    raw = duckdb.connect()
+    with pytest.raises(duckdb.CatalogException):
+        execute_profiled(raw, "SELECT * FROM no_such_table")
+    assert _profiling_disabled(raw)
+
+
+def test_statistics_only_query_routes_and_cross_checks(tmp_path):
+    # The issue's reproduction through the router: a bare count(*) on a checkpointed, read-only
+    # database with every call cross-checked. It must be served by the engine each time, not
+    # fall back with a "cross-check reference error".
+    sql = "SELECT count(*) AS c FROM t"
+    path = _checkpointed_db(tmp_path)
+    policy = RouterPolicy(mode=RouterMode.SAMPLED, cross_check_rate=1.0)
+    con = synnodb.connect(
+        str(path), read_only=True, policy=policy, registry=TemplateRegistry()
+    )
+    try:
+        assert _profile_is_empty(con.duckdb, sql)
+        engine, calls = _engine(
+            lambda ph: pa.table({"c": pa.array([1000], pa.int64())})
+        )
+        register_engine(con, template_sql=sql, engine=engine, placeholders=[])
+        for i in range(3):
+            dec = con.router.route(sql, None, con)
+            assert dec.routed is True, dec.trace
+            assert dec.trace.cross_checked is True
+            assert dec.trace.results_match is True
+            assert dec.trace.duckdb_ms is not None and dec.trace.duckdb_ms >= 0.0
+            assert con.execute(sql).fetchall() == [(1000,)]
+        assert calls["n"] == 6
+        assert con.router.counters["cross_check_error"] == 0
+    finally:
+        con.close()
