@@ -873,3 +873,53 @@ def test_olap_system_factory_resyncs_duckdb_thread_count_on_reuse(tmp_path, sour
     assert (
         mgr_parallel.con.execute("SELECT current_setting('threads')").fetchone()[0] == 4
     )
+
+
+# --------------------------------------------------------------------- statistics-only queries
+def test_disk_oracle_handles_query_without_profile(tmp_path, source_db, monkeypatch):
+    """Issue #98: on a checkpointed on-disk oracle DB, DuckDB answers a bare ``count(*)`` from
+    storage statistics and writes an *empty* profile. The oracle must still return the result,
+    a wall-clock time and a (minimal) plan instead of crashing on the empty JSON."""
+    import synnodb.observability.benchmark.systems.duckdb_connection_manager as dcm
+    from synnodb.utils.drop_caches import is_memory_backed
+
+    disk_dir = tmp_path / "disk"
+    disk_dir.mkdir()
+    if is_memory_backed(disk_dir):
+        pytest.skip("tmp_path is memory-backed; the SSD oracle refuses to run there")
+    monkeypatch.setattr(dcm, "drop_os_caches", lambda: None)  # no sudo in tests
+
+    managed = tmp_path / "managed"
+    _register("stats_only", managed, source_db, serve_from=ServeFrom.PARQUET)
+    _prepare(managed, "stats_only")
+
+    mgr = dcm.DuckDBConnectionManager(
+        pre_load_duckdb_tables=False,
+        dataset_tables=_TABLES,
+        parquet_path=managed,
+        benchmark=None,
+        db_storage=DBStorage.SSD,
+        disk_db_dir=disk_dir,
+        sf=1.0,
+        pin_worker=False,
+        pin_core=None,
+        num_threads=1,
+        run_duckdb_on_parquet=False,
+        serve_from=ServeFrom.PARQUET,
+        drop_os_caches_before_sql=False,
+    )
+    try:
+        sql = "SELECT count(*) AS n FROM lineitem"
+        time_ms, table, plan = mgr.duckdb_sql_arrow(sql)
+        assert table.to_pydict()["n"] == [1000]
+        assert isinstance(time_ms, float) and time_ms >= 0.0
+        assert isinstance(plan, dict) and plan["latency"] * 1000.0 == pytest.approx(
+            time_ms
+        )
+        # A query with a real pipeline still gets DuckDB's full profile (operator tree).
+        _, _, full_plan = mgr.duckdb_sql_arrow(
+            "SELECT count(*) AS n FROM lineitem WHERE l_id > 10"
+        )
+        assert full_plan["children"]
+    finally:
+        mgr.clear_mem_footprint(including_disk=True)
