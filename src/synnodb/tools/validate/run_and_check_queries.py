@@ -10,8 +10,18 @@ import pyarrow as pa
 
 import wandb
 from synnodb.observability.logging.wandb_plots_gen import create_wandb_speedup_plot
-from synnodb.router.adapt import candidate_superset, results_diff, results_equal
-from synnodb.router.normalize import top_level_limit_offset, widened_query
+from synnodb.router.adapt import (
+    align_timezones,
+    candidate_superset,
+    results_diff,
+    results_equal,
+)
+from synnodb.router.normalize import (
+    has_order_by,
+    order_by_key_indices,
+    top_level_limit_offset,
+    widened_query,
+)
 from synnodb.router.process_engine import read_and_delete_result
 from synnodb.utils.utils import prefix_dict
 from synnodb.workloads.query_execution_cache import QueryExecutionCache
@@ -287,21 +297,25 @@ def check_output_correctness(
                 bes_indices_by_name[col_name].popleft() for col_name in ref_names
             ]
             bespoke_aligned = bespoke_table.select(align_indices)
+            # The engine writes a zone-bearing column as bare UTC microseconds, which Python
+            # compares unequal to DuckDB's aware datetimes; label it from the reference so a
+            # correct engine is not reported as diverging for the whole run.
+            bespoke_aligned = align_timezones(bespoke_aligned, reference_table)
 
             # A top-level ORDER BY makes row order meaningful: resolve its key columns to output
             # indices for a tie-aware comparison; otherwise compare with set/multiset semantics.
-            ordered = inst.order_by_info is not None and len(inst.order_by_info) > 0
-            order_keys = None
-            if ordered:
-                sort_cols = [
-                    "count_star()" if col.lower() == "count(*)" else col
-                    for col, _ in inst.order_by_info
-                ]
-                missing = [c for c in sort_cols if c not in ref_names]
-                assert not missing, (
-                    f"ORDER BY column(s) {missing} not in result {ref_names}\n{inst.sql}\n{inst.placeholders}"
+            ordered = has_order_by(inst.sql)
+            order_keys = order_by_key_indices(inst.sql, ref_names) if ordered else None
+            if ordered and order_keys is None:
+                # The keys could not be tied to output columns (an unprojected expression,
+                # an ambiguous name). Comparing strictly position-by-position is the
+                # conservative reading: it can only over-reject, never accept a wrongly
+                # ordered result.
+                logger.warning(
+                    f"Query {inst.query_id}: the ORDER BY keys do not resolve to output "
+                    f"columns {ref_names}; comparing strictly, which may reject a correct "
+                    f"engine that broke a tie differently.\n(SQL: {inst.sql})"
                 )
-                order_keys = [ref_names.index(c) for c in sort_cols]
 
             # A top-level LIMIT cutting through a tie group makes DuckDB's pick at the cut
             # arbitrary - and not stable across runs of the identical query - so demanding the
