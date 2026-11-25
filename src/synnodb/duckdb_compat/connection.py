@@ -502,6 +502,17 @@ class SynnoConnection:
         self._maybe_discover()
         return router.why(query, parameters, self)
 
+    def session_timezone(self) -> Optional[str]:
+        """The session's time zone, used to label zone-bearing engine output exactly as
+        DuckDB would. ``None`` when it cannot be read, which leaves the engine's columns
+        unlabelled rather than guessing a zone."""
+        try:
+            return self._inner.execute("SELECT current_setting('TimeZone')").fetchone()[
+                0
+            ]
+        except Exception:
+            return None
+
     def schema_fingerprint(self, tables: Sequence[str]) -> str:
         """Fingerprint of *tables* in the live DuckDB catalog (name+type per column),
         plus the session context that decides what an unqualified statement means:
@@ -516,15 +527,16 @@ class SynnoConnection:
         """
         import hashlib
 
+        # One definition of the session context, shared with the manifest that records it
+        # at build time, so the fingerprint and the engine's recorded baseline can never
+        # disagree about which settings matter.
+        from synnodb.router.manifest import SESSION_KEYS, read_session_context
+
         parts: List[str] = []
-        try:
-            ctx = self._inner.execute(
-                "SELECT current_database(), current_setting('search_path'), "
-                "current_setting('default_null_order'), "
-                "current_setting('TimeZone'), current_setting('Calendar')"
-            ).fetchone()
-            parts.append("session(" + ",".join(str(v) for v in ctx) + ")")
-        except Exception:
+        ctx = read_session_context(self._inner)
+        if ctx:
+            parts.append("session(" + ",".join(ctx[k] for k in SESSION_KEYS) + ")")
+        else:
             parts.append("session(<unavailable>)")
         for table in sorted(t.lower() for t in tables):
             try:

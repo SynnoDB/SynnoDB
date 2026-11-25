@@ -1,0 +1,214 @@
+"""An engine may only serve under the session context it was built and validated under.
+
+The schema-match guard compares the live fingerprint against the one taken when the engine
+was REGISTERED. That catches settings changed mid-session, but never an initial mismatch:
+if the connection has already selected a different time zone (or calendar, null order,
+database, search_path) than generation used, registration adopts that as the baseline and
+the guard sees nothing wrong ever after. A zone-sensitive kernel then answers a different
+question than the one it was proven correct on, and cross-checking is sampled, so it is not
+a backstop. The engine therefore records its build context in the manifest, and
+registration compares rather than adopts.
+"""
+
+from __future__ import annotations
+
+import json
+
+import duckdb
+import pytest
+
+from synnodb.router.manifest import (
+    PORTABLE_SESSION_KEYS,
+    SCHEMA_VERSION,
+    SESSION_KEYS,
+    EngineManifest,
+    QueryTemplate,
+    check_compatibility,
+    read_session_context,
+    session_context_problems,
+)
+
+
+def _ctx(**overrides) -> dict:
+    base = {
+        "database": "memory",
+        "search_path": "",
+        "null_order": "NULLS_LAST",
+        "timezone": "Etc/UTC",
+        "calendar": "gregorian",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_read_session_context_reads_every_setting_that_changes_meaning():
+    con = duckdb.connect()
+    try:
+        ctx = read_session_context(con)
+    finally:
+        con.close()
+    assert set(ctx) == set(SESSION_KEYS)
+    assert all(isinstance(v, str) for v in ctx.values())
+
+
+def test_unreadable_context_is_unknown_not_a_match():
+    class Broken:
+        def execute(self, *_a, **_k):
+            raise RuntimeError("no such setting")
+
+    assert read_session_context(Broken()) == {}
+    # An unknown context must never silently compare equal to a real one.
+    assert session_context_problems({}, _ctx()) != []
+
+
+@pytest.mark.parametrize("key", sorted(PORTABLE_SESSION_KEYS))
+def test_every_setting_that_changes_the_answer_is_compared(key):
+    """Time zone, calendar and null order change what identical SQL computes over the
+    same data, so a build/serve difference in any of them must be caught."""
+    problems = session_context_problems(_ctx(**{key: "other"}), _ctx())
+    assert len(problems) == 1
+    assert key in problems[0]
+
+
+@pytest.mark.parametrize("key", ["database", "search_path"])
+def test_catalog_identity_is_recorded_but_not_compared(key):
+    """An engine is built over a subset catalog and served against the user's own
+    database, so these differ by design; refusing on them would reject every compatible
+    engine. What they protect against - a bare name resolving to a different table - is
+    what ``expected_tables`` verifies, and they remain in the live-vs-live fingerprint
+    where a mid-session ``SET search_path`` is genuine drift."""
+    assert session_context_problems(_ctx(**{key: "other"}), _ctx()) == []
+    assert key in SESSION_KEYS  # still recorded, for diagnosis
+
+
+def test_matching_context_is_no_problem():
+    assert session_context_problems(_ctx(), _ctx()) == []
+
+
+def test_manifest_round_trips_the_build_context():
+    ctx = _ctx(timezone="Europe/Berlin")
+    m = EngineManifest(
+        engine_id="eng-tz",
+        queries=(QueryTemplate("1", "SELECT 1"),),
+        session_context=ctx,
+    )
+    d = json.loads(m.to_json())
+    assert d["schema_version"] == SCHEMA_VERSION
+    assert d["session_context"] == ctx
+    assert EngineManifest.from_dict(d).session_context == ctx
+
+
+def test_older_manifest_without_a_context_reads_as_unknown():
+    old = {
+        "schema_version": 5,
+        "engine_id": "eng-old",
+        "queries": [{"query_id": "1", "sql_template": "SELECT 1"}],
+    }
+    assert EngineManifest.from_dict(old).session_context == {}
+
+
+def test_registration_gate_rejects_a_connection_in_another_zone():
+    """The reproduction: the engine was built under Berlin, the connection is in New York."""
+    con = duckdb.connect()
+    try:
+        con.execute("SET TimeZone='America/New_York'")
+        live = read_session_context(con)
+        manifest = EngineManifest(
+            engine_id="eng-berlin",
+            queries=(QueryTemplate("1", "SELECT 1"),),
+            session_context={**live, "timezone": "Europe/Berlin"},
+        )
+        problems = check_compatibility(con, manifest)
+        assert any("timezone" in p for p in problems), problems
+        assert "Europe/Berlin" in problems[0] and "America/New_York" in problems[0]
+    finally:
+        con.close()
+
+
+def test_registration_gate_accepts_the_zone_it_was_built_in():
+    con = duckdb.connect()
+    try:
+        manifest = EngineManifest(
+            engine_id="eng-same",
+            queries=(QueryTemplate("1", "SELECT 1"),),
+            session_context=read_session_context(con),
+        )
+        assert check_compatibility(con, manifest) == []
+    finally:
+        con.close()
+
+
+def test_zone_bearing_output_falls_back_when_the_build_context_is_unknown():
+    """Fail closed, but per query.
+
+    With no recorded baseline a zone-bearing result cannot be shown to have been built
+    under this zone, so it stays on DuckDB. The engine's OTHER queries must keep serving:
+    engines published between zone-bearing egress becoming servable and the context being
+    recorded are real and hold a mix of both kinds, and refusing all of them over one
+    unverifiable result would be a worse answer than one fallback.
+    """
+    import synnodb
+    from synnodb.router import LocalCallableEngine
+    from synnodb.router.manifest import register_manifest
+
+    con = synnodb.connect(":memory:")
+    try:
+        con.duckdb.execute(
+            "CREATE TABLE t AS SELECT TIMESTAMPTZ '2024-01-01 00:00:00' AS ts"
+        )
+        con.duckdb.execute("CREATE TABLE plain AS SELECT 1 AS n")
+        manifest = EngineManifest(
+            engine_id="eng-nocontext",
+            queries=(
+                QueryTemplate("1", "SELECT ts FROM t"),  # zone-bearing: unverifiable
+                QueryTemplate("2", "SELECT n FROM plain"),  # unaffected
+            ),
+            session_context={},  # an engine that never recorded one
+        )
+        bindings = register_manifest(
+            con,
+            manifest,
+            LocalCallableEngine(
+                "eng-nocontext", {"1": lambda ph: None, "2": lambda ph: None}
+            ),
+        )
+        assert [b.query_id for b in bindings] == ["2"]
+    finally:
+        con.close()
+
+
+def test_context_is_compared_even_with_no_expected_tables():
+    """The parquet-only publish path records no ``expected_tables``.
+
+    Strict registration used to enter the compatibility gate only when that mapping was
+    non-empty, so exactly those engines recorded a build context that was then never
+    checked - and their binding adopted whatever the live context happened to be, which no
+    later guard can detect. The gate must run on the recorded context regardless.
+    """
+    con = duckdb.connect()
+    try:
+        con.execute("SET TimeZone='America/New_York'")
+        manifest = EngineManifest(
+            engine_id="eng-parquet-only",
+            queries=(QueryTemplate("1", "SELECT 1"),),
+            expected_tables={},  # the parquet-only publish path
+            session_context={**read_session_context(con), "timezone": "Europe/Berlin"},
+        )
+        problems = check_compatibility(con, manifest)
+        assert any("timezone" in p for p in problems), problems
+    finally:
+        con.close()
+
+
+def test_a_matching_context_with_no_expected_tables_still_registers():
+    con = duckdb.connect()
+    try:
+        manifest = EngineManifest(
+            engine_id="eng-ok",
+            queries=(QueryTemplate("1", "SELECT 1"),),
+            expected_tables={},
+            session_context=read_session_context(con),
+        )
+        assert check_compatibility(con, manifest) == []
+    finally:
+        con.close()
